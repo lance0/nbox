@@ -46,6 +46,8 @@ nbox
 - **Scriptable / agent-friendly** — `-o json|csv|plain`, `--fields`, `--raw`, versioned `--envelope`, and stable exit codes (see [AGENTS.md](AGENTS.md)).
 - **Read-only first**; safe `PATCH`-based writes with diff confirmation come later.
 
+See [docs/FEATURES.md](docs/FEATURES.md) for the full command reference and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the internals.
+
 ---
 
 ## Installation
@@ -112,7 +114,7 @@ exclude_config_context = true
 2. the env var named by `token_env`
 3. *(future)* OS keyring
 
-nbox auto-detects v2 tokens (`Bearer nbt_<key>.<token>`) vs legacy v1 tokens (`Token <token>`).
+nbox auto-detects v2 tokens (`Bearer nbt_<key>.<token>`) vs legacy v1 tokens (`Token <token>`). See [docs/CONFIG.md](docs/CONFIG.md) for the full config reference.
 
 ---
 

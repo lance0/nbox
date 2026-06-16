@@ -193,17 +193,17 @@ v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implemen
 Ported from ttl/xfr where they paid off. Already have: release workflow, `install.sh`, Homebrew template, completions, MSRV, keep-a-changelog. Themes and the update-notifier are already in.
 
 - ☐ `cargo-audit` CI (`audit.yml`) — on Cargo.toml/lock + daily cron.
-- ☐ Pre-commit hooks (`.pre-commit-config.yaml`) — fmt/clippy on commit, test on push; prek with a Python fallback.
+- ☑ Pre-commit hooks (`.pre-commit-config.yaml`) — fmt/clippy on commit, test on push; prek with a Python fallback.
 - ☐ musl Linux targets in the release matrix (static binaries). gnu only today.
-- ☐ `Dockerfile.release` + multi-arch GHCR image (`ghcr.io/lance0/nbox`).
+- ◐ `Dockerfile.release` added (wraps a prebuilt musl binary); multi-arch GHCR publish lands with the release CI.
 - ☐ Ship completions as a release artifact, not just the subcommand.
 - ☐ MSRV CI job pinning `rust-version` (1.88).
-- ☐ `dependabot.yml` — grouped Cargo + GitHub Actions.
+- ☑ `dependabot.yml` — grouped Cargo + GitHub Actions.
 - ☑ `CONTRIBUTING.md`.
-- ☐ `docs/` tree — `ARCHITECTURE.md`, `CONFIG.md`, `FEATURES.md`.
+- ☑ `docs/` tree — `ARCHITECTURE.md`, `CONFIG.md`, `FEATURES.md` (linked from README).
 - ☑ `KNOWN_ISSUES.md` — read-only, search scope, parent-prefix best-effort, caps, CSV nesting.
 - ☐ Split `prefs.toml` (runtime state) from `config.toml` (user config), per xfr. Pairs with `config_version`.
-- ☐ `examples/config.toml`; `.github/FUNDING.yml`.
+- ☑ `examples/config.toml`; `.github/FUNDING.yml`.
 
 ## Explicit non-goals (v0)
 

@@ -222,7 +222,7 @@ strip = true
 
 Follows the xfr / ttl architecture style: `main.rs`, `cli.rs`, `lib.rs`, a distinct network/API layer, `tui/`, `config.rs`, `prefs.rs`, and docs.
 
-> **Aspirational target — the tree below is the intended shape, not current reality.** As of v0.1.1 several entries are not built: `prefs.rs`, `netbox/graphql.rs`, `netbox/schema.rs`, the `cache/` module, the `docs/` tree, and the `tui/views/` + `tui/widgets/` split (the TUI is currently a flatter `state.rs`/`ui.rs`/`palette.rs`/`fuzzy.rs`). `error.rs`, `output/`, `netbox/`, `domain/`, and `util/` exist roughly as shown. See `ROADMAP.md` for what's planned where.
+> **Aspirational target — the tree below is the intended shape, not current reality.** As of v0.1.1 several entries are not built: `prefs.rs`, `netbox/graphql.rs`, `netbox/schema.rs`, the `cache/` module, and the `tui/views/` + `tui/widgets/` split (the TUI is currently a flatter `state.rs`/`ui.rs`/`palette.rs`/`fuzzy.rs`). `error.rs`, `output/`, `netbox/`, `domain/`, `util/`, and a `docs/` tree (`ARCHITECTURE.md`, `CONFIG.md`, `FEATURES.md`) exist roughly as shown. See `ROADMAP.md` for what's planned where.
 
 ```
 nbox/
