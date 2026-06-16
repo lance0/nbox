@@ -53,6 +53,7 @@ pub struct App {
     pub theme_index: usize,
     pub profile_name: String,
     pub base_url: String,
+    pub netbox_version: String,
 
     pub mode: Mode,
     pub screen: Screen,
@@ -75,6 +76,7 @@ impl App {
         theme_name: &str,
         profile_name: String,
         base_url: String,
+        netbox_version: String,
     ) -> Self {
         Self {
             client,
@@ -82,6 +84,7 @@ impl App {
             theme_index: Theme::index_of(theme_name),
             profile_name,
             base_url,
+            netbox_version,
             mode: Mode::Normal,
             screen: Screen::Home,
             history: Vec::new(),
@@ -287,7 +290,13 @@ mod tests {
             ..Default::default()
         };
         let client = NetBoxClient::new(&profile, None).unwrap();
-        App::new(client, "default", "test".into(), "http://localhost".into())
+        App::new(
+            client,
+            "default",
+            "test".into(),
+            "http://localhost".into(),
+            "4.5.5".into(),
+        )
     }
 
     fn result() -> SearchResult {

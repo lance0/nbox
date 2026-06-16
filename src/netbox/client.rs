@@ -74,11 +74,8 @@ impl NetBoxClient {
         Some(format!("{scheme} ****"))
     }
 
-    /// Perform a GET request and deserialize the JSON response.
-    pub async fn get<T>(&self, path: &str, params: &[(&str, String)]) -> Result<T>
-    where
-        T: DeserializeOwned,
-    {
+    /// Issue an authenticated GET, returning the raw response.
+    async fn send(&self, path: &str, params: &[(&str, String)]) -> Result<reqwest::Response> {
         let url = self.url_for(path)?;
 
         match self.masked_authorization() {
@@ -96,7 +93,11 @@ impl NetBoxClient {
             req = req.header(AUTHORIZATION, self.auth_scheme.header_value(token));
         }
 
-        let res = req.send().await.context("sending request to NetBox")?;
+        req.send().await.context("sending request to NetBox")
+    }
+
+    /// Decode a successful response, or turn a non-2xx status into an error.
+    async fn decode<T: DeserializeOwned>(res: reqwest::Response) -> Result<T> {
         let status = res.status();
         if !status.is_success() {
             let body = res.text().await.unwrap_or_default();
@@ -105,8 +106,29 @@ impl NetBoxClient {
                 truncate(&body, 500)
             );
         }
-
         res.json::<T>().await.context("decoding NetBox response")
+    }
+
+    /// Perform a GET request and deserialize the JSON response.
+    pub async fn get<T>(&self, path: &str, params: &[(&str, String)]) -> Result<T>
+    where
+        T: DeserializeOwned,
+    {
+        let res = self.send(path, params).await?;
+        Self::decode(res).await
+    }
+
+    /// Like [`get`](Self::get), but maps HTTP 404 to `Ok(None)` (so a missing
+    /// object by ID is "not found", not an error).
+    pub async fn get_optional<T>(&self, path: &str, params: &[(&str, String)]) -> Result<Option<T>>
+    where
+        T: DeserializeOwned,
+    {
+        let res = self.send(path, params).await?;
+        if res.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        Ok(Some(Self::decode(res).await?))
     }
 
     /// Fetch a single page from a list endpoint, applying the page size and the

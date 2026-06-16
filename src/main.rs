@@ -9,6 +9,7 @@ use nbx::cli::Cli;
 #[tokio::main]
 async fn main() {
     let cli = Cli::parse();
+    nbx::init_logging(cli.log_level.as_deref());
 
     // Kick off the update check (if enabled) before doing work, then report it
     // after, so a quick command isn't delayed by the network round-trip.

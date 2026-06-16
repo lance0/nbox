@@ -32,6 +32,26 @@ pub mod update;
 /// The crate version, sourced from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
+/// Initialize logging to stderr (stdout stays clean for piping).
+///
+/// Level precedence: the `--log-level` flag, then `NBX_LOG`, then `RUST_LOG`,
+/// else quiet (`warn`). No-ops if a subscriber is already installed.
+pub fn init_logging(log_level: Option<&str>) {
+    use tracing_subscriber::{EnvFilter, fmt};
+
+    let filter = match log_level {
+        Some(level) => EnvFilter::new(level),
+        None => EnvFilter::try_from_env("NBX_LOG")
+            .or_else(|_| EnvFilter::try_from_default_env())
+            .unwrap_or_else(|_| EnvFilter::new("warn")),
+    };
+
+    let _ = fmt()
+        .with_env_filter(filter)
+        .with_writer(std::io::stderr)
+        .try_init();
+}
+
 /// Context derived from the global CLI flags, used to connect to NetBox.
 struct Ctx {
     config_path: Option<PathBuf>,
@@ -117,7 +137,12 @@ async fn run_tui(ctx: &Ctx) -> Result<()> {
     let token = config::resolve_token(profile);
     let client = NetBoxClient::new(profile, token)?;
 
-    let app = tui::state::App::new(client, &theme_name, name, base_url);
+    // Probe the instance on connect: confirms reachability + the 4.2 floor, and
+    // gives us the version for the status line. (CLI commands skip this to stay
+    // fast.)
+    let status = client.verify_compatible().await?;
+
+    let app = tui::state::App::new(client, &theme_name, name, base_url, status.netbox_version);
     tui::app::run(app).await
 }
 
@@ -258,8 +283,7 @@ async fn run_rack(ctx: &Ctx, value: &str) -> Result<()> {
     Ok(())
 }
 
-/// Report an unimplemented command on stderr without dirtying stdout.
+/// Fail an unimplemented command (non-zero exit), keeping stdout clean.
 fn not_implemented(what: &str) -> Result<()> {
-    eprintln!("nbx: {what} is not yet implemented");
-    Ok(())
+    anyhow::bail!("{what} is not yet implemented")
 }

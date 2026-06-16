@@ -15,13 +15,12 @@ impl NetBoxClient {
     /// a name-contains fallback. Returns `None` when nothing matches a name.
     pub async fn device_by_ref(&self, value: &str) -> Result<Option<Device>> {
         if let Ok(id) = value.parse::<u64>() {
-            let device: Device = self
-                .get(
+            return self
+                .get_optional(
                     &format!("/api/dcim/devices/{id}/"),
                     &[("exclude", "config_context".to_string())],
                 )
-                .await?;
-            return Ok(Some(device));
+                .await;
         }
 
         let exact: Page<Device> = self
@@ -133,8 +132,9 @@ impl NetBoxClient {
     /// Resolve a rack by numeric ID, then exact name, then name-contains.
     pub async fn rack_by_ref(&self, value: &str) -> Result<Option<Rack>> {
         if let Ok(id) = value.parse::<u64>() {
-            let rack: Rack = self.get(&format!("/api/dcim/racks/{id}/"), &[]).await?;
-            return Ok(Some(rack));
+            return self
+                .get_optional(&format!("/api/dcim/racks/{id}/"), &[])
+                .await;
         }
         let exact: Page<Rack> = self
             .list(Endpoint::Racks, vec![("name__ie", value.to_string())])

@@ -1,8 +1,9 @@
 //! NetBox version probe (`/api/status/`) and minimum-version enforcement.
 //!
-//! nbx targets NetBox 4.2+ (the polymorphic `scope` model). Networked entry
-//! points call [`NetBoxClient::verify_compatible`] on connect to fail fast — and
-//! surface the version — against older instances.
+//! nbx targets NetBox 4.2+ (the polymorphic `scope` model). The TUI calls
+//! [`NetBoxClient::verify_compatible`] on launch to fail fast against older
+//! instances and surface the version in the status line. One-shot CLI commands
+//! skip the probe to avoid an extra round-trip per invocation.
 
 use anyhow::{Result, bail};
 use serde::Deserialize;

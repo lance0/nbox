@@ -24,7 +24,7 @@ pub fn render(frame: &mut Frame, app: &App) {
             Style::default().fg(theme.header),
         ),
         Span::styled(
-            format!("netbox: {} ", app.base_url),
+            format!("netbox: {} (v{}) ", app.base_url, app.netbox_version),
             Style::default().fg(theme.text_dim),
         ),
         Span::styled(

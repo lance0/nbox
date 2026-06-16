@@ -55,6 +55,20 @@ async fn device_by_id_hits_detail_endpoint() {
 }
 
 #[tokio::test]
+async fn device_by_missing_id_returns_none_not_error() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/99999/"))
+        .respond_with(ResponseTemplate::new(404).set_body_string("Not found."))
+        .mount(&server)
+        .await;
+
+    // A 404 on the ID detail endpoint must map to Ok(None), per the contract.
+    let device = client(&server).device_by_ref("99999").await.unwrap();
+    assert!(device.is_none());
+}
+
+#[tokio::test]
 async fn device_not_found_returns_none() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
