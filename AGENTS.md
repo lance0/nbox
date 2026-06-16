@@ -13,7 +13,17 @@ subcommand) is for humans; agents should always pass a subcommand.
 - `-o csv` — CSV (arrays → table, single objects → `field,value`).
 
 stdout carries only the requested data; logs/diagnostics/errors go to stderr.
-Exit code is `0` on success, non-zero on error (e.g. not found, auth/connection).
+
+Exit codes (stable):
+
+| Code | Meaning                                   |
+| ---- | ----------------------------------------- |
+| 0    | success                                   |
+| 1    | generic error (incl. other API failures)  |
+| 2    | usage error (bad arguments)               |
+| 3    | authentication / permission (HTTP 401/403)|
+| 4    | not found (no object matched)             |
+| 5    | ambiguous reference (more than one match) |
 
 Recommended agent invocation: `nbox <cmd> ... --json --envelope` (add `--raw` to
 minimize tokens, `--fields` to trim payloads).

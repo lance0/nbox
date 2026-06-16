@@ -24,6 +24,7 @@ use crate::output::plain::KeyValues;
 pub mod cli;
 pub mod config;
 pub mod domain;
+pub mod error;
 pub mod netbox;
 pub mod output;
 pub mod tui;
@@ -436,8 +437,12 @@ fn parse_object_ref(s: &str) -> Result<(&str, &str)> {
 }
 
 /// A friendly "not found" error with an actionable suggestion (DESIGN §17).
+/// Typed as [`error::NboxError::NotFound`] so it carries a stable exit code.
 fn not_found(noun: &str, value: &str) -> anyhow::Error {
-    anyhow::anyhow!("no {noun} matched \"{value}\"\n\nTry:\n  nbox search {value}")
+    error::NboxError::NotFound(format!(
+        "no {noun} matched \"{value}\"\n\nTry:\n  nbox search {value}"
+    ))
+    .into()
 }
 
 #[cfg(test)]

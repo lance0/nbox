@@ -84,6 +84,40 @@ async fn device_not_found_returns_none() {
 }
 
 #[tokio::test]
+async fn device_contains_with_multiple_matches_is_ambiguous() {
+    let server = MockServer::start().await;
+    // Exact (name__ie) finds nothing; the contains fallback returns several.
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/"))
+        .and(query_param("name__ie", "edge"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 0, "next": null, "previous": null, "results": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/"))
+        .and(query_param("name__ic", "edge"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [
+                {"id": 1, "url": "u", "name": "edge01"},
+                {"id": 2, "url": "u", "name": "edge02"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let err = client(&server).device_by_ref("edge").await.unwrap_err();
+    let msg = format!("{err:#}");
+    assert!(msg.contains("ambiguous"), "got: {msg}");
+    assert!(
+        msg.contains("edge01") && msg.contains("edge02"),
+        "got: {msg}"
+    );
+}
+
+#[tokio::test]
 async fn ip_candidates_use_address_filter() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

@@ -4,11 +4,37 @@
 
 use anyhow::Result;
 
+use crate::error::NboxError;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
 use crate::netbox::models::dcim::{Device, Interface, Rack, Site};
 use crate::netbox::models::ipam::{IpAddress, Prefix, Vlan};
 use crate::netbox::pagination::Page;
+
+/// Resolve a fuzzy (name-contains) result set: the single match, `None` if empty,
+/// or an [`NboxError::Ambiguous`] listing the candidates when more than one match.
+fn ambiguous_or_first<T>(
+    noun: &str,
+    value: &str,
+    results: Vec<T>,
+    label: impl Fn(&T) -> String,
+) -> Result<Option<T>> {
+    if results.len() > 1 {
+        let matches = results
+            .iter()
+            .take(8)
+            .map(&label)
+            .collect::<Vec<_>>()
+            .join(", ");
+        return Err(NboxError::Ambiguous {
+            noun: noun.to_string(),
+            value: value.to_string(),
+            matches,
+        }
+        .into());
+    }
+    Ok(results.into_iter().next())
+}
 
 impl NetBoxClient {
     /// Resolve a device by numeric ID, then exact (case-insensitive) name, then
@@ -33,7 +59,7 @@ impl NetBoxClient {
         let contains: Page<Device> = self
             .list(Endpoint::Devices, vec![("name__ic", value.to_string())])
             .await?;
-        Ok(contains.results.into_iter().next())
+        ambiguous_or_first("device", value, contains.results, |d| d.name.clone())
     }
 
     /// All interfaces on a device (up to `max`).
@@ -152,7 +178,9 @@ impl NetBoxClient {
         let contains: Page<Vlan> = self
             .list(Endpoint::Vlans, vec![("name__ic", value.to_string())])
             .await?;
-        Ok(contains.results.into_iter().next())
+        ambiguous_or_first("VLAN", value, contains.results, |v| {
+            format!("{} {}", v.vid, v.name)
+        })
     }
 
     /// Prefixes that reference a VLAN (up to `max`).
@@ -182,7 +210,7 @@ impl NetBoxClient {
         let contains: Page<Site> = self
             .list(Endpoint::Sites, vec![("name__ic", value.to_string())])
             .await?;
-        Ok(contains.results.into_iter().next())
+        ambiguous_or_first("site", value, contains.results, |s| s.name.clone())
     }
 
     /// Resolve a rack by numeric ID, then exact name, then name-contains.
@@ -201,6 +229,6 @@ impl NetBoxClient {
         let contains: Page<Rack> = self
             .list(Endpoint::Racks, vec![("name__ic", value.to_string())])
             .await?;
-        Ok(contains.results.into_iter().next())
+        ambiguous_or_first("rack", value, contains.results, |r| r.name.clone())
     }
 }

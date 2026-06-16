@@ -6,12 +6,13 @@
 
 use std::time::Duration;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use reqwest::Url;
 use reqwest::header::{ACCEPT, AUTHORIZATION};
 use serde::de::DeserializeOwned;
 
 use crate::config::ProfileConfig;
+use crate::error::NboxError;
 use crate::netbox::auth::AuthScheme;
 use crate::netbox::endpoints::Endpoint;
 use crate::netbox::pagination::Page;
@@ -101,15 +102,12 @@ impl NetBoxClient {
         req.send().await.context("sending request to NetBox")
     }
 
-    /// Decode a successful response, or turn a non-2xx status into an error.
+    /// Decode a successful response, or turn a non-2xx status into a typed error.
     async fn decode<T: DeserializeOwned>(res: reqwest::Response) -> Result<T> {
         let status = res.status();
         if !status.is_success() {
             let body = res.text().await.unwrap_or_default();
-            bail!(
-                "NetBox API request failed: {status}: {}",
-                truncate(&body, 500)
-            );
+            return Err(status_error(status, &body).into());
         }
         res.json::<T>().await.context("decoding NetBox response")
     }
@@ -186,6 +184,19 @@ impl NetBoxClient {
 
         out.truncate(max);
         Ok(out)
+    }
+}
+
+/// Map a non-success HTTP status to a typed [`NboxError`] (401/403 get stable
+/// exit codes; everything else is a generic API error).
+fn status_error(status: reqwest::StatusCode, body: &str) -> NboxError {
+    match status {
+        reqwest::StatusCode::UNAUTHORIZED => NboxError::Authentication,
+        reqwest::StatusCode::FORBIDDEN => NboxError::PermissionDenied,
+        other => NboxError::Api {
+            status: other.as_u16(),
+            body: truncate(body, 500),
+        },
     }
 }
 

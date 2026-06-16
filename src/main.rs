@@ -29,6 +29,6 @@ async fn main() {
 
     if let Err(err) = result {
         eprintln!("error: {err:#}");
-        std::process::exit(1);
+        std::process::exit(nbox::error::NboxError::exit_code_for(&err));
     }
 }
