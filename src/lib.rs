@@ -123,7 +123,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Rack { value }) => run_rack(&ctx, &value).await,
         Some(Command::Vlan { value }) => run_vlan(&ctx, &value).await,
         Some(Command::Interface { .. }) => not_implemented("interface lookup"),
-        Some(Command::Open { .. }) => not_implemented("open in browser"),
+        Some(Command::Open { object_ref }) => run_open(&ctx, &object_ref).await,
         Some(Command::Status) => run_status(&ctx).await,
         Some(Command::Config { command }) => {
             config::run_config(command, ctx.config_path.as_deref(), ctx.is_json())
@@ -351,6 +351,62 @@ async fn run_rack(ctx: &Ctx, value: &str) -> Result<()> {
     emit(ctx, &view, || view.to_key_values().print())
 }
 
+/// `nbox open <kind/ref>` — resolve an object and open it in the browser.
+async fn run_open(ctx: &Ctx, object_ref: &str) -> Result<()> {
+    let (kind, value) = parse_object_ref(object_ref)?;
+
+    let client = connect(ctx)?;
+    let api_url = resolve_object_url(&client, kind, value)
+        .await?
+        .ok_or_else(|| not_found(kind, value))?;
+    let web_url = util::format::api_to_web_url(&api_url);
+
+    let report = serde_json::json!({ "url": web_url });
+    emit(ctx, &report, || println!("{web_url}"))?;
+
+    if let Err(e) = open::that(&web_url) {
+        eprintln!("warning: could not launch a browser: {e}");
+    }
+    Ok(())
+}
+
+/// Resolve a `<kind>/<ref>` pair to the object's API URL, or `None` if no match.
+async fn resolve_object_url(
+    client: &NetBoxClient,
+    kind: &str,
+    value: &str,
+) -> Result<Option<String>> {
+    let url = match kind {
+        "device" => client.device_by_ref(value).await?.map(|d| d.url),
+        "site" => client.site_by_ref(value).await?.map(|s| s.url),
+        "rack" => client.rack_by_ref(value).await?.map(|r| r.url),
+        "vlan" => client.vlan_by_ref(value).await?.map(|v| v.url),
+        "prefix" => client.prefix_by_cidr(value).await?.map(|p| p.url),
+        "ip" | "ip-address" | "address" => client
+            .ip_candidates(value)
+            .await?
+            .into_iter()
+            .next()
+            .map(|ip| ip.url),
+        other => anyhow::bail!(
+            "unknown object kind \"{other}\" (expected: device, site, rack, vlan, prefix, ip)"
+        ),
+    };
+    Ok(url)
+}
+
+/// Split a `<kind>/<ref>` reference. The first `/` is the separator, so a value
+/// may itself contain slashes (e.g. `prefix/10.0.0.0/24`).
+fn parse_object_ref(s: &str) -> Result<(&str, &str)> {
+    s.split_once('/')
+        .filter(|(kind, value)| !kind.is_empty() && !value.is_empty())
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "object reference must be `<kind>/<ref>` (e.g. device/edge01)\n\nKinds: device, site, rack, vlan, prefix, ip"
+            )
+        })
+}
+
 /// Fail an unimplemented command (non-zero exit), keeping stdout clean.
 fn not_implemented(what: &str) -> Result<()> {
     anyhow::bail!("{what} is not yet implemented")
@@ -363,7 +419,7 @@ fn not_found(noun: &str, value: &str) -> anyhow::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::not_found;
+    use super::{not_found, parse_object_ref};
 
     #[test]
     fn not_found_includes_actionable_suggestion() {
@@ -371,5 +427,25 @@ mod tests {
         assert!(msg.contains("no device matched \"edge01\""));
         assert!(msg.contains("Try:"));
         assert!(msg.contains("nbox search edge01"));
+    }
+
+    #[test]
+    fn object_ref_splits_on_first_slash() {
+        assert_eq!(
+            parse_object_ref("device/edge01").unwrap(),
+            ("device", "edge01")
+        );
+        // A value may contain slashes; only the first separates kind from ref.
+        assert_eq!(
+            parse_object_ref("prefix/10.0.0.0/24").unwrap(),
+            ("prefix", "10.0.0.0/24")
+        );
+    }
+
+    #[test]
+    fn object_ref_requires_both_parts() {
+        assert!(parse_object_ref("garbage").is_err());
+        assert!(parse_object_ref("device/").is_err());
+        assert!(parse_object_ref("/edge01").is_err());
     }
 }
