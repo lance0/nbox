@@ -12,6 +12,10 @@ pub mod cli;
 pub mod config;
 pub mod netbox;
 pub mod output;
+pub mod tui;
+
+#[cfg(feature = "updates")]
+pub mod update;
 
 /// The crate version, sourced from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");

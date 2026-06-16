@@ -8,7 +8,24 @@ use nbx::cli::Cli;
 
 fn main() {
     let cli = Cli::parse();
-    if let Err(err) = nbx::run(cli) {
+
+    // Kick off the update check (if enabled) before doing work, then report it
+    // after, so a quick command isn't delayed by the network round-trip.
+    #[cfg(feature = "updates")]
+    let update = {
+        let json = cli.json;
+        (nbx::update::spawn_check(), json)
+    };
+
+    let result = nbx::run(cli);
+
+    #[cfg(feature = "updates")]
+    {
+        let (rx, json) = update;
+        nbx::update::maybe_print_notice(rx, json);
+    }
+
+    if let Err(err) = result {
         eprintln!("error: {err:#}");
         std::process::exit(1);
     }

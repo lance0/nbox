@@ -69,7 +69,8 @@ nbx
 ```
 
 ### Phase 4 — Polish
-- ☐ Built-in themes + cycle/persist (`t`)
+- ◐ Built-in themes (11 ported from xfr in `tui/theme.rs`); cycle/persist (`t`) wired with the TUI in Phase 3
+- ☑ Update notifications (`updates` feature): GitHub check + CLI notice (`src/update.rs`); TUI banner lands in Phase 3
 - ☐ Recent objects
 - ☐ Friendly, actionable errors
 - ☐ Shell completions (bash/zsh/fish/powershell/elvish)
@@ -103,7 +104,6 @@ nbx
 
 - ☐ OS keyring token storage
 - ☐ Local SQLite cache (`cache` feature) for fast repeat lookups
-- ☐ Update notifications (`updates` feature)
 - ☐ Virtualization (VMs) and tenancy detail views
 - ☐ VRF-aware IP/prefix navigation
 
