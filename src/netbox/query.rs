@@ -148,6 +148,14 @@ impl NetBoxClient {
         Ok(ci.results.into_iter().next())
     }
 
+    /// Trace the cable path from an interface (`…/interfaces/{id}/trace/`).
+    /// Returns the raw hop array — each hop is `[near terminations, cable, far
+    /// terminations]` — kept as JSON for permissive rendering.
+    pub async fn interface_trace(&self, interface_id: u64) -> Result<Vec<serde_json::Value>> {
+        self.get(&format!("/api/dcim/interfaces/{interface_id}/trace/"), &[])
+            .await
+    }
+
     /// IP addresses assigned to a single interface (up to `max`).
     pub async fn interface_ips(&self, interface_id: u64, max: usize) -> Result<Vec<IpAddress>> {
         self.list_all(

@@ -355,9 +355,12 @@ async fn run_interface(ctx: &Ctx, device: &str, interface: &str) -> Result<()> {
         .device_interface(dev.id, interface)
         .await?
         .ok_or_else(|| not_found("interface", interface))?;
-    let ips = client.interface_ips(iface.id, CAP).await?;
+    let (ips, trace) = tokio::try_join!(
+        client.interface_ips(iface.id, CAP),
+        client.interface_trace(iface.id),
+    )?;
 
-    let view = InterfaceView::build(iface, ips);
+    let view = InterfaceView::build(iface, ips, trace);
     emit(ctx, &view, || println!("{}", view.to_plain()))
 }
 

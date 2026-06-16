@@ -144,7 +144,7 @@ v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implemen
 - ☐ **MCP server (read-only): `nbox mcp serve`** — command core as MCP tools: search, device, ip, prefix, vlan, site, status, next-ip/next-prefix. stdio first, HTTP later.
 - ◐ **Large-instance robustness** — ☑ honor 429 `Retry-After` (capped, with exponential backoff) in the client; search is already a bounded 5-way fan-out and `list_all` is `max`-capped. Remaining: configurable concurrency if needed.
 - ☐ **IPAM allocate (write)** — claim the next IP/prefix (POST to `available-ips`/`available-prefixes`). Read-only half is v0.1.1.
-- ☐ **Cable / interface trace** — `/api/dcim/interfaces/{id}/trace/`; surface on the interface/device view.
+- ☑ **Cable / interface trace** — `/api/dcim/interfaces/{id}/trace/`; surfaced as a Cable Path section on `nbox interface`.
 - ☐ **Hierarchical prefix tree in the TUI** — expand/collapse children with inline utilization (netbox#21396/#21255).
 - ☐ **Device detail — pick one path** — REST fan-out (device + interfaces + IPs) or a read-only GraphQL query. Don't build both.
 - ☐ Multi-pane TUI (nav | results | detail) per the DESIGN mockup.
