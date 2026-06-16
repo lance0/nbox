@@ -1,8 +1,8 @@
 # nbox — Design Document
 
-> Status: **Draft / v0.1 design**
-> Audience: contributors building nbox from scratch.
-> This document is the source of truth for the initial architecture and MVP scope. Code in this doc is illustrative — names and signatures may shift during implementation, but the shapes should hold.
+> Status: **Original v0.1 design (partly aspirational).**
+> Audience: contributors building nbox.
+> This is the founding architecture doc. It is the source of truth for *intent* and shapes, but the code has since diverged in places and some modules/sections here are not built yet. For what actually exists today and what's planned, **`ROADMAP.md` is authoritative**. Sections and files that are aspirational are flagged inline below; when in doubt, trust the code and the roadmap.
 
 ---
 
@@ -221,6 +221,8 @@ strip = true
 ## 6. Repository Layout
 
 Follows the xfr / ttl architecture style: `main.rs`, `cli.rs`, `lib.rs`, a distinct network/API layer, `tui/`, `config.rs`, `prefs.rs`, and docs.
+
+> **Aspirational target — the tree below is the intended shape, not current reality.** As of v0.1.1 several entries are not built: `prefs.rs`, `netbox/graphql.rs`, `netbox/schema.rs`, the `cache/` module, the `docs/` tree, and the `tui/views/` + `tui/widgets/` split (the TUI is currently a flatter `state.rs`/`ui.rs`/`palette.rs`/`fuzzy.rs`). `error.rs`, `output/`, `netbox/`, `domain/`, and `util/` exist roughly as shown. See `ROADMAP.md` for what's planned where.
 
 ```
 nbox/

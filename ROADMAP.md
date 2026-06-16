@@ -137,7 +137,7 @@ v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implemen
 - ☑ Read-only `nbox raw GET <path>` escape hatch; write verbs rejected until v0.2+.
 - ☑ `config_version` field + forward-compat (a newer version warns but still loads), before v0.2 touches the schema.
 - ☑ `clap_mangen` man page via `nbox man` (`nbox man > nbox.1`).
-- ☐ Mark absent DESIGN.md modules aspirational (`error.rs`, `graphql.rs`, `schema.rs`, `docs/`).
+- ☑ Reconcile DESIGN.md with reality — flagged the doc as partly aspirational (ROADMAP authoritative) and annotated the §6 layout (`prefs.rs`, `graphql.rs`, `schema.rs`, `cache/`, `docs/`, `tui/views`+`widgets` not built).
 
 ## v0.2 — Nested views, IPAM power, first writes
 
