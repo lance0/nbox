@@ -20,6 +20,8 @@ const INIT_TEMPLATE: &str = r#"# nbox configuration
 # Tokens are NOT stored here — point `token_env` at an environment variable,
 # or export NBOX_TOKEN to override.
 
+config_version = 1
+
 active_profile = "default"
 
 [ui]
@@ -38,9 +40,17 @@ page_size = 100
 exclude_config_context = true
 "#;
 
+/// The config schema version this build writes and understands. Bump when the
+/// shape changes incompatibly; older binaries warn on a newer file.
+pub const CONFIG_VERSION: u32 = 1;
+
 /// Top-level configuration document.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Config {
+    /// Schema version; absent means pre-versioning (treated as v1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub config_version: Option<u32>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_profile: Option<String>,
 
@@ -126,10 +136,23 @@ fn resolve_path(explicit: Option<&Path>) -> Result<PathBuf> {
 }
 
 /// Load and deserialize the typed config at `path`.
+///
+/// Forward-compatible: a `config_version` newer than this build is warned about
+/// (some settings may be ignored) but still loads — we never hard-fail on it.
 pub fn load(path: &Path) -> Result<Config> {
     let text = fs::read_to_string(path)
         .with_context(|| format!("no config at {} — run `nbox config init`", path.display()))?;
-    toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
+    let cfg: Config =
+        toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))?;
+    if let Some(v) = cfg.config_version
+        && v > CONFIG_VERSION
+    {
+        tracing::warn!(
+            "config_version {v} is newer than this nbox understands ({CONFIG_VERSION}); \
+             some settings may be ignored — consider upgrading nbox"
+        );
+    }
+    Ok(cfg)
 }
 
 /// Resolve the API token for `profile`, preferring `NBOX_TOKEN`.
@@ -353,6 +376,18 @@ page_size = 250
         assert_eq!(work.auth_scheme, Some(AuthScheme::Bearer));
         assert_eq!(work.page_size, Some(250));
         assert_eq!(work.verify_tls, None);
+    }
+
+    #[test]
+    fn config_version_is_optional_and_round_trips() {
+        let with: Config = toml::from_str("config_version = 2\n").unwrap();
+        assert_eq!(with.config_version, Some(2));
+        // Pre-versioning configs (no field) parse as None, treated as v1.
+        let without: Config = toml::from_str(SAMPLE).unwrap();
+        assert_eq!(without.config_version, None);
+        // A future field nbox doesn't know is ignored, not an error.
+        let future: Config = toml::from_str("config_version = 9\nfuture_knob = true\n").unwrap();
+        assert_eq!(future.config_version, Some(9));
     }
 
     #[test]

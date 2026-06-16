@@ -89,6 +89,7 @@ Config lives at:
 | Windows       | `%APPDATA%\nbox\config.toml` |
 
 ```toml
+config_version = 1
 active_profile = "work"
 
 [ui]
