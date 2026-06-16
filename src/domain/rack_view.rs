@@ -1,7 +1,11 @@
 //! Flattened rack view for `nbox rack` (plain + JSON).
 
-use serde::Serialize;
+use std::collections::BTreeMap;
 
+use serde::Serialize;
+use serde_json::Value;
+
+use crate::domain::custom;
 use crate::netbox::models::dcim::Rack;
 use crate::output::plain::KeyValues;
 
@@ -28,6 +32,8 @@ pub struct RackView {
     pub asset_tag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub custom_fields: BTreeMap<String, Value>,
 }
 
 impl RackView {
@@ -46,6 +52,7 @@ impl RackView {
             serial: r.serial.and_then(non_empty),
             asset_tag: r.asset_tag.and_then(non_empty),
             description: r.description.and_then(non_empty),
+            custom_fields: custom::fields(&r.custom_fields),
         }
     }
 
@@ -62,6 +69,7 @@ impl RackView {
             .push_opt("serial", self.serial.clone())
             .push_opt("asset_tag", self.asset_tag.clone())
             .push_opt("description", self.description.clone());
+        custom::append(&mut kv, &self.custom_fields);
         kv
     }
 }

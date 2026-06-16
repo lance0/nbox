@@ -3,9 +3,13 @@
 //! Resolves the most-specific containing prefix locally with `ipnet`, and pulls
 //! VLAN/site context from that prefix.
 
+use std::collections::BTreeMap;
+
 use ipnet::IpNet;
 use serde::Serialize;
+use serde_json::Value;
 
+use crate::domain::custom;
 use crate::netbox::models::ipam::{IpAddress, Prefix};
 use crate::output::plain::KeyValues;
 
@@ -29,6 +33,8 @@ pub struct IpView {
     pub vlan: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub site: Option<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub custom_fields: BTreeMap<String, Value>,
 }
 
 impl IpView {
@@ -58,6 +64,7 @@ impl IpView {
             parent_prefix,
             vlan,
             site,
+            custom_fields: custom::fields(&ip.custom_fields),
         }
     }
 
@@ -73,6 +80,7 @@ impl IpView {
             .push_opt("parent_prefix", self.parent_prefix.clone())
             .push_opt("vlan", self.vlan.clone())
             .push_opt("site", self.site.clone());
+        custom::append(&mut kv, &self.custom_fields);
         kv
     }
 }

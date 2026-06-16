@@ -1,8 +1,12 @@
 //! Flattened prefix view for `nbox prefix` (plain + JSON), with child prefixes
 //! and contained IP addresses.
 
-use serde::Serialize;
+use std::collections::BTreeMap;
 
+use serde::Serialize;
+use serde_json::Value;
+
+use crate::domain::custom;
 use crate::domain::ip_view::assigned_label;
 use crate::netbox::models::ipam::{IpAddress, Prefix};
 use crate::output::plain::KeyValues;
@@ -37,6 +41,8 @@ pub struct PrefixView {
     pub utilization: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub custom_fields: BTreeMap<String, Value>,
     pub child_prefixes: Vec<String>,
     pub ip_addresses: Vec<PrefixIp>,
 }
@@ -62,6 +68,7 @@ impl PrefixView {
             children: p.children,
             utilization: p.utilization.as_ref().and_then(coerce_pct),
             description: p.description.and_then(non_empty),
+            custom_fields: custom::fields(&p.custom_fields),
             child_prefixes: children.into_iter().map(|c| c.prefix).collect(),
             ip_addresses: ips
                 .into_iter()
@@ -86,6 +93,7 @@ impl PrefixView {
             .push_opt("children", self.children.map(|c| c.to_string()))
             .push_opt("utilization", self.utilization.map(format_utilization))
             .push_opt("description", self.description.clone());
+        custom::append(&mut kv, &self.custom_fields);
         let mut out = kv.render();
 
         if !self.child_prefixes.is_empty() {

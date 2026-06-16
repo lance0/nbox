@@ -1,7 +1,11 @@
 //! Flattened site view for `nbox site` (plain + JSON).
 
-use serde::Serialize;
+use std::collections::BTreeMap;
 
+use serde::Serialize;
+use serde_json::Value;
+
+use crate::domain::custom;
 use crate::netbox::models::dcim::Site;
 use crate::output::plain::KeyValues;
 
@@ -23,6 +27,8 @@ pub struct SiteView {
     pub facility: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub custom_fields: BTreeMap<String, Value>,
 }
 
 impl SiteView {
@@ -39,6 +45,7 @@ impl SiteView {
             tenant: s.tenant.map(|b| b.label()),
             facility: s.facility.and_then(non_empty),
             description: s.description.and_then(non_empty),
+            custom_fields: custom::fields(&s.custom_fields),
         }
     }
 
@@ -53,6 +60,7 @@ impl SiteView {
             .push_opt("tenant", self.tenant.clone())
             .push_opt("facility", self.facility.clone())
             .push_opt("description", self.description.clone());
+        custom::append(&mut kv, &self.custom_fields);
         kv
     }
 }
