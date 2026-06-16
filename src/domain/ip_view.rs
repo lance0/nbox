@@ -93,7 +93,7 @@ pub fn most_specific(prefixes: Vec<Prefix>) -> Option<Prefix> {
 
 /// Extract a "device interface" (or just "interface") label from an IP's
 /// `assigned_object` brief, tolerating its polymorphic shape.
-fn assigned_label(v: &serde_json::Value) -> Option<String> {
+pub(crate) fn assigned_label(v: &serde_json::Value) -> Option<String> {
     let iface = v
         .get("display")
         .and_then(|x| x.as_str())

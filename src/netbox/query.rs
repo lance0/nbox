@@ -55,4 +55,28 @@ impl NetBoxClient {
             .await?;
         Ok(page.results)
     }
+
+    /// Resolve a prefix by its exact CIDR.
+    pub async fn prefix_by_cidr(&self, cidr: &str) -> Result<Option<Prefix>> {
+        let page: Page<Prefix> = self
+            .list(Endpoint::Prefixes, vec![("prefix", cidr.to_string())])
+            .await?;
+        Ok(page.results.into_iter().next())
+    }
+
+    /// Prefixes nested within `cidr` (up to `max`).
+    pub async fn prefix_children(&self, cidr: &str, max: usize) -> Result<Vec<Prefix>> {
+        self.list_all(Endpoint::Prefixes, vec![("within", cidr.to_string())], max)
+            .await
+    }
+
+    /// IP addresses within `cidr` (up to `max`).
+    pub async fn prefix_ips(&self, cidr: &str, max: usize) -> Result<Vec<IpAddress>> {
+        self.list_all(
+            Endpoint::IpAddresses,
+            vec![("parent", cidr.to_string())],
+            max,
+        )
+        .await
+    }
 }

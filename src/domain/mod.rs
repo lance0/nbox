@@ -7,3 +7,4 @@
 
 pub mod device_view;
 pub mod ip_view;
+pub mod prefix_view;

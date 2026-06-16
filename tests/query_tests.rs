@@ -109,3 +109,53 @@ async fn prefixes_containing_use_contains_filter() {
         .unwrap();
     assert_eq!(prefixes.len(), 2);
 }
+
+#[tokio::test]
+async fn prefix_by_cidr_uses_prefix_filter() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .and(query_param("prefix", "10.44.208.0/24"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 5, "url": "http://nb/p/5/", "prefix": "10.44.208.0/24"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let prefix = client(&server)
+        .prefix_by_cidr("10.44.208.0/24")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(prefix.prefix, "10.44.208.0/24");
+}
+
+#[tokio::test]
+async fn prefix_children_and_ips_use_within_and_parent() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .and(query_param("within", "10.44.208.0/24"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 6, "url": "u", "prefix": "10.44.208.0/26"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/ip-addresses/"))
+        .and(query_param("parent", "10.44.208.0/24"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 7, "url": "u", "address": "10.44.208.1/24"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let cli = client(&server);
+    let children = cli.prefix_children("10.44.208.0/24", 50).await.unwrap();
+    let ips = cli.prefix_ips("10.44.208.0/24", 50).await.unwrap();
+    assert_eq!(children.len(), 1);
+    assert_eq!(ips.len(), 1);
+}

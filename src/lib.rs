@@ -11,6 +11,7 @@ use clap::CommandFactory;
 use crate::cli::{Cli, Command};
 use crate::domain::device_view::DeviceView;
 use crate::domain::ip_view::{IpView, most_specific};
+use crate::domain::prefix_view::PrefixView;
 use crate::netbox::client::NetBoxClient;
 
 pub mod cli;
@@ -46,7 +47,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Search { .. }) => not_implemented("search"),
         Some(Command::Device { value }) => run_device(&ctx, &value).await,
         Some(Command::Ip { address }) => run_ip(&ctx, &address).await,
-        Some(Command::Prefix { .. }) => not_implemented("prefix lookup"),
+        Some(Command::Prefix { cidr }) => run_prefix(&ctx, &cidr).await,
         Some(Command::Site { .. }) => not_implemented("site lookup"),
         Some(Command::Rack { .. }) => not_implemented("rack lookup"),
         Some(Command::Vlan { .. }) => not_implemented("VLAN lookup"),
@@ -124,6 +125,27 @@ async fn run_ip(ctx: &Ctx, address: &str) -> Result<()> {
         output::json::print(&view)?;
     } else {
         view.to_key_values().print();
+    }
+    Ok(())
+}
+
+/// `nbx prefix <cidr>` — show a prefix with its children and contained IPs.
+async fn run_prefix(ctx: &Ctx, cidr: &str) -> Result<()> {
+    const SECTION_CAP: usize = 50;
+    let client = connect(ctx)?;
+    let prefix = client
+        .prefix_by_cidr(cidr)
+        .await?
+        .with_context(|| format!("no prefix matched \"{cidr}\""))?;
+
+    let children = client.prefix_children(cidr, SECTION_CAP).await?;
+    let ips = client.prefix_ips(cidr, SECTION_CAP).await?;
+
+    let view = PrefixView::build(prefix, children, ips);
+    if ctx.json {
+        output::json::print(&view)?;
+    } else {
+        println!("{}", view.to_plain());
     }
     Ok(())
 }
