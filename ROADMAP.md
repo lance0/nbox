@@ -14,9 +14,9 @@ The goal of v0.1 is a working vertical slice: configure a profile, search, look 
 - ☑ `Cargo.toml` metadata + dependencies
 - ☑ Dual MIT/Apache license files
 - ☑ `clap` CLI skeleton with global flags (`--profile`, `--config`, `--json`, `--no-tui`, `--log-level`)
-- ☐ Config loader + `config init` / `config path` / `config show`
-- ☐ Profile commands (`add` / `use` / `list` / `show`)
-- ☐ Auth header support: `auto` / `bearer` / `token`
+- ☑ Config loader + `config init` / `config path` / `config show`
+- ☑ Profile commands (`add` / `use` / `list` / `show`)
+- ☑ Auth header support: `auto` / `bearer` / `token`
 - ☐ `reqwest` 0.12 client with TLS + timeout settings
 - ☐ Token redaction in request logging (never log `Authorization`)
 - ☐ Paginated `Page<T>` + `list` / `list_all`

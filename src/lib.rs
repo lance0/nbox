@@ -9,6 +9,8 @@ use clap::CommandFactory;
 use crate::cli::{Cli, Command};
 
 pub mod cli;
+pub mod config;
+pub mod netbox;
 
 /// The crate version, sourced from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -29,8 +31,12 @@ pub fn run(cli: Cli) -> anyhow::Result<()> {
         Some(Command::Vlan { .. }) => not_implemented("VLAN lookup"),
         Some(Command::Interface { .. }) => not_implemented("interface lookup"),
         Some(Command::Open { .. }) => not_implemented("open in browser"),
-        Some(Command::Config { .. }) => not_implemented("config management"),
-        Some(Command::Profile { .. }) => not_implemented("profile management"),
+        Some(Command::Config { command }) => {
+            config::run_config(command, cli.config.as_deref(), cli.json)
+        }
+        Some(Command::Profile { command }) => {
+            config::run_profile(command, cli.config.as_deref(), cli.json)
+        }
         Some(Command::Completions { shell }) => {
             let mut cmd = Cli::command();
             let bin = cmd.get_name().to_string();
