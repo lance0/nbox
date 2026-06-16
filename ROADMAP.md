@@ -54,13 +54,13 @@ nbx vlan 208
 - ☑ Terminal init/restore (panic-safe via `ratatui::init`)
 - ☑ App state + mpsc event loop (crossterm `EventStream`, spawned commands)
 - ☑ Search screen + results pane (`/` → live search, j/k select)
-- ☐ Detail pane (device / ip / prefix / vlan / site)
-- ☐ Navigation history (`b` / `Esc`)
+- ☑ Detail pane (device / ip / prefix / vlan / site) — Enter loads via `domain::detail::load_detail`
+- ☑ Navigation history (`b` / `Esc`, screen stack)
 - ☑ Help modal (`?`/`F1`)
 - ☐ Command palette (`:`)
 - ☐ Client-side fuzzy ranking (`nucleo`) for the palette + in-memory result lists
-- ☐ Open in browser (`o`)
-- ☐ Copy to clipboard (`y`)
+- ☑ Open in browser (`o`, via `open` + `util::format::api_to_web_url`)
+- ☑ Copy to clipboard (`y`, `arboard` behind the `clipboard` feature)
 
 **Deliverable**
 

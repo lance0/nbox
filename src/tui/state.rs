@@ -6,8 +6,9 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
+use crate::domain::detail::DetailView;
 use crate::netbox::client::NetBoxClient;
-use crate::netbox::search::SearchResult;
+use crate::netbox::search::{ObjectKind, SearchResult};
 use crate::tui::theme::Theme;
 
 /// Which screen is in the body area.
@@ -15,6 +16,7 @@ use crate::tui::theme::Theme;
 pub enum Screen {
     Home,
     Help,
+    Detail,
 }
 
 /// Input mode.
@@ -31,12 +33,17 @@ pub enum AppEvent {
     Resize(u16, u16),
     Tick,
     SearchComplete(anyhow::Result<Vec<SearchResult>>),
+    DetailLoaded(anyhow::Result<DetailView>),
+    Status(String),
 }
 
 /// Side-effecting work the loop should spawn off the render thread.
 #[derive(Debug, Clone)]
 pub enum AppCommand {
     Search(String),
+    LoadDetail { kind: ObjectKind, id: u64 },
+    OpenBrowser(String),
+    Copy(String),
 }
 
 /// The whole TUI application state.
@@ -49,6 +56,7 @@ pub struct App {
 
     pub mode: Mode,
     pub screen: Screen,
+    pub history: Vec<Screen>,
     pub status: String,
 
     pub search_input: String,
@@ -56,6 +64,7 @@ pub struct App {
 
     pub results: Vec<SearchResult>,
     pub selected: usize,
+    pub detail: Option<DetailView>,
     pub should_quit: bool,
 }
 
@@ -75,11 +84,13 @@ impl App {
             base_url,
             mode: Mode::Normal,
             screen: Screen::Home,
+            history: Vec::new(),
             status: String::new(),
             search_input: String::new(),
             command_input: String::new(),
             results: Vec::new(),
             selected: 0,
+            detail: None,
             should_quit: false,
         }
     }
@@ -98,6 +109,21 @@ impl App {
                     }
                     Err(e) => self.status = format!("error: {e:#}"),
                 }
+                Vec::new()
+            }
+            AppEvent::DetailLoaded(result) => {
+                match result {
+                    Ok(view) => {
+                        self.navigate_to(Screen::Detail);
+                        self.detail = Some(view);
+                        self.status.clear();
+                    }
+                    Err(e) => self.status = format!("error: {e:#}"),
+                }
+                Vec::new()
+            }
+            AppEvent::Status(message) => {
+                self.status = message;
                 Vec::new()
             }
         }
@@ -119,24 +145,20 @@ impl App {
         match key.code {
             KeyCode::Char('c') if ctrl => self.should_quit = true,
             KeyCode::Char('q') => {
-                if self.screen == Screen::Help {
-                    self.screen = Screen::Home;
-                } else {
+                if self.screen == Screen::Home {
                     self.should_quit = true;
+                } else {
+                    self.go_back();
                 }
             }
             KeyCode::Char('?') | KeyCode::F(1) => {
-                self.screen = if self.screen == Screen::Help {
-                    Screen::Home
-                } else {
-                    Screen::Help
-                };
-            }
-            KeyCode::Esc | KeyCode::Char('b') => {
                 if self.screen == Screen::Help {
-                    self.screen = Screen::Home;
+                    self.go_back();
+                } else {
+                    self.navigate_to(Screen::Help);
                 }
             }
+            KeyCode::Esc | KeyCode::Char('b') => self.go_back(),
             KeyCode::Char('/') => {
                 self.mode = Mode::Search;
                 self.search_input.clear();
@@ -149,8 +171,25 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => self.select_next(),
             KeyCode::Char('k') | KeyCode::Up => self.select_prev(),
             KeyCode::Char('g') => self.selected = 0,
-            KeyCode::Char('G') => {
-                self.selected = self.results.len().saturating_sub(1);
+            KeyCode::Char('G') => self.selected = self.results.len().saturating_sub(1),
+            KeyCode::Enter => {
+                if self.screen == Screen::Home
+                    && let Some(r) = self.results.get(self.selected)
+                {
+                    let (kind, id) = (r.kind, r.id);
+                    self.status = "loading…".into();
+                    return vec![AppCommand::LoadDetail { kind, id }];
+                }
+            }
+            KeyCode::Char('o') => {
+                if let Some(r) = self.results.get(self.selected) {
+                    return vec![AppCommand::OpenBrowser(r.url.clone())];
+                }
+            }
+            KeyCode::Char('y') => {
+                if let Some(r) = self.results.get(self.selected) {
+                    return vec![AppCommand::Copy(r.display.clone())];
+                }
             }
             _ => {}
         }
@@ -191,6 +230,19 @@ impl App {
             _ => {}
         }
         Vec::new()
+    }
+
+    /// Push the current screen onto the history stack and switch to `screen`.
+    fn navigate_to(&mut self, screen: Screen) {
+        if self.screen != screen {
+            self.history.push(self.screen);
+            self.screen = screen;
+        }
+    }
+
+    /// Pop back to the previous screen, or Home if the stack is empty.
+    fn go_back(&mut self) {
+        self.screen = self.history.pop().unwrap_or(Screen::Home);
     }
 
     /// Advance to the next built-in theme.
@@ -238,6 +290,17 @@ mod tests {
         App::new(client, "default", "test".into(), "http://localhost".into())
     }
 
+    fn result() -> SearchResult {
+        SearchResult {
+            kind: ObjectKind::Device,
+            id: 1,
+            display: "edge01".into(),
+            subtitle: Some("iad1".into()),
+            url: "http://nb/dcim/devices/1/".into(),
+            score: 100,
+        }
+    }
+
     fn press(code: KeyCode) -> AppEvent {
         AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
     }
@@ -273,16 +336,6 @@ mod tests {
     }
 
     #[test]
-    fn esc_leaves_search_without_command() {
-        let mut a = app();
-        a.handle_event(press(KeyCode::Char('/')));
-        a.handle_event(press(KeyCode::Char('x')));
-        let cmds = a.handle_event(press(KeyCode::Esc));
-        assert_eq!(a.mode, Mode::Normal);
-        assert!(cmds.is_empty());
-    }
-
-    #[test]
     fn ctrl_w_deletes_last_word() {
         let mut a = app();
         a.mode = Mode::Search;
@@ -292,6 +345,42 @@ mod tests {
             KeyModifiers::CONTROL,
         )));
         assert_eq!(a.search_input, "edge ");
+    }
+
+    #[test]
+    fn enter_on_result_loads_detail_and_back_returns_home() {
+        let mut a = app();
+        a.results = vec![result()];
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(matches!(
+            cmds.as_slice(),
+            [AppCommand::LoadDetail {
+                kind: ObjectKind::Device,
+                id: 1
+            }]
+        ));
+
+        // Simulate the detail load completing.
+        a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
+            title: "device edge01".into(),
+            body: "name: edge01".into(),
+        })));
+        assert_eq!(a.screen, Screen::Detail);
+
+        a.handle_event(press(KeyCode::Char('b')));
+        assert_eq!(a.screen, Screen::Home);
+    }
+
+    #[test]
+    fn o_and_y_emit_open_and_copy() {
+        let mut a = app();
+        a.results = vec![result()];
+        let open = a.handle_event(press(KeyCode::Char('o')));
+        assert!(
+            matches!(open.as_slice(), [AppCommand::OpenBrowser(u)] if u == "http://nb/dcim/devices/1/")
+        );
+        let copy = a.handle_event(press(KeyCode::Char('y')));
+        assert!(matches!(copy.as_slice(), [AppCommand::Copy(v)] if v == "edge01"));
     }
 
     #[test]

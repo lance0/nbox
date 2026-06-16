@@ -5,6 +5,7 @@
 //! actually renders (plain text and JSON), so the presentation layer never
 //! reaches into raw API shapes.
 
+pub mod detail;
 pub mod device_view;
 pub mod ip_view;
 pub mod prefix_view;

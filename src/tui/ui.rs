@@ -37,6 +37,7 @@ pub fn render(frame: &mut Frame, app: &App) {
     match app.screen {
         Screen::Home => render_home(frame, areas[1], app),
         Screen::Help => render_help(frame, areas[1], app),
+        Screen::Detail => render_detail(frame, areas[1], app),
     }
 
     render_footer(frame, areas[2], app);
@@ -105,6 +106,24 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
+fn render_detail(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let (title, body) = match &app.detail {
+        Some(d) => (d.title.as_str(), d.body.as_str()),
+        None => ("Detail", "loading…"),
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {title} "))
+        .border_style(Style::default().fg(theme.border_focused));
+    frame.render_widget(
+        Paragraph::new(body)
+            .block(block)
+            .style(Style::default().fg(theme.text)),
+        area,
+    );
+}
+
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
     let line = match app.mode {
@@ -112,7 +131,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         Mode::Command => Line::from(format!(":{}", app.command_input)),
         Mode::Normal if !app.status.is_empty() => Line::from(format!(" {} ", app.status)),
         Mode::Normal => Line::from(Span::styled(
-            " / search   : palette   j/k move   t theme   ? help   q quit ",
+            " / search   Enter open   o browser   y copy   b back   t theme   ? help   q quit ",
             Style::default().fg(theme.text_dim),
         )),
     };

@@ -4,6 +4,7 @@ use anyhow::Result;
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
 
+use crate::domain::detail::load_detail;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::search::SearchRequest;
 use crate::tui::events::spawn_terminal_events;
@@ -44,5 +45,43 @@ fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent
                 let _ = tx.send(AppEvent::SearchComplete(result)).await;
             });
         }
+        AppCommand::LoadDetail { kind, id } => {
+            tokio::spawn(async move {
+                let result = load_detail(&client, kind, id).await;
+                let _ = tx.send(AppEvent::DetailLoaded(result)).await;
+            });
+        }
+        AppCommand::OpenBrowser(url) => {
+            tokio::spawn(async move {
+                let opened = tokio::task::spawn_blocking(move || open::that(&url)).await;
+                let message = match opened {
+                    Ok(Ok(())) => "opened in browser".to_string(),
+                    Ok(Err(e)) => format!("open failed: {e}"),
+                    Err(e) => format!("open failed: {e}"),
+                };
+                let _ = tx.send(AppEvent::Status(message)).await;
+            });
+        }
+        AppCommand::Copy(text) => {
+            tokio::spawn(async move {
+                let message = match copy_to_clipboard(&text) {
+                    Ok(()) => format!("copied: {text}"),
+                    Err(e) => format!("copy failed: {e}"),
+                };
+                let _ = tx.send(AppEvent::Status(message)).await;
+            });
+        }
     }
+}
+
+#[cfg(feature = "clipboard")]
+fn copy_to_clipboard(text: &str) -> Result<()> {
+    let mut clipboard = arboard::Clipboard::new()?;
+    clipboard.set_text(text.to_string())?;
+    Ok(())
+}
+
+#[cfg(not(feature = "clipboard"))]
+fn copy_to_clipboard(_text: &str) -> Result<()> {
+    anyhow::bail!("clipboard support was not built in (enable the `clipboard` feature)")
 }
