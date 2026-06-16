@@ -2,7 +2,7 @@
 
 use nbox::config::ProfileConfig;
 use nbox::netbox::client::NetBoxClient;
-use nbox::netbox::search::{ObjectKind, SearchRequest};
+use nbox::netbox::search::{ObjectKind, SearchFilters, SearchRequest};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -60,6 +60,7 @@ async fn search_merges_ranks_and_dedups_across_endpoints() {
         .search(SearchRequest {
             query: "edge01".into(),
             limit: 25,
+            filters: SearchFilters::default(),
         })
         .await
         .unwrap();
@@ -99,6 +100,7 @@ async fn search_truncates_to_limit() {
         .search(SearchRequest {
             query: "site".into(),
             limit: 2,
+            filters: SearchFilters::default(),
         })
         .await
         .unwrap();

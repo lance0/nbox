@@ -6,7 +6,7 @@ use tokio::sync::mpsc;
 
 use crate::domain::detail::{load_detail, load_detail_by_ref};
 use crate::netbox::client::NetBoxClient;
-use crate::netbox::search::SearchRequest;
+use crate::netbox::search::{SearchFilters, SearchRequest};
 use crate::tui::events::spawn_terminal_events;
 use crate::tui::state::{App, AppCommand, AppEvent};
 use crate::tui::ui;
@@ -50,7 +50,13 @@ fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent
     match command {
         AppCommand::Search(query) => {
             tokio::spawn(async move {
-                let result = client.search(SearchRequest { query, limit: 50 }).await;
+                let result = client
+                    .search(SearchRequest {
+                        query,
+                        limit: 50,
+                        filters: SearchFilters::default(),
+                    })
+                    .await;
                 let _ = tx.send(AppEvent::SearchComplete(result)).await;
             });
         }

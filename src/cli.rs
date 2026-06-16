@@ -51,6 +51,22 @@ pub enum Command {
         /// Maximum number of results.
         #[arg(short, long, default_value_t = 25)]
         limit: usize,
+
+        /// Filter by status (e.g. `active`).
+        #[arg(long)]
+        status: Option<String>,
+
+        /// Filter by site slug.
+        #[arg(long)]
+        site: Option<String>,
+
+        /// Filter by tenant slug.
+        #[arg(long)]
+        tenant: Option<String>,
+
+        /// Filter by role slug.
+        #[arg(long)]
+        role: Option<String>,
     },
 
     /// Show a device by name, slug, or ID.

@@ -16,7 +16,7 @@ use crate::domain::rack_view::RackView;
 use crate::domain::site_view::SiteView;
 use crate::domain::vlan_view::VlanView;
 use crate::netbox::client::NetBoxClient;
-use crate::netbox::search::SearchRequest;
+use crate::netbox::search::{SearchFilters, SearchRequest};
 use crate::output::plain::KeyValues;
 
 pub mod cli;
@@ -70,7 +70,22 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     match cli.command {
         None | Some(Command::Tui) => run_tui(&ctx).await,
-        Some(Command::Search { query, limit }) => run_search(&ctx, &query, limit).await,
+        Some(Command::Search {
+            query,
+            limit,
+            status,
+            site,
+            tenant,
+            role,
+        }) => {
+            let filters = SearchFilters {
+                status,
+                site,
+                tenant,
+                role,
+            };
+            run_search(&ctx, &query, limit, filters).await
+        }
         Some(Command::Device { value }) => run_device(&ctx, &value).await,
         Some(Command::Ip { address }) => run_ip(&ctx, &address).await,
         Some(Command::Prefix { cidr }) => run_prefix(&ctx, &cidr).await,
@@ -179,12 +194,13 @@ async fn run_status(ctx: &Ctx) -> Result<()> {
 }
 
 /// `nbox search <query>` — normalized multi-endpoint search.
-async fn run_search(ctx: &Ctx, query: &str, limit: usize) -> Result<()> {
+async fn run_search(ctx: &Ctx, query: &str, limit: usize, filters: SearchFilters) -> Result<()> {
     let client = connect(ctx)?;
     let results = client
         .search(SearchRequest {
             query: query.to_string(),
             limit,
+            filters,
         })
         .await?;
 
