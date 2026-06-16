@@ -142,7 +142,14 @@ async fn run_tui(ctx: &Ctx) -> Result<()> {
     // fast.)
     let status = client.verify_compatible().await?;
 
-    let app = tui::state::App::new(client, &theme_name, name, base_url, status.netbox_version);
+    let app = tui::state::App::new(
+        client,
+        &theme_name,
+        name,
+        base_url,
+        status.netbox_version,
+        Some(path),
+    );
     tui::app::run(app).await
 }
 
@@ -177,7 +184,7 @@ async fn run_device(ctx: &Ctx, value: &str) -> Result<()> {
     let device = client
         .device_by_ref(value)
         .await?
-        .with_context(|| format!("no device matched \"{value}\""))?;
+        .ok_or_else(|| not_found("device", value))?;
 
     let view = DeviceView::from_model(device);
     if ctx.json {
@@ -196,7 +203,7 @@ async fn run_ip(ctx: &Ctx, address: &str) -> Result<()> {
         .await?
         .into_iter()
         .next()
-        .with_context(|| format!("no IP address matched \"{address}\""))?;
+        .ok_or_else(|| not_found("IP address", address))?;
 
     let host = address.split('/').next().unwrap_or(address);
     let parent = most_specific(client.prefixes_containing(host).await?);
@@ -217,7 +224,7 @@ async fn run_prefix(ctx: &Ctx, cidr: &str) -> Result<()> {
     let prefix = client
         .prefix_by_cidr(cidr)
         .await?
-        .with_context(|| format!("no prefix matched \"{cidr}\""))?;
+        .ok_or_else(|| not_found("prefix", cidr))?;
 
     let children = client.prefix_children(cidr, SECTION_CAP).await?;
     let ips = client.prefix_ips(cidr, SECTION_CAP).await?;
@@ -237,7 +244,7 @@ async fn run_vlan(ctx: &Ctx, value: &str) -> Result<()> {
     let vlan = client
         .vlan_by_ref(value)
         .await?
-        .with_context(|| format!("no VLAN matched \"{value}\""))?;
+        .ok_or_else(|| not_found("VLAN", value))?;
     let prefixes = client.vlan_prefixes(vlan.id, 50).await?;
 
     let view = VlanView::build(vlan, prefixes);
@@ -255,7 +262,7 @@ async fn run_site(ctx: &Ctx, value: &str) -> Result<()> {
     let site = client
         .site_by_ref(value)
         .await?
-        .with_context(|| format!("no site matched \"{value}\""))?;
+        .ok_or_else(|| not_found("site", value))?;
 
     let view = SiteView::from_model(site);
     if ctx.json {
@@ -272,7 +279,7 @@ async fn run_rack(ctx: &Ctx, value: &str) -> Result<()> {
     let rack = client
         .rack_by_ref(value)
         .await?
-        .with_context(|| format!("no rack matched \"{value}\""))?;
+        .ok_or_else(|| not_found("rack", value))?;
 
     let view = RackView::from_model(rack);
     if ctx.json {
@@ -286,4 +293,22 @@ async fn run_rack(ctx: &Ctx, value: &str) -> Result<()> {
 /// Fail an unimplemented command (non-zero exit), keeping stdout clean.
 fn not_implemented(what: &str) -> Result<()> {
     anyhow::bail!("{what} is not yet implemented")
+}
+
+/// A friendly "not found" error with an actionable suggestion (DESIGN §17).
+fn not_found(noun: &str, value: &str) -> anyhow::Error {
+    anyhow::anyhow!("no {noun} matched \"{value}\"\n\nTry:\n  nbx search {value}")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::not_found;
+
+    #[test]
+    fn not_found_includes_actionable_suggestion() {
+        let msg = format!("{:#}", not_found("device", "edge01"));
+        assert!(msg.contains("no device matched \"edge01\""));
+        assert!(msg.contains("Try:"));
+        assert!(msg.contains("nbx search edge01"));
+    }
 }

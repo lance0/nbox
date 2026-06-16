@@ -13,19 +13,28 @@ use crate::tui::ui;
 
 /// Set up the terminal, run the loop, and restore on exit (panic-safe via
 /// `ratatui::init`'s panic hook).
-pub async fn run(app: App) -> Result<()> {
+pub async fn run(mut app: App) -> Result<()> {
     let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, app).await;
+    let result = event_loop(&mut terminal, &mut app).await;
     ratatui::restore();
+
+    // Persist the theme if it changed during the session.
+    if app.theme.name() != app.initial_theme
+        && let Some(path) = &app.config_path
+        && let Err(e) = crate::config::save_ui_theme(path, app.theme.name())
+    {
+        tracing::warn!("failed to persist theme: {e:#}");
+    }
+
     result
 }
 
-async fn event_loop(terminal: &mut DefaultTerminal, mut app: App) -> Result<()> {
+async fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<AppEvent>(64);
     spawn_terminal_events(tx.clone());
 
     while !app.should_quit {
-        terminal.draw(|frame| ui::render(frame, &app))?;
+        terminal.draw(|frame| ui::render(frame, app))?;
 
         let Some(event) = rx.recv().await else { break };
         // Never await network here — dispatch each command on its own task,

@@ -180,6 +180,22 @@ pub fn set_active_profile(doc: &mut DocumentMut, name: &str) {
     doc["active_profile"] = value(name);
 }
 
+/// Set `[ui].theme` in a format-preserving document.
+pub fn set_ui_theme(doc: &mut DocumentMut, theme: &str) {
+    let ui = doc.entry("ui").or_insert_with(|| Item::Table(Table::new()));
+    if let Some(table) = ui.as_table_mut() {
+        table["theme"] = value(theme);
+    }
+}
+
+/// Persist the active UI theme to the config file (format-preserving).
+pub fn save_ui_theme(path: &Path, theme: &str) -> Result<()> {
+    let mut doc = load_doc_or_new(path)?;
+    set_ui_theme(&mut doc, theme);
+    write_doc(path, &doc)?;
+    Ok(())
+}
+
 /// Load the editable document at `path`, or start a fresh one if absent.
 fn load_doc_or_new(path: &Path) -> Result<DocumentMut> {
     if path.exists() {
@@ -357,6 +373,27 @@ page_size = 250
         let lab = &cfg.profiles["lab"];
         assert_eq!(lab.url, "https://nb.lab");
         assert_eq!(lab.token_env.as_deref(), Some("NETBOX_LAB_TOKEN"));
+    }
+
+    #[test]
+    fn set_ui_theme_round_trips_and_preserves_comments() {
+        let original = "# notes\n[ui]\ntheme = \"default\"\nwide = false\n";
+        let mut doc = original.parse::<DocumentMut>().unwrap();
+        set_ui_theme(&mut doc, "nord");
+        let out = doc.to_string();
+        assert!(out.contains("# notes"), "comment should survive");
+        assert!(out.contains("wide = false"), "other ui keys preserved");
+
+        let cfg: Config = toml::from_str(&out).unwrap();
+        assert_eq!(cfg.ui.theme, "nord");
+    }
+
+    #[test]
+    fn set_ui_theme_creates_ui_table_when_absent() {
+        let mut doc = DocumentMut::new();
+        set_ui_theme(&mut doc, "matrix");
+        let cfg: Config = toml::from_str(&doc.to_string()).unwrap();
+        assert_eq!(cfg.ui.theme, "matrix");
     }
 
     #[test]

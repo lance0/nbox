@@ -69,11 +69,11 @@ nbx
 ```
 
 ### Phase 4 — Polish
-- ◐ Built-in themes (11 ported from xfr in `tui/theme.rs`); cycle/persist (`t`) wired with the TUI in Phase 3
+- ☑ Built-in themes (11 ported from xfr in `tui/theme.rs`); cycle (`t`) + palette `theme`, persisted to `[ui].theme` on TUI exit
 - ☑ Update notifications (`updates` feature): GitHub check + CLI notice (`src/update.rs`); TUI banner lands in Phase 3
 - ☐ Recent objects
-- ☐ Friendly, actionable errors
-- ☐ Shell completions (bash/zsh/fish/powershell/elvish)
+- ☑ Friendly, actionable errors (DESIGN §17 "no X matched … Try: nbx search …")
+- ☑ Shell completions (bash/zsh/fish/powershell/elvish) — `nbx completions <shell>`
 - ☐ Install script
 - ☐ Release builds + artifacts (CI itself lands in Phase 1)
 - ☐ Homebrew tap

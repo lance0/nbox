@@ -4,6 +4,8 @@
 //! they perform no I/O, so they're unit-testable without a terminal. Network
 //! work happens in spawned tasks (see `tui::app`), never in the render loop.
 
+use std::path::PathBuf;
+
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::domain::detail::DetailView;
@@ -53,6 +55,8 @@ pub struct App {
     pub client: NetBoxClient,
     pub theme: Theme,
     pub theme_index: usize,
+    pub initial_theme: String,
+    pub config_path: Option<PathBuf>,
     pub profile_name: String,
     pub base_url: String,
     pub netbox_version: String,
@@ -82,11 +86,14 @@ impl App {
         profile_name: String,
         base_url: String,
         netbox_version: String,
+        config_path: Option<PathBuf>,
     ) -> Self {
         Self {
             client,
             theme: Theme::by_name(theme_name),
             theme_index: Theme::index_of(theme_name),
+            initial_theme: Theme::by_name(theme_name).name().to_string(),
+            config_path,
             profile_name,
             base_url,
             netbox_version,
@@ -383,6 +390,7 @@ mod tests {
             "test".into(),
             "http://localhost".into(),
             "4.5.5".into(),
+            None,
         )
     }
 
