@@ -70,6 +70,11 @@ pub struct Prefix {
     pub description: Option<String>,
     #[serde(default)]
     pub children: Option<u64>,
+    /// Prefix utilization, when the NetBox version/serializer provides it.
+    /// Kept as a permissive value (number or string) so absence never breaks
+    /// deserialization; the view coerces it to a percentage when numeric.
+    #[serde(default)]
+    pub utilization: Option<serde_json::Value>,
 
     #[serde(default)]
     pub custom_fields: serde_json::Value,

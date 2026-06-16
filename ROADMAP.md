@@ -86,7 +86,7 @@ Release & distribution (v0.1 release gate):
 
 Feature wins (small, on-identity):
 - ☑ `nbox status` — connection + NetBox/Django/Python versions (plain + `--json`)
-- ☐ Prefix utilization in `nbox prefix` output (NetBox `utilization` %, with a small bar)
+- ☑ Prefix utilization in `nbox prefix` output (NetBox `utilization` %, with a small bar; permissive — shown only when present)
 - ☐ Custom fields in detail output (view models currently drop `custom_fields`; surface `cf_*`)
 - ☐ Structured filter flags on `search`/lookups: `--status`, `--site`, `--vrf`, `--tenant`, `--role` (→ API query params)
 - ☐ Column selection `--cols id,name,status,site` for plain/table output

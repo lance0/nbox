@@ -34,6 +34,8 @@ pub struct PrefixView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub children: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub utilization: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     pub child_prefixes: Vec<String>,
     pub ip_addresses: Vec<PrefixIp>,
@@ -58,6 +60,7 @@ impl PrefixView {
             tenant: p.tenant.map(|b| b.label()),
             role: p.role.map(|b| b.label()),
             children: p.children,
+            utilization: p.utilization.as_ref().and_then(coerce_pct),
             description: p.description.and_then(non_empty),
             child_prefixes: children.into_iter().map(|c| c.prefix).collect(),
             ip_addresses: ips
@@ -81,6 +84,7 @@ impl PrefixView {
             .push_opt("tenant", self.tenant.clone())
             .push_opt("role", self.role.clone())
             .push_opt("children", self.children.map(|c| c.to_string()))
+            .push_opt("utilization", self.utilization.map(format_utilization))
             .push_opt("description", self.description.clone());
         let mut out = kv.render();
 
@@ -111,10 +115,64 @@ impl PrefixView {
     }
 }
 
+/// Coerce a permissive utilization value (number, or string like "75%") to a percent.
+fn coerce_pct(v: &serde_json::Value) -> Option<f64> {
+    v.as_f64().or_else(|| {
+        v.as_str()
+            .and_then(|s| s.trim().trim_end_matches('%').trim().parse().ok())
+    })
+}
+
+/// Format a percent with a small ASCII bar, e.g. `52% [########--------]`.
+fn format_utilization(pct: f64) -> String {
+    format!("{pct:.0}% {}", pct_bar(pct, 16))
+}
+
+fn pct_bar(pct: f64, width: usize) -> String {
+    let filled = ((pct.clamp(0.0, 100.0) / 100.0) * width as f64).round() as usize;
+    let filled = filled.min(width);
+    let mut bar = String::with_capacity(width + 2);
+    bar.push('[');
+    for i in 0..width {
+        bar.push(if i < filled { '#' } else { '-' });
+    }
+    bar.push(']');
+    bar
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn utilization_is_coerced_and_rendered_when_numeric() {
+        let p: Prefix = serde_json::from_value(json!({
+            "id": 5, "url": "u", "prefix": "10.44.208.0/24", "utilization": 75.0
+        }))
+        .unwrap();
+        let view = PrefixView::build(p, vec![], vec![]);
+        assert_eq!(view.utilization, Some(75.0));
+        let plain = view.to_plain();
+        assert!(plain.contains("utilization: 75% ["), "got: {plain}");
+        assert!(plain.contains('#') && plain.contains('-'));
+    }
+
+    #[test]
+    fn utilization_absent_renders_no_line() {
+        let p: Prefix =
+            serde_json::from_value(json!({"id": 5, "url": "u", "prefix": "10.0.0.0/8"})).unwrap();
+        let view = PrefixView::build(p, vec![], vec![]);
+        assert_eq!(view.utilization, None);
+        assert!(!view.to_plain().contains("utilization:"));
+    }
+
+    #[test]
+    fn coerce_pct_handles_number_and_percent_string() {
+        assert_eq!(coerce_pct(&json!(42.5)), Some(42.5));
+        assert_eq!(coerce_pct(&json!("50%")), Some(50.0));
+        assert_eq!(coerce_pct(&json!("nope")), None);
+    }
 
     #[test]
     fn build_flattens_and_collects_sections() {
