@@ -5,6 +5,7 @@
 //! fields are nullable, and unknown fields are ignored. UI-facing view models
 //! live in `crate::domain`, kept separate from these wire types.
 
+pub mod circuits;
 pub mod common;
 pub mod dcim;
 pub mod ipam;

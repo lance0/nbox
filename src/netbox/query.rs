@@ -7,6 +7,7 @@ use anyhow::Result;
 use crate::error::NboxError;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
+use crate::netbox::models::circuits::Circuit;
 use crate::netbox::models::dcim::{Device, Interface, Rack, Site};
 use crate::netbox::models::ipam::{AvailableIp, AvailablePrefix, IpAddress, Prefix, Vlan};
 use crate::netbox::pagination::Page;
@@ -275,6 +276,26 @@ impl NetBoxClient {
             .list(Endpoint::Sites, vec![("name__ic", value.to_string())])
             .await?;
         ambiguous_or_first("site", value, contains.results, |s| s.name.clone())
+    }
+
+    /// Resolve a circuit by numeric ID, then exact CID, then a CID-contains
+    /// fallback (ambiguous → exit 5).
+    pub async fn circuit_by_ref(&self, value: &str) -> Result<Option<Circuit>> {
+        if let Ok(id) = value.parse::<u64>() {
+            return self
+                .get_optional(&format!("/api/circuits/circuits/{id}/"), &[])
+                .await;
+        }
+        let exact: Page<Circuit> = self
+            .list(Endpoint::Circuits, vec![("cid", value.to_string())])
+            .await?;
+        if let Some(c) = exact.results.into_iter().next() {
+            return Ok(Some(c));
+        }
+        let contains: Page<Circuit> = self
+            .list(Endpoint::Circuits, vec![("cid__ic", value.to_string())])
+            .await?;
+        ambiguous_or_first("circuit", value, contains.results, |c| c.cid.clone())
     }
 
     /// Resolve a rack by numeric ID, then exact name, then name-contains.

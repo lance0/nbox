@@ -165,7 +165,7 @@ v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implemen
 - ☐ `nbox tag add <type> <name> <tag>`; tag browsing (`nbox tags`, `--tag <name>` filter).
 - ☐ Write workflows in the TUI edit mode (`e` / `d` / confirm).
 - ☐ **`--vrf` server-side filter** — pass VRF as an API filter on `search`/list paths (accept id | rd | name). Exact-lookup scoping (`nbox ip`/`prefix`/`vlan` with `--vrf`/`--site`/`--group`, plus exit-5 on cross-scope duplicates) already landed in v0.1.1; this extends it to list/search filtering.
-- ☐ Circuits (`nbox circuit <id>`, included in search).
+- ◐ Circuits — `nbox circuit <cid|id>` lookup done (☑); inclusion in `search` still pending.
 - ☐ Aggregates (`/api/ipam/aggregates/`) and ASNs (`/api/ipam/asns/`).
 - ☐ Journal entries on detail views (`/api/extras/journal-entries/`).
 - ☐ Services (`/api/ipam/services/`) — what's listening on this device.

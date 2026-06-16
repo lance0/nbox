@@ -273,6 +273,47 @@ async fn site_by_ref_tries_slug_first() {
 }
 
 #[tokio::test]
+async fn circuit_by_cid_uses_cid_filter() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/circuits/circuits/"))
+        .and(query_param("cid", "ACME-1234"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 3, "url": "http://nb/api/circuits/circuits/3/", "cid": "ACME-1234",
+                "provider": {"id": 1, "display": "ACME"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let circuit = client(&server)
+        .circuit_by_ref("ACME-1234")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(circuit.cid, "ACME-1234");
+    assert_eq!(circuit.provider.unwrap().label(), "ACME");
+}
+
+#[tokio::test]
+async fn circuit_by_id_hits_detail_endpoint() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/circuits/circuits/7/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7, "url": "http://nb/api/circuits/circuits/7/", "cid": "ACME-7"
+        })))
+        .mount(&server)
+        .await;
+
+    let circuit = client(&server).circuit_by_ref("7").await.unwrap().unwrap();
+    assert_eq!(circuit.id, 7);
+    assert_eq!(circuit.cid, "ACME-7");
+}
+
+#[tokio::test]
 async fn rack_by_id_hits_detail_endpoint() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

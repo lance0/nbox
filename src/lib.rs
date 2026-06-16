@@ -10,6 +10,7 @@ use clap::CommandFactory;
 use ipnet::IpNet;
 
 use crate::cli::{Cli, Command};
+use crate::domain::circuit_view::CircuitView;
 use crate::domain::device_detail::DeviceDetail;
 use crate::domain::interface_view::InterfaceView;
 use crate::domain::ip_view::{IpView, most_specific};
@@ -125,6 +126,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         }) => run_next_prefix(&ctx, &prefix, length, vrf.as_deref()).await,
         Some(Command::Site { value }) => run_site(&ctx, &value).await,
         Some(Command::Rack { value }) => run_rack(&ctx, &value).await,
+        Some(Command::Circuit { value }) => run_circuit(&ctx, &value).await,
         Some(Command::Vlan { value, site, group }) => {
             run_vlan(&ctx, &value, site.as_deref(), group.as_deref()).await
         }
@@ -461,6 +463,18 @@ async fn run_vlan(ctx: &Ctx, value: &str, site: Option<&str>, group: Option<&str
 
     let view = VlanView::build(vlan, prefixes);
     emit(ctx, &view, || println!("{}", view.to_plain()))
+}
+
+/// `nbox circuit <cid|id>` — show a circuit.
+async fn run_circuit(ctx: &Ctx, value: &str) -> Result<()> {
+    let client = connect(ctx)?;
+    let circuit = client
+        .circuit_by_ref(value)
+        .await?
+        .ok_or_else(|| not_found("circuit", value))?;
+
+    let view = CircuitView::from_model(circuit);
+    emit(ctx, &view, || view.to_key_values().print())
 }
 
 /// `nbox site <name|slug>` — show a site.

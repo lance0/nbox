@@ -159,6 +159,12 @@ pub enum Command {
         value: String,
     },
 
+    /// Show a circuit by CID or numeric ID.
+    Circuit {
+        /// Circuit ID (CID) or numeric ID.
+        value: String,
+    },
+
     /// Show a VLAN by VID or name.
     Vlan {
         /// VLAN VID or name.
