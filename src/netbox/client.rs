@@ -216,12 +216,22 @@ fn backoff(attempt: u32) -> Duration {
     Duration::from_millis(500u64 << attempt.min(6))
 }
 
-/// Map a non-success HTTP status to a typed [`NboxError`] (401/403 get stable
-/// exit codes; everything else is a generic API error).
+/// Map a non-success HTTP status to a typed [`NboxError`] so exit codes are
+/// consistent no matter which path hit the error: 401→auth, 403→perms, 404→not
+/// found, everything else→generic API error. (Note: `get_optional` intercepts
+/// 404 earlier as `Ok(None)`; this covers raw 404s on `get`, e.g. `nbox raw`.)
 fn status_error(status: reqwest::StatusCode, body: &str) -> NboxError {
     match status {
         reqwest::StatusCode::UNAUTHORIZED => NboxError::Authentication,
         reqwest::StatusCode::FORBIDDEN => NboxError::PermissionDenied,
+        reqwest::StatusCode::NOT_FOUND => {
+            let body = body.trim();
+            if body.is_empty() {
+                NboxError::NotFound("not found (HTTP 404)".to_string())
+            } else {
+                NboxError::NotFound(format!("not found (HTTP 404): {}", truncate(body, 200)))
+            }
+        }
         other => NboxError::Api {
             status: other.as_u16(),
             body: truncate(body, 500),
@@ -308,5 +318,24 @@ mod tests {
     fn backoff_grows() {
         assert!(backoff(0) < backoff(1));
         assert!(backoff(1) < backoff(2));
+    }
+
+    #[test]
+    fn status_error_maps_to_stable_exit_codes() {
+        use reqwest::StatusCode;
+        assert_eq!(status_error(StatusCode::UNAUTHORIZED, "").exit_code(), 3);
+        assert_eq!(status_error(StatusCode::FORBIDDEN, "").exit_code(), 3);
+        // 404 is now "not found" (exit 4) regardless of path — consistent with
+        // `nbox device 999999`, even for a raw `nbox raw GET /…/999999/`.
+        assert_eq!(
+            status_error(StatusCode::NOT_FOUND, "{\"detail\":\"Not found.\"}").exit_code(),
+            4
+        );
+        assert_eq!(status_error(StatusCode::NOT_FOUND, "").exit_code(), 4);
+        // Other statuses stay generic (exit 1).
+        assert_eq!(
+            status_error(StatusCode::INTERNAL_SERVER_ERROR, "boom").exit_code(),
+            1
+        );
     }
 }
