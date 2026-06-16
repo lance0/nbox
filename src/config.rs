@@ -76,7 +76,7 @@ impl Default for UiConfig {
 }
 
 /// A single NetBox connection profile.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ProfileConfig {
     pub url: String,
 

@@ -1,7 +1,10 @@
 //! NetBox API client and data models.
 //!
-//! The REST client, pagination, endpoint queries, search, and model structs are
-//! introduced across Phase 1–2 (see `DESIGN.md` and `ROADMAP.md`). Today this
-//! module hosts the authentication scheme.
+//! REST is the primary integration path. This module hosts the HTTP client,
+//! pagination, endpoint paths, authentication, and (across Phase 2) the model
+//! structs. See `DESIGN.md` and `ROADMAP.md`.
 
 pub mod auth;
+pub mod client;
+pub mod endpoints;
+pub mod pagination;
