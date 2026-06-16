@@ -128,11 +128,11 @@ Scriptable / agent-friendly output:
 
 v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implement them. Ship them or drop them from the docs, and pull the cheap read-only wins forward.
 
-- ☐ `nbox open` — web URL via `util::format::api_to_web_url` + `open`. Currently stubbed.
-- ☐ `nbox interface <device> <iface>`. Currently stubbed.
-- ☐ TUI device tabs: `i` interfaces · `p` IPs · `c` cables · `v` VLANs. Needs an interfaces/IPs section on `DeviceView`.
+- ☑ `nbox open` — web URL via `util::format::api_to_web_url` + `open`.
+- ☑ `nbox interface <device> <iface>` — flat view plus its addresses.
+- ☑ TUI device tabs: `i` interfaces · `p` IPs · `c` cables · `v` VLANs. `nbox device` also shows the full set.
 - ☐ Read-only `nbox next-ip <prefix>` / `next-prefix <prefix>` via `available-ips` / `available-prefixes`. Allocate lands with writes (v0.2).
-- ☐ Typed errors (`src/error.rs`) — 401→auth, 403→perms, 404→not-found, ambiguous→list matches. Distinct not-found exit code; `main.rs` exits 1 for everything today.
+- ☑ Typed errors (`src/error.rs`) — 401→auth, 403→perms, ambiguous name→list matches; stable exit codes (3 auth, 4 not-found, 5 ambiguous).
 - ☐ CI against a real NetBox — netbox-docker (pin 4.x ≥ 4.2), seeded fixture + legacy v1 token, run the binary against the live API. Catches serializer drift wiremock can't.
 - ☐ Read-only `nbox raw GET <path>`.
 - ☐ `config_version` field + forward-compat, before v0.2 touches the schema.
