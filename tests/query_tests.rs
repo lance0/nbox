@@ -337,6 +337,31 @@ async fn circuit_by_id_hits_detail_endpoint() {
 }
 
 #[tokio::test]
+async fn journal_entries_filter_by_assigned_object() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/extras/journal-entries/"))
+        .and(query_param("assigned_object_type", "dcim.device"))
+        .and(query_param("assigned_object_id", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 5, "created": "2024-01-02",
+                "kind": {"value": "info", "label": "Info"}, "comments": "rebooted"
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let entries = client(&server)
+        .journal_entries("dcim.device", 1, 20)
+        .await
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].comments, "rebooted");
+}
+
+#[tokio::test]
 async fn ip_range_by_start_uses_start_address_filter() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

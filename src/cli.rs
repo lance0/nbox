@@ -212,6 +212,19 @@ pub enum Command {
         object_ref: String,
     },
 
+    /// Show recent journal entries for an object.
+    Journal {
+        /// Object kind: device, ip, prefix, vlan, site, rack, or circuit.
+        kind: String,
+
+        /// Object reference (name, address, CIDR, VID, slug, or ID).
+        value: String,
+
+        /// Maximum number of entries (newest first).
+        #[arg(short, long, default_value_t = 20)]
+        limit: usize,
+    },
+
     /// Make a raw read-only API request (escape hatch for unmodeled endpoints).
     Raw {
         /// HTTP method. Only GET is supported until writes land (v0.2+).

@@ -8,5 +8,6 @@
 pub mod circuits;
 pub mod common;
 pub mod dcim;
+pub mod extras;
 pub mod ipam;
 pub mod tenancy;

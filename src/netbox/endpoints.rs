@@ -18,6 +18,7 @@ pub enum Endpoint {
     Asns,
     Services,
     IpRanges,
+    JournalEntries,
 }
 
 impl Endpoint {
@@ -39,6 +40,7 @@ impl Endpoint {
             Endpoint::Asns => "/api/ipam/asns/",
             Endpoint::Services => "/api/ipam/services/",
             Endpoint::IpRanges => "/api/ipam/ip-ranges/",
+            Endpoint::JournalEntries => "/api/extras/journal-entries/",
         }
     }
 

@@ -135,6 +135,7 @@ nbox asn <number>
 nbox ip-range <start-or-id>
 nbox vlan <vid-or-name> [--site <s>] [--group <g>]
 nbox interface <device> <interface>
+nbox journal <kind> <ref>         # recent journal entries for an object
 nbox open <object-ref>
 nbox raw GET <api-path>           # raw read-only API request (escape hatch)
 nbox config <init|path|show>

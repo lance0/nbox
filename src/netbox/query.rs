@@ -9,6 +9,7 @@ use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
 use crate::netbox::models::circuits::Circuit;
 use crate::netbox::models::dcim::{Device, Interface, Rack, Site};
+use crate::netbox::models::extras::JournalEntry;
 use crate::netbox::models::ipam::{
     Aggregate, Asn, AvailableIp, AvailablePrefix, IpAddress, IpRange, Prefix, Service, Vlan,
 };
@@ -338,6 +339,26 @@ impl NetBoxClient {
             .list(Endpoint::Asns, vec![("asn", asn.to_string())])
             .await?;
         Ok(page.results.into_iter().next())
+    }
+
+    /// Journal entries for an object (newest first, up to `max`), addressed by
+    /// its dotted content type (e.g. `dcim.device`) and numeric ID.
+    pub async fn journal_entries(
+        &self,
+        content_type: &str,
+        object_id: u64,
+        max: usize,
+    ) -> Result<Vec<JournalEntry>> {
+        self.list_all(
+            Endpoint::JournalEntries,
+            vec![
+                ("assigned_object_type", content_type.to_string()),
+                ("assigned_object_id", object_id.to_string()),
+                ("ordering", "-created".to_string()),
+            ],
+            max,
+        )
+        .await
     }
 
     /// Resolve a circuit by numeric ID, then exact CID, then a CID-contains

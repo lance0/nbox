@@ -17,6 +17,7 @@ use crate::domain::device_detail::DeviceDetail;
 use crate::domain::interface_view::InterfaceView;
 use crate::domain::ip_range_view::IpRangeView;
 use crate::domain::ip_view::{IpView, most_specific};
+use crate::domain::journal_view::JournalView;
 use crate::domain::prefix_view::PrefixView;
 use crate::domain::rack_view::RackView;
 use crate::domain::site_view::SiteView;
@@ -140,6 +141,9 @@ pub async fn run(cli: Cli) -> Result<()> {
             run_interface(&ctx, &device, &interface).await
         }
         Some(Command::Open { object_ref }) => run_open(&ctx, &object_ref).await,
+        Some(Command::Journal { kind, value, limit }) => {
+            run_journal(&ctx, &kind, &value, limit).await
+        }
         Some(Command::Raw { method, path }) => run_raw(&ctx, &method, &path).await,
         Some(Command::Status) => run_status(&ctx).await,
         Some(Command::Config { command }) => config::run_config(
@@ -600,6 +604,61 @@ fn parse_object_ref(s: &str) -> Result<(&str, &str)> {
                 "object reference must be `<kind>/<ref>` (e.g. device/edge01)\n\nKinds: device, site, rack, vlan, prefix, ip"
             )
         })
+}
+
+/// `nbox journal <kind> <ref>` — recent journal entries for an object.
+async fn run_journal(ctx: &Ctx, kind: &str, value: &str, limit: usize) -> Result<()> {
+    let client = connect(ctx)?;
+    let (content_type, id) = resolve_content_type_id(&client, kind, value).await?;
+    let entries = client.journal_entries(content_type, id, limit).await?;
+
+    let view = JournalView::from_models(entries);
+    emit(ctx, &view, || println!("{}", view.to_plain()))
+}
+
+/// Resolve a `<kind> <ref>` to the object's dotted content type and numeric ID,
+/// reusing the existing per-kind resolvers.
+async fn resolve_content_type_id(
+    client: &NetBoxClient,
+    kind: &str,
+    value: &str,
+) -> Result<(&'static str, u64)> {
+    let resolved = match kind {
+        "device" => client
+            .device_by_ref(value)
+            .await?
+            .map(|d| ("dcim.device", d.id)),
+        "ip" => client
+            .ip_candidates(value)
+            .await?
+            .into_iter()
+            .next()
+            .map(|i| ("ipam.ipaddress", i.id)),
+        "prefix" => client
+            .prefix_by_cidr(value)
+            .await?
+            .map(|p| ("ipam.prefix", p.id)),
+        "vlan" => client
+            .vlan_by_ref(value)
+            .await?
+            .map(|v| ("ipam.vlan", v.id)),
+        "site" => client
+            .site_by_ref(value)
+            .await?
+            .map(|s| ("dcim.site", s.id)),
+        "rack" => client
+            .rack_by_ref(value)
+            .await?
+            .map(|r| ("dcim.rack", r.id)),
+        "circuit" => client
+            .circuit_by_ref(value)
+            .await?
+            .map(|c| ("circuits.circuit", c.id)),
+        other => anyhow::bail!(
+            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit)"
+        ),
+    };
+    resolved.ok_or_else(|| not_found(kind, value))
 }
 
 /// `nbox raw <method> <path>` — a raw read-only API GET (escape hatch).

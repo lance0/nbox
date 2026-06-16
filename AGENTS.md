@@ -45,6 +45,7 @@ nbox aggregate <cidr|id>
 nbox asn <number>
 nbox ip-range <start|id>
 nbox search <query> [--limit N] [--status S] [--site SLUG] [--tenant SLUG] [--role SLUG] [--cols a,b,c] [--partial]
+nbox journal <kind> <ref>
 nbox open <kind>/<ref>
 nbox raw GET <api-path>
 nbox status

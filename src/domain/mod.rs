@@ -15,6 +15,7 @@ pub mod device_view;
 pub mod interface_view;
 pub mod ip_range_view;
 pub mod ip_view;
+pub mod journal_view;
 pub mod prefix_view;
 pub mod rack_view;
 pub mod site_view;
