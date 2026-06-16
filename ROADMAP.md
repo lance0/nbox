@@ -92,12 +92,12 @@ Feature wins (small, on-identity):
 - ☑ CSV output: global `-o/--output plain|json|csv` (`--json` is a shortcut); generic (arrays→table, objects→field,value)
 - ☑ Column selection `--cols a,b,c` for `search` CSV output
 - ☑ Auto-refresh tick in the TUI (`[ui].refresh_secs`, default off; re-runs the last query, preserving the cursor by id)
-- ☐ Client-side filter validation — warn on unknown query params (NetBox silently ignores them; netbox#6489)
+- ☑ Client-side filter validation — structurally avoided: exposed filters are typed + per-endpoint allowlisted, so nbox never sends unknown params (netbox#6489). Value-level validation → v0.3 OPTIONS/schema discovery.
 
 Scriptable / agent-friendly output:
-- ☐ Versioned JSON output envelope (`{ schema_version, data }`) + stable exit codes + structured JSON errors
-- ☐ `--fields a,b,c` / `--raw` output controls
-- ☐ `AGENTS.md` + per-command skill files; a `--dry-run` convention (effective once writes land)
+- ☑ Versioned JSON envelope (`--envelope` → `{ schema_version, data }`) + stable exit codes (structured JSON errors deferred)
+- ☑ `--fields a,b,c` / `--raw` output controls
+- ◐ `AGENTS.md` added; per-command skill files + a `--dry-run` convention land with writes (v0.2)
 
 ---
 

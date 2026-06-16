@@ -59,6 +59,7 @@ struct Ctx {
     config_path: Option<PathBuf>,
     profile: Option<String>,
     format: Format,
+    json_opts: output::json::JsonOptions,
 }
 
 impl Ctx {
@@ -68,9 +69,9 @@ impl Ctx {
 }
 
 /// Render a serializable view per the selected format, or run `plain` for text.
-fn emit<T: serde::Serialize>(format: Format, view: &T, plain: impl FnOnce()) -> Result<()> {
-    match format {
-        Format::Json => output::json::print(view)?,
+fn emit<T: serde::Serialize>(ctx: &Ctx, view: &T, plain: impl FnOnce()) -> Result<()> {
+    match ctx.format {
+        Format::Json => output::json::print_with(view, &ctx.json_opts)?,
         Format::Csv => output::csv::print(view)?,
         Format::Plain => plain(),
     }
@@ -79,10 +80,21 @@ fn emit<T: serde::Serialize>(format: Format, view: &T, plain: impl FnOnce()) -> 
 
 /// Dispatch a parsed [`Cli`] invocation.
 pub async fn run(cli: Cli) -> Result<()> {
+    let json_opts = output::json::JsonOptions {
+        fields: cli.fields.as_deref().map(|f| {
+            f.split(',')
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect()
+        }),
+        raw: cli.raw,
+        envelope: cli.envelope,
+    };
     let ctx = Ctx {
         config_path: cli.config,
         profile: cli.profile,
         format: Format::resolve(cli.json, cli.output),
+        json_opts,
     };
 
     match cli.command {
@@ -202,7 +214,7 @@ async fn run_status(ctx: &Ctx) -> Result<()> {
         "python_version": status.python_version,
     });
 
-    emit(ctx.format, &report, || {
+    emit(ctx, &report, || {
         let mut kv = KeyValues::new();
         kv.push("netbox_url", url.clone())
             .push("netbox_version", status.netbox_version.clone())
@@ -230,7 +242,7 @@ async fn run_search(
         .await?;
 
     match ctx.format {
-        Format::Json => output::json::print(&results)?,
+        Format::Json => output::json::print_with(&results, &ctx.json_opts)?,
         Format::Csv => {
             let columns: Option<Vec<String>> = cols.as_deref().map(|c| {
                 c.split(',')
@@ -266,7 +278,7 @@ async fn run_device(ctx: &Ctx, value: &str) -> Result<()> {
         .ok_or_else(|| not_found("device", value))?;
 
     let view = DeviceView::from_model(device);
-    emit(ctx.format, &view, || view.to_key_values().print())
+    emit(ctx, &view, || view.to_key_values().print())
 }
 
 /// `nbox ip <address>` — resolve an IP and its most-specific parent prefix.
@@ -283,7 +295,7 @@ async fn run_ip(ctx: &Ctx, address: &str) -> Result<()> {
     let parent = most_specific(client.prefixes_containing(host).await?);
 
     let view = IpView::build(ip, parent);
-    emit(ctx.format, &view, || view.to_key_values().print())
+    emit(ctx, &view, || view.to_key_values().print())
 }
 
 /// `nbox prefix <cidr>` — show a prefix with its children and contained IPs.
@@ -299,7 +311,7 @@ async fn run_prefix(ctx: &Ctx, cidr: &str) -> Result<()> {
     let ips = client.prefix_ips(cidr, SECTION_CAP).await?;
 
     let view = PrefixView::build(prefix, children, ips);
-    emit(ctx.format, &view, || println!("{}", view.to_plain()))
+    emit(ctx, &view, || println!("{}", view.to_plain()))
 }
 
 /// `nbox vlan <vid|name>` — show a VLAN and the prefixes that reference it.
@@ -312,7 +324,7 @@ async fn run_vlan(ctx: &Ctx, value: &str) -> Result<()> {
     let prefixes = client.vlan_prefixes(vlan.id, 50).await?;
 
     let view = VlanView::build(vlan, prefixes);
-    emit(ctx.format, &view, || println!("{}", view.to_plain()))
+    emit(ctx, &view, || println!("{}", view.to_plain()))
 }
 
 /// `nbox site <name|slug>` — show a site.
@@ -324,7 +336,7 @@ async fn run_site(ctx: &Ctx, value: &str) -> Result<()> {
         .ok_or_else(|| not_found("site", value))?;
 
     let view = SiteView::from_model(site);
-    emit(ctx.format, &view, || view.to_key_values().print())
+    emit(ctx, &view, || view.to_key_values().print())
 }
 
 /// `nbox rack <name|id>` — show a rack.
@@ -336,7 +348,7 @@ async fn run_rack(ctx: &Ctx, value: &str) -> Result<()> {
         .ok_or_else(|| not_found("rack", value))?;
 
     let view = RackView::from_model(rack);
-    emit(ctx.format, &view, || view.to_key_values().print())
+    emit(ctx, &view, || view.to_key_values().print())
 }
 
 /// Fail an unimplemented command (non-zero exit), keeping stdout clean.

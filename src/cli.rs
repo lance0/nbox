@@ -29,6 +29,18 @@ pub struct Cli {
     #[arg(short = 'o', long, global = true, value_name = "FORMAT")]
     pub output: Option<crate::output::Format>,
 
+    /// JSON only: keep only these top-level fields (comma-separated).
+    #[arg(long, global = true, value_name = "FIELDS")]
+    pub fields: Option<String>,
+
+    /// JSON only: compact output instead of pretty-printed.
+    #[arg(long, global = true)]
+    pub raw: bool,
+
+    /// JSON only: wrap output as `{schema_version, data}`.
+    #[arg(long, global = true)]
+    pub envelope: bool,
+
     /// Never launch the interactive TUI.
     #[arg(long, global = true)]
     pub no_tui: bool,
