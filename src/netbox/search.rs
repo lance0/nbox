@@ -82,6 +82,18 @@ pub struct SearchRequest {
     pub filters: SearchFilters,
 }
 
+/// The outcome of a search: ranked results plus any per-endpoint failures.
+///
+/// `errors` is non-empty when some endpoints succeeded and others failed — a
+/// *partial* result. Callers decide whether to fail closed or surface it. When
+/// every endpoint fails (and there are no results), [`NetBoxClient::search`]
+/// returns the underlying `Err` instead, preserving its typed exit code.
+#[derive(Debug, Clone)]
+pub struct SearchOutcome {
+    pub results: Vec<SearchResult>,
+    pub errors: Vec<String>,
+}
+
 /// A normalized search hit.
 #[derive(Debug, Clone, Serialize)]
 pub struct SearchResult {
@@ -129,7 +141,13 @@ fn endpoint_params(
 
 impl NetBoxClient {
     /// Search across devices, sites, IPs, prefixes, and VLANs in parallel.
-    pub async fn search(&self, req: SearchRequest) -> Result<Vec<SearchResult>> {
+    ///
+    /// Returns ranked results plus a list of endpoints that failed. If every
+    /// endpoint fails and nothing matched, returns the underlying `Err` (so a
+    /// bad token surfaces as an auth error, not an empty result set). A *partial*
+    /// failure — some endpoints down, others returning data — is reported via
+    /// [`SearchOutcome::errors`] for the caller to act on.
+    pub async fn search(&self, req: SearchRequest) -> Result<SearchOutcome> {
         let q = req.query.trim().to_string();
         let f = &req.filters;
 
@@ -142,19 +160,28 @@ impl NetBoxClient {
         );
 
         let mut merged = Vec::new();
+        let mut errors = Vec::new();
         let mut last_err = None;
-        for branch in [devices, sites, ips, prefixes, vlans] {
+        let branches = [
+            ("devices", devices),
+            ("sites", sites),
+            ("ips", ips),
+            ("prefixes", prefixes),
+            ("vlans", vlans),
+        ];
+        for (name, branch) in branches {
             match branch {
                 Ok(mut items) => merged.append(&mut items),
                 Err(e) => {
-                    tracing::warn!("search branch failed: {e:#}");
+                    tracing::warn!("search branch '{name}' failed: {e:#}");
+                    errors.push(format!("{name}: {e:#}"));
                     last_err = Some(e);
                 }
             }
         }
 
-        // If every branch failed (e.g. auth/connection), surface the error
-        // instead of a misleading "no results".
+        // Nothing came back and something failed → surface the typed error
+        // rather than a misleading "no results".
         if merged.is_empty()
             && let Some(e) = last_err
         {
@@ -169,7 +196,10 @@ impl NetBoxClient {
         let mut seen = HashSet::new();
         merged.retain(|r| seen.insert((r.kind, r.id)));
         merged.truncate(req.limit);
-        Ok(merged)
+        Ok(SearchOutcome {
+            results: merged,
+            errors,
+        })
     }
 
     async fn search_devices(&self, q: &str, f: &SearchFilters) -> Result<Vec<SearchResult>> {

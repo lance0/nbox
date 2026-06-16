@@ -8,7 +8,25 @@ pub mod csv;
 pub mod json;
 pub mod plain;
 
+use anyhow::Result;
 use clap::ValueEnum;
+use serde::Serialize;
+
+/// Render `value` per `format`: JSON (honoring `opts`), CSV, or run `plain` for
+/// human text. The single output path shared by every data-producing command.
+pub fn emit<T: Serialize>(
+    format: Format,
+    opts: &json::JsonOptions,
+    value: &T,
+    plain: impl FnOnce(),
+) -> Result<()> {
+    match format {
+        Format::Json => json::print_with(value, opts)?,
+        Format::Csv => csv::print(value)?,
+        Format::Plain => plain(),
+    }
+    Ok(())
+}
 
 /// The selected output format for a command.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]

@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 
 use crate::domain::detail::DetailView;
 use crate::netbox::client::NetBoxClient;
-use crate::netbox::search::{ObjectKind, SearchResult};
+use crate::netbox::search::{ObjectKind, SearchOutcome, SearchResult};
 use crate::tui::palette::{self, PaletteCommand};
 use crate::tui::theme::Theme;
 
@@ -35,7 +35,7 @@ pub enum AppEvent {
     Key(KeyEvent),
     Resize(u16, u16),
     Tick,
-    SearchComplete(anyhow::Result<Vec<SearchResult>>),
+    SearchComplete(anyhow::Result<SearchOutcome>),
     DetailLoaded(anyhow::Result<DetailView>),
     Status(String),
 }
@@ -140,9 +140,17 @@ impl App {
             AppEvent::Tick => self.on_tick(),
             AppEvent::SearchComplete(result) => {
                 match result {
-                    Ok(items) => {
-                        self.status = format!("{} result(s)", items.len());
-                        self.results = items;
+                    Ok(outcome) => {
+                        let n = outcome.results.len();
+                        self.status = if outcome.errors.is_empty() {
+                            format!("{n} result(s)")
+                        } else {
+                            format!(
+                                "{n} result(s) (partial: {} endpoint(s) failed)",
+                                outcome.errors.len()
+                            )
+                        };
+                        self.results = outcome.results;
                         self.view = (0..self.results.len()).collect();
                         self.selected = self
                             .pending_reselect
@@ -506,7 +514,10 @@ mod tests {
     }
 
     fn set_results(a: &mut App, items: Vec<SearchResult>) {
-        a.handle_event(AppEvent::SearchComplete(Ok(items)));
+        a.handle_event(AppEvent::SearchComplete(Ok(SearchOutcome {
+            results: items,
+            errors: Vec::new(),
+        })));
     }
 
     #[test]

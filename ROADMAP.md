@@ -148,6 +148,7 @@ v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implemen
 - ☐ **Hierarchical prefix tree in the TUI** — expand/collapse children with inline utilization (netbox#21396/#21255).
 - ☐ **Device detail — pick one path** — REST fan-out (device + interfaces + IPs) or a read-only GraphQL query. Don't build both.
 - ☐ Multi-pane TUI (nav | results | detail) per the DESIGN mockup.
+- ☐ TUI profile switcher — hotkey to flip between configured instances (e.g. dev / staging / prod) without restarting; reconnects and re-probes the version.
 - ☐ IP ranges (`/api/ipam/ip-ranges/` + `available-ips`).
 - ☐ **Safe writes (initial)** — `PATCH` engine, minimal diff, before/after preview, confirmation modal; agent-safe `--read-only` profile.
   - ☐ Settle write rules first: choice fields (`{value,label}`→string), brief relations (slug/id/name), confirmation in non-TTY/`--json`/MCP.
@@ -163,7 +164,7 @@ v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implemen
 - ☐ `nbox ip <addr> reserve --description "..."`
 - ☐ `nbox tag add <type> <name> <tag>`; tag browsing (`nbox tags`, `--tag <name>` filter).
 - ☐ Write workflows in the TUI edit mode (`e` / `d` / confirm).
-- ☐ **`--vrf` resolution** — accept id | rd (`65000:100`) | name, that precedence; ambiguous name → list matches. Also fixes first-match-wins in `ip_candidates`.
+- ☐ **`--vrf` server-side filter** — pass VRF as an API filter on `search`/list paths (accept id | rd | name). Exact-lookup scoping (`nbox ip`/`prefix`/`vlan` with `--vrf`/`--site`/`--group`, plus exit-5 on cross-scope duplicates) already landed in v0.1.1; this extends it to list/search filtering.
 - ☐ Circuits (`nbox circuit <id>`, included in search).
 - ☐ Aggregates (`/api/ipam/aggregates/`) and ASNs (`/api/ipam/asns/`).
 - ☐ Journal entries on detail views (`/api/extras/journal-entries/`).

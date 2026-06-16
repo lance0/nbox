@@ -36,6 +36,32 @@ fn ambiguous_or_first<T>(
     Ok(results.into_iter().next())
 }
 
+/// Disambiguation label for a prefix, e.g. `10.0.0.0/24 (vrf: blue)` / `(global)`.
+pub(crate) fn prefix_scope_label(p: &Prefix) -> String {
+    match &p.vrf {
+        Some(v) => format!("{} (vrf: {})", p.prefix, v.label()),
+        None => format!("{} (global)", p.prefix),
+    }
+}
+
+/// Disambiguation label for a VLAN, e.g. `208 users (site: iad1)`.
+pub(crate) fn vlan_scope_label(v: &Vlan) -> String {
+    let scope = match (&v.site, &v.group) {
+        (Some(s), _) => format!(" (site: {})", s.label()),
+        (None, Some(g)) => format!(" (group: {})", g.label()),
+        (None, None) => String::new(),
+    };
+    format!("{} {}{}", v.vid, v.name, scope)
+}
+
+/// Disambiguation label for an IP, e.g. `10.0.0.1/24 (vrf: blue)` / `(global)`.
+pub(crate) fn ip_scope_label(ip: &IpAddress) -> String {
+    match &ip.vrf {
+        Some(v) => format!("{} (vrf: {})", ip.address, v.label()),
+        None => format!("{} (global)", ip.address),
+    }
+}
+
 impl NetBoxClient {
     /// Resolve a device by numeric ID, then exact (case-insensitive) name, then
     /// a name-contains fallback. Returns `None` when nothing matches a name.
@@ -137,12 +163,20 @@ impl NetBoxClient {
         Ok(page.results)
     }
 
-    /// Resolve a prefix by its exact CIDR.
-    pub async fn prefix_by_cidr(&self, cidr: &str) -> Result<Option<Prefix>> {
+    /// All prefixes that exactly match a CIDR (one per VRF, typically).
+    pub async fn prefix_candidates(&self, cidr: &str) -> Result<Vec<Prefix>> {
         let page: Page<Prefix> = self
             .list(Endpoint::Prefixes, vec![("prefix", cidr.to_string())])
             .await?;
-        Ok(page.results.into_iter().next())
+        Ok(page.results)
+    }
+
+    /// Resolve a prefix by its exact CIDR. Ambiguous (exit 5) when the CIDR exists
+    /// in more than one VRF — use [`prefix_candidates`](Self::prefix_candidates)
+    /// with a VRF filter to scope.
+    pub async fn prefix_by_cidr(&self, cidr: &str) -> Result<Option<Prefix>> {
+        let candidates = self.prefix_candidates(cidr).await?;
+        ambiguous_or_first("prefix", cidr, candidates, prefix_scope_label)
     }
 
     /// Prefixes nested within `cidr` (up to `max`).
@@ -161,13 +195,20 @@ impl NetBoxClient {
         .await
     }
 
+    /// All VLANs with a given VID (one per site/group, typically).
+    pub async fn vlan_candidates_by_vid(&self, vid: u16) -> Result<Vec<Vlan>> {
+        let page: Page<Vlan> = self
+            .list(Endpoint::Vlans, vec![("vid", vid.to_string())])
+            .await?;
+        Ok(page.results)
+    }
+
     /// Resolve a VLAN by VID (if numeric) or by name (exact, then contains).
+    /// A VID present at several sites/groups is ambiguous (exit 5).
     pub async fn vlan_by_ref(&self, value: &str) -> Result<Option<Vlan>> {
         if let Ok(vid) = value.parse::<u16>() {
-            let page: Page<Vlan> = self
-                .list(Endpoint::Vlans, vec![("vid", vid.to_string())])
-                .await?;
-            return Ok(page.results.into_iter().next());
+            let candidates = self.vlan_candidates_by_vid(vid).await?;
+            return ambiguous_or_first("VLAN", value, candidates, vlan_scope_label);
         }
         let exact: Page<Vlan> = self
             .list(Endpoint::Vlans, vec![("name__ie", value.to_string())])

@@ -63,7 +63,8 @@ async fn search_merges_ranks_and_dedups_across_endpoints() {
             filters: SearchFilters::default(),
         })
         .await
-        .unwrap();
+        .unwrap()
+        .results;
 
     assert_eq!(results.len(), 2);
     // Exact device match ranks first.
@@ -103,6 +104,46 @@ async fn search_truncates_to_limit() {
             filters: SearchFilters::default(),
         })
         .await
-        .unwrap();
+        .unwrap()
+        .results;
     assert_eq!(results.len(), 2);
+}
+
+#[tokio::test]
+async fn search_reports_partial_endpoint_failures() {
+    let server = MockServer::start().await;
+    // Devices succeed; sites return a 403; the rest are empty.
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 1, "url": "http://nb/api/dcim/devices/1/", "name": "edge01"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/sites/"))
+        .respond_with(ResponseTemplate::new(403).set_body_string("Forbidden"))
+        .mount(&server)
+        .await;
+    mount_empty(&server, "/api/ipam/ip-addresses/").await;
+    mount_empty(&server, "/api/ipam/prefixes/").await;
+    mount_empty(&server, "/api/ipam/vlans/").await;
+
+    let outcome = client(&server)
+        .search(SearchRequest {
+            query: "edge".into(),
+            limit: 25,
+            filters: SearchFilters::default(),
+        })
+        .await
+        .unwrap();
+    // Got the device, but the sites endpoint failure is reported (not hidden).
+    assert_eq!(outcome.results.len(), 1);
+    assert_eq!(outcome.errors.len(), 1);
+    assert!(
+        outcome.errors[0].contains("sites"),
+        "got: {:?}",
+        outcome.errors
+    );
 }

@@ -32,15 +32,23 @@ minimize tokens, `--fields` to trim payloads).
 
 ```
 nbox device <name|slug|id>
-nbox ip <address>
-nbox prefix <cidr>
-nbox vlan <vid|name>
+nbox ip <address> [--vrf <name|slug|rd>]
+nbox prefix <cidr> [--vrf <name|slug|rd>]
+nbox vlan <vid|name> [--site <name|slug>] [--group <name|slug>]
+nbox interface <device> <interface>
 nbox site <name|slug>
 nbox rack <name|id>
-nbox search <query> [--limit N] [--status S] [--site SLUG] [--tenant SLUG] [--role SLUG] [--cols a,b,c]
+nbox search <query> [--limit N] [--status S] [--site SLUG] [--tenant SLUG] [--role SLUG] [--cols a,b,c] [--partial]
+nbox open <kind>/<ref>
 nbox status
 nbox completions <bash|zsh|fish|powershell|elvish>
 ```
+
+A reference that matches more than one object across scopes (an address/CIDR in
+several VRFs, a VID at several sites) exits `5` and lists the candidates; scope it
+with `--vrf` / `--site` / `--group`. `search` fails closed: if any endpoint errors
+it exits non-zero rather than return partial results — pass `--partial` for
+best-effort results (failed endpoints are reported on stderr).
 
 ## Configuration
 

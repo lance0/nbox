@@ -87,6 +87,10 @@ pub enum Command {
         /// Columns to include in CSV output (comma-separated, e.g. kind,display,url).
         #[arg(long)]
         cols: Option<String>,
+
+        /// Accept partial results if some endpoints fail (default: fail closed).
+        #[arg(long)]
+        partial: bool,
     },
 
     /// Show a device by name, slug, or ID.
@@ -99,12 +103,20 @@ pub enum Command {
     Ip {
         /// IP address, optionally with a mask.
         address: String,
+
+        /// Disambiguate by VRF (name, slug, or RD) when the address exists in several.
+        #[arg(long)]
+        vrf: Option<String>,
     },
 
     /// Show prefix details and children.
     Prefix {
         /// Prefix in CIDR notation.
         cidr: String,
+
+        /// Disambiguate by VRF (name, slug, or RD) when the CIDR exists in several.
+        #[arg(long)]
+        vrf: Option<String>,
     },
 
     /// Show a site.
@@ -123,6 +135,14 @@ pub enum Command {
     Vlan {
         /// VLAN VID or name.
         value: String,
+
+        /// Disambiguate by site (name or slug) when a VID exists at several sites.
+        #[arg(long)]
+        site: Option<String>,
+
+        /// Disambiguate by VLAN group (name or slug) when a VID exists in several.
+        #[arg(long)]
+        group: Option<String>,
     },
 
     /// Show an interface on a device.

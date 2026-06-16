@@ -120,13 +120,13 @@ nbox auto-detects v2 tokens (`Bearer nbt_<key>.<token>`) vs legacy v1 tokens (`T
 ```bash
 nbox                              # launch TUI
 nbox status                       # connection + NetBox/Django/Python versions
-nbox search <query> [--limit N] [--status/--site/--tenant/--role <v>] [--cols a,b,c]
+nbox search <query> [--limit N] [--status/--site/--tenant/--role <v>] [--cols a,b,c] [--partial]
 nbox device <name-or-id>
-nbox ip <address>
-nbox prefix <cidr>                # includes utilization + children when present
+nbox ip <address> [--vrf <name>]              # --vrf disambiguates duplicates across VRFs
+nbox prefix <cidr> [--vrf <name>]             # includes utilization + children when present
 nbox site <name-or-slug>
 nbox rack <name-or-id>
-nbox vlan <vid-or-name>
+nbox vlan <vid-or-name> [--site <s>] [--group <g>]
 nbox interface <device> <interface>
 nbox open <object-ref>
 nbox config <init|path|show>

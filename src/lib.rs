@@ -17,6 +17,8 @@ use crate::domain::rack_view::RackView;
 use crate::domain::site_view::SiteView;
 use crate::domain::vlan_view::VlanView;
 use crate::netbox::client::NetBoxClient;
+use crate::netbox::models::common::BriefObject;
+use crate::netbox::query;
 use crate::netbox::search::{SearchFilters, SearchRequest};
 use crate::output::Format;
 use crate::output::plain::KeyValues;
@@ -64,20 +66,9 @@ struct Ctx {
     json_opts: output::json::JsonOptions,
 }
 
-impl Ctx {
-    fn is_json(&self) -> bool {
-        self.format == Format::Json
-    }
-}
-
 /// Render a serializable view per the selected format, or run `plain` for text.
 fn emit<T: serde::Serialize>(ctx: &Ctx, view: &T, plain: impl FnOnce()) -> Result<()> {
-    match ctx.format {
-        Format::Json => output::json::print_with(view, &ctx.json_opts)?,
-        Format::Csv => output::csv::print(view)?,
-        Format::Plain => plain(),
-    }
-    Ok(())
+    output::emit(ctx.format, &ctx.json_opts, view, plain)
 }
 
 /// Dispatch a parsed [`Cli`] invocation.
@@ -109,6 +100,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             tenant,
             role,
             cols,
+            partial,
         }) => {
             let filters = SearchFilters {
                 status,
@@ -116,25 +108,33 @@ pub async fn run(cli: Cli) -> Result<()> {
                 tenant,
                 role,
             };
-            run_search(&ctx, &query, limit, filters, cols).await
+            run_search(&ctx, &query, limit, filters, cols, partial).await
         }
         Some(Command::Device { value }) => run_device(&ctx, &value).await,
-        Some(Command::Ip { address }) => run_ip(&ctx, &address).await,
-        Some(Command::Prefix { cidr }) => run_prefix(&ctx, &cidr).await,
+        Some(Command::Ip { address, vrf }) => run_ip(&ctx, &address, vrf.as_deref()).await,
+        Some(Command::Prefix { cidr, vrf }) => run_prefix(&ctx, &cidr, vrf.as_deref()).await,
         Some(Command::Site { value }) => run_site(&ctx, &value).await,
         Some(Command::Rack { value }) => run_rack(&ctx, &value).await,
-        Some(Command::Vlan { value }) => run_vlan(&ctx, &value).await,
+        Some(Command::Vlan { value, site, group }) => {
+            run_vlan(&ctx, &value, site.as_deref(), group.as_deref()).await
+        }
         Some(Command::Interface { device, interface }) => {
             run_interface(&ctx, &device, &interface).await
         }
         Some(Command::Open { object_ref }) => run_open(&ctx, &object_ref).await,
         Some(Command::Status) => run_status(&ctx).await,
-        Some(Command::Config { command }) => {
-            config::run_config(command, ctx.config_path.as_deref(), ctx.is_json())
-        }
-        Some(Command::Profile { command }) => {
-            config::run_profile(command, ctx.config_path.as_deref(), ctx.is_json())
-        }
+        Some(Command::Config { command }) => config::run_config(
+            command,
+            ctx.config_path.as_deref(),
+            ctx.format,
+            &ctx.json_opts,
+        ),
+        Some(Command::Profile { command }) => config::run_profile(
+            command,
+            ctx.config_path.as_deref(),
+            ctx.format,
+            &ctx.json_opts,
+        ),
         Some(Command::Completions { shell }) => {
             let mut cmd = Cli::command();
             let bin = cmd.get_name().to_string();
@@ -235,9 +235,10 @@ async fn run_search(
     limit: usize,
     filters: SearchFilters,
     cols: Option<String>,
+    partial: bool,
 ) -> Result<()> {
     let client = connect(ctx)?;
-    let results = client
+    let outcome = client
         .search(SearchRequest {
             query: query.to_string(),
             limit,
@@ -245,6 +246,24 @@ async fn run_search(
         })
         .await?;
 
+    // Fail closed by default: if some endpoints failed, don't present partial
+    // results as if they were complete. `--partial` opts into a best-effort run.
+    if !outcome.errors.is_empty() {
+        if !partial {
+            anyhow::bail!(
+                "search incomplete — {} endpoint(s) failed:\n  {}\n\nRe-run with --partial to accept partial results.",
+                outcome.errors.len(),
+                outcome.errors.join("\n  ")
+            );
+        }
+        eprintln!(
+            "warning: partial results — {} endpoint(s) failed:\n  {}",
+            outcome.errors.len(),
+            outcome.errors.join("\n  ")
+        );
+    }
+
+    let results = outcome.results;
     match ctx.format {
         Format::Json => output::json::print_with(&results, &ctx.json_opts)?,
         Format::Csv => {
@@ -310,15 +329,12 @@ async fn run_interface(ctx: &Ctx, device: &str, interface: &str) -> Result<()> {
     emit(ctx, &view, || println!("{}", view.to_plain()))
 }
 
-/// `nbox ip <address>` — resolve an IP and its most-specific parent prefix.
-async fn run_ip(ctx: &Ctx, address: &str) -> Result<()> {
+/// `nbox ip <address>` — resolve an IP (scoped by `--vrf`) and its parent prefix.
+async fn run_ip(ctx: &Ctx, address: &str, vrf: Option<&str>) -> Result<()> {
     let client = connect(ctx)?;
-    let ip = client
-        .ip_candidates(address)
-        .await?
-        .into_iter()
-        .next()
-        .ok_or_else(|| not_found("IP address", address))?;
+    let mut candidates = client.ip_candidates(address).await?;
+    retain_scope(&mut candidates, vrf, |ip| ip.vrf.as_ref());
+    let ip = resolve_unique("IP address", address, candidates, query::ip_scope_label)?;
 
     let host = address.split('/').next().unwrap_or(address);
     let parent = most_specific(client.prefixes_containing(host).await?);
@@ -327,14 +343,13 @@ async fn run_ip(ctx: &Ctx, address: &str) -> Result<()> {
     emit(ctx, &view, || view.to_key_values().print())
 }
 
-/// `nbox prefix <cidr>` — show a prefix with its children and contained IPs.
-async fn run_prefix(ctx: &Ctx, cidr: &str) -> Result<()> {
+/// `nbox prefix <cidr>` — show a prefix (scoped by `--vrf`) with children and IPs.
+async fn run_prefix(ctx: &Ctx, cidr: &str, vrf: Option<&str>) -> Result<()> {
     const SECTION_CAP: usize = 50;
     let client = connect(ctx)?;
-    let prefix = client
-        .prefix_by_cidr(cidr)
-        .await?
-        .ok_or_else(|| not_found("prefix", cidr))?;
+    let mut candidates = client.prefix_candidates(cidr).await?;
+    retain_scope(&mut candidates, vrf, |p| p.vrf.as_ref());
+    let prefix = resolve_unique("prefix", cidr, candidates, query::prefix_scope_label)?;
 
     let children = client.prefix_children(cidr, SECTION_CAP).await?;
     let ips = client.prefix_ips(cidr, SECTION_CAP).await?;
@@ -344,12 +359,20 @@ async fn run_prefix(ctx: &Ctx, cidr: &str) -> Result<()> {
 }
 
 /// `nbox vlan <vid|name>` — show a VLAN and the prefixes that reference it.
-async fn run_vlan(ctx: &Ctx, value: &str) -> Result<()> {
+/// A VID present at several sites/groups is scoped by `--site` / `--group`.
+async fn run_vlan(ctx: &Ctx, value: &str, site: Option<&str>, group: Option<&str>) -> Result<()> {
     let client = connect(ctx)?;
-    let vlan = client
-        .vlan_by_ref(value)
-        .await?
-        .ok_or_else(|| not_found("VLAN", value))?;
+    let vlan = if let Ok(vid) = value.parse::<u16>() {
+        let mut candidates = client.vlan_candidates_by_vid(vid).await?;
+        retain_scope(&mut candidates, site, |v| v.site.as_ref());
+        retain_scope(&mut candidates, group, |v| v.group.as_ref());
+        resolve_unique("VLAN", value, candidates, query::vlan_scope_label)?
+    } else {
+        client
+            .vlan_by_ref(value)
+            .await?
+            .ok_or_else(|| not_found("VLAN", value))?
+    };
     let prefixes = client.vlan_prefixes(vlan.id, 50).await?;
 
     let view = VlanView::build(vlan, prefixes);
@@ -436,6 +459,46 @@ fn parse_object_ref(s: &str) -> Result<(&str, &str)> {
         })
 }
 
+/// Drop candidates whose scope object doesn't match a user-supplied reference
+/// (e.g. `--vrf`). A no-op when `query` is `None`.
+fn retain_scope<T>(
+    items: &mut Vec<T>,
+    query: Option<&str>,
+    scope: impl Fn(&T) -> Option<&BriefObject>,
+) {
+    if let Some(q) = query {
+        items.retain(|it| scope(it).is_some_and(|b| b.matches(q)));
+    }
+}
+
+/// Resolve a candidate set to exactly one object: not found (exit 4) when empty,
+/// ambiguous (exit 5) when more than one, listing the candidates via `label`.
+fn resolve_unique<T>(
+    noun: &str,
+    value: &str,
+    mut candidates: Vec<T>,
+    label: impl Fn(&T) -> String,
+) -> Result<T> {
+    match candidates.len() {
+        0 => Err(not_found(noun, value)),
+        1 => Ok(candidates.pop().unwrap()),
+        _ => {
+            let matches = candidates
+                .iter()
+                .take(8)
+                .map(&label)
+                .collect::<Vec<_>>()
+                .join(", ");
+            Err(error::NboxError::Ambiguous {
+                noun: noun.to_string(),
+                value: value.to_string(),
+                matches,
+            }
+            .into())
+        }
+    }
+}
+
 /// A friendly "not found" error with an actionable suggestion (DESIGN §17).
 /// Typed as [`error::NboxError::NotFound`] so it carries a stable exit code.
 fn not_found(noun: &str, value: &str) -> anyhow::Error {
@@ -447,7 +510,28 @@ fn not_found(noun: &str, value: &str) -> anyhow::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{not_found, parse_object_ref};
+    use super::{error, not_found, parse_object_ref, resolve_unique};
+
+    #[test]
+    fn resolve_unique_distinguishes_none_one_many() {
+        let label = |s: &String| s.clone();
+
+        let one = resolve_unique("device", "edge01", vec!["edge01".to_string()], label).unwrap();
+        assert_eq!(one, "edge01");
+
+        let none = resolve_unique("device", "edge99", Vec::<String>::new(), label).unwrap_err();
+        assert_eq!(error::NboxError::exit_code_for(&none), 4); // not found
+
+        let many = resolve_unique(
+            "device",
+            "edge",
+            vec!["edge01".to_string(), "edge02".to_string()],
+            label,
+        )
+        .unwrap_err();
+        assert_eq!(error::NboxError::exit_code_for(&many), 5); // ambiguous
+        assert!(format!("{many:#}").contains("edge01"));
+    }
 
     #[test]
     fn not_found_includes_actionable_suggestion() {

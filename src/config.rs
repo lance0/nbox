@@ -221,7 +221,12 @@ fn write_doc(path: &Path, doc: &DocumentMut) -> Result<()> {
 }
 
 /// Handle the `nbox config` subcommands.
-pub fn run_config(cmd: ConfigCommand, config_path: Option<&Path>, json: bool) -> Result<()> {
+pub fn run_config(
+    cmd: ConfigCommand,
+    config_path: Option<&Path>,
+    format: crate::output::Format,
+    json_opts: &crate::output::json::JsonOptions,
+) -> Result<()> {
     let path = resolve_path(config_path)?;
     match cmd {
         ConfigCommand::Init => {
@@ -237,23 +242,27 @@ pub fn run_config(cmd: ConfigCommand, config_path: Option<&Path>, json: bool) ->
             Ok(())
         }
         ConfigCommand::Path => {
-            println!("{}", path.display());
-            Ok(())
+            let report = serde_json::json!({ "path": path.display().to_string() });
+            crate::output::emit(format, json_opts, &report, || {
+                println!("{}", path.display())
+            })
         }
         ConfigCommand::Show => {
             let cfg = load(&path)?;
-            if json {
-                crate::output::json::print(&cfg)?;
-            } else {
-                print!("{}", toml::to_string_pretty(&cfg)?);
-            }
-            Ok(())
+            crate::output::emit(format, json_opts, &cfg, || {
+                print!("{}", toml::to_string_pretty(&cfg).unwrap_or_default())
+            })
         }
     }
 }
 
 /// Handle the `nbox profile` subcommands.
-pub fn run_profile(cmd: ProfileCommand, config_path: Option<&Path>, json: bool) -> Result<()> {
+pub fn run_profile(
+    cmd: ProfileCommand,
+    config_path: Option<&Path>,
+    format: crate::output::Format,
+    json_opts: &crate::output::json::JsonOptions,
+) -> Result<()> {
     let path = resolve_path(config_path)?;
     match cmd {
         ProfileCommand::Add {
@@ -287,10 +296,8 @@ pub fn run_profile(cmd: ProfileCommand, config_path: Option<&Path>, json: bool) 
         }
         ProfileCommand::List => {
             let cfg = load(&path)?;
-            if json {
-                let names: Vec<&String> = cfg.profiles.keys().collect();
-                crate::output::json::print(&names)?;
-            } else {
+            let names: Vec<&String> = cfg.profiles.keys().collect();
+            crate::output::emit(format, json_opts, &names, || {
                 for name in cfg.profiles.keys() {
                     let marker = if Some(name) == cfg.active_profile.as_ref() {
                         "*"
@@ -299,8 +306,7 @@ pub fn run_profile(cmd: ProfileCommand, config_path: Option<&Path>, json: bool) 
                     };
                     println!("{marker} {name}");
                 }
-            }
-            Ok(())
+            })
         }
         ProfileCommand::Show { name } => {
             let cfg = load(&path)?;
@@ -311,12 +317,9 @@ pub fn run_profile(cmd: ProfileCommand, config_path: Option<&Path>, json: bool) 
                 .profiles
                 .get(&name)
                 .with_context(|| format!("no profile named '{name}'"))?;
-            if json {
-                crate::output::json::print(profile)?;
-            } else {
-                print!("{}", toml::to_string_pretty(profile)?);
-            }
-            Ok(())
+            crate::output::emit(format, json_opts, profile, || {
+                print!("{}", toml::to_string_pretty(profile).unwrap_or_default())
+            })
         }
     }
 }
