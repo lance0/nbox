@@ -6,7 +6,7 @@
 //! skip the probe to avoid an extra round-trip per invocation.
 
 use anyhow::{Result, bail};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::netbox::client::NetBoxClient;
 
@@ -16,11 +16,23 @@ pub const MIN_MAJOR: u32 = 4;
 pub const MIN_MINOR: u32 = 2;
 
 /// The subset of `/api/status/` that nbox cares about. NetBox returns more keys
-/// (python version, plugins, …); they are ignored.
-#[derive(Debug, Clone, Deserialize)]
+/// (plugins, workers, …); the rest are ignored.
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Status {
     #[serde(rename = "netbox-version")]
     pub netbox_version: String,
+    #[serde(
+        rename = "django-version",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub django_version: Option<String>,
+    #[serde(
+        rename = "python-version",
+        default,
+        skip_serializing_if = "Option::is_none"
+    )]
+    pub python_version: Option<String>,
 }
 
 impl NetBoxClient {
@@ -79,6 +91,24 @@ mod tests {
         assert!(meets_minimum("4.2.0-dev", MIN_MAJOR, MIN_MINOR));
         assert!(meets_minimum("4.3.0-beta1", MIN_MAJOR, MIN_MINOR));
         assert!(!meets_minimum("4.1.0-rc1", MIN_MAJOR, MIN_MINOR));
+    }
+
+    #[test]
+    fn status_parses_optional_versions() {
+        let s: Status = serde_json::from_value(serde_json::json!({
+            "netbox-version": "4.5.5",
+            "django-version": "5.0.9",
+            "python-version": "3.12.3"
+        }))
+        .unwrap();
+        assert_eq!(s.netbox_version, "4.5.5");
+        assert_eq!(s.django_version.as_deref(), Some("5.0.9"));
+        assert_eq!(s.python_version.as_deref(), Some("3.12.3"));
+
+        // Minimal payload still works.
+        let bare: Status =
+            serde_json::from_value(serde_json::json!({"netbox-version": "4.2.0"})).unwrap();
+        assert!(bare.django_version.is_none());
     }
 
     #[test]

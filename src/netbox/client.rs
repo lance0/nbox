@@ -58,6 +58,11 @@ impl NetBoxClient {
         })
     }
 
+    /// The configured NetBox base URL.
+    pub fn base_url(&self) -> &Url {
+        &self.base_url
+    }
+
     /// Resolve an API path against the base URL.
     fn url_for(&self, path: &str) -> Result<Url> {
         self.base_url

@@ -104,6 +104,9 @@ pub enum Command {
         object_ref: String,
     },
 
+    /// Show NetBox connection and version info.
+    Status,
+
     /// Manage configuration.
     Config {
         #[command(subcommand)]

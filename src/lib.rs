@@ -17,6 +17,7 @@ use crate::domain::site_view::SiteView;
 use crate::domain::vlan_view::VlanView;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::search::SearchRequest;
+use crate::output::plain::KeyValues;
 
 pub mod cli;
 pub mod config;
@@ -78,6 +79,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Vlan { value }) => run_vlan(&ctx, &value).await,
         Some(Command::Interface { .. }) => not_implemented("interface lookup"),
         Some(Command::Open { .. }) => not_implemented("open in browser"),
+        Some(Command::Status) => run_status(&ctx).await,
         Some(Command::Config { command }) => {
             config::run_config(command, ctx.config_path.as_deref(), ctx.json)
         }
@@ -151,6 +153,29 @@ async fn run_tui(ctx: &Ctx) -> Result<()> {
         Some(path),
     );
     tui::app::run(app).await
+}
+
+/// `nbox status` — show NetBox connection + version info.
+async fn run_status(ctx: &Ctx) -> Result<()> {
+    let client = connect(ctx)?;
+    let status = client.status().await?;
+
+    if ctx.json {
+        output::json::print(&serde_json::json!({
+            "netbox_url": client.base_url().as_str(),
+            "netbox_version": status.netbox_version,
+            "django_version": status.django_version,
+            "python_version": status.python_version,
+        }))?;
+    } else {
+        let mut kv = KeyValues::new();
+        kv.push("netbox_url", client.base_url().as_str().to_string())
+            .push("netbox_version", status.netbox_version)
+            .push_opt("django", status.django_version)
+            .push_opt("python", status.python_version);
+        kv.print();
+    }
+    Ok(())
 }
 
 /// `nbox search <query>` — normalized multi-endpoint search.

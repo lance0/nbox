@@ -81,11 +81,11 @@ Release & distribution (v0.1 release gate):
 - ☐ Release pipeline via `cargo-dist`: GitHub Release binaries (macOS Intel/ARM, Linux x86_64/aarch64, Windows) + SHA256SUMS, completions bundled
 - ☐ Install script (`scripts/install.sh`: download latest release, `cargo binstall`/`cargo install` fallback)
 - ☐ Homebrew tap formula
-- ☐ Publish to crates.io (see [RELEASING.md](RELEASING.md))
+- ☑ Publish to crates.io — `nbox` 0.1.0 published (name camped; next release 0.1.1+)
 - ☐ README pass: usage, a demo recording (asciinema/VHS), keybindings
 
 Feature wins (small, on-identity):
-- ☐ `nbox status` — expose the `/api/status/` probe (version/python/workers) as a command (reuses `verify_compatible`/`Status`)
+- ☑ `nbox status` — connection + NetBox/Django/Python versions (plain + `--json`)
 - ☐ Prefix utilization in `nbox prefix` output (NetBox `utilization` %, with a small bar)
 - ☐ Custom fields in detail output (view models currently drop `custom_fields`; surface `cf_*`)
 - ☐ Structured filter flags on `search`/lookups: `--status`, `--site`, `--vrf`, `--tenant`, `--role` (→ API query params)
