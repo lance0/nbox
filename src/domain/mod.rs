@@ -8,3 +8,6 @@
 pub mod device_view;
 pub mod ip_view;
 pub mod prefix_view;
+pub mod rack_view;
+pub mod site_view;
+pub mod vlan_view;

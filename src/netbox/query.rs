@@ -6,8 +6,8 @@ use anyhow::Result;
 
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
-use crate::netbox::models::dcim::Device;
-use crate::netbox::models::ipam::{IpAddress, Prefix};
+use crate::netbox::models::dcim::{Device, Rack, Site};
+use crate::netbox::models::ipam::{IpAddress, Prefix, Vlan};
 use crate::netbox::pagination::Page;
 
 impl NetBoxClient {
@@ -78,5 +78,73 @@ impl NetBoxClient {
             max,
         )
         .await
+    }
+
+    /// Resolve a VLAN by VID (if numeric) or by name (exact, then contains).
+    pub async fn vlan_by_ref(&self, value: &str) -> Result<Option<Vlan>> {
+        if let Ok(vid) = value.parse::<u16>() {
+            let page: Page<Vlan> = self
+                .list(Endpoint::Vlans, vec![("vid", vid.to_string())])
+                .await?;
+            return Ok(page.results.into_iter().next());
+        }
+        let exact: Page<Vlan> = self
+            .list(Endpoint::Vlans, vec![("name__ie", value.to_string())])
+            .await?;
+        if let Some(v) = exact.results.into_iter().next() {
+            return Ok(Some(v));
+        }
+        let contains: Page<Vlan> = self
+            .list(Endpoint::Vlans, vec![("name__ic", value.to_string())])
+            .await?;
+        Ok(contains.results.into_iter().next())
+    }
+
+    /// Prefixes that reference a VLAN (up to `max`).
+    pub async fn vlan_prefixes(&self, vlan_id: u64, max: usize) -> Result<Vec<Prefix>> {
+        self.list_all(
+            Endpoint::Prefixes,
+            vec![("vlan_id", vlan_id.to_string())],
+            max,
+        )
+        .await
+    }
+
+    /// Resolve a site by slug, then exact name, then name-contains.
+    pub async fn site_by_ref(&self, value: &str) -> Result<Option<Site>> {
+        let by_slug: Page<Site> = self
+            .list(Endpoint::Sites, vec![("slug", value.to_string())])
+            .await?;
+        if let Some(s) = by_slug.results.into_iter().next() {
+            return Ok(Some(s));
+        }
+        let exact: Page<Site> = self
+            .list(Endpoint::Sites, vec![("name__ie", value.to_string())])
+            .await?;
+        if let Some(s) = exact.results.into_iter().next() {
+            return Ok(Some(s));
+        }
+        let contains: Page<Site> = self
+            .list(Endpoint::Sites, vec![("name__ic", value.to_string())])
+            .await?;
+        Ok(contains.results.into_iter().next())
+    }
+
+    /// Resolve a rack by numeric ID, then exact name, then name-contains.
+    pub async fn rack_by_ref(&self, value: &str) -> Result<Option<Rack>> {
+        if let Ok(id) = value.parse::<u64>() {
+            let rack: Rack = self.get(&format!("/api/dcim/racks/{id}/"), &[]).await?;
+            return Ok(Some(rack));
+        }
+        let exact: Page<Rack> = self
+            .list(Endpoint::Racks, vec![("name__ie", value.to_string())])
+            .await?;
+        if let Some(r) = exact.results.into_iter().next() {
+            return Ok(Some(r));
+        }
+        let contains: Page<Rack> = self
+            .list(Endpoint::Racks, vec![("name__ic", value.to_string())])
+            .await?;
+        Ok(contains.results.into_iter().next())
     }
 }

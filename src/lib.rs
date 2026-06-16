@@ -12,6 +12,9 @@ use crate::cli::{Cli, Command};
 use crate::domain::device_view::DeviceView;
 use crate::domain::ip_view::{IpView, most_specific};
 use crate::domain::prefix_view::PrefixView;
+use crate::domain::rack_view::RackView;
+use crate::domain::site_view::SiteView;
+use crate::domain::vlan_view::VlanView;
 use crate::netbox::client::NetBoxClient;
 
 pub mod cli;
@@ -48,9 +51,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Device { value }) => run_device(&ctx, &value).await,
         Some(Command::Ip { address }) => run_ip(&ctx, &address).await,
         Some(Command::Prefix { cidr }) => run_prefix(&ctx, &cidr).await,
-        Some(Command::Site { .. }) => not_implemented("site lookup"),
-        Some(Command::Rack { .. }) => not_implemented("rack lookup"),
-        Some(Command::Vlan { .. }) => not_implemented("VLAN lookup"),
+        Some(Command::Site { value }) => run_site(&ctx, &value).await,
+        Some(Command::Rack { value }) => run_rack(&ctx, &value).await,
+        Some(Command::Vlan { value }) => run_vlan(&ctx, &value).await,
         Some(Command::Interface { .. }) => not_implemented("interface lookup"),
         Some(Command::Open { .. }) => not_implemented("open in browser"),
         Some(Command::Config { command }) => {
@@ -146,6 +149,58 @@ async fn run_prefix(ctx: &Ctx, cidr: &str) -> Result<()> {
         output::json::print(&view)?;
     } else {
         println!("{}", view.to_plain());
+    }
+    Ok(())
+}
+
+/// `nbx vlan <vid|name>` — show a VLAN and the prefixes that reference it.
+async fn run_vlan(ctx: &Ctx, value: &str) -> Result<()> {
+    let client = connect(ctx)?;
+    let vlan = client
+        .vlan_by_ref(value)
+        .await?
+        .with_context(|| format!("no VLAN matched \"{value}\""))?;
+    let prefixes = client.vlan_prefixes(vlan.id, 50).await?;
+
+    let view = VlanView::build(vlan, prefixes);
+    if ctx.json {
+        output::json::print(&view)?;
+    } else {
+        println!("{}", view.to_plain());
+    }
+    Ok(())
+}
+
+/// `nbx site <name|slug>` — show a site.
+async fn run_site(ctx: &Ctx, value: &str) -> Result<()> {
+    let client = connect(ctx)?;
+    let site = client
+        .site_by_ref(value)
+        .await?
+        .with_context(|| format!("no site matched \"{value}\""))?;
+
+    let view = SiteView::from_model(site);
+    if ctx.json {
+        output::json::print(&view)?;
+    } else {
+        view.to_key_values().print();
+    }
+    Ok(())
+}
+
+/// `nbx rack <name|id>` — show a rack.
+async fn run_rack(ctx: &Ctx, value: &str) -> Result<()> {
+    let client = connect(ctx)?;
+    let rack = client
+        .rack_by_ref(value)
+        .await?
+        .with_context(|| format!("no rack matched \"{value}\""))?;
+
+    let view = RackView::from_model(rack);
+    if ctx.json {
+        output::json::print(&view)?;
+    } else {
+        view.to_key_values().print();
     }
     Ok(())
 }

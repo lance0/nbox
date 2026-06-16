@@ -159,3 +159,52 @@ async fn prefix_children_and_ips_use_within_and_parent() {
     assert_eq!(children.len(), 1);
     assert_eq!(ips.len(), 1);
 }
+
+#[tokio::test]
+async fn vlan_by_numeric_ref_uses_vid_filter() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/vlans/"))
+        .and(query_param("vid", "208"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 3, "url": "u", "vid": 208, "name": "users"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let vlan = client(&server).vlan_by_ref("208").await.unwrap().unwrap();
+    assert_eq!(vlan.vid, 208);
+}
+
+#[tokio::test]
+async fn site_by_ref_tries_slug_first() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/sites/"))
+        .and(query_param("slug", "iad1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 1, "url": "u", "name": "iad1", "slug": "iad1"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let site = client(&server).site_by_ref("iad1").await.unwrap().unwrap();
+    assert_eq!(site.slug, "iad1");
+}
+
+#[tokio::test]
+async fn rack_by_id_hits_detail_endpoint() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/racks/12/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 12, "url": "u", "name": "r12"
+        })))
+        .mount(&server)
+        .await;
+
+    let rack = client(&server).rack_by_ref("12").await.unwrap().unwrap();
+    assert_eq!(rack.name, "r12");
+}
