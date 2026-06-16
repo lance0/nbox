@@ -82,7 +82,7 @@ Release & distribution (v0.1 release gate):
 - ☑ Install script (`scripts/install.sh`: detect OS/arch, download latest release asset, `cargo install` fallback)
 - ☑ Homebrew tap formula template (`packaging/homebrew/nbox.rb`; needs a tap repo + real URLs/sha256 at release time)
 - ☑ Publish to crates.io — `nbox` 0.1.0 published (name camped; next release 0.1.1+)
-- ☐ README pass: usage, a demo recording (asciinema/VHS), keybindings
+- ☑ README pass: install (crates.io/install.sh/Homebrew), all commands + global flags, TUI keybindings (palette/themes/recent/auto-refresh); demo recording placeholder pending the release
 
 Feature wins (small, on-identity):
 - ☑ `nbox status` — connection + NetBox/Django/Python versions (plain + `--json`)

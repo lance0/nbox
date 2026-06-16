@@ -27,6 +27,11 @@ nbox prefix 10.44.208.0/24
 nbox
 ```
 
+<!-- Demo: replace with an asciinema/VHS recording before the v0.1 release.
+     e.g. [![asciicast](https://asciinema.org/a/<id>.svg)](https://asciinema.org/a/<id>)
+     or a docs/demo.gif rendered with `vhs docs/demo.tape`. -->
+> 📽️ _A short asciinema/VHS demo lands with the v0.1 release._
+
 ---
 
 ## Features
@@ -38,27 +43,32 @@ nbox
 - **Scriptable** — clean `--json` output on every command for piping into `jq`.
 - **Open in browser** and **copy to clipboard** straight from results.
 - **Profiles** for multiple NetBox instances (work, lab, …).
+- **Scriptable / agent-friendly** — `-o json|csv|plain`, `--fields`, `--raw`, versioned `--envelope`, and stable exit codes (see [AGENTS.md](AGENTS.md)).
 - **Read-only first**; safe `PATCH`-based writes with diff confirmation come later.
-
-See [docs/FEATURES.md](docs/FEATURES.md) for the full list.
 
 ---
 
 ## Installation
 
-> Published binaries and a Homebrew tap are planned (see [ROADMAP.md](ROADMAP.md)). For now, build from source.
-
 ```bash
-# From source (requires Rust 1.88+)
-git clone git@github.com:lance0/nbox.git
-cd nbox
-cargo install --path .
+# From crates.io (requires Rust 1.88+)
+cargo install nbox
+
+# Or grab a prebuilt binary (Linux/macOS) — downloads the latest release,
+# falls back to `cargo install` if there's no asset for your platform
+curl -fsSL https://raw.githubusercontent.com/lance0/nbox/master/scripts/install.sh | sh
 ```
 
-Optional features:
+> Prebuilt binaries for Linux (x86_64/aarch64), macOS (Intel/ARM), and Windows
+> are attached to each [GitHub Release](https://github.com/lance0/nbox/releases).
+> A Homebrew tap formula template lives in [`packaging/homebrew/`](packaging/homebrew/nbox.rb).
+
+Build from source:
 
 ```bash
-cargo install --path . --features cache,updates
+git clone git@github.com:lance0/nbox.git
+cd nbox
+cargo install --path . --features cache,updates   # optional features
 ```
 
 | Feature     | Default | Description                          |
@@ -101,7 +111,7 @@ exclude_config_context = true
 2. the env var named by `token_env`
 3. *(future)* OS keyring
 
-nbox auto-detects v2 tokens (`Bearer nbt_<key>.<token>`) vs legacy v1 tokens (`Token <token>`). See [docs/CONFIG.md](docs/CONFIG.md).
+nbox auto-detects v2 tokens (`Bearer nbt_<key>.<token>`) vs legacy v1 tokens (`Token <token>`).
 
 ---
 
@@ -109,24 +119,45 @@ nbox auto-detects v2 tokens (`Bearer nbt_<key>.<token>`) vs legacy v1 tokens (`T
 
 ```bash
 nbox                              # launch TUI
-nbox search <query> [--limit N]
+nbox status                       # connection + NetBox/Django/Python versions
+nbox search <query> [--limit N] [--status/--site/--tenant/--role <v>] [--cols a,b,c]
 nbox device <name-or-id>
 nbox ip <address>
-nbox prefix <cidr>
+nbox prefix <cidr>                # includes utilization + children when present
 nbox site <name-or-slug>
 nbox rack <name-or-id>
 nbox vlan <vid-or-name>
 nbox interface <device> <interface>
 nbox open <object-ref>
+nbox config <init|path|show>
+nbox profile <add|use|list|show>
 nbox completions <bash|zsh|fish|powershell|elvish>
 ```
 
-Every command supports `--json`:
+### Global flags
+
+These apply to every command:
+
+| Flag                       | Effect                                                          |
+| -------------------------- | -------------------------------------------------------------- |
+| `-o, --output <fmt>`       | `plain` (default), `json`, or `csv`                            |
+| `--json`                   | Shortcut for `-o json`                                         |
+| `--fields a,b,c`           | JSON: keep only these top-level fields                         |
+| `--raw`                    | JSON: compact (single line) instead of pretty                 |
+| `--envelope`               | JSON: wrap as `{ schema_version, data }`                       |
+| `-p, --profile <name>`     | Use a specific profile for this invocation                     |
+| `--config <path>`          | Use an alternate config file                                   |
+| `--log-level <spec>`       | `tracing` filter to stderr (`info`, `debug`, `nbox=debug`, …) |
+| `--no-tui`                 | Never fall through to the interactive TUI                      |
+
+Custom fields appear as `cf.<name>` rows (plain) and a `custom_fields` object (JSON).
 
 ```bash
 nbox device edge01 --json | jq '.primary_ip4.address'
 nbox ip 10.44.208.55 --json
-nbox search edge01 --limit 20
+nbox search edge01 --limit 20 --status active
+nbox search edge01 -o csv --cols name,site,status > devices.csv
+nbox prefix 10.44.208.0/24 --envelope --raw      # versioned, single-line JSON
 ```
 
 ---
@@ -149,6 +180,8 @@ nbox search edge01 --limit 20
 | `q` / `Ctrl+c`     | quit                            |
 
 On a device screen: `i` interfaces · `p` IPs · `c` cables · `v` VLANs.
+
+The **command palette** (`:`) accepts `device`/`ip`/`prefix`/`vlan`/`site <ref>`, `find <q>` (or bare text), `open`, `copy`, `theme <name>`, and `refresh`. The **home screen** lists recently opened objects (deduped, most-recent-first) when there are no search results — press `Enter` to reopen one. Set `[ui].refresh_secs` to auto-refresh the current search on an interval (off by default), preserving your selection.
 
 ---
 
