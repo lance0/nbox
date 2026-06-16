@@ -1,8 +1,15 @@
 //! nbx binary entry point.
 //!
-//! The CLI/TUI dispatch is built out across Phase 1–3 (see `ROADMAP.md`). For now
-//! this is a minimal, compiling skeleton.
+//! Parses the CLI and dispatches into [`nbx::run`]. Command handlers are built
+//! out across Phase 1–3 (see `ROADMAP.md`).
+
+use clap::Parser;
+use nbx::cli::Cli;
 
 fn main() {
-    println!("nbx {}", nbx::VERSION);
+    let cli = Cli::parse();
+    if let Err(err) = nbx::run(cli) {
+        eprintln!("error: {err:#}");
+        std::process::exit(1);
+    }
 }
