@@ -164,6 +164,7 @@ See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 
 ## NetBox Compatibility
 
+- **Requires NetBox 4.2+** (uses the modern polymorphic `scope` model for prefixes/VLANs). nbx checks the instance version via `/api/status/` on connect.
 - Targets the NetBox **REST API** (`/api/`) as the primary integration path.
 - Supports both **v2 API tokens** (NetBox 4.5+, `Bearer`) and legacy **v1 tokens** (`Token`).
 - Optional, read-only **GraphQL** (`/graphql/`) is used for nested detail views (v0.2+).

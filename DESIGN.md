@@ -18,6 +18,7 @@
 | Purpose  | Fast terminal UI and CLI for NetBox      |
 | License  | MIT OR Apache-2.0                        |
 | Edition  | 2024 (rust-version 1.88)                 |
+| NetBox   | 4.2+ (modern polymorphic `scope` model; v2 `Bearer` tokens supported) |
 
 **Tagline**
 
@@ -157,7 +158,8 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 
 # TUI
 ratatui = "0.30"
-crossterm = "0.29"
+crossterm = { version = "0.29", features = ["event-stream"] }  # async EventStream for the tokio TUI loop
+nucleo = "0.5"   # client-side fuzzy ranking for the command palette + in-memory result lists (TUI only)
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
@@ -167,6 +169,7 @@ clap_complete = "4.6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "1"
+toml_edit = "0.25"   # format-preserving writes for `profile add` / config mutation
 
 # Config and paths
 dirs = "6"
@@ -190,7 +193,7 @@ ipnet = "2"
 chrono = { version = "0.4", features = ["serde"] }
 
 # Caching, later
-rusqlite = { version = "0.32", features = ["bundled"], optional = true }
+rusqlite = { version = "0.40", features = ["bundled"], optional = true }
 
 # Update notifications, later
 update-informer = { version = "1", default-features = false, features = ["github", "ureq", "rustls-tls"], optional = true }
@@ -725,7 +728,11 @@ impl NetBoxClient {
 
 There is no universal global search endpoint to rely on. `nbx search` is a **normalized multi-endpoint search**.
 
-v0.1 fields per endpoint:
+**Primary strategy: the `q` parameter.** Most NetBox endpoints expose a built-in `q=` quick-search (the same fuzzy search the web UI uses), which spans the relevant fields for that object type and survives version drift. nbx uses `q=<query>` as the primary search per endpoint.
+
+**Fallback: explicit field filters.** When `q` is unavailable or too coarse for a given endpoint, fall back to the per-field lookup filters below. These also drive structured filtering in detail views.
+
+v0.1 fallback fields per endpoint:
 
 | Endpoint        | Filters                                            |
 | --------------- | ------------------------------------------------- |
@@ -807,7 +814,49 @@ impl NetBoxClient {
 }
 ```
 
+### Client-side ranking (TUI only)
+
+NetBox does the *finding* (the `q` query over the network); nbx does the *interactive refining*
+on top of whatever came back. Once a result set is in memory, the TUI re-ranks and filters it
+with [`nucleo`](https://crates.io/crates/nucleo) — a fast, typo-resistant fuzzy matcher — so the
+command palette (`:`), the results list, and recent objects filter instantly as you type, with
+**zero network round-trips**.
+
+This is purely a presentation-layer concern: `nucleo` never touches the `netbox/` client and is
+not on the path for non-TUI (`--json`/plain) output. At nbx's scale (tens to low-hundreds of
+fetched objects) any decent matcher is far faster than the request that produced the data, so the
+matcher is about *feel*, not throughput. Lands in Phase 3 alongside the command palette.
+
 > **Future enhancement:** use `OPTIONS` / the OpenAPI schema to validate available filters per NetBox version. The REST `OPTIONS` verb inspects an endpoint and returns supported actions and parameters, so nbx can eventually discover filter/write capability rather than hardcoding it.
+
+### Object references and URL mapping
+
+NetBox objects carry their **API** url (`/api/dcim/devices/1/`), but "open in browser" (`o`)
+and any user-facing link needs the **web** url (`/dcim/devices/1/`). This conversion lives in
+exactly one place — `domain/object_ref.rs` — so no call site does ad-hoc string surgery.
+
+```rust
+/// Canonical handle to a NetBox object: kind + id, with URL derivation centralized here.
+#[derive(Debug, Clone)]
+pub struct ObjectRef {
+    pub kind: ObjectKind,
+    pub id: u64,
+}
+
+impl ObjectRef {
+    /// `/api/dcim/devices/1/` — for further API calls.
+    pub fn api_path(&self) -> String { /* kind → endpoint path + id */ }
+
+    /// `https://netbox/dcim/devices/1/` — for the browser / clipboard.
+    pub fn web_url(&self, base: &reqwest::Url) -> String { /* strip `/api`, join base */ }
+
+    /// Parse a nested object's `url` field back into an ObjectRef.
+    pub fn from_api_url(url: &str) -> Option<Self> { /* … */ }
+}
+```
+
+The web url is derived by stripping the leading `/api` segment from the API path and joining
+it onto the profile's base url. Every `open`/copy-link path goes through `web_url`.
 
 ---
 
@@ -910,6 +959,8 @@ pub struct Prefix {
     #[serde(default)] pub tenant: Option<BriefObject>,
     #[serde(default)] pub vlan: Option<BriefObject>,
     #[serde(default)] pub role: Option<BriefObject>,
+    // NetBox 4.2+ polymorphic scope (replaced the old `site` field). We target 4.2+, so
+    // there is no legacy `site` fallback to carry.
     #[serde(default)] pub scope_type: Option<String>,
     #[serde(default)] pub scope_id: Option<u64>,
     #[serde(default)] pub scope: Option<BriefObject>,
@@ -1036,7 +1087,8 @@ pub async fn run_tui(client: NetBoxClient, config: Config, prefs: Prefs) -> anyh
         tokio::select! {
             Some(event) = rx.recv() => {
                 let commands = app.handle_event(event);
-                run_commands(commands, &app, tx.clone()).await;
+                // Dispatch each command on its own task — never await network here.
+                dispatch_commands(commands, &app.client, tx.clone());
             }
         }
     }
@@ -1045,6 +1097,30 @@ pub async fn run_tui(client: NetBoxClient, config: Config, prefs: Prefs) -> anyh
     Ok(())
 }
 ```
+
+> **TUI commands must be spawned, never awaited in the render loop.** Each `AppCommand`
+> runs in its own `tokio::spawn`, posts its result back as an `AppEvent`
+> (`SearchComplete`, `DeviceLoaded`, …), and the loop sets `Mode::Loading` meanwhile so
+> the UI stays responsive during requests. `NetBoxClient` is `Clone` (reqwest is `Arc`
+> internally), so cloning it per task is cheap.
+>
+> ```rust
+> fn dispatch_commands(cmds: Vec<AppCommand>, client: &NetBoxClient, tx: Sender<AppEvent>) {
+>     for cmd in cmds {
+>         let (client, tx) = (client.clone(), tx.clone());
+>         tokio::spawn(async move {
+>             let event = match cmd {
+>                 AppCommand::Search(q) =>
+>                     AppEvent::SearchComplete(client.search(SearchRequest { query: q, limit: 25 }).await),
+>                 AppCommand::LoadDevice(r) => AppEvent::DeviceLoaded(client.device_view(r).await),
+>                 // … one arm per command
+>                 _ => return,
+>             };
+>             let _ = tx.send(event).await;
+>         });
+>     }
+> }
+> ```
 
 ### Keybindings
 
@@ -1390,6 +1466,9 @@ Defaults:
 - Human output stays clean.
 - JSON output stays pipe-safe.
 - Logs go to stderr or a file.
+- **The API token is redacted before any request is logged.** Debug request logging must
+  never emit the `Authorization` header value — it is masked (e.g. `Token ****`) at the
+  point of logging, so a pasted debug log can't leak credentials.
 
 Config:
 

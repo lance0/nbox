@@ -17,9 +17,12 @@ The goal of v0.1 is a working vertical slice: configure a profile, search, look 
 - ☐ Config loader + `config init` / `config path` / `config show`
 - ☐ Profile commands (`add` / `use` / `list` / `show`)
 - ☐ Auth header support: `auto` / `bearer` / `token`
-- ☐ `reqwest` client with TLS + timeout settings
+- ☐ `reqwest` 0.12 client with TLS + timeout settings
+- ☐ Token redaction in request logging (never log `Authorization`)
 - ☐ Paginated `Page<T>` + `list` / `list_all`
+- ☐ `/api/status/` version probe on connect — warn/refuse if below the 4.2 floor, show version in status line
 - ☐ JSON output path
+- ☐ CI green from commit 1 (fmt, clippy, test on GitHub Actions)
 
 **Deliverable**
 
@@ -34,7 +37,7 @@ nbx search edge01 --json
 - ☐ `BriefObject`, `Choice<T>`, `Tag`, custom fields
 - ☐ Device, Interface, IPAddress, Prefix, VLAN, Site, Rack
 - ☐ Endpoint mapping + per-endpoint query methods
-- ☐ Normalized `SearchResult` + parallel multi-endpoint search
+- ☐ Normalized `SearchResult` + parallel multi-endpoint search (`q` primary, field filters fallback)
 - ☐ Device / IP / Prefix / VLAN detail resolution (incl. IP → parent prefix via `ipnet`)
 - ☐ Plain + JSON output for each command
 
@@ -55,6 +58,7 @@ nbx vlan 208
 - ☐ Navigation history (`b` / `Esc`)
 - ☐ Help modal
 - ☐ Command palette (`:`)
+- ☐ Client-side fuzzy ranking (`nucleo`) for the palette + in-memory result lists
 - ☐ Open in browser (`o`)
 - ☐ Copy to clipboard (`y`)
 
@@ -70,7 +74,7 @@ nbx
 - ☐ Friendly, actionable errors
 - ☐ Shell completions (bash/zsh/fish/powershell/elvish)
 - ☐ Install script
-- ☐ GitHub Actions CI + release builds
+- ☐ Release builds + artifacts (CI itself lands in Phase 1)
 - ☐ Homebrew tap
 
 ---
