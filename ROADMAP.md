@@ -78,9 +78,9 @@ Done / carried:
 - ☑ Recent objects (TUI: capped/deduped, most-recent-first; shown on Home when there are no results; Enter reopens)
 
 Release & distribution (v0.1 release gate):
-- ☐ Release pipeline via `cargo-dist`: GitHub Release binaries (macOS Intel/ARM, Linux x86_64/aarch64, Windows) + SHA256SUMS, completions bundled
-- ☐ Install script (`scripts/install.sh`: download latest release, `cargo binstall`/`cargo install` fallback)
-- ☐ Homebrew tap formula
+- ☑ Release pipeline: hand-written `.github/workflows/release.yml` on tag `v*` — matrix build (Linux x86_64/aarch64, macOS Intel/ARM, Windows) → archives + `.sha256` to the GitHub Release (plain workflow over cargo-dist to avoid a mid-CI install)
+- ☑ Install script (`scripts/install.sh`: detect OS/arch, download latest release asset, `cargo install` fallback)
+- ☑ Homebrew tap formula template (`packaging/homebrew/nbox.rb`; needs a tap repo + real URLs/sha256 at release time)
 - ☑ Publish to crates.io — `nbox` 0.1.0 published (name camped; next release 0.1.1+)
 - ☐ README pass: usage, a demo recording (asciinema/VHS), keybindings
 
