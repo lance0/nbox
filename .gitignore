@@ -1,1 +1,9 @@
+# Rust build output
 /target
+
+# Claude Code local session state
+/.claude/
+
+# Editor / OS noise
+*.swp
+.DS_Store
