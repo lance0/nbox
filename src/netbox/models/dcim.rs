@@ -64,6 +64,21 @@ pub struct Interface {
     pub description: Option<String>,
     #[serde(default)]
     pub mtu: Option<u32>,
+    #[serde(default)]
+    pub mac_address: Option<String>,
+
+    #[serde(default)]
+    pub mode: Option<Choice<String>>,
+    #[serde(default)]
+    pub untagged_vlan: Option<BriefObject>,
+    #[serde(default)]
+    pub tagged_vlans: Vec<BriefObject>,
+
+    #[serde(default)]
+    pub cable: Option<BriefObject>,
+    /// Far-end endpoints once a cable path is traced (may be absent/null).
+    #[serde(default)]
+    pub connected_endpoints: Option<Vec<BriefObject>>,
 
     #[serde(default)]
     pub tags: Vec<Tag>,

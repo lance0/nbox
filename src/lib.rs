@@ -9,7 +9,8 @@ use anyhow::{Context, Result};
 use clap::CommandFactory;
 
 use crate::cli::{Cli, Command};
-use crate::domain::device_view::DeviceView;
+use crate::domain::device_detail::DeviceDetail;
+use crate::domain::interface_view::InterfaceView;
 use crate::domain::ip_view::{IpView, most_specific};
 use crate::domain::prefix_view::PrefixView;
 use crate::domain::rack_view::RackView;
@@ -122,7 +123,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Site { value }) => run_site(&ctx, &value).await,
         Some(Command::Rack { value }) => run_rack(&ctx, &value).await,
         Some(Command::Vlan { value }) => run_vlan(&ctx, &value).await,
-        Some(Command::Interface { .. }) => not_implemented("interface lookup"),
+        Some(Command::Interface { device, interface }) => {
+            run_interface(&ctx, &device, &interface).await
+        }
         Some(Command::Open { object_ref }) => run_open(&ctx, &object_ref).await,
         Some(Command::Status) => run_status(&ctx).await,
         Some(Command::Config { command }) => {
@@ -269,16 +272,41 @@ async fn run_search(
     Ok(())
 }
 
-/// `nbox device <value>` — look up and render a device.
+/// `nbox device <value>` — look up a device with its interfaces, IPs, cables, VLANs.
 async fn run_device(ctx: &Ctx, value: &str) -> Result<()> {
+    const CAP: usize = 200;
     let client = connect(ctx)?;
     let device = client
         .device_by_ref(value)
         .await?
         .ok_or_else(|| not_found("device", value))?;
 
-    let view = DeviceView::from_model(device);
-    emit(ctx, &view, || view.to_key_values().print())
+    let id = device.id;
+    let (interfaces, ips) = tokio::try_join!(
+        client.device_interfaces(id, CAP),
+        client.device_ips(id, CAP)
+    )?;
+
+    let view = DeviceDetail::build(device, interfaces, ips);
+    emit(ctx, &view, || println!("{}", view.to_plain()))
+}
+
+/// `nbox interface <device> <interface>` — show one interface and its addresses.
+async fn run_interface(ctx: &Ctx, device: &str, interface: &str) -> Result<()> {
+    const CAP: usize = 200;
+    let client = connect(ctx)?;
+    let dev = client
+        .device_by_ref(device)
+        .await?
+        .ok_or_else(|| not_found("device", device))?;
+    let iface = client
+        .device_interface(dev.id, interface)
+        .await?
+        .ok_or_else(|| not_found("interface", interface))?;
+    let ips = client.interface_ips(iface.id, CAP).await?;
+
+    let view = InterfaceView::build(iface, ips);
+    emit(ctx, &view, || println!("{}", view.to_plain()))
 }
 
 /// `nbox ip <address>` — resolve an IP and its most-specific parent prefix.
@@ -405,11 +433,6 @@ fn parse_object_ref(s: &str) -> Result<(&str, &str)> {
                 "object reference must be `<kind>/<ref>` (e.g. device/edge01)\n\nKinds: device, site, rack, vlan, prefix, ip"
             )
         })
-}
-
-/// Fail an unimplemented command (non-zero exit), keeping stdout clean.
-fn not_implemented(what: &str) -> Result<()> {
-    anyhow::bail!("{what} is not yet implemented")
 }
 
 /// A friendly "not found" error with an actionable suggestion (DESIGN §17).

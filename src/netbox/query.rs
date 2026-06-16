@@ -6,7 +6,7 @@ use anyhow::Result;
 
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
-use crate::netbox::models::dcim::{Device, Rack, Site};
+use crate::netbox::models::dcim::{Device, Interface, Rack, Site};
 use crate::netbox::models::ipam::{IpAddress, Prefix, Vlan};
 use crate::netbox::pagination::Page;
 
@@ -34,6 +34,62 @@ impl NetBoxClient {
             .list(Endpoint::Devices, vec![("name__ic", value.to_string())])
             .await?;
         Ok(contains.results.into_iter().next())
+    }
+
+    /// All interfaces on a device (up to `max`).
+    pub async fn device_interfaces(&self, device_id: u64, max: usize) -> Result<Vec<Interface>> {
+        self.list_all(
+            Endpoint::Interfaces,
+            vec![("device_id", device_id.to_string())],
+            max,
+        )
+        .await
+    }
+
+    /// All IP addresses assigned on a device (up to `max`).
+    pub async fn device_ips(&self, device_id: u64, max: usize) -> Result<Vec<IpAddress>> {
+        self.list_all(
+            Endpoint::IpAddresses,
+            vec![("device_id", device_id.to_string())],
+            max,
+        )
+        .await
+    }
+
+    /// Resolve a single interface on a device by exact name, then case-insensitive.
+    pub async fn device_interface(&self, device_id: u64, name: &str) -> Result<Option<Interface>> {
+        let exact: Page<Interface> = self
+            .list(
+                Endpoint::Interfaces,
+                vec![
+                    ("device_id", device_id.to_string()),
+                    ("name", name.to_string()),
+                ],
+            )
+            .await?;
+        if let Some(i) = exact.results.into_iter().next() {
+            return Ok(Some(i));
+        }
+        let ci: Page<Interface> = self
+            .list(
+                Endpoint::Interfaces,
+                vec![
+                    ("device_id", device_id.to_string()),
+                    ("name__ic", name.to_string()),
+                ],
+            )
+            .await?;
+        Ok(ci.results.into_iter().next())
+    }
+
+    /// IP addresses assigned to a single interface (up to `max`).
+    pub async fn interface_ips(&self, interface_id: u64, max: usize) -> Result<Vec<IpAddress>> {
+        self.list_all(
+            Endpoint::IpAddresses,
+            vec![("interface_id", interface_id.to_string())],
+            max,
+        )
+        .await
     }
 
     /// IP addresses matching `address` (NetBox host-aware `address` filter).
