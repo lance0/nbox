@@ -4,4 +4,8 @@
 //! Phase 3 (see `DESIGN.md` and `ROADMAP.md`). Today this module hosts the
 //! color theme definitions.
 
+pub mod app;
+pub mod events;
+pub mod state;
 pub mod theme;
+pub mod ui;

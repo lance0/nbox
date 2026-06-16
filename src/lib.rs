@@ -48,7 +48,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     };
 
     match cli.command {
-        None | Some(Command::Tui) => not_implemented("interactive TUI"),
+        None | Some(Command::Tui) => run_tui(&ctx).await,
         Some(Command::Search { query, limit }) => run_search(&ctx, &query, limit).await,
         Some(Command::Device { value }) => run_device(&ctx, &value).await,
         Some(Command::Ip { address }) => run_ip(&ctx, &address).await,
@@ -93,6 +93,32 @@ fn connect(ctx: &Ctx) -> Result<NetBoxClient> {
 
     let token = config::resolve_token(profile);
     NetBoxClient::new(profile, token)
+}
+
+/// `nbx` / `nbx tui` — launch the interactive TUI.
+async fn run_tui(ctx: &Ctx) -> Result<()> {
+    let path = match &ctx.config_path {
+        Some(p) => p.clone(),
+        None => config::default_path()?,
+    };
+    let cfg = config::load(&path)?;
+    let name = ctx
+        .profile
+        .clone()
+        .or_else(|| cfg.active_profile.clone())
+        .context("no profile selected; run `nbx profile use <name>` or pass --profile")?;
+    let profile = cfg
+        .profiles
+        .get(&name)
+        .with_context(|| format!("no profile named '{name}'"))?;
+
+    let base_url = profile.url.clone();
+    let theme_name = cfg.ui.theme.clone();
+    let token = config::resolve_token(profile);
+    let client = NetBoxClient::new(profile, token)?;
+
+    let app = tui::state::App::new(client, &theme_name, name, base_url);
+    tui::app::run(app).await
 }
 
 /// `nbx search <query>` — normalized multi-endpoint search.

@@ -51,12 +51,12 @@ nbx vlan 208
 ```
 
 ### Phase 3 — TUI v0
-- ☐ Terminal init/restore
-- ☐ App state + mpsc event loop
-- ☐ Search screen + results pane
+- ☑ Terminal init/restore (panic-safe via `ratatui::init`)
+- ☑ App state + mpsc event loop (crossterm `EventStream`, spawned commands)
+- ☑ Search screen + results pane (`/` → live search, j/k select)
 - ☐ Detail pane (device / ip / prefix / vlan / site)
 - ☐ Navigation history (`b` / `Esc`)
-- ☐ Help modal
+- ☑ Help modal (`?`/`F1`)
 - ☐ Command palette (`:`)
 - ☐ Client-side fuzzy ranking (`nucleo`) for the palette + in-memory result lists
 - ☐ Open in browser (`o`)
