@@ -141,6 +141,7 @@ async fn prefixes_containing_use_contains_filter() {
     Mock::given(method("GET"))
         .and(path("/api/ipam/prefixes/"))
         .and(query_param("contains", "10.44.208.55"))
+        .and(query_param("vrf_id", "null"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "count": 2, "next": null, "previous": null,
             "results": [
@@ -151,11 +152,33 @@ async fn prefixes_containing_use_contains_filter() {
         .mount(&server)
         .await;
 
+    // No VRF → scoped to the global table (vrf_id=null).
     let prefixes = client(&server)
-        .prefixes_containing("10.44.208.55")
+        .prefixes_containing("10.44.208.55", None)
         .await
         .unwrap();
     assert_eq!(prefixes.len(), 2);
+}
+
+#[tokio::test]
+async fn prefixes_containing_scopes_to_vrf() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .and(query_param("contains", "10.0.0.1"))
+        .and(query_param("vrf_id", "7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 9, "url": "http://nb/p/9/", "prefix": "10.0.0.0/24"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let prefixes = client(&server)
+        .prefixes_containing("10.0.0.1", Some(7))
+        .await
+        .unwrap();
+    assert_eq!(prefixes.len(), 1);
 }
 
 #[tokio::test]

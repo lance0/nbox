@@ -158,10 +158,21 @@ impl NetBoxClient {
         Ok(page.results)
     }
 
-    /// Prefixes that contain `address` (NetBox `contains` filter).
-    pub async fn prefixes_containing(&self, address: &str) -> Result<Vec<Prefix>> {
+    /// Prefixes that contain `address` (NetBox `contains` filter), scoped to a
+    /// VRF so parent-prefix enrichment doesn't cross VRFs with overlapping space.
+    /// `vrf_id = Some(id)` restricts to that VRF; `None` restricts to the global
+    /// table (`vrf_id=null`) — matching an IP that has no VRF.
+    pub async fn prefixes_containing(
+        &self,
+        address: &str,
+        vrf_id: Option<u64>,
+    ) -> Result<Vec<Prefix>> {
+        let vrf = vrf_id.map_or_else(|| "null".to_string(), |id| id.to_string());
         let page: Page<Prefix> = self
-            .list(Endpoint::Prefixes, vec![("contains", address.to_string())])
+            .list(
+                Endpoint::Prefixes,
+                vec![("contains", address.to_string()), ("vrf_id", vrf)],
+            )
             .await?;
         Ok(page.results)
     }

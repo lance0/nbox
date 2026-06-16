@@ -106,7 +106,8 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
                 .next()
                 .unwrap_or(&ip.address)
                 .to_string();
-            let parent = most_specific(client.prefixes_containing(&host).await?);
+            let vrf_id = ip.vrf.as_ref().map(|v| v.id);
+            let parent = most_specific(client.prefixes_containing(&host, vrf_id).await?);
             let v = IpView::build(ip, parent);
             (format!("ip {}", v.address), v.to_key_values().render())
         }
@@ -172,7 +173,8 @@ pub async fn load_detail_by_ref(
                 .next()
                 .unwrap_or(&ip.address)
                 .to_string();
-            let parent = most_specific(client.prefixes_containing(&host).await?);
+            let vrf_id = ip.vrf.as_ref().map(|v| v.id);
+            let parent = most_specific(client.prefixes_containing(&host, vrf_id).await?);
             let v = IpView::build(ip, parent);
             (id, format!("ip {}", v.address), v.to_key_values().render())
         }

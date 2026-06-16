@@ -358,7 +358,8 @@ async fn run_ip(ctx: &Ctx, address: &str, vrf: Option<&str>) -> Result<()> {
     let ip = resolve_unique("IP address", address, candidates, query::ip_scope_label)?;
 
     let host = address.split('/').next().unwrap_or(address);
-    let parent = most_specific(client.prefixes_containing(host).await?);
+    let vrf_id = ip.vrf.as_ref().map(|v| v.id);
+    let parent = most_specific(client.prefixes_containing(host, vrf_id).await?);
 
     let view = IpView::build(ip, parent);
     emit(ctx, &view, || view.to_key_values().print())
