@@ -8,7 +8,7 @@ use crate::error::NboxError;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
 use crate::netbox::models::dcim::{Device, Interface, Rack, Site};
-use crate::netbox::models::ipam::{IpAddress, Prefix, Vlan};
+use crate::netbox::models::ipam::{AvailableIp, AvailablePrefix, IpAddress, Prefix, Vlan};
 use crate::netbox::pagination::Page;
 
 /// Resolve a fuzzy (name-contains) result set: the single match, `None` if empty,
@@ -177,6 +177,29 @@ impl NetBoxClient {
     pub async fn prefix_by_cidr(&self, cidr: &str) -> Result<Option<Prefix>> {
         let candidates = self.prefix_candidates(cidr).await?;
         ambiguous_or_first("prefix", cidr, candidates, prefix_scope_label)
+    }
+
+    /// Available IP addresses within a prefix (`…/available-ips/`), up to `limit`.
+    /// This endpoint returns a bare JSON array, not a paginated page.
+    pub async fn prefix_available_ips(
+        &self,
+        prefix_id: u64,
+        limit: usize,
+    ) -> Result<Vec<AvailableIp>> {
+        self.get(
+            &format!("/api/ipam/prefixes/{prefix_id}/available-ips/"),
+            &[("limit", limit.to_string())],
+        )
+        .await
+    }
+
+    /// Available (free) child prefixes within a prefix (`…/available-prefixes/`).
+    pub async fn prefix_available_prefixes(&self, prefix_id: u64) -> Result<Vec<AvailablePrefix>> {
+        self.get(
+            &format!("/api/ipam/prefixes/{prefix_id}/available-prefixes/"),
+            &[],
+        )
+        .await
     }
 
     /// Prefixes nested within `cidr` (up to `max`).

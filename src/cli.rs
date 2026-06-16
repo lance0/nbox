@@ -119,6 +119,34 @@ pub enum Command {
         vrf: Option<String>,
     },
 
+    /// Show the next available IP address(es) in a prefix.
+    NextIp {
+        /// Prefix in CIDR notation.
+        prefix: String,
+
+        /// How many available addresses to return.
+        #[arg(short, long, default_value_t = 1)]
+        count: usize,
+
+        /// Disambiguate the prefix by VRF (name, slug, or RD).
+        #[arg(long)]
+        vrf: Option<String>,
+    },
+
+    /// Show available (free) prefix(es) within a prefix.
+    NextPrefix {
+        /// Prefix in CIDR notation.
+        prefix: String,
+
+        /// Desired new prefix length (e.g. 26): the first free block of that size.
+        #[arg(short, long)]
+        length: Option<u8>,
+
+        /// Disambiguate the prefix by VRF (name, slug, or RD).
+        #[arg(long)]
+        vrf: Option<String>,
+    },
+
     /// Show a site.
     Site {
         /// Site name or slug.

@@ -124,6 +124,8 @@ nbox search <query> [--limit N] [--status/--site/--tenant/--role <v>] [--cols a,
 nbox device <name-or-id>
 nbox ip <address> [--vrf <name>]              # --vrf disambiguates duplicates across VRFs
 nbox prefix <cidr> [--vrf <name>]             # includes utilization + children when present
+nbox next-ip <cidr> [--count N] [--vrf <name>]      # next available address(es)
+nbox next-prefix <cidr> [--length L] [--vrf <name>] # available free block(s)
 nbox site <name-or-slug>
 nbox rack <name-or-id>
 nbox vlan <vid-or-name> [--site <s>] [--group <g>]

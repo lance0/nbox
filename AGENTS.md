@@ -34,6 +34,8 @@ minimize tokens, `--fields` to trim payloads).
 nbox device <name|slug|id>
 nbox ip <address> [--vrf <name|slug|rd>]
 nbox prefix <cidr> [--vrf <name|slug|rd>]
+nbox next-ip <cidr> [--count N] [--vrf <name|slug|rd>]
+nbox next-prefix <cidr> [--length L] [--vrf <name|slug|rd>]
 nbox vlan <vid|name> [--site <name|slug>] [--group <name|slug>]
 nbox interface <device> <interface>
 nbox site <name|slug>

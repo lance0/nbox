@@ -131,7 +131,7 @@ v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implemen
 - ☑ `nbox open` — web URL via `util::format::api_to_web_url` + `open`.
 - ☑ `nbox interface <device> <iface>` — flat view plus its addresses.
 - ☑ TUI device tabs: `i` interfaces · `p` IPs · `c` cables · `v` VLANs. `nbox device` also shows the full set.
-- ☐ Read-only `nbox next-ip <prefix>` / `next-prefix <prefix>` via `available-ips` / `available-prefixes`. Allocate lands with writes (v0.2).
+- ☑ Read-only `nbox next-ip <prefix>` / `next-prefix <prefix>` via `available-ips` / `available-prefixes` (with `--vrf` scoping; `next-prefix --length` finds the first free block of a size). Allocate lands with writes (v0.2).
 - ☑ Typed errors (`src/error.rs`) — 401→auth, 403→perms, ambiguous name→list matches; stable exit codes (3 auth, 4 not-found, 5 ambiguous).
 - ☐ CI against a real NetBox — netbox-docker (pin 4.x ≥ 4.2), seeded fixture + legacy v1 token, run the binary against the live API. Catches serializer drift wiremock can't.
 - ☐ Read-only `nbox raw GET <path>`.

@@ -132,6 +132,19 @@ pub struct Vrf {
     pub custom_fields: serde_json::Value,
 }
 
+/// An available IP within a prefix (`…/available-ips/`). NetBox returns a bare
+/// array of these; only `address` is needed (other fields are ignored).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AvailableIp {
+    pub address: String,
+}
+
+/// An available (free) child prefix within a prefix (`…/available-prefixes/`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AvailablePrefix {
+    pub prefix: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

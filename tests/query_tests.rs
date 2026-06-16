@@ -209,6 +209,36 @@ async fn prefix_children_and_ips_use_within_and_parent() {
 }
 
 #[tokio::test]
+async fn available_ips_and_prefixes_parse_bare_arrays() {
+    let server = MockServer::start().await;
+    // These endpoints return a bare JSON array, not a paginated page.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/5/available-ips/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"family": 4, "address": "10.44.208.1/24"},
+            {"family": 4, "address": "10.44.208.2/24"}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/5/available-prefixes/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"family": 4, "prefix": "10.44.208.0/26"}
+        ])))
+        .mount(&server)
+        .await;
+
+    let cli = client(&server);
+    let ips = cli.prefix_available_ips(5, 10).await.unwrap();
+    assert_eq!(ips.len(), 2);
+    assert_eq!(ips[0].address, "10.44.208.1/24");
+
+    let prefixes = cli.prefix_available_prefixes(5).await.unwrap();
+    assert_eq!(prefixes.len(), 1);
+    assert_eq!(prefixes[0].prefix, "10.44.208.0/26");
+}
+
+#[tokio::test]
 async fn vlan_by_numeric_ref_uses_vid_filter() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

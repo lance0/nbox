@@ -7,6 +7,7 @@ use std::path::PathBuf;
 
 use anyhow::{Context, Result};
 use clap::CommandFactory;
+use ipnet::IpNet;
 
 use crate::cli::{Cli, Command};
 use crate::domain::device_detail::DeviceDetail;
@@ -18,6 +19,7 @@ use crate::domain::site_view::SiteView;
 use crate::domain::vlan_view::VlanView;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::models::common::BriefObject;
+use crate::netbox::models::ipam::{AvailablePrefix, Prefix};
 use crate::netbox::query;
 use crate::netbox::search::{SearchFilters, SearchRequest};
 use crate::output::Format;
@@ -113,6 +115,14 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Device { value }) => run_device(&ctx, &value).await,
         Some(Command::Ip { address, vrf }) => run_ip(&ctx, &address, vrf.as_deref()).await,
         Some(Command::Prefix { cidr, vrf }) => run_prefix(&ctx, &cidr, vrf.as_deref()).await,
+        Some(Command::NextIp { prefix, count, vrf }) => {
+            run_next_ip(&ctx, &prefix, count, vrf.as_deref()).await
+        }
+        Some(Command::NextPrefix {
+            prefix,
+            length,
+            vrf,
+        }) => run_next_prefix(&ctx, &prefix, length, vrf.as_deref()).await,
         Some(Command::Site { value }) => run_site(&ctx, &value).await,
         Some(Command::Rack { value }) => run_rack(&ctx, &value).await,
         Some(Command::Vlan { value, site, group }) => {
@@ -343,19 +353,88 @@ async fn run_ip(ctx: &Ctx, address: &str, vrf: Option<&str>) -> Result<()> {
     emit(ctx, &view, || view.to_key_values().print())
 }
 
+/// Resolve a CIDR to a single prefix, scoped by `--vrf`. Ambiguous → exit 5.
+async fn resolve_prefix(client: &NetBoxClient, cidr: &str, vrf: Option<&str>) -> Result<Prefix> {
+    let mut candidates = client.prefix_candidates(cidr).await?;
+    retain_scope(&mut candidates, vrf, |p| p.vrf.as_ref());
+    resolve_unique("prefix", cidr, candidates, query::prefix_scope_label)
+}
+
 /// `nbox prefix <cidr>` — show a prefix (scoped by `--vrf`) with children and IPs.
 async fn run_prefix(ctx: &Ctx, cidr: &str, vrf: Option<&str>) -> Result<()> {
     const SECTION_CAP: usize = 50;
     let client = connect(ctx)?;
-    let mut candidates = client.prefix_candidates(cidr).await?;
-    retain_scope(&mut candidates, vrf, |p| p.vrf.as_ref());
-    let prefix = resolve_unique("prefix", cidr, candidates, query::prefix_scope_label)?;
+    let prefix = resolve_prefix(&client, cidr, vrf).await?;
 
     let children = client.prefix_children(cidr, SECTION_CAP).await?;
     let ips = client.prefix_ips(cidr, SECTION_CAP).await?;
 
     let view = PrefixView::build(prefix, children, ips);
     emit(ctx, &view, || println!("{}", view.to_plain()))
+}
+
+/// `nbox next-ip <prefix>` — the next available address(es) within a prefix.
+async fn run_next_ip(ctx: &Ctx, prefix: &str, count: usize, vrf: Option<&str>) -> Result<()> {
+    let client = connect(ctx)?;
+    let p = resolve_prefix(&client, prefix, vrf).await?;
+    let available = client.prefix_available_ips(p.id, count).await?;
+    let addresses: Vec<String> = available
+        .into_iter()
+        .take(count)
+        .map(|a| a.address)
+        .collect();
+
+    let report = serde_json::json!({ "prefix": p.prefix.clone(), "available": addresses.clone() });
+    emit(ctx, &report, || {
+        if addresses.is_empty() {
+            eprintln!("no available addresses in {}", p.prefix);
+        } else {
+            for a in &addresses {
+                println!("{a}");
+            }
+        }
+    })
+}
+
+/// `nbox next-prefix <prefix>` — available free blocks, or the first of `--length`.
+async fn run_next_prefix(
+    ctx: &Ctx,
+    prefix: &str,
+    length: Option<u8>,
+    vrf: Option<&str>,
+) -> Result<()> {
+    let client = connect(ctx)?;
+    let p = resolve_prefix(&client, prefix, vrf).await?;
+    let free = client.prefix_available_prefixes(p.id).await?;
+    let available: Vec<String> = match length {
+        Some(len) => first_subnet_of_length(&free, len).into_iter().collect(),
+        None => free.into_iter().map(|f| f.prefix).collect(),
+    };
+
+    let report = serde_json::json!({ "prefix": p.prefix.clone(), "available": available.clone() });
+    emit(ctx, &report, || {
+        if available.is_empty() {
+            eprintln!("no available prefixes in {}", p.prefix);
+        } else {
+            for a in &available {
+                println!("{a}");
+            }
+        }
+    })
+}
+
+/// The first free block of exactly `len` bits among the available prefixes,
+/// computed locally (read-only) by subnetting each free block with `ipnet`.
+fn first_subnet_of_length(free: &[AvailablePrefix], len: u8) -> Option<String> {
+    for block in free {
+        if let Ok(net) = block.prefix.parse::<IpNet>()
+            && net.prefix_len() <= len
+            && let Some(sub) = net.subnets(len).ok().and_then(|mut s| s.next())
+        {
+            return Some(sub.to_string());
+        }
+    }
+    None
 }
 
 /// `nbox vlan <vid|name>` — show a VLAN and the prefixes that reference it.
@@ -510,7 +589,26 @@ fn not_found(noun: &str, value: &str) -> anyhow::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{error, not_found, parse_object_ref, resolve_unique};
+    use super::{error, first_subnet_of_length, not_found, parse_object_ref, resolve_unique};
+    use crate::netbox::models::ipam::AvailablePrefix;
+
+    #[test]
+    fn first_subnet_of_length_picks_first_fitting_block() {
+        let ap = |p: &str| AvailablePrefix { prefix: p.into() };
+        let free = vec![ap("10.0.0.0/24"), ap("10.1.0.0/16")];
+        // A /26 fits in the first /24 → its first subnet.
+        assert_eq!(
+            first_subnet_of_length(&free, 26).as_deref(),
+            Some("10.0.0.0/26")
+        );
+        // Nothing here can contain a /8 (both blocks are longer).
+        assert_eq!(first_subnet_of_length(&free, 8), None);
+        // A request equal to a block's length returns the block itself.
+        assert_eq!(
+            first_subnet_of_length(&[ap("10.0.0.0/24")], 24).as_deref(),
+            Some("10.0.0.0/24")
+        );
+    }
 
     #[test]
     fn resolve_unique_distinguishes_none_one_many() {
