@@ -10,6 +10,7 @@ use clap::CommandFactory;
 
 use crate::cli::{Cli, Command};
 use crate::domain::device_view::DeviceView;
+use crate::domain::ip_view::{IpView, most_specific};
 use crate::netbox::client::NetBoxClient;
 
 pub mod cli;
@@ -44,7 +45,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         None | Some(Command::Tui) => not_implemented("interactive TUI"),
         Some(Command::Search { .. }) => not_implemented("search"),
         Some(Command::Device { value }) => run_device(&ctx, &value).await,
-        Some(Command::Ip { .. }) => not_implemented("IP lookup"),
+        Some(Command::Ip { address }) => run_ip(&ctx, &address).await,
         Some(Command::Prefix { .. }) => not_implemented("prefix lookup"),
         Some(Command::Site { .. }) => not_implemented("site lookup"),
         Some(Command::Rack { .. }) => not_implemented("rack lookup"),
@@ -97,6 +98,28 @@ async fn run_device(ctx: &Ctx, value: &str) -> Result<()> {
         .with_context(|| format!("no device matched \"{value}\""))?;
 
     let view = DeviceView::from_model(device);
+    if ctx.json {
+        output::json::print(&view)?;
+    } else {
+        view.to_key_values().print();
+    }
+    Ok(())
+}
+
+/// `nbx ip <address>` — resolve an IP and its most-specific parent prefix.
+async fn run_ip(ctx: &Ctx, address: &str) -> Result<()> {
+    let client = connect(ctx)?;
+    let ip = client
+        .ip_candidates(address)
+        .await?
+        .into_iter()
+        .next()
+        .with_context(|| format!("no IP address matched \"{address}\""))?;
+
+    let host = address.split('/').next().unwrap_or(address);
+    let parent = most_specific(client.prefixes_containing(host).await?);
+
+    let view = IpView::build(ip, parent);
     if ctx.json {
         output::json::print(&view)?;
     } else {

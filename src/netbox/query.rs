@@ -7,6 +7,7 @@ use anyhow::Result;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
 use crate::netbox::models::dcim::Device;
+use crate::netbox::models::ipam::{IpAddress, Prefix};
 use crate::netbox::pagination::Page;
 
 impl NetBoxClient {
@@ -34,5 +35,24 @@ impl NetBoxClient {
             .list(Endpoint::Devices, vec![("name__ic", value.to_string())])
             .await?;
         Ok(contains.results.into_iter().next())
+    }
+
+    /// IP addresses matching `address` (NetBox host-aware `address` filter).
+    pub async fn ip_candidates(&self, address: &str) -> Result<Vec<IpAddress>> {
+        let page: Page<IpAddress> = self
+            .list(
+                Endpoint::IpAddresses,
+                vec![("address", address.to_string())],
+            )
+            .await?;
+        Ok(page.results)
+    }
+
+    /// Prefixes that contain `address` (NetBox `contains` filter).
+    pub async fn prefixes_containing(&self, address: &str) -> Result<Vec<Prefix>> {
+        let page: Page<Prefix> = self
+            .list(Endpoint::Prefixes, vec![("contains", address.to_string())])
+            .await?;
+        Ok(page.results)
     }
 }

@@ -6,3 +6,4 @@
 //! reaches into raw API shapes.
 
 pub mod device_view;
+pub mod ip_view;

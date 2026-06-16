@@ -68,3 +68,44 @@ async fn device_not_found_returns_none() {
     let device = client(&server).device_by_ref("nope").await.unwrap();
     assert!(device.is_none());
 }
+
+#[tokio::test]
+async fn ip_candidates_use_address_filter() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/ip-addresses/"))
+        .and(query_param("address", "10.44.208.55"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 7, "url": "http://nb/ip/7/", "address": "10.44.208.55/24"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let ips = client(&server).ip_candidates("10.44.208.55").await.unwrap();
+    assert_eq!(ips.len(), 1);
+    assert_eq!(ips[0].address, "10.44.208.55/24");
+}
+
+#[tokio::test]
+async fn prefixes_containing_use_contains_filter() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .and(query_param("contains", "10.44.208.55"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [
+                {"id": 1, "url": "http://nb/p/1/", "prefix": "10.44.0.0/16"},
+                {"id": 2, "url": "http://nb/p/2/", "prefix": "10.44.208.0/24"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let prefixes = client(&server)
+        .prefixes_containing("10.44.208.55")
+        .await
+        .unwrap();
+    assert_eq!(prefixes.len(), 2);
+}
