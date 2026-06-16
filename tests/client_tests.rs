@@ -123,6 +123,30 @@ async fn excludes_config_context_for_devices() {
 }
 
 #[tokio::test]
+async fn retries_on_429_then_succeeds() {
+    let server = MockServer::start().await;
+    // First request: 429 with Retry-After: 0 (no real delay), served at most once.
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/sites/"))
+        .respond_with(ResponseTemplate::new(429).insert_header("retry-after", "0"))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    // The retry then hits this 200.
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/sites/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
+        .with_priority(2)
+        .mount(&server)
+        .await;
+
+    let client = client_for(&server);
+    let page: Page<Value> = client.list(Endpoint::Sites, vec![]).await.unwrap();
+    assert_eq!(page.count, 0);
+}
+
+#[tokio::test]
 async fn non_success_status_is_an_error() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

@@ -80,8 +80,10 @@ impl NetBoxClient {
         Some(format!("{scheme} ****"))
     }
 
-    /// Issue an authenticated GET, returning the raw response.
+    /// Issue an authenticated GET, returning the raw response. Retries on HTTP
+    /// 429 (rate limited), honoring `Retry-After` when present, up to a small cap.
     async fn send(&self, path: &str, params: &[(&str, String)]) -> Result<reqwest::Response> {
+        const MAX_RETRIES: u32 = 3;
         let url = self.url_for(path)?;
 
         match self.masked_authorization() {
@@ -89,17 +91,32 @@ impl NetBoxClient {
             None => tracing::debug!(url = %url, "GET (unauthenticated)"),
         }
 
-        let mut req = self
-            .http
-            .get(url)
-            .query(params)
-            .header(ACCEPT, "application/json");
+        let mut attempt = 0;
+        loop {
+            let mut req = self
+                .http
+                .get(url.clone())
+                .query(params)
+                .header(ACCEPT, "application/json");
+            if let Some(token) = &self.token {
+                req = req.header(AUTHORIZATION, self.auth_scheme.header_value(token));
+            }
 
-        if let Some(token) = &self.token {
-            req = req.header(AUTHORIZATION, self.auth_scheme.header_value(token));
+            let res = req.send().await.context("sending request to NetBox")?;
+            if res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt < MAX_RETRIES {
+                let wait = parse_retry_after(
+                    res.headers()
+                        .get(reqwest::header::RETRY_AFTER)
+                        .and_then(|v| v.to_str().ok()),
+                )
+                .unwrap_or_else(|| backoff(attempt));
+                tracing::warn!("NetBox rate limited (429); retrying in {wait:?}");
+                tokio::time::sleep(wait).await;
+                attempt += 1;
+                continue;
+            }
+            return Ok(res);
         }
-
-        req.send().await.context("sending request to NetBox")
     }
 
     /// Decode a successful response, or turn a non-2xx status into a typed error.
@@ -187,6 +204,18 @@ impl NetBoxClient {
     }
 }
 
+/// Parse a `Retry-After` header value (delay in seconds; HTTP-date form is not
+/// honored). Caps the wait so a hostile/large value can't stall us indefinitely.
+fn parse_retry_after(value: Option<&str>) -> Option<Duration> {
+    let secs: u64 = value?.trim().parse().ok()?;
+    Some(Duration::from_secs(secs.min(60)))
+}
+
+/// Exponential backoff for retry `attempt` (0-based): 0.5s, 1s, 2s, …
+fn backoff(attempt: u32) -> Duration {
+    Duration::from_millis(500u64 << attempt.min(6))
+}
+
 /// Map a non-success HTTP status to a typed [`NboxError`] (401/403 get stable
 /// exit codes; everything else is a generic API error).
 fn status_error(status: reqwest::StatusCode, body: &str) -> NboxError {
@@ -253,5 +282,31 @@ mod tests {
     fn truncate_is_char_safe() {
         assert_eq!(truncate("hello", 10), "hello");
         assert_eq!(truncate("hello", 3), "hel…");
+    }
+
+    #[test]
+    fn retry_after_parses_seconds_and_caps() {
+        assert_eq!(parse_retry_after(Some("5")), Some(Duration::from_secs(5)));
+        assert_eq!(
+            parse_retry_after(Some("  2 ")),
+            Some(Duration::from_secs(2))
+        );
+        // Capped so a huge value can't stall the client.
+        assert_eq!(
+            parse_retry_after(Some("9999")),
+            Some(Duration::from_secs(60))
+        );
+        // HTTP-date form and garbage are ignored (fall back to backoff).
+        assert_eq!(
+            parse_retry_after(Some("Wed, 21 Oct 2099 07:28:00 GMT")),
+            None
+        );
+        assert_eq!(parse_retry_after(None), None);
+    }
+
+    #[test]
+    fn backoff_grows() {
+        assert!(backoff(0) < backoff(1));
+        assert!(backoff(1) < backoff(2));
     }
 }
