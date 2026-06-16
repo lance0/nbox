@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result};
 
-use crate::domain::device_view::DeviceView;
+use crate::domain::device_detail::DeviceDetail;
 use crate::domain::ip_view::{IpView, most_specific};
 use crate::domain::prefix_view::PrefixView;
 use crate::domain::site_view::SiteView;
@@ -13,13 +13,26 @@ use crate::netbox::models::dcim::{Device, Site};
 use crate::netbox::models::ipam::{IpAddress, Prefix, Vlan};
 use crate::netbox::search::ObjectKind;
 
-/// A rendered detail screen: the object's identity plus a title and body.
+/// Maximum sub-resources to load for a device detail screen.
+const DEVICE_SECTION_CAP: usize = 200;
+
+/// A switchable section on a detail screen (e.g. a device's interfaces).
+#[derive(Debug, Clone)]
+pub struct DetailTab {
+    pub key: char,
+    pub label: String,
+    pub body: String,
+}
+
+/// A rendered detail screen: the object's identity, a title, the summary body,
+/// and any switchable tabs (empty for objects without sub-resources).
 #[derive(Debug, Clone)]
 pub struct DetailView {
     pub kind: ObjectKind,
     pub id: u64,
     pub title: String,
     pub body: String,
+    pub tabs: Vec<DetailTab>,
 }
 
 impl DetailView {
@@ -29,12 +42,43 @@ impl DetailView {
             id,
             title,
             body,
+            tabs: Vec::new(),
         }
     }
+
+    fn with_tabs(mut self, tabs: Vec<DetailTab>) -> Self {
+        self.tabs = tabs;
+        self
+    }
+}
+
+/// Build a device detail (summary body + i/p/c/v tabs) from its sub-resources.
+async fn load_device_detail(
+    client: &NetBoxClient,
+    device: Device,
+) -> Result<(String, String, Vec<DetailTab>)> {
+    let id = device.id;
+    let name = device.name.clone();
+    let (interfaces, ips) = tokio::try_join!(
+        client.device_interfaces(id, DEVICE_SECTION_CAP),
+        client.device_ips(id, DEVICE_SECTION_CAP)
+    )?;
+    let detail = DeviceDetail::build(device, interfaces, ips);
+    let tabs = detail
+        .sections()
+        .into_iter()
+        .map(|(key, label, body)| DetailTab {
+            key,
+            label: label.to_string(),
+            body,
+        })
+        .collect();
+    Ok((format!("device {name}"), detail.summary_plain(), tabs))
 }
 
 /// Load and render the detail for a search result (`kind` + `id`).
 pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Result<DetailView> {
+    let mut tabs = Vec::new();
     let (title, body) = match kind {
         ObjectKind::Device => {
             let d: Device = client
@@ -43,8 +87,9 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
                     &[("exclude", "config_context".to_string())],
                 )
                 .await?;
-            let v = DeviceView::from_model(d);
-            (format!("device {}", v.name), v.to_key_values().render())
+            let (title, body, device_tabs) = load_device_detail(client, d).await?;
+            tabs = device_tabs;
+            (title, body)
         }
         ObjectKind::Site => {
             let s: Site = client.get(&format!("/api/dcim/sites/{id}/"), &[]).await?;
@@ -82,7 +127,7 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             (format!("vlan {}", v.vid), v.to_plain())
         }
     };
-    Ok(DetailView::new(kind, id, title, body))
+    Ok(DetailView::new(kind, id, title, body).with_tabs(tabs))
 }
 
 /// Load and render a detail by user reference (name/slug/cidr/vid/address),
@@ -92,6 +137,7 @@ pub async fn load_detail_by_ref(
     kind: ObjectKind,
     value: &str,
 ) -> Result<DetailView> {
+    let mut tabs = Vec::new();
     let (id, title, body) = match kind {
         ObjectKind::Device => {
             let d = client
@@ -99,8 +145,9 @@ pub async fn load_detail_by_ref(
                 .await?
                 .with_context(|| format!("no device matched \"{value}\""))?;
             let id = d.id;
-            let v = DeviceView::from_model(d);
-            (id, format!("device {}", v.name), v.to_key_values().render())
+            let (title, body, device_tabs) = load_device_detail(client, d).await?;
+            tabs = device_tabs;
+            (id, title, body)
         }
         ObjectKind::Site => {
             let s = client
@@ -152,5 +199,5 @@ pub async fn load_detail_by_ref(
             (id, format!("vlan {}", v.vid), v.to_plain())
         }
     };
-    Ok(DetailView::new(kind, id, title, body))
+    Ok(DetailView::new(kind, id, title, body).with_tabs(tabs))
 }

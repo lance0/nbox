@@ -128,6 +128,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         Line::from("j / k    move selection"),
         Line::from("g / G    top / bottom"),
         Line::from("t        cycle theme"),
+        Line::from("i/p/c/v  device tabs (interfaces/IPs/cables/VLANs)"),
         Line::from("b / Esc  back"),
         Line::from("?  / F1  toggle this help"),
         Line::from("q        quit"),
@@ -146,20 +147,53 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
 
 fn render_detail(frame: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
-    let (title, body) = match &app.detail {
-        Some(d) => (d.title.as_str(), d.body.as_str()),
-        None => ("Detail", "loading…"),
+    let title = match &app.detail {
+        Some(d) => d.title.as_str(),
+        None => "Detail",
     };
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {title} "))
         .border_style(Style::default().fg(theme.border_focused));
+
+    let mut lines: Vec<Line> = Vec::new();
+    if let Some(d) = &app.detail
+        && !d.tabs.is_empty()
+    {
+        lines.push(tab_bar(app, d));
+        lines.push(Line::from(""));
+    }
+    for line in app.detail_body().lines() {
+        lines.push(Line::from(line.to_string()));
+    }
+
     frame.render_widget(
-        Paragraph::new(body)
+        Paragraph::new(lines)
             .block(block)
             .style(Style::default().fg(theme.text)),
         area,
     );
+}
+
+/// A tab bar like `[summary]  i:interfaces  p:ips`, active tab highlighted.
+fn tab_bar<'a>(app: &App, detail: &'a crate::domain::detail::DetailView) -> Line<'a> {
+    let theme = &app.theme;
+    let style = |active: bool| {
+        if active {
+            Style::default().fg(theme.text).bg(theme.highlight_bg)
+        } else {
+            Style::default().fg(theme.text_dim)
+        }
+    };
+    let mut spans = vec![Span::styled(" summary ", style(app.detail_tab == 0))];
+    for (i, tab) in detail.tabs.iter().enumerate() {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(
+            format!(" {}:{} ", tab.key, tab.label.to_lowercase()),
+            style(app.detail_tab == i + 1),
+        ));
+    }
+    Line::from(spans)
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &App) {

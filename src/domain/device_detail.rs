@@ -124,59 +124,77 @@ impl DeviceDetail {
 
     /// Render the summary plus each non-empty section for plain output.
     pub fn to_plain(&self) -> String {
-        let mut out = self.summary.to_key_values().render();
-
-        if !self.interfaces.is_empty() {
-            let lines: Vec<String> = self
-                .interfaces
-                .iter()
-                .map(|i| {
-                    let mut row = format!("  {}", i.name);
-                    if let Some(t) = &i.type_ {
-                        row.push_str(&format!("  {t}"));
-                    }
-                    if i.enabled == Some(false) {
-                        row.push_str("  (disabled)");
-                    }
-                    row
-                })
-                .collect();
-            out.push_str(&format!("\n\nInterfaces\n{}", lines.join("\n")));
+        let mut out = self.summary_plain();
+        for (_, title, body) in self.sections() {
+            out.push_str(&format!("\n\n{title}\n{body}"));
         }
-
-        if !self.ip_addresses.is_empty() {
-            let lines: Vec<String> = self
-                .ip_addresses
-                .iter()
-                .map(|ip| match &ip.interface {
-                    Some(name) => format!("  {}  {name}", ip.address),
-                    None => format!("  {}", ip.address),
-                })
-                .collect();
-            out.push_str(&format!("\n\nIP Addresses\n{}", lines.join("\n")));
-        }
-
-        if !self.cables.is_empty() {
-            let lines: Vec<String> = self
-                .cables
-                .iter()
-                .map(|c| {
-                    if c.connected_to.is_empty() {
-                        format!("  {}  {}", c.interface, c.cable.as_deref().unwrap_or(""))
-                    } else {
-                        format!("  {} -> {}", c.interface, c.connected_to.join(", "))
-                    }
-                })
-                .collect();
-            out.push_str(&format!("\n\nCables\n{}", lines.join("\n")));
-        }
-
-        if !self.vlans.is_empty() {
-            let lines: Vec<String> = self.vlans.iter().map(|v| format!("  {}", v.vlan)).collect();
-            out.push_str(&format!("\n\nVLANs\n{}", lines.join("\n")));
-        }
-
         out
+    }
+
+    /// The device summary alone, as `key: value` lines.
+    pub fn summary_plain(&self) -> String {
+        self.summary.to_key_values().render()
+    }
+
+    /// Non-empty sections as `(tab key, title, body)` — used for the TUI tabs.
+    pub fn sections(&self) -> Vec<(char, &'static str, String)> {
+        let mut tabs = Vec::new();
+        if !self.interfaces.is_empty() {
+            tabs.push(('i', "Interfaces", self.iface_lines().join("\n")));
+        }
+        if !self.ip_addresses.is_empty() {
+            tabs.push(('p', "IP Addresses", self.ip_lines().join("\n")));
+        }
+        if !self.cables.is_empty() {
+            tabs.push(('c', "Cables", self.cable_lines().join("\n")));
+        }
+        if !self.vlans.is_empty() {
+            tabs.push(('v', "VLANs", self.vlan_lines().join("\n")));
+        }
+        tabs
+    }
+
+    fn iface_lines(&self) -> Vec<String> {
+        self.interfaces
+            .iter()
+            .map(|i| {
+                let mut row = format!("  {}", i.name);
+                if let Some(t) = &i.type_ {
+                    row.push_str(&format!("  {t}"));
+                }
+                if i.enabled == Some(false) {
+                    row.push_str("  (disabled)");
+                }
+                row
+            })
+            .collect()
+    }
+
+    fn ip_lines(&self) -> Vec<String> {
+        self.ip_addresses
+            .iter()
+            .map(|ip| match &ip.interface {
+                Some(name) => format!("  {}  {name}", ip.address),
+                None => format!("  {}", ip.address),
+            })
+            .collect()
+    }
+
+    fn cable_lines(&self) -> Vec<String> {
+        self.cables
+            .iter()
+            .map(|c| {
+                if c.connected_to.is_empty() {
+                    format!("  {}  {}", c.interface, c.cable.as_deref().unwrap_or(""))
+                } else {
+                    format!("  {} -> {}", c.interface, c.connected_to.join(", "))
+                }
+            })
+            .collect()
+    }
+
+    fn vlan_lines(&self) -> Vec<String> {
+        self.vlans.iter().map(|v| format!("  {}", v.vlan)).collect()
     }
 }
 

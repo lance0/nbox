@@ -90,6 +90,8 @@ pub struct App {
     pub pending_reselect: Option<(ObjectKind, u64)>,
     pub recent: Vec<RecentItem>,
     pub detail: Option<DetailView>,
+    /// Active detail tab: 0 = summary, n>0 = `detail.tabs[n-1]`.
+    pub detail_tab: usize,
     pub should_quit: bool,
 }
 
@@ -125,6 +127,7 @@ impl App {
             pending_reselect: None,
             recent: Vec::new(),
             detail: None,
+            detail_tab: 0,
             should_quit: false,
         }
     }
@@ -161,6 +164,7 @@ impl App {
                         self.record_recent(view.kind, view.id, view.title.clone());
                         self.navigate_to(Screen::Detail);
                         self.detail = Some(view);
+                        self.detail_tab = 0;
                         self.status.clear();
                     }
                     Err(e) => self.status = format!("error: {e:#}"),
@@ -236,6 +240,7 @@ impl App {
                     return vec![AppCommand::Copy(r.display.clone())];
                 }
             }
+            KeyCode::Char(c @ ('i' | 'p' | 'c' | 'v')) if !ctrl => self.select_detail_tab(c),
             _ => {}
         }
         Vec::new()
@@ -394,6 +399,33 @@ impl App {
             .and_then(|&i| self.results.get(i))
     }
 
+    /// Switch the active detail tab by its key (`i`/`p`/`c`/`v`); pressing the
+    /// active tab's key again returns to the summary. No-op off the detail screen.
+    fn select_detail_tab(&mut self, key: char) {
+        if self.screen != Screen::Detail {
+            return;
+        }
+        if let Some(detail) = &self.detail
+            && let Some(pos) = detail.tabs.iter().position(|t| t.key == key)
+        {
+            let target = pos + 1;
+            self.detail_tab = if self.detail_tab == target { 0 } else { target };
+        }
+    }
+
+    /// The body text for the active detail tab (summary when `detail_tab` is 0).
+    pub fn detail_body(&self) -> &str {
+        match &self.detail {
+            Some(d) if self.detail_tab > 0 => d
+                .tabs
+                .get(self.detail_tab - 1)
+                .map(|t| t.body.as_str())
+                .unwrap_or(d.body.as_str()),
+            Some(d) => d.body.as_str(),
+            None => "loading…",
+        }
+    }
+
     /// Record an opened object at the front of the recents list (deduped, capped).
     fn record_recent(&mut self, kind: ObjectKind, id: u64, title: String) {
         self.recent.retain(|r| !(r.kind == kind && r.id == id));
@@ -550,6 +582,7 @@ mod tests {
             id: 1,
             title: "device edge01".into(),
             body: "name: edge01".into(),
+            tabs: Vec::new(),
         })));
         assert_eq!(a.screen, Screen::Detail);
         // Opening recorded it in recents.
@@ -569,6 +602,7 @@ mod tests {
                 id,
                 title: title.into(),
                 body: String::new(),
+                tabs: Vec::new(),
             })));
             a.handle_event(press(KeyCode::Char('b')));
         };
@@ -672,5 +706,42 @@ mod tests {
         // New results arrive in a different order; cursor should track id=3.
         set_results(&mut a, vec![result(3, "c"), result(1, "a"), result(2, "b")]);
         assert_eq!(a.selected_result().map(|r| r.id), Some(3));
+    }
+
+    #[test]
+    fn device_tabs_select_and_toggle() {
+        use crate::domain::detail::DetailTab;
+        let tab = |key, label: &str| DetailTab {
+            key,
+            label: label.into(),
+            body: format!("{label} body"),
+        };
+        let mut a = app();
+        a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
+            kind: ObjectKind::Device,
+            id: 1,
+            title: "device edge01".into(),
+            body: "summary".into(),
+            tabs: vec![tab('i', "interfaces"), tab('p', "ips"), tab('v', "vlans")],
+        })));
+        assert_eq!(a.screen, Screen::Detail);
+        assert_eq!(a.detail_tab, 0);
+        assert_eq!(a.detail_body(), "summary");
+
+        a.handle_event(press(KeyCode::Char('i')));
+        assert_eq!(a.detail_tab, 1);
+        assert_eq!(a.detail_body(), "interfaces body");
+
+        a.handle_event(press(KeyCode::Char('v')));
+        assert_eq!(a.detail_tab, 3);
+        assert_eq!(a.detail_body(), "vlans body");
+
+        // Pressing the active tab's key again returns to the summary.
+        a.handle_event(press(KeyCode::Char('v')));
+        assert_eq!(a.detail_tab, 0);
+
+        // A tab key with no matching section is a no-op (no cables here).
+        a.handle_event(press(KeyCode::Char('c')));
+        assert_eq!(a.detail_tab, 0);
     }
 }
