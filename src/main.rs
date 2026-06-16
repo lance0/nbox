@@ -6,7 +6,8 @@
 use clap::Parser;
 use nbx::cli::Cli;
 
-fn main() {
+#[tokio::main]
+async fn main() {
     let cli = Cli::parse();
 
     // Kick off the update check (if enabled) before doing work, then report it
@@ -17,7 +18,7 @@ fn main() {
         (nbx::update::spawn_check(), json)
     };
 
-    let result = nbx::run(cli);
+    let result = nbx::run(cli).await;
 
     #[cfg(feature = "updates")]
     {
