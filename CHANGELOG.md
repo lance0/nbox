@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added (Phase 4 polish, in progress)
-- Strategy + planning docs: `docs/POSITIONING.md` (market wedge, differentiators, agent stance, GTM), `RELEASING.md` (crates.io reserve/publish + cargo-dist), and an expanded `ROADMAP.md` (IPAM allocation, cable trace, prefix tree, agent-parity, and a prioritized competitive-analysis backlog).
+- Planning docs: `RELEASING.md` (crates.io publish + cargo-dist) and an expanded `ROADMAP.md` (IPAM allocation, cable/interface trace, hierarchical prefix tree, scriptable/agent-friendly output, prioritized backlog).
 - crates.io metadata (`readme`, `homepage`, richer `description`); `cargo publish --dry-run` is clean.
 - Theme persistence: the active theme (cycled with `t` or set via the palette `theme` command) is saved to `[ui].theme` on TUI exit, format-preserving (`config::save_ui_theme`).
 - Friendly, actionable errors: not-found lookups now print the DESIGN §17 style — e.g. `no device matched "edge01"` followed by `Try:\n  nbox search edge01` — on stderr.

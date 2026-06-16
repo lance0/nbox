@@ -68,45 +68,40 @@ nbox vlan 208
 nbox
 ```
 
-### Phase 4 — Polish
-
-**Strategy:** see [docs/POSITIONING.md](docs/POSITIONING.md). The competitive read says **distribution is the #1 throttle** — the release/install items below are the v0.1 launch gate; the small high-value feature wins ride along.
+### Phase 4 — Polish & release
 
 Done / carried:
-- ☑ Built-in themes (11 ported from xfr in `tui/theme.rs`); cycle (`t`) + palette `theme`, persisted to `[ui].theme` on TUI exit
+- ☑ Built-in themes (11 in `tui/theme.rs`); cycle (`t`) + palette `theme`, persisted to `[ui].theme` on TUI exit
 - ☑ Update notifications (`updates` feature): GitHub check + CLI notice (`src/update.rs`); TUI banner lands in Phase 3
 - ☑ Friendly, actionable errors (DESIGN §17 "no X matched … Try: nbox search …")
 - ☑ Shell completions (bash/zsh/fish/powershell/elvish) — `nbox completions <shell>`
 - ☐ Recent objects
 
-Launch gate (distribution + first impression — highest leverage):
+Release & distribution (v0.1 release gate):
 - ☐ Release pipeline via `cargo-dist`: GitHub Release binaries (macOS Intel/ARM, Linux x86_64/aarch64, Windows) + SHA256SUMS, completions bundled
-- ☐ Install script (`scripts/install.sh`: download latest release, `cargo install`/`cargo binstall` fallback)
+- ☐ Install script (`scripts/install.sh`: download latest release, `cargo binstall`/`cargo install` fallback)
 - ☐ Homebrew tap formula
-- ☐ Publish + reserve `nbox` on crates.io (see [RELEASING.md](RELEASING.md))
-- ☐ Demo-first README: VHS hero GIF (`/edge01` → keyboard drill-down, speed visible) + 3 short clips (IP→prefix→VLAN, `--json | jq`, `o`/`y`)
-- ☐ Quantified speed claim (ripgrep-style: NetBox UI vs `nbox` lookup, screenshot)
+- ☐ Publish to crates.io (see [RELEASING.md](RELEASING.md))
+- ☐ README pass: usage, a demo recording (asciinema/VHS), keybindings
 
-High-value feature wins for v0.1 (small, on-identity — from competitive analysis):
-- ☐ `nbox status` — expose the existing `/api/status/` probe (version/python/workers) as a command (trivial; reuses `verify_compatible`/`Status`)
-- ☐ Prefix utilization in `nbox prefix` output (surface NetBox's `utilization` %, with a small bar)
+Feature wins (small, on-identity):
+- ☐ `nbox status` — expose the `/api/status/` probe (version/python/workers) as a command (reuses `verify_compatible`/`Status`)
+- ☐ Prefix utilization in `nbox prefix` output (NetBox `utilization` %, with a small bar)
 - ☐ Custom fields in detail output (view models currently drop `custom_fields`; surface `cf_*`)
 - ☐ Structured filter flags on `search`/lookups: `--status`, `--site`, `--vrf`, `--tenant`, `--role` (→ API query params)
 - ☐ Column selection `--cols id,name,status,site` for plain/table output
 - ☐ CSV output (extend `output/`: `--output plain|json|csv`; YAML/jsonl optional)
-- ☐ Auto-refresh tick in the TUI (emit the existing `Tick`; configurable interval, k9s-style)
-- ☐ Client-side filter validation — reject/warn on unknown query params (NetBox silently returns *everything*; netbox#6489)
+- ☐ Auto-refresh tick in the TUI (emit the existing `Tick`; configurable interval)
+- ☐ Client-side filter validation — warn on unknown query params (NetBox silently ignores them; netbox#6489)
 
-Agent parity (table-stakes; cheap; neutralizes the competitor's only claim):
-- ☐ Versioned JSON output envelope (`{ schema_version, data }`) + semantic exit codes + structured JSON errors
-- ☐ `--fields a,b,c` / `--raw` token-efficiency controls
-- ☐ `AGENTS.md` + per-command skill files; a `--dry-run` convention (real once writes land)
+Scriptable / agent-friendly output:
+- ☐ Versioned JSON output envelope (`{ schema_version, data }`) + stable exit codes + structured JSON errors
+- ☐ `--fields a,b,c` / `--raw` output controls
+- ☐ `AGENTS.md` + per-command skill files; a `--dry-run` convention (effective once writes land)
 
 ---
 
-## Prioritized adds (from competitive analysis, 2026-06-16)
-
-Ranking compiled pre-rename; see [docs/POSITIONING.md](docs/POSITIONING.md) for rationale.
+## Prioritized backlog
 
 | # | Feature | Lands |
 |---|---|---|
@@ -118,7 +113,7 @@ Ranking compiled pre-rename; see [docs/POSITIONING.md](docs/POSITIONING.md) for 
 | 6 | Custom fields in detail output | v0.1 Phase 4 |
 | 7 | Column selection (`--cols`) | v0.1 Phase 4 |
 | 8 | CSV output | v0.1 Phase 4 |
-| 9 | Hierarchical prefix tree in TUI (signature) | v0.2 |
+| 9 | Hierarchical prefix tree in TUI | v0.2 |
 | 10 | Auto-refresh tick in TUI | v0.1 Phase 4 |
 
 ---
@@ -127,7 +122,7 @@ Ranking compiled pre-rename; see [docs/POSITIONING.md](docs/POSITIONING.md) for 
 
 - ☐ **IPAM allocation:** `nbox next-ip <prefix>` / `nbox next-prefix <prefix>` via `/api/ipam/prefixes/{id}/available-ips/` + `/available-prefixes/` (the most-requested NetBox workflow; netbox#66 open since 2016)
 - ☐ **Cable / interface trace:** `/api/dcim/interfaces/{id}/trace/` — "where is this port cabled to?"; surface on the interface/device detail view
-- ☐ **Hierarchical prefix tree in the TUI (signature feature):** expand/collapse child prefixes with inline utilization — uniquely tractable in a terminal (netbox#21396/#21255)
+- ☐ **Hierarchical prefix tree in the TUI:** expand/collapse child prefixes with inline utilization (netbox#21396/#21255)
 - ☐ Optional read-only **GraphQL** client for nested device detail (one query: device + interfaces + IPs + rack + site)
 - ☐ Interface and cable/connection views on the device screen
 - ☐ Multi-pane TUI (nav | results | detail) per DESIGN mockup, vs current screen-switching
@@ -156,9 +151,9 @@ Ranking compiled pre-rename; see [docs/POSITIONING.md](docs/POSITIONING.md) for 
 
 ## Later / under consideration
 
-- ☐ `nbox mcp serve` (stdio + HTTP) reusing the command core — self-hosted, low-token, **write-safe** complement to NetBox Labs' read-only MCP server (post-1.0; be protocol-agnostic, don't bet the product on it)
-- ☐ Dashboard / overview screen (counts by status, utilization stats, recent changes — k9s "pulse")
-- ☐ Plugin / custom-command system (`~/.config/nbox/commands.toml`, k9s-style key bindings)
+- ☐ Optional `nbox mcp serve` (stdio + HTTP) reusing the command core (post-1.0)
+- ☐ Dashboard / overview screen (counts by status, utilization stats, recent changes)
+- ☐ Plugin / custom-command system (`~/.config/nbox/commands.toml`)
 - ☐ Context preservation in the TUI (scroll position + filters per view)
 - ☐ OS keyring token storage
 - ☐ Local SQLite cache (`cache` feature) for fast repeat lookups

@@ -18,10 +18,9 @@ they're called out below.
 
 ## 1. Reserve the `nbox` name now (recommended)
 
-`nbox` is currently free on crates.io — reserve it before it can be sniped (we
-already lost `nbx` to a collision). crates.io versions are **immutable**, so do
-**not** burn `0.1.0` on a placeholder. Publish a pre-release to hold the name and
-keep `0.1.0` for the real launch:
+`nbox` is currently free on crates.io — claim it early. crates.io versions are
+**immutable**, so do **not** burn `0.1.0` on a placeholder. Publish a pre-release
+to hold the name and keep `0.1.0` for the first real release:
 
 ```bash
 # 1. set a pre-release version
