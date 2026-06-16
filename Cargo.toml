@@ -3,9 +3,11 @@ name = "nbox"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Terminal UI and CLI for NetBox"
+description = "Terminal UI and CLI for NetBox — fast search, IPAM lookups, and device context"
 license = "MIT OR Apache-2.0"
 repository = "https://github.com/lance0/nbox"
+homepage = "https://github.com/lance0/nbox"
+readme = "README.md"
 keywords = ["netbox", "network", "ipam", "tui", "dcim"]
 categories = ["command-line-utilities", "network-programming"]
 
