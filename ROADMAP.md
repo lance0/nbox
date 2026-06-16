@@ -75,7 +75,7 @@ Done / carried:
 - ☑ Update notifications (`updates` feature): GitHub check + CLI notice (`src/update.rs`); TUI banner lands in Phase 3
 - ☑ Friendly, actionable errors (DESIGN §17 "no X matched … Try: nbox search …")
 - ☑ Shell completions (bash/zsh/fish/powershell/elvish) — `nbox completions <shell>`
-- ☐ Recent objects
+- ☑ Recent objects (TUI: capped/deduped, most-recent-first; shown on Home when there are no results; Enter reopens)
 
 Release & distribution (v0.1 release gate):
 - ☐ Release pipeline via `cargo-dist`: GitHub Release binaries (macOS Intel/ARM, Linux x86_64/aarch64, Windows) + SHA256SUMS, completions bundled

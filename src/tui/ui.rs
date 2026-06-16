@@ -45,47 +45,77 @@ pub fn render(frame: &mut Frame, app: &App) {
 
 fn render_home(frame: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
+
+    // With search results, show them. Otherwise fall back to recents, then a hint.
+    if !app.view.is_empty() {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Results ")
+            .border_style(Style::default().fg(theme.border));
+        let items: Vec<ListItem> = app
+            .view
+            .iter()
+            .enumerate()
+            .filter_map(|(pos, &idx)| app.results.get(idx).map(|r| (pos, r)))
+            .map(|(pos, r)| {
+                let text = match &r.subtitle {
+                    Some(s) => format!(
+                        "{}{:<7} {}  ({s})",
+                        marker(pos, app),
+                        r.kind.as_str(),
+                        r.display
+                    ),
+                    None => format!("{}{:<7} {}", marker(pos, app), r.kind.as_str(), r.display),
+                };
+                ListItem::new(text).style(row_style(pos, app))
+            })
+            .collect();
+        frame.render_widget(List::new(items).block(block), area);
+        return;
+    }
+
+    if !app.recent.is_empty() {
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .title(" Recent ")
+            .border_style(Style::default().fg(theme.border));
+        let items: Vec<ListItem> = app
+            .recent
+            .iter()
+            .enumerate()
+            .map(|(pos, item)| {
+                ListItem::new(format!("{}{}", marker(pos, app), item.title))
+                    .style(row_style(pos, app))
+            })
+            .collect();
+        frame.render_widget(List::new(items).block(block), area);
+        return;
+    }
+
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Results ")
         .border_style(Style::default().fg(theme.border));
+    frame.render_widget(
+        Paragraph::new("Press / to search NetBox.")
+            .block(block)
+            .style(Style::default().fg(theme.text_dim)),
+        area,
+    );
+}
 
-    if app.view.is_empty() {
-        let hint = if app.results.is_empty() {
-            "Press / to search NetBox."
-        } else {
-            "No matches."
-        };
-        frame.render_widget(
-            Paragraph::new(hint)
-                .block(block)
-                .style(Style::default().fg(theme.text_dim)),
-            area,
-        );
-        return;
+fn marker(pos: usize, app: &App) -> &'static str {
+    if pos == app.selected { "> " } else { "  " }
+}
+
+fn row_style(pos: usize, app: &App) -> Style {
+    if pos == app.selected {
+        Style::default()
+            .fg(app.theme.text)
+            .bg(app.theme.highlight_bg)
+    } else {
+        Style::default().fg(app.theme.text)
     }
-
-    let items: Vec<ListItem> = app
-        .view
-        .iter()
-        .enumerate()
-        .filter_map(|(pos, &idx)| app.results.get(idx).map(|r| (pos, r)))
-        .map(|(pos, r)| {
-            let marker = if pos == app.selected { "> " } else { "  " };
-            let text = match &r.subtitle {
-                Some(s) => format!("{marker}{:<7} {}  ({s})", r.kind.as_str(), r.display),
-                None => format!("{marker}{:<7} {}", r.kind.as_str(), r.display),
-            };
-            let style = if pos == app.selected {
-                Style::default().fg(theme.text).bg(theme.highlight_bg)
-            } else {
-                Style::default().fg(theme.text)
-            };
-            ListItem::new(text).style(style)
-        })
-        .collect();
-
-    frame.render_widget(List::new(items).block(block), area);
 }
 
 fn render_help(frame: &mut Frame, area: Rect, app: &App) {

@@ -1,29 +1,41 @@
-//! On-demand detail loading for the TUI: fetch an object by kind + id and
-//! render it (reusing the same view models as the CLI).
+//! On-demand detail loading for the TUI: fetch an object by kind + id (or by a
+//! user reference) and render it, reusing the same view models as the CLI.
 
 use anyhow::{Context, Result};
 
 use crate::domain::device_view::DeviceView;
 use crate::domain::ip_view::{IpView, most_specific};
 use crate::domain::prefix_view::PrefixView;
-use crate::domain::rack_view::RackView;
 use crate::domain::site_view::SiteView;
 use crate::domain::vlan_view::VlanView;
 use crate::netbox::client::NetBoxClient;
-use crate::netbox::models::dcim::{Device, Rack, Site};
+use crate::netbox::models::dcim::{Device, Site};
 use crate::netbox::models::ipam::{IpAddress, Prefix, Vlan};
 use crate::netbox::search::ObjectKind;
 
-/// A rendered detail screen: a title and a body of `key: value` / section text.
+/// A rendered detail screen: the object's identity plus a title and body.
 #[derive(Debug, Clone)]
 pub struct DetailView {
+    pub kind: ObjectKind,
+    pub id: u64,
     pub title: String,
     pub body: String,
 }
 
+impl DetailView {
+    fn new(kind: ObjectKind, id: u64, title: String, body: String) -> Self {
+        Self {
+            kind,
+            id,
+            title,
+            body,
+        }
+    }
+}
+
 /// Load and render the detail for a search result (`kind` + `id`).
 pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Result<DetailView> {
-    match kind {
+    let (title, body) = match kind {
         ObjectKind::Device => {
             let d: Device = client
                 .get(
@@ -32,18 +44,12 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
                 )
                 .await?;
             let v = DeviceView::from_model(d);
-            Ok(DetailView {
-                title: format!("device {}", v.name),
-                body: v.to_key_values().render(),
-            })
+            (format!("device {}", v.name), v.to_key_values().render())
         }
         ObjectKind::Site => {
             let s: Site = client.get(&format!("/api/dcim/sites/{id}/"), &[]).await?;
             let v = SiteView::from_model(s);
-            Ok(DetailView {
-                title: format!("site {}", v.name),
-                body: v.to_key_values().render(),
-            })
+            (format!("site {}", v.name), v.to_key_values().render())
         }
         ObjectKind::IpAddress => {
             let ip: IpAddress = client
@@ -57,10 +63,7 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
                 .to_string();
             let parent = most_specific(client.prefixes_containing(&host).await?);
             let v = IpView::build(ip, parent);
-            Ok(DetailView {
-                title: format!("ip {}", v.address),
-                body: v.to_key_values().render(),
-            })
+            (format!("ip {}", v.address), v.to_key_values().render())
         }
         ObjectKind::Prefix => {
             let p: Prefix = client
@@ -70,21 +73,16 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             let children = client.prefix_children(&cidr, 50).await?;
             let ips = client.prefix_ips(&cidr, 50).await?;
             let v = PrefixView::build(p, children, ips);
-            Ok(DetailView {
-                title: format!("prefix {}", v.prefix),
-                body: v.to_plain(),
-            })
+            (format!("prefix {}", v.prefix), v.to_plain())
         }
         ObjectKind::Vlan => {
             let vlan: Vlan = client.get(&format!("/api/ipam/vlans/{id}/"), &[]).await?;
             let prefixes = client.vlan_prefixes(vlan.id, 50).await?;
             let v = VlanView::build(vlan, prefixes);
-            Ok(DetailView {
-                title: format!("vlan {}", v.vid),
-                body: v.to_plain(),
-            })
+            (format!("vlan {}", v.vid), v.to_plain())
         }
-    }
+    };
+    Ok(DetailView::new(kind, id, title, body))
 }
 
 /// Load and render a detail by user reference (name/slug/cidr/vid/address),
@@ -94,28 +92,24 @@ pub async fn load_detail_by_ref(
     kind: ObjectKind,
     value: &str,
 ) -> Result<DetailView> {
-    match kind {
+    let (id, title, body) = match kind {
         ObjectKind::Device => {
             let d = client
                 .device_by_ref(value)
                 .await?
                 .with_context(|| format!("no device matched \"{value}\""))?;
+            let id = d.id;
             let v = DeviceView::from_model(d);
-            Ok(DetailView {
-                title: format!("device {}", v.name),
-                body: v.to_key_values().render(),
-            })
+            (id, format!("device {}", v.name), v.to_key_values().render())
         }
         ObjectKind::Site => {
             let s = client
                 .site_by_ref(value)
                 .await?
                 .with_context(|| format!("no site matched \"{value}\""))?;
+            let id = s.id;
             let v = SiteView::from_model(s);
-            Ok(DetailView {
-                title: format!("site {}", v.name),
-                body: v.to_key_values().render(),
-            })
+            (id, format!("site {}", v.name), v.to_key_values().render())
         }
         ObjectKind::IpAddress => {
             let ip = client
@@ -124,6 +118,7 @@ pub async fn load_detail_by_ref(
                 .into_iter()
                 .next()
                 .with_context(|| format!("no IP address matched \"{value}\""))?;
+            let id = ip.id;
             let host = ip
                 .address
                 .split('/')
@@ -132,46 +127,30 @@ pub async fn load_detail_by_ref(
                 .to_string();
             let parent = most_specific(client.prefixes_containing(&host).await?);
             let v = IpView::build(ip, parent);
-            Ok(DetailView {
-                title: format!("ip {}", v.address),
-                body: v.to_key_values().render(),
-            })
+            (id, format!("ip {}", v.address), v.to_key_values().render())
         }
         ObjectKind::Prefix => {
             let p = client
                 .prefix_by_cidr(value)
                 .await?
                 .with_context(|| format!("no prefix matched \"{value}\""))?;
+            let id = p.id;
             let cidr = p.prefix.clone();
             let children = client.prefix_children(&cidr, 50).await?;
             let ips = client.prefix_ips(&cidr, 50).await?;
             let v = PrefixView::build(p, children, ips);
-            Ok(DetailView {
-                title: format!("prefix {}", v.prefix),
-                body: v.to_plain(),
-            })
+            (id, format!("prefix {}", v.prefix), v.to_plain())
         }
         ObjectKind::Vlan => {
             let vlan = client
                 .vlan_by_ref(value)
                 .await?
                 .with_context(|| format!("no VLAN matched \"{value}\""))?;
+            let id = vlan.id;
             let prefixes = client.vlan_prefixes(vlan.id, 50).await?;
             let v = VlanView::build(vlan, prefixes);
-            Ok(DetailView {
-                title: format!("vlan {}", v.vid),
-                body: v.to_plain(),
-            })
+            (id, format!("vlan {}", v.vid), v.to_plain())
         }
-    }
-}
-
-/// Load and render a rack detail (used by the `rack` command path / future TUI).
-pub async fn load_rack(client: &NetBoxClient, id: u64) -> Result<DetailView> {
-    let r: Rack = client.get(&format!("/api/dcim/racks/{id}/"), &[]).await?;
-    let v = RackView::from_model(r);
-    Ok(DetailView {
-        title: format!("rack {}", v.name),
-        body: v.to_key_values().render(),
-    })
+    };
+    Ok(DetailView::new(kind, id, title, body))
 }

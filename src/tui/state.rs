@@ -40,6 +40,17 @@ pub enum AppEvent {
     Status(String),
 }
 
+/// A recently-opened object, for quick reopening from the home screen.
+#[derive(Debug, Clone)]
+pub struct RecentItem {
+    pub kind: ObjectKind,
+    pub id: u64,
+    pub title: String,
+}
+
+/// Most-recent-first cap for the recents list.
+const RECENT_CAP: usize = 20;
+
 /// Side-effecting work the loop should spawn off the render thread.
 #[derive(Debug, Clone)]
 pub enum AppCommand {
@@ -77,6 +88,7 @@ pub struct App {
     /// On the next `SearchComplete`, try to re-select this (kind, id) — used to
     /// keep the cursor stable across an auto-refresh.
     pub pending_reselect: Option<(ObjectKind, u64)>,
+    pub recent: Vec<RecentItem>,
     pub detail: Option<DetailView>,
     pub should_quit: bool,
 }
@@ -111,6 +123,7 @@ impl App {
             view: Vec::new(),
             selected: 0,
             pending_reselect: None,
+            recent: Vec::new(),
             detail: None,
             should_quit: false,
         }
@@ -145,6 +158,7 @@ impl App {
             AppEvent::DetailLoaded(result) => {
                 match result {
                     Ok(view) => {
+                        self.record_recent(view.kind, view.id, view.title.clone());
                         self.navigate_to(Screen::Detail);
                         self.detail = Some(view);
                         self.status.clear();
@@ -203,12 +217,11 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => self.select_next(),
             KeyCode::Char('k') | KeyCode::Up => self.select_prev(),
             KeyCode::Char('g') => self.selected = 0,
-            KeyCode::Char('G') => self.selected = self.view.len().saturating_sub(1),
+            KeyCode::Char('G') => self.selected = self.home_len().saturating_sub(1),
             KeyCode::Enter => {
                 if self.screen == Screen::Home
-                    && let Some(r) = self.selected_result()
+                    && let Some((kind, id)) = self.home_target()
                 {
-                    let (kind, id) = (r.kind, r.id);
                     self.status = "loading…".into();
                     return vec![AppCommand::LoadDetail { kind, id }];
                 }
@@ -381,8 +394,33 @@ impl App {
             .and_then(|&i| self.results.get(i))
     }
 
+    /// Record an opened object at the front of the recents list (deduped, capped).
+    fn record_recent(&mut self, kind: ObjectKind, id: u64, title: String) {
+        self.recent.retain(|r| !(r.kind == kind && r.id == id));
+        self.recent.insert(0, RecentItem { kind, id, title });
+        self.recent.truncate(RECENT_CAP);
+    }
+
+    /// Length of the active home list: search results, or recents when empty.
+    fn home_len(&self) -> usize {
+        if self.results.is_empty() {
+            self.recent.len()
+        } else {
+            self.view.len()
+        }
+    }
+
+    /// The (kind, id) the home cursor points at — a result, or a recent.
+    fn home_target(&self) -> Option<(ObjectKind, u64)> {
+        if self.results.is_empty() {
+            self.recent.get(self.selected).map(|r| (r.kind, r.id))
+        } else {
+            self.selected_result().map(|r| (r.kind, r.id))
+        }
+    }
+
     fn select_next(&mut self) {
-        if self.selected + 1 < self.view.len() {
+        if self.selected + 1 < self.home_len() {
             self.selected += 1;
         }
     }
@@ -508,13 +546,45 @@ mod tests {
         ));
 
         a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
+            kind: ObjectKind::Device,
+            id: 1,
             title: "device edge01".into(),
             body: "name: edge01".into(),
         })));
         assert_eq!(a.screen, Screen::Detail);
+        // Opening recorded it in recents.
+        assert_eq!(a.recent.len(), 1);
+        assert_eq!(a.recent[0].id, 1);
 
         a.handle_event(press(KeyCode::Char('b')));
         assert_eq!(a.screen, Screen::Home);
+    }
+
+    #[test]
+    fn recents_dedup_and_reopen_from_home() {
+        let mut a = app();
+        let load = |a: &mut App, id, title: &str| {
+            a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
+                kind: ObjectKind::Device,
+                id,
+                title: title.into(),
+                body: String::new(),
+            })));
+            a.handle_event(press(KeyCode::Char('b')));
+        };
+        load(&mut a, 1, "device a");
+        load(&mut a, 2, "device b");
+        load(&mut a, 1, "device a"); // reopening 1 moves it to front, no dup
+        assert_eq!(a.recent.len(), 2);
+        assert_eq!(a.recent[0].id, 1);
+
+        // No search results → Home shows recents; Enter reopens the selected one.
+        assert!(a.results.is_empty());
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(matches!(
+            cmds.as_slice(),
+            [AppCommand::LoadDetail { id: 1, .. }]
+        ));
     }
 
     #[test]
