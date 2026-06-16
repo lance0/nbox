@@ -40,6 +40,10 @@ nbox vlan <vid|name> [--site <name|slug>] [--group <name|slug>]
 nbox interface <device> <interface>
 nbox site <name|slug>
 nbox rack <name|id>
+nbox circuit <cid|id>
+nbox aggregate <cidr|id>
+nbox asn <number>
+nbox ip-range <start|id>
 nbox search <query> [--limit N] [--status S] [--site SLUG] [--tenant SLUG] [--role SLUG] [--cols a,b,c] [--partial]
 nbox open <kind>/<ref>
 nbox raw GET <api-path>

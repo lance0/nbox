@@ -177,6 +177,12 @@ pub enum Command {
         asn: u32,
     },
 
+    /// Show an IP range by start address or numeric ID.
+    IpRange {
+        /// Range start address or numeric ID.
+        value: String,
+    },
+
     /// Show a VLAN by VID or name.
     Vlan {
         /// VLAN VID or name.

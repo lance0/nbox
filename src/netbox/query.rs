@@ -10,7 +10,7 @@ use crate::netbox::endpoints::Endpoint;
 use crate::netbox::models::circuits::Circuit;
 use crate::netbox::models::dcim::{Device, Interface, Rack, Site};
 use crate::netbox::models::ipam::{
-    Aggregate, Asn, AvailableIp, AvailablePrefix, IpAddress, Prefix, Service, Vlan,
+    Aggregate, Asn, AvailableIp, AvailablePrefix, IpAddress, IpRange, Prefix, Service, Vlan,
 };
 use crate::netbox::pagination::Page;
 
@@ -299,6 +299,24 @@ impl NetBoxClient {
             .list(Endpoint::Sites, vec![("name__ic", value.to_string())])
             .await?;
         ambiguous_or_first("site", value, contains.results, |s| s.name.clone())
+    }
+
+    /// Resolve an IP range by numeric ID, or by its start address.
+    pub async fn ip_range_by_ref(&self, value: &str) -> Result<Option<IpRange>> {
+        if let Ok(id) = value.parse::<u64>() {
+            return self
+                .get_optional(&format!("/api/ipam/ip-ranges/{id}/"), &[])
+                .await;
+        }
+        let page: Page<IpRange> = self
+            .list(
+                Endpoint::IpRanges,
+                vec![("start_address", value.to_string())],
+            )
+            .await?;
+        ambiguous_or_first("IP range", value, page.results, |r| {
+            format!("{} – {}", r.start_address, r.end_address)
+        })
     }
 
     /// Resolve an aggregate by numeric ID, or by its exact CIDR.

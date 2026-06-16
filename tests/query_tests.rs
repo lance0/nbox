@@ -337,6 +337,31 @@ async fn circuit_by_id_hits_detail_endpoint() {
 }
 
 #[tokio::test]
+async fn ip_range_by_start_uses_start_address_filter() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/ip-ranges/"))
+        .and(query_param("start_address", "10.0.0.10/24"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 1, "url": "http://nb/api/ipam/ip-ranges/1/",
+                "start_address": "10.0.0.10/24", "end_address": "10.0.0.20/24", "size": 11
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let range = client(&server)
+        .ip_range_by_ref("10.0.0.10/24")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(range.start_address, "10.0.0.10/24");
+    assert_eq!(range.size, Some(11));
+}
+
+#[tokio::test]
 async fn aggregate_by_cidr_uses_prefix_filter() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

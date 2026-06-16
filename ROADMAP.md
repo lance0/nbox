@@ -149,7 +149,7 @@ v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implemen
 - ☐ **Device detail — pick one path** — REST fan-out (device + interfaces + IPs) or a read-only GraphQL query. Don't build both.
 - ☐ Multi-pane TUI (nav | results | detail) per the DESIGN mockup.
 - ☐ TUI profile switcher — hotkey to flip between configured instances (e.g. dev / staging / prod) without restarting; reconnects and re-probes the version.
-- ☐ IP ranges (`/api/ipam/ip-ranges/` + `available-ips`).
+- ◐ IP ranges — `nbox ip-range <start|id>` lookup done (☑); range `available-ips` lands with allocation/writes.
 - ☐ **Safe writes (initial)** — `PATCH` engine, minimal diff, before/after preview, confirmation modal; agent-safe `--read-only` profile.
   - ☐ Settle write rules first: choice fields (`{value,label}`→string), brief relations (slug/id/name), confirmation in non-TTY/`--json`/MCP.
   - ☐ `nbox device <name> set status <value>`

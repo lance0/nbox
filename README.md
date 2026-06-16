@@ -129,6 +129,10 @@ nbox next-ip <cidr> [--count N] [--vrf <name>]      # next available address(es)
 nbox next-prefix <cidr> [--length L] [--vrf <name>] # available free block(s)
 nbox site <name-or-slug>
 nbox rack <name-or-id>
+nbox circuit <cid-or-id>
+nbox aggregate <cidr-or-id>
+nbox asn <number>
+nbox ip-range <start-or-id>
 nbox vlan <vid-or-name> [--site <s>] [--group <g>]
 nbox interface <device> <interface>
 nbox open <object-ref>

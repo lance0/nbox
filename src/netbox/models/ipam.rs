@@ -132,6 +132,35 @@ pub struct Vrf {
     pub custom_fields: serde_json::Value,
 }
 
+/// An IP range (`/api/ipam/ip-ranges/`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct IpRange {
+    pub id: u64,
+    pub url: String,
+    #[serde(default)]
+    pub display: Option<String>,
+    pub start_address: String,
+    pub end_address: String,
+
+    #[serde(default)]
+    pub size: Option<u64>,
+    #[serde(default)]
+    pub status: Option<Choice<String>>,
+    #[serde(default)]
+    pub vrf: Option<BriefObject>,
+    #[serde(default)]
+    pub tenant: Option<BriefObject>,
+    #[serde(default)]
+    pub role: Option<BriefObject>,
+    #[serde(default)]
+    pub description: Option<String>,
+
+    #[serde(default)]
+    pub tags: Vec<Tag>,
+    #[serde(default)]
+    pub custom_fields: serde_json::Value,
+}
+
 /// A service (`/api/ipam/services/`) — a port/protocol on a device or VM.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Service {

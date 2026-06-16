@@ -15,6 +15,7 @@ use crate::domain::asn_view::AsnView;
 use crate::domain::circuit_view::CircuitView;
 use crate::domain::device_detail::DeviceDetail;
 use crate::domain::interface_view::InterfaceView;
+use crate::domain::ip_range_view::IpRangeView;
 use crate::domain::ip_view::{IpView, most_specific};
 use crate::domain::prefix_view::PrefixView;
 use crate::domain::rack_view::RackView;
@@ -131,6 +132,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Circuit { value }) => run_circuit(&ctx, &value).await,
         Some(Command::Aggregate { value }) => run_aggregate(&ctx, &value).await,
         Some(Command::Asn { asn }) => run_asn(&ctx, asn).await,
+        Some(Command::IpRange { value }) => run_ip_range(&ctx, &value).await,
         Some(Command::Vlan { value, site, group }) => {
             run_vlan(&ctx, &value, site.as_deref(), group.as_deref()).await
         }
@@ -480,6 +482,18 @@ async fn run_circuit(ctx: &Ctx, value: &str) -> Result<()> {
         .ok_or_else(|| not_found("circuit", value))?;
 
     let view = CircuitView::from_model(circuit);
+    emit(ctx, &view, || view.to_key_values().print())
+}
+
+/// `nbox ip-range <start|id>` — show an IP range.
+async fn run_ip_range(ctx: &Ctx, value: &str) -> Result<()> {
+    let client = connect(ctx)?;
+    let range = client
+        .ip_range_by_ref(value)
+        .await?
+        .ok_or_else(|| not_found("IP range", value))?;
+
+    let view = IpRangeView::from_model(range);
     emit(ctx, &view, || view.to_key_values().print())
 }
 
