@@ -4,7 +4,7 @@ use anyhow::Result;
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
 
-use crate::domain::detail::load_detail;
+use crate::domain::detail::{load_detail, load_detail_by_ref};
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::search::SearchRequest;
 use crate::tui::events::spawn_terminal_events;
@@ -48,6 +48,12 @@ fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent
         AppCommand::LoadDetail { kind, id } => {
             tokio::spawn(async move {
                 let result = load_detail(&client, kind, id).await;
+                let _ = tx.send(AppEvent::DetailLoaded(result)).await;
+            });
+        }
+        AppCommand::LoadByRef { kind, value } => {
+            tokio::spawn(async move {
+                let result = load_detail_by_ref(&client, kind, &value).await;
                 let _ = tx.send(AppEvent::DetailLoaded(result)).await;
             });
         }

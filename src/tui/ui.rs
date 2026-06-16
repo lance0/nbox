@@ -50,25 +50,33 @@ fn render_home(frame: &mut Frame, area: Rect, app: &App) {
         .title(" Results ")
         .border_style(Style::default().fg(theme.border));
 
-    if app.results.is_empty() {
-        let hint = Paragraph::new("Press / to search NetBox.")
-            .block(block)
-            .style(Style::default().fg(theme.text_dim));
-        frame.render_widget(hint, area);
+    if app.view.is_empty() {
+        let hint = if app.results.is_empty() {
+            "Press / to search NetBox."
+        } else {
+            "No matches."
+        };
+        frame.render_widget(
+            Paragraph::new(hint)
+                .block(block)
+                .style(Style::default().fg(theme.text_dim)),
+            area,
+        );
         return;
     }
 
     let items: Vec<ListItem> = app
-        .results
+        .view
         .iter()
         .enumerate()
-        .map(|(i, r)| {
-            let marker = if i == app.selected { "> " } else { "  " };
+        .filter_map(|(pos, &idx)| app.results.get(idx).map(|r| (pos, r)))
+        .map(|(pos, r)| {
+            let marker = if pos == app.selected { "> " } else { "  " };
             let text = match &r.subtitle {
                 Some(s) => format!("{marker}{:<7} {}  ({s})", r.kind.as_str(), r.display),
                 None => format!("{marker}{:<7} {}", r.kind.as_str(), r.display),
             };
-            let style = if i == app.selected {
+            let style = if pos == app.selected {
                 Style::default().fg(theme.text).bg(theme.highlight_bg)
             } else {
                 Style::default().fg(theme.text)

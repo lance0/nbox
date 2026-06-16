@@ -9,6 +9,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use crate::domain::detail::DetailView;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::search::{ObjectKind, SearchResult};
+use crate::tui::palette::{self, PaletteCommand};
 use crate::tui::theme::Theme;
 
 /// Which screen is in the body area.
@@ -42,6 +43,7 @@ pub enum AppEvent {
 pub enum AppCommand {
     Search(String),
     LoadDetail { kind: ObjectKind, id: u64 },
+    LoadByRef { kind: ObjectKind, value: String },
     OpenBrowser(String),
     Copy(String),
 }
@@ -62,8 +64,11 @@ pub struct App {
 
     pub search_input: String,
     pub command_input: String,
+    pub last_query: Option<String>,
 
     pub results: Vec<SearchResult>,
+    /// Indices into `results` in display order (fuzzy-filtered while searching).
+    pub view: Vec<usize>,
     pub selected: usize,
     pub detail: Option<DetailView>,
     pub should_quit: bool,
@@ -91,7 +96,9 @@ impl App {
             status: String::new(),
             search_input: String::new(),
             command_input: String::new(),
+            last_query: None,
             results: Vec::new(),
+            view: Vec::new(),
             selected: 0,
             detail: None,
             should_quit: false,
@@ -108,6 +115,7 @@ impl App {
                     Ok(items) => {
                         self.status = format!("{} result(s)", items.len());
                         self.results = items;
+                        self.view = (0..self.results.len()).collect();
                         self.selected = 0;
                     }
                     Err(e) => self.status = format!("error: {e:#}"),
@@ -165,6 +173,7 @@ impl App {
             KeyCode::Char('/') => {
                 self.mode = Mode::Search;
                 self.search_input.clear();
+                self.refilter();
             }
             KeyCode::Char(':') => {
                 self.mode = Mode::Command;
@@ -174,10 +183,10 @@ impl App {
             KeyCode::Char('j') | KeyCode::Down => self.select_next(),
             KeyCode::Char('k') | KeyCode::Up => self.select_prev(),
             KeyCode::Char('g') => self.selected = 0,
-            KeyCode::Char('G') => self.selected = self.results.len().saturating_sub(1),
+            KeyCode::Char('G') => self.selected = self.view.len().saturating_sub(1),
             KeyCode::Enter => {
                 if self.screen == Screen::Home
-                    && let Some(r) = self.results.get(self.selected)
+                    && let Some(r) = self.selected_result()
                 {
                     let (kind, id) = (r.kind, r.id);
                     self.status = "loading…".into();
@@ -185,12 +194,12 @@ impl App {
                 }
             }
             KeyCode::Char('o') => {
-                if let Some(r) = self.results.get(self.selected) {
+                if let Some(r) = self.selected_result() {
                     return vec![AppCommand::OpenBrowser(r.url.clone())];
                 }
             }
             KeyCode::Char('y') => {
-                if let Some(r) = self.results.get(self.selected) {
+                if let Some(r) = self.selected_result() {
                     return vec![AppCommand::Copy(r.display.clone())];
                 }
             }
@@ -207,16 +216,27 @@ impl App {
                 let query = self.search_input.trim().to_string();
                 self.mode = Mode::Normal;
                 if !query.is_empty() {
+                    self.last_query = Some(query.clone());
                     self.status = format!("searching {query}…");
                     return vec![AppCommand::Search(query)];
                 }
             }
-            KeyCode::Char('u') if ctrl => self.search_input.clear(),
-            KeyCode::Char('w') if ctrl => trim_last_word(&mut self.search_input),
+            KeyCode::Char('u') if ctrl => {
+                self.search_input.clear();
+                self.refilter();
+            }
+            KeyCode::Char('w') if ctrl => {
+                trim_last_word(&mut self.search_input);
+                self.refilter();
+            }
             KeyCode::Backspace => {
                 self.search_input.pop();
+                self.refilter();
             }
-            KeyCode::Char(c) => self.search_input.push(c),
+            KeyCode::Char(c) => {
+                self.search_input.push(c);
+                self.refilter();
+            }
             _ => {}
         }
         Vec::new()
@@ -225,7 +245,16 @@ impl App {
     fn handle_command_key(&mut self, key: KeyEvent) -> Vec<AppCommand> {
         match key.code {
             KeyCode::Esc => self.mode = Mode::Normal,
-            KeyCode::Enter => self.mode = Mode::Normal,
+            KeyCode::Enter => {
+                let input = self.command_input.trim().to_string();
+                self.mode = Mode::Normal;
+                if !input.is_empty() {
+                    match palette::parse(&input) {
+                        Ok(cmd) => return self.apply_palette(cmd),
+                        Err(e) => self.status = e,
+                    }
+                }
+            }
             KeyCode::Backspace => {
                 self.command_input.pop();
             }
@@ -233,6 +262,49 @@ impl App {
             _ => {}
         }
         Vec::new()
+    }
+
+    /// Map a parsed palette command onto state changes / commands.
+    fn apply_palette(&mut self, cmd: PaletteCommand) -> Vec<AppCommand> {
+        match cmd {
+            PaletteCommand::Lookup { kind, value } => {
+                self.status = format!("loading {value}…");
+                vec![AppCommand::LoadByRef { kind, value }]
+            }
+            PaletteCommand::Search(query) => {
+                self.last_query = Some(query.clone());
+                self.status = format!("searching {query}…");
+                vec![AppCommand::Search(query)]
+            }
+            PaletteCommand::Open => match self.selected_result() {
+                Some(r) => vec![AppCommand::OpenBrowser(r.url.clone())],
+                None => {
+                    self.status = "no selection".into();
+                    Vec::new()
+                }
+            },
+            PaletteCommand::Copy => match self.selected_result() {
+                Some(r) => vec![AppCommand::Copy(r.display.clone())],
+                None => {
+                    self.status = "no selection".into();
+                    Vec::new()
+                }
+            },
+            PaletteCommand::Theme(name) => {
+                self.set_theme_by_name(&name);
+                Vec::new()
+            }
+            PaletteCommand::Refresh => match self.last_query.clone() {
+                Some(query) => {
+                    self.status = format!("refreshing {query}…");
+                    vec![AppCommand::Search(query)]
+                }
+                None => {
+                    self.status = "nothing to refresh".into();
+                    Vec::new()
+                }
+            },
+        }
     }
 
     /// Push the current screen onto the history stack and switch to `screen`.
@@ -256,13 +328,28 @@ impl App {
         self.status = format!("theme: {}", list[self.theme_index]);
     }
 
-    /// The currently selected result, if any.
+    fn set_theme_by_name(&mut self, name: &str) {
+        self.theme = Theme::by_name(name);
+        self.theme_index = Theme::index_of(name);
+        self.status = format!("theme: {}", self.theme.name());
+    }
+
+    /// Recompute the visible `view` by fuzzy-filtering results on `search_input`.
+    fn refilter(&mut self) {
+        let displays: Vec<&str> = self.results.iter().map(|r| r.display.as_str()).collect();
+        self.view = crate::tui::fuzzy::rank(&self.search_input, &displays);
+        self.selected = 0;
+    }
+
+    /// The currently selected result (through the filtered view), if any.
     pub fn selected_result(&self) -> Option<&SearchResult> {
-        self.results.get(self.selected)
+        self.view
+            .get(self.selected)
+            .and_then(|&i| self.results.get(i))
     }
 
     fn select_next(&mut self) {
-        if self.selected + 1 < self.results.len() {
+        if self.selected + 1 < self.view.len() {
             self.selected += 1;
         }
     }
@@ -299,19 +386,23 @@ mod tests {
         )
     }
 
-    fn result() -> SearchResult {
+    fn result(id: u64, display: &str) -> SearchResult {
         SearchResult {
             kind: ObjectKind::Device,
-            id: 1,
-            display: "edge01".into(),
-            subtitle: Some("iad1".into()),
-            url: "http://nb/dcim/devices/1/".into(),
+            id,
+            display: display.into(),
+            subtitle: None,
+            url: format!("http://nb/dcim/devices/{id}/"),
             score: 100,
         }
     }
 
     fn press(code: KeyCode) -> AppEvent {
         AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    fn set_results(a: &mut App, items: Vec<SearchResult>) {
+        a.handle_event(AppEvent::SearchComplete(Ok(items)));
     }
 
     #[test]
@@ -342,6 +433,93 @@ mod tests {
         let cmds = a.handle_event(press(KeyCode::Enter));
         assert_eq!(a.mode, Mode::Normal);
         assert!(matches!(cmds.as_slice(), [AppCommand::Search(q)] if q == "edge01"));
+        assert_eq!(a.last_query.as_deref(), Some("edge01"));
+    }
+
+    #[test]
+    fn typing_in_search_fuzzy_filters_the_view() {
+        let mut a = app();
+        set_results(
+            &mut a,
+            vec![
+                result(1, "edge01"),
+                result(2, "core02"),
+                result(3, "edge-rtr"),
+            ],
+        );
+        assert_eq!(a.view.len(), 3);
+
+        a.handle_event(press(KeyCode::Char('/')));
+        for c in "edge".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        // Only the two "edge" results remain in the filtered view.
+        assert_eq!(a.view.len(), 2);
+        let visible: Vec<u64> = a.view.iter().map(|&i| a.results[i].id).collect();
+        assert!(visible.contains(&1) && visible.contains(&3));
+        assert!(!visible.contains(&2));
+    }
+
+    #[test]
+    fn enter_on_result_loads_detail_and_back_returns_home() {
+        let mut a = app();
+        set_results(&mut a, vec![result(1, "edge01")]);
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(matches!(
+            cmds.as_slice(),
+            [AppCommand::LoadDetail {
+                kind: ObjectKind::Device,
+                id: 1
+            }]
+        ));
+
+        a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
+            title: "device edge01".into(),
+            body: "name: edge01".into(),
+        })));
+        assert_eq!(a.screen, Screen::Detail);
+
+        a.handle_event(press(KeyCode::Char('b')));
+        assert_eq!(a.screen, Screen::Home);
+    }
+
+    #[test]
+    fn palette_lookup_emits_load_by_ref() {
+        let mut a = app();
+        a.handle_event(press(KeyCode::Char(':')));
+        for c in "device edge01".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert_eq!(a.mode, Mode::Normal);
+        assert!(matches!(
+            cmds.as_slice(),
+            [AppCommand::LoadByRef { kind: ObjectKind::Device, value }] if value == "edge01"
+        ));
+    }
+
+    #[test]
+    fn palette_theme_changes_theme_in_place() {
+        let mut a = app();
+        a.handle_event(press(KeyCode::Char(':')));
+        for c in "theme nord".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(cmds.is_empty());
+        assert_eq!(a.theme.name(), "nord");
+    }
+
+    #[test]
+    fn o_and_y_emit_open_and_copy() {
+        let mut a = app();
+        set_results(&mut a, vec![result(1, "edge01")]);
+        let open = a.handle_event(press(KeyCode::Char('o')));
+        assert!(
+            matches!(open.as_slice(), [AppCommand::OpenBrowser(u)] if u == "http://nb/dcim/devices/1/")
+        );
+        let copy = a.handle_event(press(KeyCode::Char('y')));
+        assert!(matches!(copy.as_slice(), [AppCommand::Copy(v)] if v == "edge01"));
     }
 
     #[test]
@@ -354,42 +532,6 @@ mod tests {
             KeyModifiers::CONTROL,
         )));
         assert_eq!(a.search_input, "edge ");
-    }
-
-    #[test]
-    fn enter_on_result_loads_detail_and_back_returns_home() {
-        let mut a = app();
-        a.results = vec![result()];
-        let cmds = a.handle_event(press(KeyCode::Enter));
-        assert!(matches!(
-            cmds.as_slice(),
-            [AppCommand::LoadDetail {
-                kind: ObjectKind::Device,
-                id: 1
-            }]
-        ));
-
-        // Simulate the detail load completing.
-        a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
-            title: "device edge01".into(),
-            body: "name: edge01".into(),
-        })));
-        assert_eq!(a.screen, Screen::Detail);
-
-        a.handle_event(press(KeyCode::Char('b')));
-        assert_eq!(a.screen, Screen::Home);
-    }
-
-    #[test]
-    fn o_and_y_emit_open_and_copy() {
-        let mut a = app();
-        a.results = vec![result()];
-        let open = a.handle_event(press(KeyCode::Char('o')));
-        assert!(
-            matches!(open.as_slice(), [AppCommand::OpenBrowser(u)] if u == "http://nb/dcim/devices/1/")
-        );
-        let copy = a.handle_event(press(KeyCode::Char('y')));
-        assert!(matches!(copy.as_slice(), [AppCommand::Copy(v)] if v == "edge01"));
     }
 
     #[test]

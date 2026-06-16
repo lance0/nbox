@@ -1,7 +1,7 @@
 //! On-demand detail loading for the TUI: fetch an object by kind + id and
 //! render it (reusing the same view models as the CLI).
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 
 use crate::domain::device_view::DeviceView;
 use crate::domain::ip_view::{IpView, most_specific};
@@ -77,6 +77,85 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
         }
         ObjectKind::Vlan => {
             let vlan: Vlan = client.get(&format!("/api/ipam/vlans/{id}/"), &[]).await?;
+            let prefixes = client.vlan_prefixes(vlan.id, 50).await?;
+            let v = VlanView::build(vlan, prefixes);
+            Ok(DetailView {
+                title: format!("vlan {}", v.vid),
+                body: v.to_plain(),
+            })
+        }
+    }
+}
+
+/// Load and render a detail by user reference (name/slug/cidr/vid/address),
+/// used by the command palette.
+pub async fn load_detail_by_ref(
+    client: &NetBoxClient,
+    kind: ObjectKind,
+    value: &str,
+) -> Result<DetailView> {
+    match kind {
+        ObjectKind::Device => {
+            let d = client
+                .device_by_ref(value)
+                .await?
+                .with_context(|| format!("no device matched \"{value}\""))?;
+            let v = DeviceView::from_model(d);
+            Ok(DetailView {
+                title: format!("device {}", v.name),
+                body: v.to_key_values().render(),
+            })
+        }
+        ObjectKind::Site => {
+            let s = client
+                .site_by_ref(value)
+                .await?
+                .with_context(|| format!("no site matched \"{value}\""))?;
+            let v = SiteView::from_model(s);
+            Ok(DetailView {
+                title: format!("site {}", v.name),
+                body: v.to_key_values().render(),
+            })
+        }
+        ObjectKind::IpAddress => {
+            let ip = client
+                .ip_candidates(value)
+                .await?
+                .into_iter()
+                .next()
+                .with_context(|| format!("no IP address matched \"{value}\""))?;
+            let host = ip
+                .address
+                .split('/')
+                .next()
+                .unwrap_or(&ip.address)
+                .to_string();
+            let parent = most_specific(client.prefixes_containing(&host).await?);
+            let v = IpView::build(ip, parent);
+            Ok(DetailView {
+                title: format!("ip {}", v.address),
+                body: v.to_key_values().render(),
+            })
+        }
+        ObjectKind::Prefix => {
+            let p = client
+                .prefix_by_cidr(value)
+                .await?
+                .with_context(|| format!("no prefix matched \"{value}\""))?;
+            let cidr = p.prefix.clone();
+            let children = client.prefix_children(&cidr, 50).await?;
+            let ips = client.prefix_ips(&cidr, 50).await?;
+            let v = PrefixView::build(p, children, ips);
+            Ok(DetailView {
+                title: format!("prefix {}", v.prefix),
+                body: v.to_plain(),
+            })
+        }
+        ObjectKind::Vlan => {
+            let vlan = client
+                .vlan_by_ref(value)
+                .await?
+                .with_context(|| format!("no VLAN matched \"{value}\""))?;
             let prefixes = client.vlan_prefixes(vlan.id, 50).await?;
             let v = VlanView::build(vlan, prefixes);
             Ok(DetailView {

@@ -57,8 +57,8 @@ nbx vlan 208
 - ☑ Detail pane (device / ip / prefix / vlan / site) — Enter loads via `domain::detail::load_detail`
 - ☑ Navigation history (`b` / `Esc`, screen stack)
 - ☑ Help modal (`?`/`F1`)
-- ☐ Command palette (`:`)
-- ☐ Client-side fuzzy ranking (`nucleo`) for the palette + in-memory result lists
+- ☑ Command palette (`:`) — `device`/`ip`/`prefix`/`vlan`/`site`/`find`/`open`/`copy`/`theme`/`refresh`
+- ☑ Client-side fuzzy ranking (`nucleo`) — live filtering of in-memory results while typing
 - ☑ Open in browser (`o`, via `open` + `util::format::api_to_web_url`)
 - ☑ Copy to clipboard (`y`, `arboard` behind the `clipboard` feature)
 

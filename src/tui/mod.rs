@@ -6,6 +6,8 @@
 
 pub mod app;
 pub mod events;
+pub mod fuzzy;
+pub mod palette;
 pub mod state;
 pub mod theme;
 pub mod ui;
