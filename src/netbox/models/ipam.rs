@@ -132,6 +132,53 @@ pub struct Vrf {
     pub custom_fields: serde_json::Value,
 }
 
+/// An aggregate (`/api/ipam/aggregates/`) — a top-level allocation from a RIR.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Aggregate {
+    pub id: u64,
+    pub url: String,
+    #[serde(default)]
+    pub display: Option<String>,
+    pub prefix: String,
+
+    #[serde(default)]
+    pub rir: Option<BriefObject>,
+    #[serde(default)]
+    pub tenant: Option<BriefObject>,
+    #[serde(default)]
+    pub date_added: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+
+    #[serde(default)]
+    pub tags: Vec<Tag>,
+    #[serde(default)]
+    pub custom_fields: serde_json::Value,
+}
+
+/// An ASN (`/api/ipam/asns/`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Asn {
+    pub id: u64,
+    pub url: String,
+    #[serde(default)]
+    pub display: Option<String>,
+    /// The AS number (supports 32-bit ASNs).
+    pub asn: u32,
+
+    #[serde(default)]
+    pub rir: Option<BriefObject>,
+    #[serde(default)]
+    pub tenant: Option<BriefObject>,
+    #[serde(default)]
+    pub description: Option<String>,
+
+    #[serde(default)]
+    pub tags: Vec<Tag>,
+    #[serde(default)]
+    pub custom_fields: serde_json::Value,
+}
+
 /// An available IP within a prefix (`…/available-ips/`). NetBox returns a bare
 /// array of these; only `address` is needed (other fields are ignored).
 #[derive(Debug, Clone, Deserialize, Serialize)]

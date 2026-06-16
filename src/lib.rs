@@ -10,6 +10,8 @@ use clap::CommandFactory;
 use ipnet::IpNet;
 
 use crate::cli::{Cli, Command};
+use crate::domain::aggregate_view::AggregateView;
+use crate::domain::asn_view::AsnView;
 use crate::domain::circuit_view::CircuitView;
 use crate::domain::device_detail::DeviceDetail;
 use crate::domain::interface_view::InterfaceView;
@@ -127,6 +129,8 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Site { value }) => run_site(&ctx, &value).await,
         Some(Command::Rack { value }) => run_rack(&ctx, &value).await,
         Some(Command::Circuit { value }) => run_circuit(&ctx, &value).await,
+        Some(Command::Aggregate { value }) => run_aggregate(&ctx, &value).await,
+        Some(Command::Asn { asn }) => run_asn(&ctx, asn).await,
         Some(Command::Vlan { value, site, group }) => {
             run_vlan(&ctx, &value, site.as_deref(), group.as_deref()).await
         }
@@ -474,6 +478,31 @@ async fn run_circuit(ctx: &Ctx, value: &str) -> Result<()> {
         .ok_or_else(|| not_found("circuit", value))?;
 
     let view = CircuitView::from_model(circuit);
+    emit(ctx, &view, || view.to_key_values().print())
+}
+
+/// `nbox aggregate <cidr|id>` — show an aggregate.
+async fn run_aggregate(ctx: &Ctx, value: &str) -> Result<()> {
+    let client = connect(ctx)?;
+    let aggregate = client
+        .aggregate_by_ref(value)
+        .await?
+        .ok_or_else(|| not_found("aggregate", value))?;
+
+    let view = AggregateView::from_model(aggregate);
+    emit(ctx, &view, || view.to_key_values().print())
+}
+
+/// `nbox asn <asn>` — show an ASN.
+async fn run_asn(ctx: &Ctx, asn: u32) -> Result<()> {
+    let client = connect(ctx)?;
+    let value = asn.to_string();
+    let asn = client
+        .asn_by_ref(asn)
+        .await?
+        .ok_or_else(|| not_found("ASN", &value))?;
+
+    let view = AsnView::from_model(asn);
     emit(ctx, &view, || view.to_key_values().print())
 }
 

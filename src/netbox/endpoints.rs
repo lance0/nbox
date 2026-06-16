@@ -14,6 +14,8 @@ pub enum Endpoint {
     Tenants,
     VirtualMachines,
     Circuits,
+    Aggregates,
+    Asns,
 }
 
 impl Endpoint {
@@ -31,6 +33,8 @@ impl Endpoint {
             Endpoint::Tenants => "/api/tenancy/tenants/",
             Endpoint::VirtualMachines => "/api/virtualization/virtual-machines/",
             Endpoint::Circuits => "/api/circuits/circuits/",
+            Endpoint::Aggregates => "/api/ipam/aggregates/",
+            Endpoint::Asns => "/api/ipam/asns/",
         }
     }
 

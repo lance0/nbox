@@ -165,6 +165,18 @@ pub enum Command {
         value: String,
     },
 
+    /// Show an aggregate by CIDR or numeric ID.
+    Aggregate {
+        /// Aggregate prefix (CIDR) or numeric ID.
+        value: String,
+    },
+
+    /// Show an ASN by number.
+    Asn {
+        /// The AS number.
+        asn: u32,
+    },
+
     /// Show a VLAN by VID or name.
     Vlan {
         /// VLAN VID or name.

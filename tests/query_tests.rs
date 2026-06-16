@@ -314,6 +314,47 @@ async fn circuit_by_id_hits_detail_endpoint() {
 }
 
 #[tokio::test]
+async fn aggregate_by_cidr_uses_prefix_filter() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/aggregates/"))
+        .and(query_param("prefix", "10.0.0.0/8"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 1, "url": "http://nb/api/ipam/aggregates/1/", "prefix": "10.0.0.0/8",
+                "rir": {"id": 1, "display": "RFC 1918"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let agg = client(&server)
+        .aggregate_by_ref("10.0.0.0/8")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(agg.prefix, "10.0.0.0/8");
+}
+
+#[tokio::test]
+async fn asn_by_ref_uses_asn_filter() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/asns/"))
+        .and(query_param("asn", "64512"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 9, "url": "http://nb/api/ipam/asns/9/", "asn": 64512}]
+        })))
+        .mount(&server)
+        .await;
+
+    let asn = client(&server).asn_by_ref(64512).await.unwrap().unwrap();
+    assert_eq!(asn.asn, 64512);
+}
+
+#[tokio::test]
 async fn rack_by_id_hits_detail_endpoint() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

@@ -9,7 +9,9 @@ use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
 use crate::netbox::models::circuits::Circuit;
 use crate::netbox::models::dcim::{Device, Interface, Rack, Site};
-use crate::netbox::models::ipam::{AvailableIp, AvailablePrefix, IpAddress, Prefix, Vlan};
+use crate::netbox::models::ipam::{
+    Aggregate, Asn, AvailableIp, AvailablePrefix, IpAddress, Prefix, Vlan,
+};
 use crate::netbox::pagination::Page;
 
 /// Resolve a fuzzy (name-contains) result set: the single match, `None` if empty,
@@ -276,6 +278,27 @@ impl NetBoxClient {
             .list(Endpoint::Sites, vec![("name__ic", value.to_string())])
             .await?;
         ambiguous_or_first("site", value, contains.results, |s| s.name.clone())
+    }
+
+    /// Resolve an aggregate by numeric ID, or by its exact CIDR.
+    pub async fn aggregate_by_ref(&self, value: &str) -> Result<Option<Aggregate>> {
+        if let Ok(id) = value.parse::<u64>() {
+            return self
+                .get_optional(&format!("/api/ipam/aggregates/{id}/"), &[])
+                .await;
+        }
+        let page: Page<Aggregate> = self
+            .list(Endpoint::Aggregates, vec![("prefix", value.to_string())])
+            .await?;
+        ambiguous_or_first("aggregate", value, page.results, |a| a.prefix.clone())
+    }
+
+    /// Resolve an ASN by its AS number.
+    pub async fn asn_by_ref(&self, asn: u32) -> Result<Option<Asn>> {
+        let page: Page<Asn> = self
+            .list(Endpoint::Asns, vec![("asn", asn.to_string())])
+            .await?;
+        Ok(page.results.into_iter().next())
     }
 
     /// Resolve a circuit by numeric ID, then exact CID, then a CID-contains
