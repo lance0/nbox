@@ -1,7 +1,7 @@
 //! Configuration: profiles, UI preferences, and token resolution.
 //!
-//! Config lives at `~/.config/nbx/config.toml` (Linux/macOS) or
-//! `%APPDATA%\nbx\config.toml` (Windows). We read with `toml` and mutate with
+//! Config lives at `~/.config/nbox/config.toml` (Linux/macOS) or
+//! `%APPDATA%\nbox\config.toml` (Windows). We read with `toml` and mutate with
 //! `toml_edit` so user comments and formatting survive `profile add`/`use`.
 
 use std::collections::BTreeMap;
@@ -15,10 +15,10 @@ use toml_edit::{DocumentMut, Item, Table, value};
 use crate::cli::{ConfigCommand, ProfileCommand};
 use crate::netbox::auth::AuthScheme;
 
-/// Starter config written by `nbx config init`.
-const INIT_TEMPLATE: &str = r#"# nbx configuration
+/// Starter config written by `nbox config init`.
+const INIT_TEMPLATE: &str = r#"# nbox configuration
 # Tokens are NOT stored here — point `token_env` at an environment variable,
-# or export NBX_TOKEN to override.
+# or export NBOX_TOKEN to override.
 
 active_profile = "default"
 
@@ -110,7 +110,7 @@ fn default_true() -> bool {
 /// The default config file path for this platform.
 pub fn default_path() -> Result<PathBuf> {
     let dir = dirs::config_dir().context("could not determine the user config directory")?;
-    Ok(dir.join("nbx").join("config.toml"))
+    Ok(dir.join("nbox").join("config.toml"))
 }
 
 /// Resolve an explicit `--config` path, falling back to [`default_path`].
@@ -124,23 +124,23 @@ fn resolve_path(explicit: Option<&Path>) -> Result<PathBuf> {
 /// Load and deserialize the typed config at `path`.
 pub fn load(path: &Path) -> Result<Config> {
     let text = fs::read_to_string(path)
-        .with_context(|| format!("no config at {} — run `nbx config init`", path.display()))?;
+        .with_context(|| format!("no config at {} — run `nbox config init`", path.display()))?;
     toml::from_str(&text).with_context(|| format!("parsing {}", path.display()))
 }
 
-/// Resolve the API token for `profile`, preferring `NBX_TOKEN`.
+/// Resolve the API token for `profile`, preferring `NBOX_TOKEN`.
 pub fn resolve_token(profile: &ProfileConfig) -> Option<String> {
-    let nbx = std::env::var("NBX_TOKEN").ok();
+    let nbox = std::env::var("NBOX_TOKEN").ok();
     let from_env = profile
         .token_env
         .as_ref()
         .and_then(|name| std::env::var(name).ok());
-    select_token(nbx, from_env)
+    select_token(nbox, from_env)
 }
 
-/// Pure token-priority logic: `NBX_TOKEN` wins, then the profile's env var.
-fn select_token(nbx_token: Option<String>, env_token: Option<String>) -> Option<String> {
-    nbx_token
+/// Pure token-priority logic: `NBOX_TOKEN` wins, then the profile's env var.
+fn select_token(nbox_token: Option<String>, env_token: Option<String>) -> Option<String> {
+    nbox_token
         .filter(|t| !t.is_empty())
         .or_else(|| env_token.filter(|t| !t.is_empty()))
 }
@@ -216,7 +216,7 @@ fn write_doc(path: &Path, doc: &DocumentMut) -> Result<()> {
     Ok(())
 }
 
-/// Handle the `nbx config` subcommands.
+/// Handle the `nbox config` subcommands.
 pub fn run_config(cmd: ConfigCommand, config_path: Option<&Path>, json: bool) -> Result<()> {
     let path = resolve_path(config_path)?;
     match cmd {
@@ -248,7 +248,7 @@ pub fn run_config(cmd: ConfigCommand, config_path: Option<&Path>, json: bool) ->
     }
 }
 
-/// Handle the `nbx profile` subcommands.
+/// Handle the `nbox profile` subcommands.
 pub fn run_profile(cmd: ProfileCommand, config_path: Option<&Path>, json: bool) -> Result<()> {
     let path = resolve_path(config_path)?;
     match cmd {
@@ -349,7 +349,7 @@ page_size = 250
     }
 
     #[test]
-    fn token_priority_prefers_nbx_token() {
+    fn token_priority_prefers_nbox_token() {
         assert_eq!(
             select_token(Some("override".into()), Some("env".into())),
             Some("override".into())

@@ -1,8 +1,8 @@
 //! Integration tests for the multi-endpoint search fan-out.
 
-use nbx::config::ProfileConfig;
-use nbx::netbox::client::NetBoxClient;
-use nbx::netbox::search::{ObjectKind, SearchRequest};
+use nbox::config::ProfileConfig;
+use nbox::netbox::client::NetBoxClient;
+use nbox::netbox::search::{ObjectKind, SearchRequest};
 use serde_json::json;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};

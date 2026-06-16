@@ -1,10 +1,10 @@
 //! Integration tests for the NetBox REST client, backed by a wiremock server.
 
-use nbx::config::ProfileConfig;
-use nbx::netbox::auth::AuthScheme;
-use nbx::netbox::client::NetBoxClient;
-use nbx::netbox::endpoints::Endpoint;
-use nbx::netbox::pagination::Page;
+use nbox::config::ProfileConfig;
+use nbox::netbox::auth::AuthScheme;
+use nbox::netbox::client::NetBoxClient;
+use nbox::netbox::endpoints::Endpoint;
+use nbox::netbox::pagination::Page;
 use serde_json::{Value, json};
 use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};

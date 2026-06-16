@@ -1,6 +1,6 @@
 # Roadmap
 
-This roadmap tracks nbx from skeleton to safe writes. It maps the implementation phases in [DESIGN.md](DESIGN.md) onto release milestones. Items are intentionally read-only first; write support is deliberately deferred.
+This roadmap tracks nbox from skeleton to safe writes. It maps the implementation phases in [DESIGN.md](DESIGN.md) onto release milestones. Items are intentionally read-only first; write support is deliberately deferred.
 
 Legend: ☐ planned · ◐ in progress · ☑ done
 
@@ -27,10 +27,10 @@ The goal of v0.1 is a working vertical slice: configure a profile, search, look 
 **Deliverable**
 
 ```bash
-nbx config init
-nbx profile add work https://netbox.example.com --token-env NETBOX_TOKEN
-nbx profile use work
-nbx search edge01 --json
+nbox config init
+nbox profile add work https://netbox.example.com --token-env NETBOX_TOKEN
+nbox profile use work
+nbox search edge01 --json
 ```
 
 ### Phase 2 — Core REST models
@@ -44,10 +44,10 @@ nbx search edge01 --json
 **Deliverable**
 
 ```bash
-nbx device edge01
-nbx ip 10.44.208.55
-nbx prefix 10.44.208.0/24
-nbx vlan 208
+nbox device edge01
+nbox ip 10.44.208.55
+nbox prefix 10.44.208.0/24
+nbox vlan 208
 ```
 
 ### Phase 3 — TUI v0
@@ -65,15 +65,15 @@ nbx vlan 208
 **Deliverable**
 
 ```bash
-nbx
+nbox
 ```
 
 ### Phase 4 — Polish
 - ☑ Built-in themes (11 ported from xfr in `tui/theme.rs`); cycle (`t`) + palette `theme`, persisted to `[ui].theme` on TUI exit
 - ☑ Update notifications (`updates` feature): GitHub check + CLI notice (`src/update.rs`); TUI banner lands in Phase 3
 - ☐ Recent objects
-- ☑ Friendly, actionable errors (DESIGN §17 "no X matched … Try: nbx search …")
-- ☑ Shell completions (bash/zsh/fish/powershell/elvish) — `nbx completions <shell>`
+- ☑ Friendly, actionable errors (DESIGN §17 "no X matched … Try: nbox search …")
+- ☑ Shell completions (bash/zsh/fish/powershell/elvish) — `nbox completions <shell>`
 - ☐ Install script
 - ☐ Release builds + artifacts (CI itself lands in Phase 1)
 - ☐ Homebrew tap
@@ -85,16 +85,16 @@ nbx
 - ☐ Optional read-only **GraphQL** client for nested device detail (one query for device + interfaces + IPs + rack + site)
 - ☐ Interface and cable/connection views on the device screen
 - ☐ **Safe writes (initial):** `PATCH` engine, minimal diff, before/after preview, confirmation modal
-  - ☐ `nbx device <name> set status <value>`
-  - ☐ `nbx interface <device> <iface> set description "..."`
+  - ☐ `nbox device <name> set status <value>`
+  - ☐ `nbox interface <device> <iface> set description "..."`
 - ☐ `changelog_message` support on writes
 
 ---
 
 ## v0.3 — Broader safe writes
 
-- ☐ `nbx ip <addr> reserve --description "..."`
-- ☐ `nbx tag add <type> <name> <tag>`
+- ☐ `nbox ip <addr> reserve --description "..."`
+- ☐ `nbox tag add <type> <name> <tag>`
 - ☐ Write workflows surfaced in the TUI edit mode (`e` / `d` / confirm)
 - ☐ OPTIONS / OpenAPI schema discovery to validate filters & write capability per NetBox version
 

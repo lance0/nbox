@@ -1,6 +1,6 @@
 //! Normalized multi-endpoint search.
 //!
-//! There is no universal NetBox search endpoint, so `nbx search` fans out across
+//! There is no universal NetBox search endpoint, so `nbox search` fans out across
 //! several object types in parallel using each endpoint's built-in `q=`
 //! quick-search, then merges, ranks, dedups, and truncates.
 

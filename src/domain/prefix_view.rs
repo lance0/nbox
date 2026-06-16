@@ -1,4 +1,4 @@
-//! Flattened prefix view for `nbx prefix` (plain + JSON), with child prefixes
+//! Flattened prefix view for `nbox prefix` (plain + JSON), with child prefixes
 //! and contained IP addresses.
 
 use serde::Serialize;

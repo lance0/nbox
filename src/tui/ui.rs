@@ -91,7 +91,7 @@ fn render_home(frame: &mut Frame, area: Rect, app: &App) {
 fn render_help(frame: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
     let lines = vec![
-        Line::from("nbx — keybindings"),
+        Line::from("nbox — keybindings"),
         Line::from(""),
         Line::from("/        search"),
         Line::from(":        command palette"),

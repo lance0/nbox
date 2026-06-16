@@ -1,7 +1,7 @@
 //! Integration tests for endpoint query helpers.
 
-use nbx::config::ProfileConfig;
-use nbx::netbox::client::NetBoxClient;
+use nbox::config::ProfileConfig;
+use nbox::netbox::client::NetBoxClient;
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};

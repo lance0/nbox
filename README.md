@@ -1,8 +1,8 @@
-# nbx
+# nbox
 
 > Terminal UI and CLI for NetBox — fast search, IPAM lookups, device context, and (later) safe operational workflows.
 
-**nbx** gives you k9s/lazygit-style navigation for NetBox data. It is built for the questions you actually ask at the terminal: *What is this IP? Where is this device? What prefix owns this address? What VLAN is this?* — and answers them fast, both interactively and as scriptable one-liners.
+**nbox** gives you k9s/lazygit-style navigation for NetBox data. It is built for the questions you actually ask at the terminal: *What is this IP? Where is this device? What prefix owns this address? What VLAN is this?* — and answers them fast, both interactively and as scriptable one-liners.
 
 > ⚠️ **Status: pre-release / in active development.** v0.1 is read-only. See [ROADMAP.md](ROADMAP.md) for what's shipping when, and [DESIGN.md](DESIGN.md) for the full architecture.
 
@@ -12,19 +12,19 @@
 
 ```bash
 # Configure a profile
-nbx config init
-nbx profile add work https://netbox.example.com --token-env NETBOX_TOKEN
-nbx profile use work
-export NETBOX_TOKEN=...      # or NBX_TOKEN to override
+nbox config init
+nbox profile add work https://netbox.example.com --token-env NETBOX_TOKEN
+nbox profile use work
+export NETBOX_TOKEN=...      # or NBOX_TOKEN to override
 
 # Look things up from the shell
-nbx search edge01
-nbx device edge01
-nbx ip 10.44.208.55
-nbx prefix 10.44.208.0/24
+nbox search edge01
+nbox device edge01
+nbox ip 10.44.208.55
+nbox prefix 10.44.208.0/24
 
 # Or launch the interactive TUI
-nbx
+nbox
 ```
 
 ---
@@ -50,8 +50,8 @@ See [docs/FEATURES.md](docs/FEATURES.md) for the full list.
 
 ```bash
 # From source (requires Rust 1.88+)
-git clone git@github.com:lance0/nbx.git
-cd nbx
+git clone git@github.com:lance0/nbox.git
+cd nbox
 cargo install --path .
 ```
 
@@ -75,8 +75,8 @@ Config lives at:
 
 | OS            | Path                        |
 | ------------- | --------------------------- |
-| Linux / macOS | `~/.config/nbx/config.toml` |
-| Windows       | `%APPDATA%\nbx\config.toml` |
+| Linux / macOS | `~/.config/nbox/config.toml` |
+| Windows       | `%APPDATA%\nbox\config.toml` |
 
 ```toml
 active_profile = "work"
@@ -95,38 +95,38 @@ page_size = 100
 exclude_config_context = true
 ```
 
-**Tokens are never stored in plaintext by default.** nbx reads them, in order, from:
+**Tokens are never stored in plaintext by default.** nbox reads them, in order, from:
 
-1. `NBX_TOKEN` (direct override)
+1. `NBOX_TOKEN` (direct override)
 2. the env var named by `token_env`
 3. *(future)* OS keyring
 
-nbx auto-detects v2 tokens (`Bearer nbt_<key>.<token>`) vs legacy v1 tokens (`Token <token>`). See [docs/CONFIG.md](docs/CONFIG.md).
+nbox auto-detects v2 tokens (`Bearer nbt_<key>.<token>`) vs legacy v1 tokens (`Token <token>`). See [docs/CONFIG.md](docs/CONFIG.md).
 
 ---
 
 ## Usage
 
 ```bash
-nbx                              # launch TUI
-nbx search <query> [--limit N]
-nbx device <name-or-id>
-nbx ip <address>
-nbx prefix <cidr>
-nbx site <name-or-slug>
-nbx rack <name-or-id>
-nbx vlan <vid-or-name>
-nbx interface <device> <interface>
-nbx open <object-ref>
-nbx completions <bash|zsh|fish|powershell|elvish>
+nbox                              # launch TUI
+nbox search <query> [--limit N]
+nbox device <name-or-id>
+nbox ip <address>
+nbox prefix <cidr>
+nbox site <name-or-slug>
+nbox rack <name-or-id>
+nbox vlan <vid-or-name>
+nbox interface <device> <interface>
+nbox open <object-ref>
+nbox completions <bash|zsh|fish|powershell|elvish>
 ```
 
 Every command supports `--json`:
 
 ```bash
-nbx device edge01 --json | jq '.primary_ip4.address'
-nbx ip 10.44.208.55 --json
-nbx search edge01 --limit 20
+nbox device edge01 --json | jq '.primary_ip4.address'
+nbox ip 10.44.208.55 --json
+nbox search edge01 --limit 20
 ```
 
 ---
@@ -164,7 +164,7 @@ See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 
 ## NetBox Compatibility
 
-- **Requires NetBox 4.2+** (uses the modern polymorphic `scope` model for prefixes/VLANs). nbx checks the instance version via `/api/status/` on connect.
+- **Requires NetBox 4.2+** (uses the modern polymorphic `scope` model for prefixes/VLANs). nbox checks the instance version via `/api/status/` on connect.
 - Targets the NetBox **REST API** (`/api/`) as the primary integration path.
 - Supports both **v2 API tokens** (NetBox 4.5+, `Bearer`) and legacy **v1 tokens** (`Token`).
 - Optional, read-only **GraphQL** (`/graphql/`) is used for nested detail views (v0.2+).

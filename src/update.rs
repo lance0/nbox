@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use update_informer::registry::GitHub;
 
-/// How nbx was installed (best guess from the executable path).
+/// How nbox was installed (best guess from the executable path).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallMethod {
     Homebrew,
@@ -41,9 +41,9 @@ impl InstallMethod {
     /// The upgrade command/URL appropriate for this install method.
     pub fn update_command(self) -> &'static str {
         match self {
-            Self::Homebrew => "brew upgrade nbx",
-            Self::Cargo => "cargo install nbx",
-            Self::Binary => "github.com/lance0/nbx/releases",
+            Self::Homebrew => "brew upgrade nbox",
+            Self::Cargo => "cargo install nbox",
+            Self::Binary => "github.com/lance0/nbox/releases",
         }
     }
 }
@@ -64,7 +64,7 @@ pub fn spawn_check() -> Receiver<Option<String>> {
 pub fn check_for_update() -> Option<String> {
     use update_informer::Check;
 
-    let informer = update_informer::new(GitHub, "lance0/nbx", env!("CARGO_PKG_VERSION"))
+    let informer = update_informer::new(GitHub, "lance0/nbox", env!("CARGO_PKG_VERSION"))
         .interval(Duration::ZERO);
 
     informer
@@ -116,13 +116,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn install_commands_reference_nbx() {
-        assert_eq!(InstallMethod::Homebrew.update_command(), "brew upgrade nbx");
-        assert_eq!(InstallMethod::Cargo.update_command(), "cargo install nbx");
+    fn install_commands_reference_nbox() {
+        assert_eq!(
+            InstallMethod::Homebrew.update_command(),
+            "brew upgrade nbox"
+        );
+        assert_eq!(InstallMethod::Cargo.update_command(), "cargo install nbox");
         assert!(
             InstallMethod::Binary
                 .update_command()
-                .contains("github.com/lance0/nbx")
+                .contains("github.com/lance0/nbox")
         );
     }
 }

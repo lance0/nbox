@@ -1,4 +1,4 @@
-//! Flattened site view for `nbx site` (plain + JSON).
+//! Flattened site view for `nbox site` (plain + JSON).
 
 use serde::Serialize;
 

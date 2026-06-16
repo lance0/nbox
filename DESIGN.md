@@ -1,7 +1,7 @@
-# nbx — Design Document
+# nbox — Design Document
 
 > Status: **Draft / v0.1 design**
-> Audience: contributors building nbx from scratch.
+> Audience: contributors building nbox from scratch.
 > This document is the source of truth for the initial architecture and MVP scope. Code in this doc is illustrative — names and signatures may shift during implementation, but the shapes should hold.
 
 ---
@@ -10,9 +10,9 @@
 
 | Field    | Value                                    |
 | -------- | ---------------------------------------- |
-| Name     | nbx                                      |
-| Repo     | `lance0/nbx`                             |
-| Binary   | `nbx`                                    |
+| Name     | nbox                                      |
+| Repo     | `lance0/nbox`                             |
+| Binary   | `nbox`                                    |
 | Language | Rust                                     |
 | UI       | ratatui + crossterm                      |
 | Purpose  | Fast terminal UI and CLI for NetBox      |
@@ -22,7 +22,7 @@
 
 **Tagline**
 
-> nbx is a terminal UI for NetBox, built for fast search, IPAM lookups, device context, and safe operational workflows.
+> nbox is a terminal UI for NetBox, built for fast search, IPAM lookups, device context, and safe operational workflows.
 
 **Positioning**
 
@@ -31,7 +31,7 @@
 
 **Integration strategy**
 
-- **REST is the primary integration path.** NetBox's REST API is designed around normal HTTP verbs, JSON objects, list endpoints, detail endpoints, filters, and object IDs. A running instance exposes interactive REST API docs at `/api/schema/swagger-ui/`, which doubles as a development aid and a future schema-discovery tool for nbx.
+- **REST is the primary integration path.** NetBox's REST API is designed around normal HTTP verbs, JSON objects, list endpoints, detail endpoints, filters, and object IDs. A running instance exposes interactive REST API docs at `/api/schema/swagger-ui/`, which doubles as a development aid and a future schema-discovery tool for nbox.
 - **GraphQL is optional and read-only.** NetBox's GraphQL API (`/graphql/`) is explicitly read-only. It is valuable for nested detail views where a single query fetches a device plus its interfaces, IPs, rack, site, and related objects.
 
 ---
@@ -60,7 +60,7 @@
 
 ### Product philosophy
 
-nbx exists to answer operational questions quickly:
+nbox exists to answer operational questions quickly:
 
 - What is this IP?
 - Where is this device?
@@ -76,29 +76,29 @@ nbx exists to answer operational questions quickly:
 ## 3. Command Surface
 
 ```
-nbx                              # launch TUI (no subcommand)
-nbx search <query>
-nbx device <name-or-id>
-nbx ip <address>
-nbx prefix <cidr>
-nbx site <name-or-slug>
-nbx rack <name-or-id>
-nbx vlan <vid-or-name>
-nbx interface <device> <interface>
-nbx open <object-ref>
-nbx config init
-nbx profile add <name>
-nbx profile use <name>
-nbx completions <shell>
+nbox                              # launch TUI (no subcommand)
+nbox search <query>
+nbox device <name-or-id>
+nbox ip <address>
+nbox prefix <cidr>
+nbox site <name-or-slug>
+nbox rack <name-or-id>
+nbox vlan <vid-or-name>
+nbox interface <device> <interface>
+nbox open <object-ref>
+nbox config init
+nbox profile add <name>
+nbox profile use <name>
+nbox completions <shell>
 ```
 
-Every shell command works without the TUI, which makes nbx scriptable:
+Every shell command works without the TUI, which makes nbox scriptable:
 
 ```bash
-nbx ip 10.44.208.55
-nbx ip 10.44.208.55 --json
-nbx device edge01 --json | jq '.primary_ip4.address'
-nbx search edge01 --limit 20
+nbox ip 10.44.208.55
+nbox ip 10.44.208.55 --json
+nbox device edge01 --json | jq '.primary_ip4.address'
+nbox search edge01 --limit 20
 ```
 
 ---
@@ -133,17 +133,17 @@ NetBox supports `PATCH`, and the docs recommend `PATCH` for most updates because
 
 ## 5. Cargo.toml
 
-nbx mirrors the xfr and ttl dependency posture: ratatui, crossterm, clap, clap_complete, serde, serde_json, toml, dirs, anyhow, tracing, reqwest, tokio, and the same optimized release profile.
+nbox mirrors the xfr and ttl dependency posture: ratatui, crossterm, clap, clap_complete, serde, serde_json, toml, dirs, anyhow, tracing, reqwest, tokio, and the same optimized release profile.
 
 ```toml
 [package]
-name = "nbx"
+name = "nbox"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
 description = "Terminal UI and CLI for NetBox"
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/lance0/nbx"
+repository = "https://github.com/lance0/nbox"
 keywords = ["netbox", "network", "ipam", "tui", "dcim"]
 categories = ["command-line-utilities", "network-programming"]
 
@@ -223,7 +223,7 @@ strip = true
 Follows the xfr / ttl architecture style: `main.rs`, `cli.rs`, `lib.rs`, a distinct network/API layer, `tui/`, `config.rs`, `prefs.rs`, and docs.
 
 ```
-nbx/
+nbox/
 ├── Cargo.toml
 ├── README.md
 ├── CHANGELOG.md
@@ -373,8 +373,8 @@ output/
 
 | OS            | Path                            |
 | ------------- | ------------------------------- |
-| Linux / macOS | `~/.config/nbx/config.toml`     |
-| Windows       | `%APPDATA%\nbx\config.toml`     |
+| Linux / macOS | `~/.config/nbox/config.toml`     |
+| Windows       | `%APPDATA%\nbox\config.toml`     |
 
 ### Example config
 
@@ -410,7 +410,7 @@ exclude_config_context = true
 
 Do **not** store plaintext tokens by default. Supported auth sources, in priority order:
 
-1. Direct environment override: `NBX_TOKEN`
+1. Direct environment override: `NBOX_TOKEN`
 2. Environment variable named by `token_env`
 3. *Future:* OS keyring
 4. *Future:* explicit config token, only with a warning
@@ -451,7 +451,7 @@ impl AuthScheme {
 use clap::{Parser, Subcommand, ValueEnum};
 
 #[derive(Debug, Parser)]
-#[command(name = "nbx")]
+#[command(name = "nbox")]
 #[command(version)]
 #[command(about = "Terminal UI and CLI for NetBox")]
 pub struct Cli {
@@ -722,13 +722,13 @@ impl NetBoxClient {
 }
 ```
 
-> **Performance note:** NetBox recommends excluding rendered config context with `?exclude=config_context` for devices and VMs when it is not needed — large config contexts hurt API performance. nbx does this by default for those endpoints.
+> **Performance note:** NetBox recommends excluding rendered config context with `?exclude=config_context` for devices and VMs when it is not needed — large config contexts hurt API performance. nbox does this by default for those endpoints.
 
 ### Search strategy
 
-There is no universal global search endpoint to rely on. `nbx search` is a **normalized multi-endpoint search**.
+There is no universal global search endpoint to rely on. `nbox search` is a **normalized multi-endpoint search**.
 
-**Primary strategy: the `q` parameter.** Most NetBox endpoints expose a built-in `q=` quick-search (the same fuzzy search the web UI uses), which spans the relevant fields for that object type and survives version drift. nbx uses `q=<query>` as the primary search per endpoint.
+**Primary strategy: the `q` parameter.** Most NetBox endpoints expose a built-in `q=` quick-search (the same fuzzy search the web UI uses), which spans the relevant fields for that object type and survives version drift. nbox uses `q=<query>` as the primary search per endpoint.
 
 **Fallback: explicit field filters.** When `q` is unavailable or too coarse for a given endpoint, fall back to the per-field lookup filters below. These also drive structured filtering in detail views.
 
@@ -816,18 +816,18 @@ impl NetBoxClient {
 
 ### Client-side ranking (TUI only)
 
-NetBox does the *finding* (the `q` query over the network); nbx does the *interactive refining*
+NetBox does the *finding* (the `q` query over the network); nbox does the *interactive refining*
 on top of whatever came back. Once a result set is in memory, the TUI re-ranks and filters it
 with [`nucleo`](https://crates.io/crates/nucleo) — a fast, typo-resistant fuzzy matcher — so the
 command palette (`:`), the results list, and recent objects filter instantly as you type, with
 **zero network round-trips**.
 
 This is purely a presentation-layer concern: `nucleo` never touches the `netbox/` client and is
-not on the path for non-TUI (`--json`/plain) output. At nbx's scale (tens to low-hundreds of
+not on the path for non-TUI (`--json`/plain) output. At nbox's scale (tens to low-hundreds of
 fetched objects) any decent matcher is far faster than the request that produced the data, so the
 matcher is about *feel*, not throughput. Lands in Phase 3 alongside the command palette.
 
-> **Future enhancement:** use `OPTIONS` / the OpenAPI schema to validate available filters per NetBox version. The REST `OPTIONS` verb inspects an endpoint and returns supported actions and parameters, so nbx can eventually discover filter/write capability rather than hardcoding it.
+> **Future enhancement:** use `OPTIONS` / the OpenAPI schema to validate available filters per NetBox version. The REST `OPTIONS` verb inspects an endpoint and returns supported actions and parameters, so nbox can eventually discover filter/write capability rather than hardcoding it.
 
 ### Object references and URL mapping
 
@@ -977,7 +977,7 @@ pub struct Prefix {
 ### Default layout
 
 ```
-┌ nbx ───────────────────────────────────────────────────────────────────────┐
+┌ nbox ───────────────────────────────────────────────────────────────────────┐
 │ profile: work  netbox: https://netbox.example.com  mode: normal            │
 ├───────────────┬────────────────────────────┬───────────────────────────────┤
 │ Navigation    │ Results                    │ Detail                        │
@@ -1225,7 +1225,7 @@ GraphQL fits here because NetBox lets clients request nested fields and provides
 ### IP view
 
 ```bash
-nbx ip 10.44.208.55
+nbox ip 10.44.208.55
 ```
 
 ```
@@ -1252,7 +1252,7 @@ Use `ipnet` locally to compute prefix containment. Do not assume NetBox returns 
 ### Prefix view
 
 ```bash
-nbx prefix 10.44.208.0/24
+nbox prefix 10.44.208.0/24
 ```
 
 ```
@@ -1279,7 +1279,7 @@ IP Addresses
 ### VLAN view
 
 ```bash
-nbx vlan 208
+nbox vlan 208
 ```
 
 ```
@@ -1334,7 +1334,7 @@ pub enum PaletteCommand {
 Every non-TUI command supports `plain` and `json`.
 
 ```bash
-nbx device edge01
+nbox device edge01
 ```
 
 Plain:
@@ -1350,7 +1350,7 @@ primary_ip4: 10.44.12.9/32
 ```
 
 ```bash
-nbx device edge01 --json
+nbox device edge01 --json
 ```
 
 JSON:
@@ -1377,10 +1377,10 @@ Write support should be explicit and boring.
 ### Write candidates
 
 ```bash
-nbx device edge01 set status planned
-nbx interface edge01 xe-0/0/1 set description "Transit to ISP-A"
-nbx ip 10.44.208.55 reserve --description "Printer"
-nbx tag add device edge01 maintenance
+nbox device edge01 set status planned
+nbox interface edge01 xe-0/0/1 set description "Transit to ISP-A"
+nbox ip 10.44.208.55 reserve --description "Printer"
+nbox tag add device edge01 maintenance
 ```
 
 ### Write flow
@@ -1393,7 +1393,7 @@ nbx tag add device edge01 maintenance
 6. Show NetBox response.
 7. Log `changelog_message` if provided.
 
-NetBox supports `POST`, `PUT`, `PATCH`, and `DELETE`; `PATCH` only requires the fields being modified. nbx write actions never send whole-object payloads unless required.
+NetBox supports `POST`, `PUT`, `PATCH`, and `DELETE`; `PATCH` only requires the fields being modified. nbox write actions never send whole-object payloads unless required.
 
 ```rust
 #[derive(Debug, Clone)]
@@ -1451,7 +1451,7 @@ User-facing error style:
 error: no device matched "edge01"
 
 Try:
-  nbx search edge01
+  nbox search edge01
 ```
 
 Avoid dumping raw HTML or huge JSON unless `--debug` is enabled.
@@ -1475,14 +1475,14 @@ Config:
 ```toml
 [logging]
 level = "info"
-file = "~/.config/nbx/nbx.log"
+file = "~/.config/nbox/nbox.log"
 ```
 
 Env:
 
 ```bash
-NBX_LOG=debug nbx search edge01
-RUST_LOG=nbx=debug nbx
+NBOX_LOG=debug nbox search edge01
+RUST_LOG=nbox=debug nbox
 ```
 
 ---
@@ -1514,7 +1514,7 @@ theme = "default"
 ### README.md sections
 
 ```
-# nbx
+# nbox
 Terminal UI and CLI for NetBox.
 
 ## Quick Start
@@ -1557,10 +1557,10 @@ Search · Device lookup · IP lookup · Prefix lookup · VLAN lookup · Site/rac
 Deliverable:
 
 ```bash
-nbx config init
-nbx profile add work https://netbox.example.com --token-env NETBOX_TOKEN
-nbx profile use work
-nbx search edge01 --json
+nbox config init
+nbox profile add work https://netbox.example.com --token-env NETBOX_TOKEN
+nbox profile use work
+nbox search edge01 --json
 ```
 
 ### Phase 2 — Core REST models
@@ -1570,10 +1570,10 @@ Device, Interface, IPAddress, Prefix, VLAN, Site, Rack, BriefObject, Choice, `Pa
 Deliverable:
 
 ```bash
-nbx device edge01
-nbx ip 10.44.208.55
-nbx prefix 10.44.208.0/24
-nbx vlan 208
+nbox device edge01
+nbox ip 10.44.208.55
+nbox prefix 10.44.208.0/24
+nbox vlan 208
 ```
 
 ### Phase 3 — TUI v0
@@ -1583,7 +1583,7 @@ Terminal setup/restore, app state, search screen, detail pane, navigation histor
 Deliverable:
 
 ```bash
-nbx
+nbox
 ```
 
 ### Phase 4 — Polish
@@ -1598,7 +1598,7 @@ PATCH engine, diff preview, confirmation modal, `changelog_message` support, wri
 
 ## 22. First Milestone Issue List
 
-- [ ] Create repo `lance0/nbx`
+- [ ] Create repo `lance0/nbox`
 - [ ] Add Cargo.toml metadata and dependencies
 - [ ] Add dual MIT/Apache license
 - [ ] Add clap CLI skeleton
@@ -1630,17 +1630,17 @@ PATCH engine, diff preview, confirmation modal, `changelog_message` support, wri
 Build this exact slice first:
 
 ```bash
-nbx search edge01
-nbx device edge01
-nbx ip 10.44.208.55
-nbx
+nbox search edge01
+nbox device edge01
+nbox ip 10.44.208.55
+nbox
 ```
 
 It proves the whole spine: config, auth, REST client, pagination, model deserialization, plain output, JSON output, TUI event loop, search UX.
 
 **Strongest v0.1 demo:**
 
-1. Open `nbx`.
+1. Open `nbox`.
 2. Type `/ edge01`.
 3. Select device.
 4. Press `Enter`.

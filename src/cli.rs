@@ -1,6 +1,6 @@
 //! Command-line interface definitions.
 //!
-//! This is the `clap` derive surface for nbx, mirroring the command set in
+//! This is the `clap` derive surface for nbox, mirroring the command set in
 //! `DESIGN.md` §9. Handlers are wired incrementally; see [`crate::run`].
 
 use std::path::PathBuf;
@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand, ValueEnum};
 
 /// Terminal UI and CLI for NetBox.
 #[derive(Debug, Parser)]
-#[command(name = "nbx")]
+#[command(name = "nbox")]
 #[command(version)]
 #[command(about = "Terminal UI and CLI for NetBox")]
 pub struct Cli {
@@ -29,7 +29,7 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub no_tui: bool,
 
-    /// Logging level (e.g. `info`, `debug`, `nbx=debug`).
+    /// Logging level (e.g. `info`, `debug`, `nbox=debug`).
     #[arg(long, global = true)]
     pub log_level: Option<String>,
 
@@ -123,7 +123,7 @@ pub enum Command {
     },
 }
 
-/// `nbx config` subcommands.
+/// `nbox config` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum ConfigCommand {
     /// Create a starter config file.
@@ -134,7 +134,7 @@ pub enum ConfigCommand {
     Show,
 }
 
-/// `nbx profile` subcommands.
+/// `nbox profile` subcommands.
 #[derive(Debug, Subcommand)]
 pub enum ProfileCommand {
     /// Add a new profile.
@@ -163,7 +163,7 @@ pub enum ProfileCommand {
     },
 }
 
-/// Shells supported by `nbx completions`.
+/// Shells supported by `nbox completions`.
 #[derive(Debug, Clone, Copy, ValueEnum)]
 pub enum CompletionShell {
     Bash,
@@ -198,14 +198,14 @@ mod tests {
 
     #[test]
     fn parses_global_flag_and_subcommand() {
-        let cli = Cli::try_parse_from(["nbx", "--json", "device", "edge01"]).unwrap();
+        let cli = Cli::try_parse_from(["nbox", "--json", "device", "edge01"]).unwrap();
         assert!(cli.json);
         assert!(matches!(cli.command, Some(Command::Device { value }) if value == "edge01"));
     }
 
     #[test]
     fn search_limit_defaults_to_25() {
-        let cli = Cli::try_parse_from(["nbx", "search", "edge"]).unwrap();
+        let cli = Cli::try_parse_from(["nbox", "search", "edge"]).unwrap();
         assert!(matches!(
             cli.command,
             Some(Command::Search { limit: 25, .. })

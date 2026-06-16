@@ -1,6 +1,6 @@
 //! Plain-text output for human-readable detail views.
 
-/// A simple `key: value` renderer for detail output (e.g. `nbx device`).
+/// A simple `key: value` renderer for detail output (e.g. `nbox device`).
 #[derive(Debug, Default)]
 pub struct KeyValues {
     rows: Vec<(String, String)>,

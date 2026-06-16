@@ -1,4 +1,4 @@
-//! Flattened device view for `nbx device` (plain + JSON).
+//! Flattened device view for `nbox device` (plain + JSON).
 
 use serde::Serialize;
 

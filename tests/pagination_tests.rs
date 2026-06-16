@@ -1,8 +1,8 @@
 //! Integration tests for offset-based pagination in `list_all`.
 
-use nbx::config::ProfileConfig;
-use nbx::netbox::client::NetBoxClient;
-use nbx::netbox::endpoints::Endpoint;
+use nbox::config::ProfileConfig;
+use nbox::netbox::client::NetBoxClient;
+use nbox::netbox::endpoints::Endpoint;
 use serde::Deserialize;
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param};

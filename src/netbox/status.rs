@@ -1,6 +1,6 @@
 //! NetBox version probe (`/api/status/`) and minimum-version enforcement.
 //!
-//! nbx targets NetBox 4.2+ (the polymorphic `scope` model). The TUI calls
+//! nbox targets NetBox 4.2+ (the polymorphic `scope` model). The TUI calls
 //! [`NetBoxClient::verify_compatible`] on launch to fail fast against older
 //! instances and surface the version in the status line. One-shot CLI commands
 //! skip the probe to avoid an extra round-trip per invocation.
@@ -15,7 +15,7 @@ pub const MIN_MAJOR: u32 = 4;
 /// Minimum supported NetBox minor version.
 pub const MIN_MINOR: u32 = 2;
 
-/// The subset of `/api/status/` that nbx cares about. NetBox returns more keys
+/// The subset of `/api/status/` that nbox cares about. NetBox returns more keys
 /// (python version, plugins, …); they are ignored.
 #[derive(Debug, Clone, Deserialize)]
 pub struct Status {
@@ -34,7 +34,7 @@ impl NetBoxClient {
         let status = self.status().await?;
         if !meets_minimum(&status.netbox_version, MIN_MAJOR, MIN_MINOR) {
             bail!(
-                "NetBox {} is unsupported; nbx requires {MIN_MAJOR}.{MIN_MINOR}+",
+                "NetBox {} is unsupported; nbox requires {MIN_MAJOR}.{MIN_MINOR}+",
                 status.netbox_version
             );
         }

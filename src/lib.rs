@@ -1,4 +1,4 @@
-//! nbx — terminal UI and CLI for NetBox.
+//! nbox — terminal UI and CLI for NetBox.
 //!
 //! Library crate root. See `DESIGN.md` and `ROADMAP.md` for the architecture
 //! and phasing. The binary parses a [`cli::Cli`] and dispatches into [`run`].
@@ -34,14 +34,14 @@ pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 /// Initialize logging to stderr (stdout stays clean for piping).
 ///
-/// Level precedence: the `--log-level` flag, then `NBX_LOG`, then `RUST_LOG`,
+/// Level precedence: the `--log-level` flag, then `NBOX_LOG`, then `RUST_LOG`,
 /// else quiet (`warn`). No-ops if a subscriber is already installed.
 pub fn init_logging(log_level: Option<&str>) {
     use tracing_subscriber::{EnvFilter, fmt};
 
     let filter = match log_level {
         Some(level) => EnvFilter::new(level),
-        None => EnvFilter::try_from_env("NBX_LOG")
+        None => EnvFilter::try_from_env("NBOX_LOG")
             .or_else(|_| EnvFilter::try_from_default_env())
             .unwrap_or_else(|_| EnvFilter::new("warn")),
     };
@@ -105,7 +105,7 @@ fn connect(ctx: &Ctx) -> Result<NetBoxClient> {
         .profile
         .clone()
         .or_else(|| cfg.active_profile.clone())
-        .context("no profile selected; run `nbx profile use <name>` or pass --profile")?;
+        .context("no profile selected; run `nbox profile use <name>` or pass --profile")?;
     let profile = cfg
         .profiles
         .get(&name)
@@ -115,7 +115,7 @@ fn connect(ctx: &Ctx) -> Result<NetBoxClient> {
     NetBoxClient::new(profile, token)
 }
 
-/// `nbx` / `nbx tui` — launch the interactive TUI.
+/// `nbox` / `nbox tui` — launch the interactive TUI.
 async fn run_tui(ctx: &Ctx) -> Result<()> {
     let path = match &ctx.config_path {
         Some(p) => p.clone(),
@@ -126,7 +126,7 @@ async fn run_tui(ctx: &Ctx) -> Result<()> {
         .profile
         .clone()
         .or_else(|| cfg.active_profile.clone())
-        .context("no profile selected; run `nbx profile use <name>` or pass --profile")?;
+        .context("no profile selected; run `nbox profile use <name>` or pass --profile")?;
     let profile = cfg
         .profiles
         .get(&name)
@@ -153,7 +153,7 @@ async fn run_tui(ctx: &Ctx) -> Result<()> {
     tui::app::run(app).await
 }
 
-/// `nbx search <query>` — normalized multi-endpoint search.
+/// `nbox search <query>` — normalized multi-endpoint search.
 async fn run_search(ctx: &Ctx, query: &str, limit: usize) -> Result<()> {
     let client = connect(ctx)?;
     let results = client
@@ -178,7 +178,7 @@ async fn run_search(ctx: &Ctx, query: &str, limit: usize) -> Result<()> {
     Ok(())
 }
 
-/// `nbx device <value>` — look up and render a device.
+/// `nbox device <value>` — look up and render a device.
 async fn run_device(ctx: &Ctx, value: &str) -> Result<()> {
     let client = connect(ctx)?;
     let device = client
@@ -195,7 +195,7 @@ async fn run_device(ctx: &Ctx, value: &str) -> Result<()> {
     Ok(())
 }
 
-/// `nbx ip <address>` — resolve an IP and its most-specific parent prefix.
+/// `nbox ip <address>` — resolve an IP and its most-specific parent prefix.
 async fn run_ip(ctx: &Ctx, address: &str) -> Result<()> {
     let client = connect(ctx)?;
     let ip = client
@@ -217,7 +217,7 @@ async fn run_ip(ctx: &Ctx, address: &str) -> Result<()> {
     Ok(())
 }
 
-/// `nbx prefix <cidr>` — show a prefix with its children and contained IPs.
+/// `nbox prefix <cidr>` — show a prefix with its children and contained IPs.
 async fn run_prefix(ctx: &Ctx, cidr: &str) -> Result<()> {
     const SECTION_CAP: usize = 50;
     let client = connect(ctx)?;
@@ -238,7 +238,7 @@ async fn run_prefix(ctx: &Ctx, cidr: &str) -> Result<()> {
     Ok(())
 }
 
-/// `nbx vlan <vid|name>` — show a VLAN and the prefixes that reference it.
+/// `nbox vlan <vid|name>` — show a VLAN and the prefixes that reference it.
 async fn run_vlan(ctx: &Ctx, value: &str) -> Result<()> {
     let client = connect(ctx)?;
     let vlan = client
@@ -256,7 +256,7 @@ async fn run_vlan(ctx: &Ctx, value: &str) -> Result<()> {
     Ok(())
 }
 
-/// `nbx site <name|slug>` — show a site.
+/// `nbox site <name|slug>` — show a site.
 async fn run_site(ctx: &Ctx, value: &str) -> Result<()> {
     let client = connect(ctx)?;
     let site = client
@@ -273,7 +273,7 @@ async fn run_site(ctx: &Ctx, value: &str) -> Result<()> {
     Ok(())
 }
 
-/// `nbx rack <name|id>` — show a rack.
+/// `nbox rack <name|id>` — show a rack.
 async fn run_rack(ctx: &Ctx, value: &str) -> Result<()> {
     let client = connect(ctx)?;
     let rack = client
@@ -297,7 +297,7 @@ fn not_implemented(what: &str) -> Result<()> {
 
 /// A friendly "not found" error with an actionable suggestion (DESIGN §17).
 fn not_found(noun: &str, value: &str) -> anyhow::Error {
-    anyhow::anyhow!("no {noun} matched \"{value}\"\n\nTry:\n  nbx search {value}")
+    anyhow::anyhow!("no {noun} matched \"{value}\"\n\nTry:\n  nbox search {value}")
 }
 
 #[cfg(test)]
@@ -309,6 +309,6 @@ mod tests {
         let msg = format!("{:#}", not_found("device", "edge01"));
         assert!(msg.contains("no device matched \"edge01\""));
         assert!(msg.contains("Try:"));
-        assert!(msg.contains("nbx search edge01"));
+        assert!(msg.contains("nbox search edge01"));
     }
 }

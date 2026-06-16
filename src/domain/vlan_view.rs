@@ -1,4 +1,4 @@
-//! Flattened VLAN view for `nbx vlan` (plain + JSON), with associated prefixes.
+//! Flattened VLAN view for `nbox vlan` (plain + JSON), with associated prefixes.
 
 use serde::Serialize;
 

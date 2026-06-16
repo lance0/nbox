@@ -1,4 +1,4 @@
-//! Flattened IP-address view for `nbx ip` (plain + JSON).
+//! Flattened IP-address view for `nbox ip` (plain + JSON).
 //!
 //! Resolves the most-specific containing prefix locally with `ipnet`, and pulls
 //! VLAN/site context from that prefix.

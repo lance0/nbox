@@ -1,4 +1,4 @@
-//! Flattened rack view for `nbx rack` (plain + JSON).
+//! Flattened rack view for `nbox rack` (plain + JSON).
 
 use serde::Serialize;
 
