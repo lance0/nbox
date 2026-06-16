@@ -34,8 +34,8 @@ nbx search edge01 --json
 ```
 
 ### Phase 2 — Core REST models
-- ☐ `BriefObject`, `Choice<T>`, `Tag`, custom fields
-- ☐ Device, Interface, IPAddress, Prefix, VLAN, Site, Rack
+- ☑ `BriefObject`, `Choice<T>`, `Tag`, custom fields
+- ☑ Device, Interface, IPAddress, Prefix, VLAN, Site, Rack (+ Vrf, Tenant)
 - ☐ Endpoint mapping + per-endpoint query methods
 - ☐ Normalized `SearchResult` + parallel multi-endpoint search (`q` primary, field filters fallback)
 - ☐ Device / IP / Prefix / VLAN detail resolution (incl. IP → parent prefix via `ipnet`)
