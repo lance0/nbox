@@ -4,11 +4,11 @@ This roadmap tracks nbox from skeleton to safe writes. It maps the implementatio
 
 Legend: ☐ planned · ◐ in progress · ☑ done
 
-## Design pillars
+## Principles
 
-- **Agent-first.** nbox is built so that an LLM/agent is a first-class consumer, not an afterthought. The clean command core (one function per operation, structured output) feeds three surfaces from the same code: the CLI, the TUI, and a **first-class MCP server** (`nbox mcp serve`). The `--json`/`--envelope`/`--fields`/`--raw` controls and `AGENTS.md` are step one; the MCP server is the headline (see v0.2 / v0.3).
-- **Read-only first, writes gated.** Every read surface ships before any write. Writes are `PATCH`-based, diff-previewed, and confirmable — and exposed over MCP only behind an explicit opt-in.
-- **Correctness over breadth.** Permissive wire models, a typed error layer, and CI against a real NetBox (not just mocks) before adding surface area.
+- **Agent-first.** The CLI, TUI, and `nbox mcp serve` all run off the same command core. JSON/envelope/`--fields`/`--raw` and `AGENTS.md` exist now; MCP lands in v0.2/v0.3.
+- **Read-only first.** Reads ship before writes. Writes are `PATCH`-based, diff-previewed, confirmable, and opt-in over MCP.
+- **Correctness over breadth.** Typed errors and CI against a real NetBox before more surface area.
 
 ---
 
@@ -124,90 +124,86 @@ Scriptable / agent-friendly output:
 
 ---
 
-## v0.1.1 — Close the gap (correctness before breadth)
+## v0.1.1 — Close the gap
 
-A review found v0.1 advertises commands and TUI behaviour that aren't implemented yet. Before any v0.2 work, either ship these or stop documenting them — and pull the cheap, high-leverage read-only wins forward.
+v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implement them. Ship them or drop them from the docs, and pull the cheap read-only wins forward.
 
-- ☐ **Implement `nbox open`** (web URL via `util::format::api_to_web_url` + `open`) — it's a stated v0.1 MVP feature but currently `bail!`s "not yet implemented".
-- ☐ **Implement `nbox interface <device> <iface>`** — the device-detail story; currently stubbed.
-- ☐ **TUI device-detail tabs** (`i` interfaces · `p` IPs · `c` cables · `v` VLANs) — documented in README/DESIGN, not built. Add an `interfaces`/IP section to `DeviceView`.
-- ☐ **Read-only IPAM allocation:** `nbox next-ip <prefix>` / `nbox next-prefix <prefix>` via `GET …/available-ips/` + `/available-prefixes/`. The *read* half of the most-requested NetBox workflow fits the read-only contract; the *claim/allocate* half ships with writes (v0.2).
-- ☐ **Typed errors (`src/error.rs`):** map 401→auth, 403→perms, 404→not-found, ambiguous match→disambiguation list (today `device_by_ref` silently takes the first `name__ic` hit). Give not-found a **distinct exit code** (AGENTS.md/DESIGN claim one; `main.rs` exits `1` for everything).
-- ☐ **CI against a real NetBox:** `netbox-community/netbox-docker` (pin a 4.x ≥ 4.2 tag) in GitHub Actions, seeded with a deterministic fixture + legacy v1 token, running the built binary (`assert_cmd`) against the live API. Catches serializer drift (polymorphic `scope`, `assigned_object`, `available-ips` shape) that wiremock cannot.
-- ☐ Read-only `nbox raw GET <path>` escape hatch (power users + a stopgap for unmodeled types).
-- ☐ `config_version` field + forward-compat handling (before v0.2 mutates the config schema).
-- ☐ `clap_mangen` man pages alongside the existing completions.
-- ☐ Reconcile DESIGN.md with reality: mark absent modules/sections (`error.rs`, `graphql.rs`, `schema.rs`, `docs/` tree) as aspirational so contributors aren't misled.
+- ☐ `nbox open` — web URL via `util::format::api_to_web_url` + `open`. Currently stubbed.
+- ☐ `nbox interface <device> <iface>`. Currently stubbed.
+- ☐ TUI device tabs: `i` interfaces · `p` IPs · `c` cables · `v` VLANs. Needs an interfaces/IPs section on `DeviceView`.
+- ☐ Read-only `nbox next-ip <prefix>` / `next-prefix <prefix>` via `available-ips` / `available-prefixes`. Allocate lands with writes (v0.2).
+- ☐ Typed errors (`src/error.rs`) — 401→auth, 403→perms, 404→not-found, ambiguous→list matches. Distinct not-found exit code; `main.rs` exits 1 for everything today.
+- ☐ CI against a real NetBox — netbox-docker (pin 4.x ≥ 4.2), seeded fixture + legacy v1 token, run the binary against the live API. Catches serializer drift wiremock can't.
+- ☐ Read-only `nbox raw GET <path>`.
+- ☐ `config_version` field + forward-compat, before v0.2 touches the schema.
+- ☐ `clap_mangen` man pages.
+- ☐ Mark absent DESIGN.md modules aspirational (`error.rs`, `graphql.rs`, `schema.rs`, `docs/`).
 
 ## v0.2 — Nested views, IPAM power, first writes
 
-- ☐ **First-class MCP server (read-only): `nbox mcp serve`** (stdio first, HTTP after) exposing the command core as MCP tools — `search`, `device`, `ip`, `prefix`, `vlan`, `site`, `status`, `next-ip`/`next-prefix`. This is the headline of the agent-first pillar: same code as the CLI, structured results, no shelling out. Internal agents are the primary early consumer.
-- ☐ **Robustness on large instances:** honor HTTP 429 `Retry-After`, bound search/`list_all` concurrency, cap unbounded paging. Required before agents/MCP hammer a production API.
-- ☐ **IPAM allocation (write half):** `claim`/`allocate` the next IP/prefix (POST to `available-ips`/`available-prefixes`). The read-only `next-ip`/`next-prefix` ships in v0.1.1.
-- ☐ **Cable / interface trace:** `/api/dcim/interfaces/{id}/trace/` — "where is this port cabled to?"; surface on the interface/device detail view
-- ☐ **Hierarchical prefix tree in the TUI:** expand/collapse child prefixes with inline utilization (netbox#21396/#21255)
-- ☐ **Pick ONE device-detail path** (don't build both): REST fan-out (device + interfaces + IPs) **or** a read-only GraphQL query (device + interfaces + IPs + rack + site in one round-trip). Decide before implementing.
-- ☐ Multi-pane TUI (nav | results | detail) per DESIGN mockup, vs current screen-switching
-- ☐ IP ranges (`/api/ipam/ip-ranges/` + `available-ips`)
-- ☐ **Safe writes (initial):** `PATCH` engine, minimal diff, before/after preview, confirmation modal; agent-safe `--read-only` profile
-  - ☐ **Design gate:** write field-coercion + diff rules (choice fields `{value,label}`→bare string; brief relations by slug/id/name; non-TTY/`--json`/MCP confirmation UX) before coding the engine
+- ☐ **MCP server (read-only): `nbox mcp serve`** — command core as MCP tools: search, device, ip, prefix, vlan, site, status, next-ip/next-prefix. stdio first, HTTP later.
+- ☐ **Large-instance robustness** — honor 429 `Retry-After`, bound search/`list_all` concurrency, cap paging.
+- ☐ **IPAM allocate (write)** — claim the next IP/prefix (POST to `available-ips`/`available-prefixes`). Read-only half is v0.1.1.
+- ☐ **Cable / interface trace** — `/api/dcim/interfaces/{id}/trace/`; surface on the interface/device view.
+- ☐ **Hierarchical prefix tree in the TUI** — expand/collapse children with inline utilization (netbox#21396/#21255).
+- ☐ **Device detail — pick one path** — REST fan-out (device + interfaces + IPs) or a read-only GraphQL query. Don't build both.
+- ☐ Multi-pane TUI (nav | results | detail) per the DESIGN mockup.
+- ☐ IP ranges (`/api/ipam/ip-ranges/` + `available-ips`).
+- ☐ **Safe writes (initial)** — `PATCH` engine, minimal diff, before/after preview, confirmation modal; agent-safe `--read-only` profile.
+  - ☐ Settle write rules first: choice fields (`{value,label}`→string), brief relations (slug/id/name), confirmation in non-TTY/`--json`/MCP.
   - ☐ `nbox device <name> set status <value>`
   - ☐ `nbox interface <device> <iface> set description "..."`
-- ☐ `changelog_message` support on writes
+- ☐ `changelog_message` support on writes.
 
 ---
 
 ## v0.3 — Broader models, writes, discovery
 
-- ☐ **Write-capable MCP tools** behind an explicit opt-in (`--allow-writes` / a write-enabled profile): expose the `PATCH`/allocate operations as MCP tools that return the diff for the agent to confirm. Read-only `mcp serve` stays the default.
+- ☐ **Write-capable MCP tools**, opt-in (`--allow-writes` / a write profile) — return the diff for the agent to confirm. Read-only stays default.
 - ☐ `nbox ip <addr> reserve --description "..."`
-- ☐ `nbox tag add <type> <name> <tag>`; tag browsing (`nbox tags`, `--tag <name>` filter)
-- ☐ Write workflows surfaced in the TUI edit mode (`e` / `d` / confirm)
-- ☐ **`--vrf` resolution:** accept `id | rd (65000:100) | name`, in that precedence; ambiguous name → error listing matches. (Deferred from v0.1 search filters; also fixes the first-match-wins limit in `ip_candidates`.)
-- ☐ Circuits (`nbox circuit <id>`, included in search)
-- ☐ Aggregates (`/api/ipam/aggregates/`) and ASNs (`/api/ipam/asns/`)
-- ☐ Journal entries on detail views (`/api/extras/journal-entries/`)
-- ☐ Services (`/api/ipam/services/`) — "what's listening on this device?"
-- ☐ Write verbs for `nbox raw <POST|PATCH|DELETE> <path>` (read-only `raw GET` ships in v0.1.1)
-- ☐ OPTIONS / OpenAPI **write-capability** discovery per NetBox version (narrowed — filter safety is already handled structurally by the typed per-endpoint allowlist); optional user-facing `schema` command
-- ☐ Batch queries from a file (audits)
+- ☐ `nbox tag add <type> <name> <tag>`; tag browsing (`nbox tags`, `--tag <name>` filter).
+- ☐ Write workflows in the TUI edit mode (`e` / `d` / confirm).
+- ☐ **`--vrf` resolution** — accept id | rd (`65000:100`) | name, that precedence; ambiguous name → list matches. Also fixes first-match-wins in `ip_candidates`.
+- ☐ Circuits (`nbox circuit <id>`, included in search).
+- ☐ Aggregates (`/api/ipam/aggregates/`) and ASNs (`/api/ipam/asns/`).
+- ☐ Journal entries on detail views (`/api/extras/journal-entries/`).
+- ☐ Services (`/api/ipam/services/`) — what's listening on this device.
+- ☐ `nbox raw POST|PATCH|DELETE <path>` (read-only GET ships in v0.1.1).
+- ☐ OPTIONS write-capability discovery — filter safety is already handled by the typed allowlist; optional `schema` command.
+- ☐ Batch queries from a file (audits).
 
 ---
 
 ## Later / under consideration
 
-- ☐ Dashboard / overview screen (counts by status, utilization stats, recent changes)
-- ☐ Context preservation in the TUI (scroll position + filters per view)
-- ☐ OS keyring token storage
-- ☐ Virtualization (VMs) and tenancy detail views
-- ☐ VRF-aware IP/prefix navigation (built on the v0.3 `--vrf` resolution)
+- ☐ Dashboard / overview screen (counts by status, utilization, recent changes).
+- ☐ Context preservation in the TUI (scroll position + filters per view).
+- ☐ OS keyring token storage.
+- ☐ Virtualization (VMs) and tenancy detail views.
+- ☐ VRF-aware IP/prefix navigation (built on the v0.3 `--vrf` resolution).
+- ☐ TurboBulk export — capability-detect `/api/plugins/turbobulk/`, read/export-only (JSONL, no arrow/parquet dep), behind a feature flag, clean fallback when absent. Fast full-table export/audit on large instances where paginated REST is too slow.
 
 **Reconsidering / likely cut**
-- Local SQLite cache (`cache` feature) — questionable for a tool whose value is *freshness*; the in-memory `nucleo` ranking already covers interactive speed, and it adds a bundled-C dep + invalidation complexity. Keep parked unless a concrete large-instance latency problem appears; the `cache` feature is dead weight today.
-- ~~MCP server~~ — **promoted to a first-class v0.2/v0.3 feature** (see Design pillars).
-- ~~Plugin / custom-command system~~ — **cut**; it's a stated non-goal (plugin framework).
-- ~~TurboBulk~~ — **cut**; proprietary Cloud/Enterprise-only plugin and bulk import/export is a stated non-goal.
+- Local SQLite cache (`cache` feature) — the value here is freshness, and `nucleo` already covers interactive speed. Adds a bundled-C dep and invalidation complexity. Parked unless a real large-instance latency problem shows up; dead weight today.
+- Plugin / custom-command system — cut; it's a non-goal.
 
-## Project infrastructure & quality
+## Infrastructure & quality
 
-Patterns proven in the author's other Rust tools (ttl, xfr) worth porting. Themes + the update-notifier are already ported. Release workflow, `install.sh`, the Homebrew template, completions, MSRV, and the keep-a-changelog CHANGELOG already exist.
+Ported from ttl/xfr where they paid off. Already have: release workflow, `install.sh`, Homebrew template, completions, MSRV, keep-a-changelog. Themes and the update-notifier are already in.
 
-High-impact, easy:
-- ☐ **`cargo-audit` CI** (`.github/workflows/audit.yml`): on Cargo.toml/lock changes + daily cron. Supply-chain safety, cheap.
-- ☐ **Pre-commit hooks** (`.pre-commit-config.yaml`): `fmt` + `clippy -D warnings` on commit, `test` on push; document **prek** (fast Rust runner) with a Python `pre-commit` fallback.
-- ☐ **`musl` Linux targets** in the release matrix (static, glibc-free binaries) — ttl/xfr ship these via `cross`; nbox currently builds gnu only.
-- ☐ **`Dockerfile.release` + GHCR image** built from the musl binary on a minimal Alpine base (CA certs only) → `docker run ghcr.io/lance0/nbox`.
-- ☐ **Ship completions as a release artifact** (generate in `release.yml`), not just the runtime subcommand.
-- ☐ **MSRV CI job** that pins and verifies `rust-version` (1.88).
-- ☐ **`dependabot.yml`** with grouped Cargo updates (one PR/week) + github-actions.
-
-Polish:
-- ☐ `CONTRIBUTING.md` (setup, style, hooks, PR/commit conventions).
-- ☐ `docs/` tree — `ARCHITECTURE.md`, `CONFIG.md`, `FEATURES.md` (lean README, deep reference); the README currently links to `AGENTS.md` only.
-- ☐ `KNOWN_ISSUES.md` (candid limitations + workarounds; e.g. first-match disambiguation, no VRF scoping yet).
-- ☐ Split runtime state (`prefs.toml`: last theme/profile) from user config (`config.toml`), per xfr's `prefs.rs` (CLI > config > prefs precedence). Pairs with the v0.1.1 `config_version` work.
-- ☐ `examples/config.toml` with documented profiles; `.github/FUNDING.yml`.
+- ☐ `cargo-audit` CI (`audit.yml`) — on Cargo.toml/lock + daily cron.
+- ☐ Pre-commit hooks (`.pre-commit-config.yaml`) — fmt/clippy on commit, test on push; prek with a Python fallback.
+- ☐ musl Linux targets in the release matrix (static binaries). gnu only today.
+- ☐ `Dockerfile.release` + multi-arch GHCR image (`ghcr.io/lance0/nbox`).
+- ☐ Ship completions as a release artifact, not just the subcommand.
+- ☐ MSRV CI job pinning `rust-version` (1.88).
+- ☐ `dependabot.yml` — grouped Cargo + GitHub Actions.
+- ☐ `CONTRIBUTING.md`.
+- ☐ `docs/` tree — `ARCHITECTURE.md`, `CONFIG.md`, `FEATURES.md`.
+- ☐ `KNOWN_ISSUES.md` — first-match disambiguation, no VRF scoping yet, etc.
+- ☐ Split `prefs.toml` (runtime state) from `config.toml` (user config), per xfr. Pairs with `config_version`.
+- ☐ `examples/config.toml`; `.github/FUNDING.yml`.
 
 ## Explicit non-goals (v0)
 
-Full CRUD for every model · replacing the NetBox web UI · plugin framework · topology diagrams · bulk import/export · custom script runner · approval workflow engine.
+Full CRUD for every model · replacing the NetBox web UI · plugin framework · topology diagrams · a bulk import/export engine (TurboBulk export aside) · custom script runner · approval workflow engine.
