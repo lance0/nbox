@@ -9,7 +9,7 @@ use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
 use crate::netbox::models::circuits::Circuit;
 use crate::netbox::models::dcim::{Device, Interface, Rack, Site};
-use crate::netbox::models::extras::JournalEntry;
+use crate::netbox::models::extras::{JournalEntry, TagInfo};
 use crate::netbox::models::ipam::{
     Aggregate, Asn, AvailableIp, AvailablePrefix, IpAddress, IpRange, Prefix, Service, Vlan,
 };
@@ -339,6 +339,12 @@ impl NetBoxClient {
             .list(Endpoint::Asns, vec![("asn", asn.to_string())])
             .await?;
         Ok(page.results.into_iter().next())
+    }
+
+    /// All tags (up to `max`), ordered by name.
+    pub async fn tags(&self, max: usize) -> Result<Vec<TagInfo>> {
+        self.list_all(Endpoint::Tags, vec![("ordering", "name".to_string())], max)
+            .await
     }
 
     /// Journal entries for an object (newest first, up to `max`), addressed by

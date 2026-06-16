@@ -162,7 +162,7 @@ v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implemen
 
 - ☐ **Write-capable MCP tools**, opt-in (`--allow-writes` / a write profile) — return the diff for the agent to confirm. Read-only stays default.
 - ☐ `nbox ip <addr> reserve --description "..."`
-- ☐ `nbox tag add <type> <name> <tag>`; tag browsing (`nbox tags`, `--tag <name>` filter).
+- ◐ Tag browsing done (☑): `nbox tags` lists tags; `search --tag <slug>` filters supported endpoints. The write side `nbox tag add <type> <name> <tag>` is still open.
 - ☐ Write workflows in the TUI edit mode (`e` / `d` / confirm).
 - ☐ **`--vrf` server-side filter** — pass VRF as an API filter on `search`/list paths (accept id | rd | name). Exact-lookup scoping (`nbox ip`/`prefix`/`vlan` with `--vrf`/`--site`/`--group`, plus exit-5 on cross-scope duplicates) already landed in v0.1.1; this extends it to list/search filtering.
 - ◐ Circuits — `nbox circuit <cid|id>` lookup done (☑); inclusion in `search` still pending.

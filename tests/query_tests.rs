@@ -337,6 +337,27 @@ async fn circuit_by_id_hits_detail_endpoint() {
 }
 
 #[tokio::test]
+async fn tags_lists_all() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/extras/tags/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 1, "name": "Critical", "slug": "critical",
+                "color": "ff0000", "tagged_items": 3
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let tags = client(&server).tags(200).await.unwrap();
+    assert_eq!(tags.len(), 1);
+    assert_eq!(tags[0].slug, "critical");
+    assert_eq!(tags[0].tagged_items, Some(3));
+}
+
+#[tokio::test]
 async fn journal_entries_filter_by_assigned_object() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

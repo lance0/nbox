@@ -21,6 +21,7 @@ use crate::domain::journal_view::JournalView;
 use crate::domain::prefix_view::PrefixView;
 use crate::domain::rack_view::RackView;
 use crate::domain::site_view::SiteView;
+use crate::domain::tag_view::TagsView;
 use crate::domain::vlan_view::VlanView;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::models::common::BriefObject;
@@ -106,6 +107,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             site,
             tenant,
             role,
+            tag,
             cols,
             partial,
         }) => {
@@ -114,6 +116,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                 site,
                 tenant,
                 role,
+                tag,
             };
             run_search(&ctx, &query, limit, filters, cols, partial).await
         }
@@ -141,6 +144,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             run_interface(&ctx, &device, &interface).await
         }
         Some(Command::Open { object_ref }) => run_open(&ctx, &object_ref).await,
+        Some(Command::Tags { limit }) => run_tags(&ctx, limit).await,
         Some(Command::Journal { kind, value, limit }) => {
             run_journal(&ctx, &kind, &value, limit).await
         }
@@ -604,6 +608,14 @@ fn parse_object_ref(s: &str) -> Result<(&str, &str)> {
                 "object reference must be `<kind>/<ref>` (e.g. device/edge01)\n\nKinds: device, site, rack, vlan, prefix, ip"
             )
         })
+}
+
+/// `nbox tags` — list tags.
+async fn run_tags(ctx: &Ctx, limit: usize) -> Result<()> {
+    let client = connect(ctx)?;
+    let tags = client.tags(limit).await?;
+    let view = TagsView::from_models(tags);
+    emit(ctx, &view, || println!("{}", view.to_plain()))
 }
 
 /// `nbox journal <kind> <ref>` — recent journal entries for an object.

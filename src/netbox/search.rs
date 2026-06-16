@@ -47,6 +47,7 @@ pub struct SearchFilters {
     pub site: Option<String>,
     pub tenant: Option<String>,
     pub role: Option<String>,
+    pub tag: Option<String>,
 }
 
 impl SearchFilters {
@@ -55,11 +56,12 @@ impl SearchFilters {
     /// then skips that endpoint rather than send an ignored param (NetBox
     /// silently ignores unknown filters and would return everything).
     fn params_for(&self, supported: &[&str]) -> Option<Vec<(&'static str, String)>> {
-        let active: [(&'static str, &Option<String>); 4] = [
+        let active: [(&'static str, &Option<String>); 5] = [
             ("status", &self.status),
             ("site", &self.site),
             ("tenant", &self.tenant),
             ("role", &self.role),
+            ("tag", &self.tag),
         ];
         let mut params = Vec::new();
         for (key, value) in active {
@@ -203,7 +205,8 @@ impl NetBoxClient {
     }
 
     async fn search_devices(&self, q: &str, f: &SearchFilters) -> Result<Vec<SearchResult>> {
-        let Some(params) = endpoint_params(q, f, &["status", "site", "tenant", "role"]) else {
+        let Some(params) = endpoint_params(q, f, &["status", "site", "tenant", "role", "tag"])
+        else {
             return Ok(Vec::new());
         };
         let page: Page<Device> = self.list(Endpoint::Devices, params).await?;
@@ -222,7 +225,7 @@ impl NetBoxClient {
     }
 
     async fn search_sites(&self, q: &str, f: &SearchFilters) -> Result<Vec<SearchResult>> {
-        let Some(params) = endpoint_params(q, f, &["status", "tenant"]) else {
+        let Some(params) = endpoint_params(q, f, &["status", "tenant", "tag"]) else {
             return Ok(Vec::new());
         };
         let page: Page<Site> = self.list(Endpoint::Sites, params).await?;
@@ -241,7 +244,7 @@ impl NetBoxClient {
     }
 
     async fn search_ips(&self, q: &str, f: &SearchFilters) -> Result<Vec<SearchResult>> {
-        let Some(params) = endpoint_params(q, f, &["status", "tenant", "role"]) else {
+        let Some(params) = endpoint_params(q, f, &["status", "tenant", "role", "tag"]) else {
             return Ok(Vec::new());
         };
         let page: Page<IpAddress> = self.list(Endpoint::IpAddresses, params).await?;
@@ -263,7 +266,7 @@ impl NetBoxClient {
         // `site` is intentionally omitted: prefix site-filtering is ambiguous
         // under the 4.2+ polymorphic scope, so we skip prefixes when `--site`
         // is set rather than risk an ignored filter.
-        let Some(params) = endpoint_params(q, f, &["status", "tenant", "role"]) else {
+        let Some(params) = endpoint_params(q, f, &["status", "tenant", "role", "tag"]) else {
             return Ok(Vec::new());
         };
         let page: Page<Prefix> = self.list(Endpoint::Prefixes, params).await?;
@@ -282,7 +285,8 @@ impl NetBoxClient {
     }
 
     async fn search_vlans(&self, q: &str, f: &SearchFilters) -> Result<Vec<SearchResult>> {
-        let Some(params) = endpoint_params(q, f, &["status", "site", "tenant", "role"]) else {
+        let Some(params) = endpoint_params(q, f, &["status", "site", "tenant", "role", "tag"])
+        else {
             return Ok(Vec::new());
         };
         let page: Page<Vlan> = self.list(Endpoint::Vlans, params).await?;
@@ -329,6 +333,18 @@ mod tests {
         assert!(dev.contains(&("status", "active".to_string())));
         // IP addresses don't support `site` → endpoint skipped entirely.
         assert!(endpoint_params("edge", &f, &["status", "tenant", "role"]).is_none());
+    }
+
+    #[test]
+    fn tag_filter_is_passed_to_supported_endpoints() {
+        let f = SearchFilters {
+            tag: Some("critical".into()),
+            ..Default::default()
+        };
+        let p = endpoint_params("edge", &f, &["status", "tag"]).unwrap();
+        assert!(p.contains(&("tag", "critical".to_string())));
+        // An endpoint that doesn't list `tag` is skipped rather than ignoring it.
+        assert!(endpoint_params("edge", &f, &["status"]).is_none());
     }
 
     #[test]

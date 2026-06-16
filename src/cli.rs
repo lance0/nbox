@@ -84,6 +84,10 @@ pub enum Command {
         #[arg(long)]
         role: Option<String>,
 
+        /// Filter by tag slug.
+        #[arg(long)]
+        tag: Option<String>,
+
         /// Columns to include in CSV output (comma-separated, e.g. kind,display,url).
         #[arg(long)]
         cols: Option<String>,
@@ -210,6 +214,13 @@ pub enum Command {
     Open {
         /// Object reference (e.g. `device/edge01`).
         object_ref: String,
+    },
+
+    /// List tags.
+    Tags {
+        /// Maximum number of tags to list.
+        #[arg(short, long, default_value_t = 200)]
+        limit: usize,
     },
 
     /// Show recent journal entries for an object.

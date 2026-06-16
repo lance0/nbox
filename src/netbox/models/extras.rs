@@ -1,8 +1,25 @@
-//! Extras models: journal entries, etc.
+//! Extras models: journal entries, tags, etc.
 
 use serde::{Deserialize, Serialize};
 
 use super::common::Choice;
+
+/// A tag, as returned by the listing endpoint (`/api/extras/tags/`).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TagInfo {
+    pub id: u64,
+    #[serde(default)]
+    pub url: Option<String>,
+    pub name: String,
+    pub slug: String,
+    #[serde(default)]
+    pub color: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Number of objects tagged (NetBox `tagged_items`).
+    #[serde(default)]
+    pub tagged_items: Option<u64>,
+}
 
 /// A journal entry (`/api/extras/journal-entries/`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
