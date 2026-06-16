@@ -74,6 +74,9 @@ pub struct App {
     /// Indices into `results` in display order (fuzzy-filtered while searching).
     pub view: Vec<usize>,
     pub selected: usize,
+    /// On the next `SearchComplete`, try to re-select this (kind, id) — used to
+    /// keep the cursor stable across an auto-refresh.
+    pub pending_reselect: Option<(ObjectKind, u64)>,
     pub detail: Option<DetailView>,
     pub should_quit: bool,
 }
@@ -107,6 +110,7 @@ impl App {
             results: Vec::new(),
             view: Vec::new(),
             selected: 0,
+            pending_reselect: None,
             detail: None,
             should_quit: false,
         }
@@ -116,14 +120,23 @@ impl App {
     pub fn handle_event(&mut self, event: AppEvent) -> Vec<AppCommand> {
         match event {
             AppEvent::Key(key) => self.handle_key(key),
-            AppEvent::Resize(_, _) | AppEvent::Tick => Vec::new(),
+            AppEvent::Resize(_, _) => Vec::new(),
+            AppEvent::Tick => self.on_tick(),
             AppEvent::SearchComplete(result) => {
                 match result {
                     Ok(items) => {
                         self.status = format!("{} result(s)", items.len());
                         self.results = items;
                         self.view = (0..self.results.len()).collect();
-                        self.selected = 0;
+                        self.selected = self
+                            .pending_reselect
+                            .take()
+                            .and_then(|(kind, id)| {
+                                self.view.iter().position(|&i| {
+                                    self.results[i].kind == kind && self.results[i].id == id
+                                })
+                            })
+                            .unwrap_or(0);
                     }
                     Err(e) => self.status = format!("error: {e:#}"),
                 }
@@ -325,6 +338,19 @@ impl App {
     /// Pop back to the previous screen, or Home if the stack is empty.
     fn go_back(&mut self) {
         self.screen = self.history.pop().unwrap_or(Screen::Home);
+    }
+
+    /// On an auto-refresh tick, re-run the last query (preserving the cursor)
+    /// only when idle on the home screen — so it never fights user input.
+    fn on_tick(&mut self) -> Vec<AppCommand> {
+        if self.mode == Mode::Normal
+            && self.screen == Screen::Home
+            && let Some(query) = self.last_query.clone()
+        {
+            self.pending_reselect = self.selected_result().map(|r| (r.kind, r.id));
+            return vec![AppCommand::Search(query)];
+        }
+        Vec::new()
     }
 
     /// Advance to the next built-in theme.
@@ -548,5 +574,33 @@ mod tests {
         let before = a.theme_index;
         a.handle_event(press(KeyCode::Char('t')));
         assert_ne!(a.theme_index, before);
+    }
+
+    #[test]
+    fn tick_refreshes_last_query_only_when_idle_on_home() {
+        let mut a = app();
+        // No last query → tick does nothing.
+        assert!(a.handle_event(AppEvent::Tick).is_empty());
+
+        a.last_query = Some("edge".into());
+        let cmds = a.handle_event(AppEvent::Tick);
+        assert!(matches!(cmds.as_slice(), [AppCommand::Search(q)] if q == "edge"));
+
+        // While typing a search, a tick must not fire a refresh.
+        a.mode = Mode::Search;
+        assert!(a.handle_event(AppEvent::Tick).is_empty());
+    }
+
+    #[test]
+    fn refresh_preserves_selection_by_id() {
+        let mut a = app();
+        set_results(&mut a, vec![result(1, "a"), result(2, "b"), result(3, "c")]);
+        a.selected = 2; // select id=3
+        a.last_query = Some("x".into());
+
+        let _ = a.handle_event(AppEvent::Tick); // captures pending_reselect = (Device, 3)
+        // New results arrive in a different order; cursor should track id=3.
+        set_results(&mut a, vec![result(3, "c"), result(1, "a"), result(2, "b")]);
+        assert_eq!(a.selected_result().map(|r| r.id), Some(3));
     }
 }

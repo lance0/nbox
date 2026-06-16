@@ -7,15 +7,15 @@ use tokio::sync::mpsc;
 use crate::domain::detail::{load_detail, load_detail_by_ref};
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::search::{SearchFilters, SearchRequest};
-use crate::tui::events::spawn_terminal_events;
+use crate::tui::events::{spawn_terminal_events, spawn_ticks};
 use crate::tui::state::{App, AppCommand, AppEvent};
 use crate::tui::ui;
 
 /// Set up the terminal, run the loop, and restore on exit (panic-safe via
 /// `ratatui::init`'s panic hook).
-pub async fn run(mut app: App) -> Result<()> {
+pub async fn run(mut app: App, refresh_secs: Option<u64>) -> Result<()> {
     let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, &mut app).await;
+    let result = event_loop(&mut terminal, &mut app, refresh_secs).await;
     ratatui::restore();
 
     // Persist the theme if it changed during the session.
@@ -29,9 +29,16 @@ pub async fn run(mut app: App) -> Result<()> {
     result
 }
 
-async fn event_loop(terminal: &mut DefaultTerminal, app: &mut App) -> Result<()> {
+async fn event_loop(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+    refresh_secs: Option<u64>,
+) -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<AppEvent>(64);
     spawn_terminal_events(tx.clone());
+    if let Some(secs) = refresh_secs.filter(|s| *s > 0) {
+        spawn_ticks(tx.clone(), secs);
+    }
 
     while !app.should_quit {
         terminal.draw(|frame| ui::render(frame, app))?;

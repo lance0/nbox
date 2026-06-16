@@ -91,7 +91,7 @@ Feature wins (small, on-identity):
 - ☑ Structured filter flags on `search`: `--status`/`--site`/`--tenant`/`--role` (per-endpoint allowlist; unsupported→endpoint skipped). `--vrf` deferred (needs name→RD/id resolution; with filter validation in v0.2)
 - ☑ CSV output: global `-o/--output plain|json|csv` (`--json` is a shortcut); generic (arrays→table, objects→field,value)
 - ☑ Column selection `--cols a,b,c` for `search` CSV output
-- ☐ Auto-refresh tick in the TUI (emit the existing `Tick`; configurable interval)
+- ☑ Auto-refresh tick in the TUI (`[ui].refresh_secs`, default off; re-runs the last query, preserving the cursor by id)
 - ☐ Client-side filter validation — warn on unknown query params (NetBox silently ignores them; netbox#6489)
 
 Scriptable / agent-friendly output:

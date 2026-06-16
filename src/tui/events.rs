@@ -1,8 +1,11 @@
 //! Terminal event source: forwards crossterm input onto the app channel.
 
+use std::time::Duration;
+
 use crossterm::event::{Event, EventStream, KeyEventKind};
 use futures::StreamExt;
 use tokio::sync::mpsc::Sender;
+use tokio::time::MissedTickBehavior;
 
 use crate::tui::state::AppEvent;
 
@@ -19,6 +22,22 @@ pub fn spawn_terminal_events(tx: Sender<AppEvent>) {
                 _ => continue,
             };
             if tx.send(app_event).await.is_err() {
+                break;
+            }
+        }
+    });
+}
+
+/// Spawn a task that emits [`AppEvent::Tick`] every `secs` seconds. Exits when
+/// the receiver is dropped.
+pub fn spawn_ticks(tx: Sender<AppEvent>, secs: u64) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(Duration::from_secs(secs));
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        ticker.tick().await; // the first tick fires immediately; skip it
+        loop {
+            ticker.tick().await;
+            if tx.send(AppEvent::Tick).await.is_err() {
                 break;
             }
         }

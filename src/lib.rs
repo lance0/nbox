@@ -169,6 +169,7 @@ async fn run_tui(ctx: &Ctx) -> Result<()> {
 
     let base_url = profile.url.clone();
     let theme_name = cfg.ui.theme.clone();
+    let refresh_secs = cfg.ui.refresh_secs;
     let token = config::resolve_token(profile);
     let client = NetBoxClient::new(profile, token)?;
 
@@ -185,7 +186,7 @@ async fn run_tui(ctx: &Ctx) -> Result<()> {
         status.netbox_version,
         Some(path),
     );
-    tui::app::run(app).await
+    tui::app::run(app, refresh_secs).await
 }
 
 /// `nbox status` — show NetBox connection + version info.

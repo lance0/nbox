@@ -62,6 +62,9 @@ pub struct UiConfig {
     pub confirm_writes: bool,
     #[serde(default)]
     pub open_browser_command: String,
+    /// TUI auto-refresh interval in seconds (0/absent = disabled).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub refresh_secs: Option<u64>,
 }
 
 impl Default for UiConfig {
@@ -71,6 +74,7 @@ impl Default for UiConfig {
             wide: false,
             confirm_writes: true,
             open_browser_command: String::new(),
+            refresh_secs: None,
         }
     }
 }
