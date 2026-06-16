@@ -131,6 +131,7 @@ nbox rack <name-or-id>
 nbox vlan <vid-or-name> [--site <s>] [--group <g>]
 nbox interface <device> <interface>
 nbox open <object-ref>
+nbox raw GET <api-path>           # raw read-only API request (escape hatch)
 nbox config <init|path|show>
 nbox profile <add|use|list|show>
 nbox completions <bash|zsh|fish|powershell|elvish>

@@ -132,6 +132,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             run_interface(&ctx, &device, &interface).await
         }
         Some(Command::Open { object_ref }) => run_open(&ctx, &object_ref).await,
+        Some(Command::Raw { method, path }) => run_raw(&ctx, &method, &path).await,
         Some(Command::Status) => run_status(&ctx).await,
         Some(Command::Config { command }) => config::run_config(
             command,
@@ -538,6 +539,31 @@ fn parse_object_ref(s: &str) -> Result<(&str, &str)> {
         })
 }
 
+/// `nbox raw <method> <path>` — a raw read-only API GET (escape hatch).
+async fn run_raw(ctx: &Ctx, method: &str, path: &str) -> Result<()> {
+    check_raw_method(method)?;
+    let client = connect(ctx)?;
+    let value: serde_json::Value = client.get(path, &[]).await?;
+    emit(ctx, &value, || {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&value).unwrap_or_default()
+        );
+    })
+}
+
+/// Allow only `GET` for `nbox raw` until write support lands. Write verbs are a
+/// deliberate v0.2+ feature behind the safe-write engine.
+fn check_raw_method(method: &str) -> Result<()> {
+    if method.eq_ignore_ascii_case("GET") {
+        Ok(())
+    } else {
+        anyhow::bail!(
+            "`nbox raw` only supports GET today; write verbs land with safe writes (v0.2+)"
+        )
+    }
+}
+
 /// Drop candidates whose scope object doesn't match a user-supplied reference
 /// (e.g. `--vrf`). A no-op when `query` is `None`.
 fn retain_scope<T>(
@@ -589,8 +615,19 @@ fn not_found(noun: &str, value: &str) -> anyhow::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{error, first_subnet_of_length, not_found, parse_object_ref, resolve_unique};
+    use super::{
+        check_raw_method, error, first_subnet_of_length, not_found, parse_object_ref,
+        resolve_unique,
+    };
     use crate::netbox::models::ipam::AvailablePrefix;
+
+    #[test]
+    fn raw_allows_get_only() {
+        assert!(check_raw_method("GET").is_ok());
+        assert!(check_raw_method("get").is_ok());
+        assert!(check_raw_method("POST").is_err());
+        assert!(check_raw_method("delete").is_err());
+    }
 
     #[test]
     fn first_subnet_of_length_picks_first_fitting_block() {

@@ -188,6 +188,15 @@ pub enum Command {
         object_ref: String,
     },
 
+    /// Make a raw read-only API request (escape hatch for unmodeled endpoints).
+    Raw {
+        /// HTTP method. Only GET is supported until writes land (v0.2+).
+        method: String,
+
+        /// API path, e.g. `/api/dcim/devices/?limit=1`.
+        path: String,
+    },
+
     /// Show NetBox connection and version info.
     Status,
 

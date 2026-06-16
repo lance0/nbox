@@ -134,7 +134,7 @@ v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implemen
 - ☑ Read-only `nbox next-ip <prefix>` / `next-prefix <prefix>` via `available-ips` / `available-prefixes` (with `--vrf` scoping; `next-prefix --length` finds the first free block of a size). Allocate lands with writes (v0.2).
 - ☑ Typed errors (`src/error.rs`) — 401→auth, 403→perms, ambiguous name→list matches; stable exit codes (3 auth, 4 not-found, 5 ambiguous).
 - ☐ CI against a real NetBox — netbox-docker (pin 4.x ≥ 4.2), seeded fixture + legacy v1 token, run the binary against the live API. Catches serializer drift wiremock can't.
-- ☐ Read-only `nbox raw GET <path>`.
+- ☑ Read-only `nbox raw GET <path>` escape hatch; write verbs rejected until v0.2+.
 - ☐ `config_version` field + forward-compat, before v0.2 touches the schema.
 - ☐ `clap_mangen` man pages.
 - ☐ Mark absent DESIGN.md modules aspirational (`error.rs`, `graphql.rs`, `schema.rs`, `docs/`).

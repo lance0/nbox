@@ -42,6 +42,7 @@ nbox site <name|slug>
 nbox rack <name|id>
 nbox search <query> [--limit N] [--status S] [--site SLUG] [--tenant SLUG] [--role SLUG] [--cols a,b,c] [--partial]
 nbox open <kind>/<ref>
+nbox raw GET <api-path>
 nbox status
 nbox completions <bash|zsh|fish|powershell|elvish>
 ```
