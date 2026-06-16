@@ -17,6 +17,7 @@ use crate::domain::site_view::SiteView;
 use crate::domain::vlan_view::VlanView;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::search::{SearchFilters, SearchRequest};
+use crate::output::Format;
 use crate::output::plain::KeyValues;
 
 pub mod cli;
@@ -57,7 +58,23 @@ pub fn init_logging(log_level: Option<&str>) {
 struct Ctx {
     config_path: Option<PathBuf>,
     profile: Option<String>,
-    json: bool,
+    format: Format,
+}
+
+impl Ctx {
+    fn is_json(&self) -> bool {
+        self.format == Format::Json
+    }
+}
+
+/// Render a serializable view per the selected format, or run `plain` for text.
+fn emit<T: serde::Serialize>(format: Format, view: &T, plain: impl FnOnce()) -> Result<()> {
+    match format {
+        Format::Json => output::json::print(view)?,
+        Format::Csv => output::csv::print(view)?,
+        Format::Plain => plain(),
+    }
+    Ok(())
 }
 
 /// Dispatch a parsed [`Cli`] invocation.
@@ -65,7 +82,7 @@ pub async fn run(cli: Cli) -> Result<()> {
     let ctx = Ctx {
         config_path: cli.config,
         profile: cli.profile,
-        json: cli.json,
+        format: Format::resolve(cli.json, cli.output),
     };
 
     match cli.command {
@@ -77,6 +94,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             site,
             tenant,
             role,
+            cols,
         }) => {
             let filters = SearchFilters {
                 status,
@@ -84,7 +102,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                 tenant,
                 role,
             };
-            run_search(&ctx, &query, limit, filters).await
+            run_search(&ctx, &query, limit, filters, cols).await
         }
         Some(Command::Device { value }) => run_device(&ctx, &value).await,
         Some(Command::Ip { address }) => run_ip(&ctx, &address).await,
@@ -96,10 +114,10 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Open { .. }) => not_implemented("open in browser"),
         Some(Command::Status) => run_status(&ctx).await,
         Some(Command::Config { command }) => {
-            config::run_config(command, ctx.config_path.as_deref(), ctx.json)
+            config::run_config(command, ctx.config_path.as_deref(), ctx.is_json())
         }
         Some(Command::Profile { command }) => {
-            config::run_profile(command, ctx.config_path.as_deref(), ctx.json)
+            config::run_profile(command, ctx.config_path.as_deref(), ctx.is_json())
         }
         Some(Command::Completions { shell }) => {
             let mut cmd = Cli::command();
@@ -174,27 +192,33 @@ async fn run_tui(ctx: &Ctx) -> Result<()> {
 async fn run_status(ctx: &Ctx) -> Result<()> {
     let client = connect(ctx)?;
     let status = client.status().await?;
+    let url = client.base_url().as_str().to_string();
 
-    if ctx.json {
-        output::json::print(&serde_json::json!({
-            "netbox_url": client.base_url().as_str(),
-            "netbox_version": status.netbox_version,
-            "django_version": status.django_version,
-            "python_version": status.python_version,
-        }))?;
-    } else {
+    let report = serde_json::json!({
+        "netbox_url": url,
+        "netbox_version": status.netbox_version,
+        "django_version": status.django_version,
+        "python_version": status.python_version,
+    });
+
+    emit(ctx.format, &report, || {
         let mut kv = KeyValues::new();
-        kv.push("netbox_url", client.base_url().as_str().to_string())
-            .push("netbox_version", status.netbox_version)
-            .push_opt("django", status.django_version)
-            .push_opt("python", status.python_version);
+        kv.push("netbox_url", url.clone())
+            .push("netbox_version", status.netbox_version.clone())
+            .push_opt("django", status.django_version.clone())
+            .push_opt("python", status.python_version.clone());
         kv.print();
-    }
-    Ok(())
+    })
 }
 
 /// `nbox search <query>` — normalized multi-endpoint search.
-async fn run_search(ctx: &Ctx, query: &str, limit: usize, filters: SearchFilters) -> Result<()> {
+async fn run_search(
+    ctx: &Ctx,
+    query: &str,
+    limit: usize,
+    filters: SearchFilters,
+    cols: Option<String>,
+) -> Result<()> {
     let client = connect(ctx)?;
     let results = client
         .search(SearchRequest {
@@ -204,15 +228,28 @@ async fn run_search(ctx: &Ctx, query: &str, limit: usize, filters: SearchFilters
         })
         .await?;
 
-    if ctx.json {
-        output::json::print(&results)?;
-    } else if results.is_empty() {
-        eprintln!("no results for \"{query}\"");
-    } else {
-        for r in &results {
-            match &r.subtitle {
-                Some(s) => println!("{:<7} {}  ({s})", r.kind.as_str(), r.display),
-                None => println!("{:<7} {}", r.kind.as_str(), r.display),
+    match ctx.format {
+        Format::Json => output::json::print(&results)?,
+        Format::Csv => {
+            let columns: Option<Vec<String>> = cols.as_deref().map(|c| {
+                c.split(',')
+                    .map(|s| s.trim().to_string())
+                    .filter(|s| !s.is_empty())
+                    .collect()
+            });
+            let value = serde_json::to_value(&results)?;
+            print!("{}", output::csv::to_csv(&value, columns.as_deref()));
+        }
+        Format::Plain => {
+            if results.is_empty() {
+                eprintln!("no results for \"{query}\"");
+            } else {
+                for r in &results {
+                    match &r.subtitle {
+                        Some(s) => println!("{:<7} {}  ({s})", r.kind.as_str(), r.display),
+                        None => println!("{:<7} {}", r.kind.as_str(), r.display),
+                    }
+                }
             }
         }
     }
@@ -228,12 +265,7 @@ async fn run_device(ctx: &Ctx, value: &str) -> Result<()> {
         .ok_or_else(|| not_found("device", value))?;
 
     let view = DeviceView::from_model(device);
-    if ctx.json {
-        output::json::print(&view)?;
-    } else {
-        view.to_key_values().print();
-    }
-    Ok(())
+    emit(ctx.format, &view, || view.to_key_values().print())
 }
 
 /// `nbox ip <address>` — resolve an IP and its most-specific parent prefix.
@@ -250,12 +282,7 @@ async fn run_ip(ctx: &Ctx, address: &str) -> Result<()> {
     let parent = most_specific(client.prefixes_containing(host).await?);
 
     let view = IpView::build(ip, parent);
-    if ctx.json {
-        output::json::print(&view)?;
-    } else {
-        view.to_key_values().print();
-    }
-    Ok(())
+    emit(ctx.format, &view, || view.to_key_values().print())
 }
 
 /// `nbox prefix <cidr>` — show a prefix with its children and contained IPs.
@@ -271,12 +298,7 @@ async fn run_prefix(ctx: &Ctx, cidr: &str) -> Result<()> {
     let ips = client.prefix_ips(cidr, SECTION_CAP).await?;
 
     let view = PrefixView::build(prefix, children, ips);
-    if ctx.json {
-        output::json::print(&view)?;
-    } else {
-        println!("{}", view.to_plain());
-    }
-    Ok(())
+    emit(ctx.format, &view, || println!("{}", view.to_plain()))
 }
 
 /// `nbox vlan <vid|name>` — show a VLAN and the prefixes that reference it.
@@ -289,12 +311,7 @@ async fn run_vlan(ctx: &Ctx, value: &str) -> Result<()> {
     let prefixes = client.vlan_prefixes(vlan.id, 50).await?;
 
     let view = VlanView::build(vlan, prefixes);
-    if ctx.json {
-        output::json::print(&view)?;
-    } else {
-        println!("{}", view.to_plain());
-    }
-    Ok(())
+    emit(ctx.format, &view, || println!("{}", view.to_plain()))
 }
 
 /// `nbox site <name|slug>` — show a site.
@@ -306,12 +323,7 @@ async fn run_site(ctx: &Ctx, value: &str) -> Result<()> {
         .ok_or_else(|| not_found("site", value))?;
 
     let view = SiteView::from_model(site);
-    if ctx.json {
-        output::json::print(&view)?;
-    } else {
-        view.to_key_values().print();
-    }
-    Ok(())
+    emit(ctx.format, &view, || view.to_key_values().print())
 }
 
 /// `nbox rack <name|id>` — show a rack.
@@ -323,12 +335,7 @@ async fn run_rack(ctx: &Ctx, value: &str) -> Result<()> {
         .ok_or_else(|| not_found("rack", value))?;
 
     let view = RackView::from_model(rack);
-    if ctx.json {
-        output::json::print(&view)?;
-    } else {
-        view.to_key_values().print();
-    }
-    Ok(())
+    emit(ctx.format, &view, || view.to_key_values().print())
 }
 
 /// Fail an unimplemented command (non-zero exit), keeping stdout clean.

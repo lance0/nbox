@@ -25,6 +25,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub json: bool,
 
+    /// Output format: plain (default), json, or csv. `--json` is a shortcut.
+    #[arg(short = 'o', long, global = true, value_name = "FORMAT")]
+    pub output: Option<crate::output::Format>,
+
     /// Never launch the interactive TUI.
     #[arg(long, global = true)]
     pub no_tui: bool,
@@ -67,6 +71,10 @@ pub enum Command {
         /// Filter by role slug.
         #[arg(long)]
         role: Option<String>,
+
+        /// Columns to include in CSV output (comma-separated, e.g. kind,display,url).
+        #[arg(long)]
+        cols: Option<String>,
     },
 
     /// Show a device by name, slug, or ID.

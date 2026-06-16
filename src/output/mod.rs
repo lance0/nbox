@@ -1,26 +1,36 @@
 //! Output rendering for non-TUI commands.
 //!
-//! Every shell command can emit either human-readable plain text (default) or
-//! machine-readable JSON (`--json`). JSON goes to stdout so it stays pipe-safe;
-//! status/diagnostic messages always go to stderr (see [`crate::run`]).
+//! Every shell command can emit human-readable plain text (default), JSON
+//! (`--json` / `--output json`), or CSV (`--output csv`). JSON/CSV go to stdout
+//! so they stay pipe-safe; status/diagnostic messages always go to stderr.
 
+pub mod csv;
 pub mod json;
 pub mod plain;
 
+use clap::ValueEnum;
+
 /// The selected output format for a command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, ValueEnum)]
 pub enum Format {
     /// Human-readable text.
     #[default]
     Plain,
     /// Pretty-printed JSON.
     Json,
+    /// Comma-separated values.
+    Csv,
 }
 
 impl Format {
-    /// Derive the format from the global `--json` flag.
-    pub fn from_json_flag(json: bool) -> Self {
-        if json { Format::Json } else { Format::Plain }
+    /// Resolve the effective format: the `--json` shortcut wins, else `--output`,
+    /// else plain.
+    pub fn resolve(json: bool, output: Option<Format>) -> Self {
+        if json {
+            Format::Json
+        } else {
+            output.unwrap_or_default()
+        }
     }
 }
 
@@ -29,9 +39,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn format_from_flag() {
-        assert_eq!(Format::from_json_flag(true), Format::Json);
-        assert_eq!(Format::from_json_flag(false), Format::Plain);
-        assert_eq!(Format::default(), Format::Plain);
+    fn resolve_prefers_json_flag_then_output() {
+        assert_eq!(Format::resolve(true, Some(Format::Csv)), Format::Json);
+        assert_eq!(Format::resolve(false, Some(Format::Csv)), Format::Csv);
+        assert_eq!(Format::resolve(false, None), Format::Plain);
     }
 }
