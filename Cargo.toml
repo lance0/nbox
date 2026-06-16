@@ -1,0 +1,78 @@
+[package]
+name = "nbx"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+description = "Terminal UI and CLI for NetBox"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/lance0/nbx"
+keywords = ["netbox", "network", "ipam", "tui", "dcim"]
+categories = ["command-line-utilities", "network-programming"]
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+futures = "0.3"
+
+# HTTP
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# TUI
+ratatui = "0.30"
+crossterm = { version = "0.29", features = ["event-stream"] }
+nucleo = "0.5"
+
+# CLI
+clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4.6"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "1"
+toml_edit = "0.25"
+
+# Config and paths
+dirs = "6"
+
+# Errors and logging
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tracing-appender = "0.2"
+
+# Terminal helpers
+is-terminal = "0.4"
+arboard = { version = "3", optional = true }
+open = "5"
+
+# IP/network handling
+ipnet = "2"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# Caching, later
+rusqlite = { version = "0.40", features = ["bundled"], optional = true }
+
+# Update notifications, later
+update-informer = { version = "1", default-features = false, features = ["github", "ureq", "rustls-tls"], optional = true }
+
+[features]
+default = ["clipboard"]
+clipboard = ["dep:arboard"]
+cache = ["dep:rusqlite"]
+updates = ["dep:update-informer"]
+
+[dev-dependencies]
+tokio-test = "0.4"
+tempfile = "3"
+insta = "1"
+wiremock = "0.6"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true

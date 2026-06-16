@@ -11,8 +11,8 @@ Legend: ☐ planned · ◐ in progress · ☑ done
 The goal of v0.1 is a working vertical slice: configure a profile, search, look up objects from the shell, and navigate them in the TUI.
 
 ### Phase 1 — Skeleton
-- ☐ `Cargo.toml` metadata + dependencies
-- ☐ Dual MIT/Apache license files
+- ☑ `Cargo.toml` metadata + dependencies
+- ☑ Dual MIT/Apache license files
 - ☐ `clap` CLI skeleton with global flags (`--profile`, `--config`, `--json`, `--no-tui`, `--log-level`)
 - ☐ Config loader + `config init` / `config path` / `config show`
 - ☐ Profile commands (`add` / `use` / `list` / `show`)
@@ -22,7 +22,7 @@ The goal of v0.1 is a working vertical slice: configure a profile, search, look 
 - ☐ Paginated `Page<T>` + `list` / `list_all`
 - ☐ `/api/status/` version probe on connect — warn/refuse if below the 4.2 floor, show version in status line
 - ☐ JSON output path
-- ☐ CI green from commit 1 (fmt, clippy, test on GitHub Actions)
+- ☑ CI green from commit 1 (fmt, clippy, test on GitHub Actions)
 
 **Deliverable**
 
