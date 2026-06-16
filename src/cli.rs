@@ -217,6 +217,9 @@ pub enum Command {
         /// Target shell.
         shell: CompletionShell,
     },
+
+    /// Generate a man page (roff) for nbox, e.g. `nbox man > nbox.1`.
+    Man,
 }
 
 /// `nbox config` subcommands.

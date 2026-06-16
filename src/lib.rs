@@ -152,6 +152,10 @@ pub async fn run(cli: Cli) -> Result<()> {
             clap_complete::generate(shell.to_clap(), &mut cmd, bin, &mut std::io::stdout());
             Ok(())
         }
+        Some(Command::Man) => {
+            clap_mangen::Man::new(Cli::command()).render(&mut std::io::stdout())?;
+            Ok(())
+        }
     }
 }
 

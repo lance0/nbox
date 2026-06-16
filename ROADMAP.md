@@ -136,7 +136,7 @@ v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implemen
 - ☐ CI against a real NetBox — netbox-docker (pin 4.x ≥ 4.2), seeded fixture + legacy v1 token, run the binary against the live API. Catches serializer drift wiremock can't.
 - ☑ Read-only `nbox raw GET <path>` escape hatch; write verbs rejected until v0.2+.
 - ☑ `config_version` field + forward-compat (a newer version warns but still loads), before v0.2 touches the schema.
-- ☐ `clap_mangen` man pages.
+- ☑ `clap_mangen` man page via `nbox man` (`nbox man > nbox.1`).
 - ☐ Mark absent DESIGN.md modules aspirational (`error.rs`, `graphql.rs`, `schema.rs`, `docs/`).
 
 ## v0.2 — Nested views, IPAM power, first writes

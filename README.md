@@ -136,6 +136,7 @@ nbox raw GET <api-path>           # raw read-only API request (escape hatch)
 nbox config <init|path|show>
 nbox profile <add|use|list|show>
 nbox completions <bash|zsh|fish|powershell|elvish>
+nbox man                          # generate a man page: nbox man > nbox.1
 ```
 
 ### Global flags
