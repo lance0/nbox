@@ -37,7 +37,7 @@ nbx search edge01 --json
 - ☑ `BriefObject`, `Choice<T>`, `Tag`, custom fields
 - ☑ Device, Interface, IPAddress, Prefix, VLAN, Site, Rack (+ Vrf, Tenant)
 - ☑ Endpoint mapping + per-endpoint query methods (device/ip/prefix/vlan/site/rack)
-- ☐ Normalized `SearchResult` + parallel multi-endpoint search (`q` primary, field filters fallback)
+- ☑ Normalized `SearchResult` + parallel multi-endpoint search (`q` primary across devices/sites/ips/prefixes/vlans)
 - ☑ Device / IP / Prefix / VLAN / Site / Rack detail resolution (incl. IP → parent prefix via `ipnet`)
 - ☑ Plain + JSON output for each detail command
 
@@ -104,6 +104,7 @@ nbx
 
 - ☐ OS keyring token storage
 - ☐ Local SQLite cache (`cache` feature) for fast repeat lookups
+- ☐ TurboBulk (NetBox Labs) — **only if** revisited post-1.0: capability-detect `/api/plugins/turbobulk/`, export-only (JSONL, no Parquet/arrow dep), opt-in behind a feature flag. It's a proprietary Cloud/Enterprise server plugin (needs NetBox 4.4.7+), so most self-hosted users can't use it, and bulk import/export is a stated non-goal — hence parked here, not planned.
 - ☐ Virtualization (VMs) and tenancy detail views
 - ☐ VRF-aware IP/prefix navigation
 

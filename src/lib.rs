@@ -16,6 +16,7 @@ use crate::domain::rack_view::RackView;
 use crate::domain::site_view::SiteView;
 use crate::domain::vlan_view::VlanView;
 use crate::netbox::client::NetBoxClient;
+use crate::netbox::search::SearchRequest;
 
 pub mod cli;
 pub mod config;
@@ -23,6 +24,7 @@ pub mod domain;
 pub mod netbox;
 pub mod output;
 pub mod tui;
+pub mod util;
 
 #[cfg(feature = "updates")]
 pub mod update;
@@ -47,7 +49,7 @@ pub async fn run(cli: Cli) -> Result<()> {
 
     match cli.command {
         None | Some(Command::Tui) => not_implemented("interactive TUI"),
-        Some(Command::Search { .. }) => not_implemented("search"),
+        Some(Command::Search { query, limit }) => run_search(&ctx, &query, limit).await,
         Some(Command::Device { value }) => run_device(&ctx, &value).await,
         Some(Command::Ip { address }) => run_ip(&ctx, &address).await,
         Some(Command::Prefix { cidr }) => run_prefix(&ctx, &cidr).await,
@@ -91,6 +93,31 @@ fn connect(ctx: &Ctx) -> Result<NetBoxClient> {
 
     let token = config::resolve_token(profile);
     NetBoxClient::new(profile, token)
+}
+
+/// `nbx search <query>` — normalized multi-endpoint search.
+async fn run_search(ctx: &Ctx, query: &str, limit: usize) -> Result<()> {
+    let client = connect(ctx)?;
+    let results = client
+        .search(SearchRequest {
+            query: query.to_string(),
+            limit,
+        })
+        .await?;
+
+    if ctx.json {
+        output::json::print(&results)?;
+    } else if results.is_empty() {
+        eprintln!("no results for \"{query}\"");
+    } else {
+        for r in &results {
+            match &r.subtitle {
+                Some(s) => println!("{:<7} {}  ({s})", r.kind.as_str(), r.display),
+                None => println!("{:<7} {}", r.kind.as_str(), r.display),
+            }
+        }
+    }
+    Ok(())
 }
 
 /// `nbx device <value>` — look up and render a device.
