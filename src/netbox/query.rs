@@ -10,7 +10,7 @@ use crate::netbox::endpoints::Endpoint;
 use crate::netbox::models::circuits::Circuit;
 use crate::netbox::models::dcim::{Device, Interface, Rack, Site};
 use crate::netbox::models::ipam::{
-    Aggregate, Asn, AvailableIp, AvailablePrefix, IpAddress, Prefix, Vlan,
+    Aggregate, Asn, AvailableIp, AvailablePrefix, IpAddress, Prefix, Service, Vlan,
 };
 use crate::netbox::pagination::Page;
 
@@ -95,6 +95,16 @@ impl NetBoxClient {
     pub async fn device_interfaces(&self, device_id: u64, max: usize) -> Result<Vec<Interface>> {
         self.list_all(
             Endpoint::Interfaces,
+            vec![("device_id", device_id.to_string())],
+            max,
+        )
+        .await
+    }
+
+    /// Services declared on a device (up to `max`).
+    pub async fn device_services(&self, device_id: u64, max: usize) -> Result<Vec<Service>> {
+        self.list_all(
+            Endpoint::Services,
             vec![("device_id", device_id.to_string())],
             max,
         )

@@ -184,7 +184,7 @@ nbox prefix 10.44.208.0/24 --envelope --raw      # versioned, single-line JSON
 | `?` / `F1`         | help                            |
 | `q` / `Ctrl+c`     | quit                            |
 
-On a device screen: `i` interfaces · `p` IPs · `c` cables · `v` VLANs.
+On a device screen: `i` interfaces · `p` IPs · `c` cables · `v` VLANs · `s` services.
 
 The **command palette** (`:`) accepts `device`/`ip`/`prefix`/`vlan`/`site <ref>`, `find <q>` (or bare text), `open`, `copy`, `theme <name>`, and `refresh`. The **home screen** lists recently opened objects (deduped, most-recent-first) when there are no search results — press `Enter` to reopen one. Set `[ui].refresh_secs` to auto-refresh the current search on an interval (off by default), preserving your selection.
 

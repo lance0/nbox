@@ -168,7 +168,7 @@ v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implemen
 - ◐ Circuits — `nbox circuit <cid|id>` lookup done (☑); inclusion in `search` still pending.
 - ☑ Aggregates (`nbox aggregate <cidr|id>`) and ASNs (`nbox asn <asn>`) lookups.
 - ☐ Journal entries on detail views (`/api/extras/journal-entries/`).
-- ☐ Services (`/api/ipam/services/`) — what's listening on this device.
+- ☑ Services (`/api/ipam/services/`) — surfaced on the device detail (a `services` section + TUI `s` tab; "what's listening").
 - ☐ `nbox raw POST|PATCH|DELETE <path>` (read-only GET ships in v0.1.1).
 - ☐ OPTIONS write-capability discovery — filter safety is already handled by the typed allowlist; optional `schema` command.
 - ☐ Batch queries from a file (audits).

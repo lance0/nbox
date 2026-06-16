@@ -323,12 +323,13 @@ async fn run_device(ctx: &Ctx, value: &str) -> Result<()> {
         .ok_or_else(|| not_found("device", value))?;
 
     let id = device.id;
-    let (interfaces, ips) = tokio::try_join!(
+    let (interfaces, ips, services) = tokio::try_join!(
         client.device_interfaces(id, CAP),
-        client.device_ips(id, CAP)
+        client.device_ips(id, CAP),
+        client.device_services(id, CAP),
     )?;
 
-    let view = DeviceDetail::build(device, interfaces, ips);
+    let view = DeviceDetail::build(device, interfaces, ips, services);
     emit(ctx, &view, || println!("{}", view.to_plain()))
 }
 

@@ -132,6 +132,26 @@ pub struct Vrf {
     pub custom_fields: serde_json::Value,
 }
 
+/// A service (`/api/ipam/services/`) — a port/protocol on a device or VM.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Service {
+    pub id: u64,
+    pub url: String,
+    #[serde(default)]
+    pub display: Option<String>,
+    pub name: String,
+
+    #[serde(default)]
+    pub protocol: Option<Choice<String>>,
+    #[serde(default)]
+    pub ports: Vec<u32>,
+    #[serde(default)]
+    pub description: Option<String>,
+
+    #[serde(default)]
+    pub custom_fields: serde_json::Value,
+}
+
 /// An aggregate (`/api/ipam/aggregates/`) — a top-level allocation from a RIR.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Aggregate {

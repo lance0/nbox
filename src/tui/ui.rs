@@ -128,7 +128,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         Line::from("j / k    move selection"),
         Line::from("g / G    top / bottom"),
         Line::from("t        cycle theme"),
-        Line::from("i/p/c/v  device tabs (interfaces/IPs/cables/VLANs)"),
+        Line::from("i/p/c/v/s  device tabs (interfaces/IPs/cables/VLANs/services)"),
         Line::from("b / Esc  back"),
         Line::from("?  / F1  toggle this help"),
         Line::from("q        quit"),

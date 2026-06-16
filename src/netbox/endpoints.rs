@@ -16,6 +16,7 @@ pub enum Endpoint {
     Circuits,
     Aggregates,
     Asns,
+    Services,
 }
 
 impl Endpoint {
@@ -35,6 +36,7 @@ impl Endpoint {
             Endpoint::Circuits => "/api/circuits/circuits/",
             Endpoint::Aggregates => "/api/ipam/aggregates/",
             Endpoint::Asns => "/api/ipam/asns/",
+            Endpoint::Services => "/api/ipam/services/",
         }
     }
 

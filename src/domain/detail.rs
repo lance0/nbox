@@ -59,11 +59,12 @@ async fn load_device_detail(
 ) -> Result<(String, String, Vec<DetailTab>)> {
     let id = device.id;
     let name = device.name.clone();
-    let (interfaces, ips) = tokio::try_join!(
+    let (interfaces, ips, services) = tokio::try_join!(
         client.device_interfaces(id, DEVICE_SECTION_CAP),
-        client.device_ips(id, DEVICE_SECTION_CAP)
+        client.device_ips(id, DEVICE_SECTION_CAP),
+        client.device_services(id, DEVICE_SECTION_CAP),
     )?;
-    let detail = DeviceDetail::build(device, interfaces, ips);
+    let detail = DeviceDetail::build(device, interfaces, ips, services);
     let tabs = detail
         .sections()
         .into_iter()

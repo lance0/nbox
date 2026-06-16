@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use crate::domain::device_view::DeviceView;
 use crate::netbox::models::dcim::{Device, Interface};
-use crate::netbox::models::ipam::IpAddress;
+use crate::netbox::models::ipam::{IpAddress, Service};
 
 /// One interface row in the device's Interfaces section.
 #[derive(Debug, Clone, Serialize)]
@@ -46,7 +46,17 @@ pub struct VlanRow {
     pub vlan: String,
 }
 
-/// A device summary plus its interfaces, IPs, cables, and VLANs.
+/// One service declared on the device.
+#[derive(Debug, Clone, Serialize)]
+pub struct ServiceRow {
+    pub name: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub protocol: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub ports: Vec<u32>,
+}
+
+/// A device summary plus its interfaces, IPs, cables, VLANs, and services.
 #[derive(Debug, Clone, Serialize)]
 pub struct DeviceDetail {
     #[serde(flatten)]
@@ -59,12 +69,19 @@ pub struct DeviceDetail {
     pub cables: Vec<CableRow>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub vlans: Vec<VlanRow>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub services: Vec<ServiceRow>,
 }
 
 impl DeviceDetail {
-    /// Build from a device and its interfaces + assigned IPs. VLANs and cables
-    /// are derived from the interfaces (no extra requests).
-    pub fn build(device: Device, interfaces: Vec<Interface>, ips: Vec<IpAddress>) -> Self {
+    /// Build from a device and its interfaces, assigned IPs, and services. VLANs
+    /// and cables are derived from the interfaces (no extra requests).
+    pub fn build(
+        device: Device,
+        interfaces: Vec<Interface>,
+        ips: Vec<IpAddress>,
+        services: Vec<Service>,
+    ) -> Self {
         let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
 
         let mut vlans: Vec<VlanRow> = Vec::new();
@@ -113,12 +130,22 @@ impl DeviceDetail {
             })
             .collect();
 
+        let service_rows = services
+            .into_iter()
+            .map(|s| ServiceRow {
+                name: s.name,
+                protocol: s.protocol.map(|c| c.value),
+                ports: s.ports,
+            })
+            .collect();
+
         Self {
             summary: DeviceView::from_model(device),
             interfaces: iface_rows,
             ip_addresses: ip_rows,
             cables,
             vlans,
+            services: service_rows,
         }
     }
 
@@ -150,6 +177,9 @@ impl DeviceDetail {
         }
         if !self.vlans.is_empty() {
             tabs.push(('v', "VLANs", self.vlan_lines().join("\n")));
+        }
+        if !self.services.is_empty() {
+            tabs.push(('s', "Services", self.service_lines().join("\n")));
         }
         tabs
     }
@@ -195,6 +225,26 @@ impl DeviceDetail {
 
     fn vlan_lines(&self) -> Vec<String> {
         self.vlans.iter().map(|v| format!("  {}", v.vlan)).collect()
+    }
+
+    fn service_lines(&self) -> Vec<String> {
+        self.services
+            .iter()
+            .map(|s| {
+                let ports = s
+                    .ports
+                    .iter()
+                    .map(|p| p.to_string())
+                    .collect::<Vec<_>>()
+                    .join(",");
+                match (&s.protocol, ports.is_empty()) {
+                    (Some(proto), false) => format!("  {}  {proto}/{ports}", s.name),
+                    (Some(proto), true) => format!("  {}  {proto}", s.name),
+                    (None, false) => format!("  {}  {ports}", s.name),
+                    (None, true) => format!("  {}", s.name),
+                }
+            })
+            .collect()
     }
 }
 
@@ -246,11 +296,20 @@ mod tests {
             .unwrap(),
         ];
 
-        let detail = DeviceDetail::build(device(), interfaces, ips);
+        let services: Vec<Service> = vec![
+            serde_json::from_value(json!({
+                "id": 1, "url": "u", "name": "ssh",
+                "protocol": {"value": "tcp", "label": "TCP"}, "ports": [22]
+            }))
+            .unwrap(),
+        ];
+
+        let detail = DeviceDetail::build(device(), interfaces, ips, services);
         assert_eq!(detail.interfaces.len(), 2);
         assert_eq!(detail.cables.len(), 1);
         // VLAN 20 appears on both interfaces but is deduped.
         assert_eq!(detail.vlans.len(), 2);
+        assert_eq!(detail.services.len(), 1);
         assert_eq!(
             detail.ip_addresses[0].interface.as_deref(),
             Some("xe-0/0/0")
@@ -262,5 +321,6 @@ mod tests {
         assert!(plain.contains("IP Addresses\n  10.0.0.1/31  xe-0/0/0"));
         assert!(plain.contains("Cables\n  xe-0/0/0 -> core01 xe-1/0/0"));
         assert!(plain.contains("VLANs\n  10 (mgmt)\n  20 (prod)"));
+        assert!(plain.contains("Services\n  ssh  tcp/22"));
     }
 }
