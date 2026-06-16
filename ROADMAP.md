@@ -199,9 +199,9 @@ Ported from ttl/xfr where they paid off. Already have: release workflow, `instal
 - ☐ Ship completions as a release artifact, not just the subcommand.
 - ☐ MSRV CI job pinning `rust-version` (1.88).
 - ☐ `dependabot.yml` — grouped Cargo + GitHub Actions.
-- ☐ `CONTRIBUTING.md`.
+- ☑ `CONTRIBUTING.md`.
 - ☐ `docs/` tree — `ARCHITECTURE.md`, `CONFIG.md`, `FEATURES.md`.
-- ☐ `KNOWN_ISSUES.md` — first-match disambiguation, no VRF scoping yet, etc.
+- ☑ `KNOWN_ISSUES.md` — read-only, search scope, parent-prefix best-effort, caps, CSV nesting.
 - ☐ Split `prefs.toml` (runtime state) from `config.toml` (user config), per xfr. Pairs with `config_version`.
 - ☐ `examples/config.toml`; `.github/FUNDING.yml`.
 
