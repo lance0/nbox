@@ -21,7 +21,7 @@ The goal of v0.1 is a working vertical slice: configure a profile, search, look 
 - ☑ Token redaction in request logging (never log `Authorization`)
 - ☑ Paginated `Page<T>` + `list` / `list_all`
 - ☑ `/api/status/` version probe + 4.2 floor enforcement (`verify_compatible`); status-line display lands with the TUI (Phase 3)
-- ☐ JSON output path
+- ☑ JSON output path
 - ☑ CI green from commit 1 (fmt, clippy, test on GitHub Actions)
 
 **Deliverable**

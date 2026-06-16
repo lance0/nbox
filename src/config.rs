@@ -223,7 +223,7 @@ pub fn run_config(cmd: ConfigCommand, config_path: Option<&Path>, json: bool) ->
         ConfigCommand::Show => {
             let cfg = load(&path)?;
             if json {
-                println!("{}", serde_json::to_string_pretty(&cfg)?);
+                crate::output::json::print(&cfg)?;
             } else {
                 print!("{}", toml::to_string_pretty(&cfg)?);
             }
@@ -269,7 +269,7 @@ pub fn run_profile(cmd: ProfileCommand, config_path: Option<&Path>, json: bool) 
             let cfg = load(&path)?;
             if json {
                 let names: Vec<&String> = cfg.profiles.keys().collect();
-                println!("{}", serde_json::to_string_pretty(&names)?);
+                crate::output::json::print(&names)?;
             } else {
                 for name in cfg.profiles.keys() {
                     let marker = if Some(name) == cfg.active_profile.as_ref() {
@@ -292,7 +292,7 @@ pub fn run_profile(cmd: ProfileCommand, config_path: Option<&Path>, json: bool) 
                 .get(&name)
                 .with_context(|| format!("no profile named '{name}'"))?;
             if json {
-                println!("{}", serde_json::to_string_pretty(profile)?);
+                crate::output::json::print(profile)?;
             } else {
                 print!("{}", toml::to_string_pretty(profile)?);
             }
