@@ -62,6 +62,7 @@ rusqlite = { version = "0.40", features = ["bundled"], optional = true }
 
 # Update notifications, later
 update-informer = { version = "1", default-features = false, features = ["github", "ureq", "rustls-tls"], optional = true }
+rmcp = { version = "1.7", default-features = false, features = ["server", "macros", "transport-io"] }
 
 [features]
 default = ["clipboard"]

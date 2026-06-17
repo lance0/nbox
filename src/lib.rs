@@ -35,6 +35,7 @@ pub mod cli;
 pub mod config;
 pub mod domain;
 pub mod error;
+pub mod mcp;
 pub mod netbox;
 pub mod output;
 pub mod tui;
@@ -172,6 +173,14 @@ pub async fn run(cli: Cli) -> Result<()> {
             clap_mangen::Man::new(Cli::command()).render(&mut std::io::stdout())?;
             Ok(())
         }
+        Some(Command::Mcp { cmd }) => match cmd {
+            // stdout is reserved for the JSON-RPC stream — connect() and the
+            // server itself print nothing, and logging already goes to stderr.
+            cli::McpCmd::Serve => {
+                let client = connect(&ctx)?;
+                mcp::serve(client).await
+            }
+        },
     }
 }
 
@@ -451,7 +460,7 @@ async fn run_next_prefix(
 
 /// The first free block of exactly `len` bits among the available prefixes,
 /// computed locally (read-only) by subnetting each free block with `ipnet`.
-fn first_subnet_of_length(free: &[AvailablePrefix], len: u8) -> Option<String> {
+pub(crate) fn first_subnet_of_length(free: &[AvailablePrefix], len: u8) -> Option<String> {
     for block in free {
         if let Ok(net) = block.prefix.parse::<IpNet>()
             && net.prefix_len() <= len
