@@ -42,7 +42,7 @@ See [Installation](#installation) below for setup instructions.
 ## Features
 
 - **Fast shell lookups** — `device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `circuit`, `aggregate`, `asn`, `ip-range`, and `interface`, each as a one-liner.
-- **Agent-ready** — `nbox serve` is a read-only MCP server: the same lookups exposed as eight tools over stdio, returning the exact JSON view models the CLI does, so AI agents (Claude Code, Claude Desktop, …) query NetBox safely. See [docs/MCP.md](docs/MCP.md).
+- **Agent-ready** — `nbox serve` is a read-only MCP server: the same lookups exposed as eight tools, returning the exact JSON view models the CLI does, so AI agents (Claude Code, Claude Desktop, …) query NetBox safely. Stdio for a local subprocess, or a loopback HTTP transport — with OIDC resource-server auth for a network-reachable, read-only deployment. See [docs/MCP.md](docs/MCP.md).
 - **Normalized search** — one `search` query runs in parallel across devices, sites, IPs, prefixes, VLANs, circuits, aggregates, ASNs, and IP ranges and returns ranked, deduped hits.
 - **IPAM-aware** — IP → most-specific parent prefix → VLAN → scope resolution, prefix utilization and children, `next-ip` / `next-prefix` for available addresses and free blocks (computed locally with `ipnet`).
 - **Polymorphic scope** — `--site`/`--region`/`--site-group`/`--location` on `search` resolve the reference once and filter prefixes by NetBox 4.2's `scope_type` + `scope_id` (exact scope, one flag at a time); views expose `scope`/`scope_type` (site, location, region, site-group, …).
@@ -240,7 +240,7 @@ nbox open <kind>/<ref>            # device, ip, prefix, vlan, site, rack, circui
                                   # ip-range, and interface/<device>/<name> (the name may contain
                                   # slashes, e.g. xe-0/0/1)
 nbox raw GET <api-path>           # raw read-only API request (escape hatch)
-nbox serve                        # read-only MCP server over stdio (for AI agents)
+nbox serve [--http <addr>]        # read-only MCP server for AI agents (stdio, or loopback/OIDC HTTP)
 nbox config <init|path|show>
 nbox profile <add|use|list|show>
 nbox completions <bash|zsh|fish|powershell|elvish>
@@ -347,9 +347,9 @@ Tokens are **never written to config**. nbox resolves them in order: `NBOX_TOKEN
 
 ## MCP Server
 
-`nbox serve` runs a read-only MCP server over stdio. An MCP host (Claude Desktop,
-Claude Code, …) launches `nbox serve` as a subprocess and speaks JSON-RPC over
-stdin/stdout; it reuses the same query + view layer as the CLI, so the tools
+`nbox serve` runs a read-only MCP server, stdio by default. An MCP host (Claude
+Desktop, Claude Code, …) launches `nbox serve` as a subprocess and speaks JSON-RPC
+over stdin/stdout; it reuses the same query + view layer as the CLI, so the tools
 return the same JSON view models. The NetBox URL and token come from the active
 profile / env, and it takes the same `-p`/`--config` flags. JSON-RPC goes to
 stdout; all logging stays on stderr.
@@ -367,8 +367,35 @@ The tools are all annotated read-only:
 | `nbox_journal` | Recent journal entries for an object. |
 | `nbox_list_tags` | List tags. |
 
-Full setup: [docs/MCP.md](docs/MCP.md). HTTP transport, OAuth, a raw escape-hatch
-tool, and MCP resources/prompts come later.
+### HTTP transport and OIDC
+
+Stdio is the default. For local clients that prefer HTTP framing, serve the same
+tools at `/mcp` (Streamable HTTP) on a loopback address — the transport is in the
+default build (behind the `http` cargo feature, on by default; `--no-default-features`
+gives a lean stdio-only build). It binds loopback only, validates `Origin`/`Host`,
+and takes an optional static bearer:
+
+```bash
+nbox serve --http 127.0.0.1:8080 [--http-token "$(openssl rand -hex 16)"]
+```
+
+For a network-reachable, read-only deployment, run nbox as an OAuth 2.1 resource
+server: it validates inbound IdP JWTs on `/mcp` and advertises Protected Resource
+Metadata (RFC 9728). Provider-agnostic; configuring OIDC is what lifts the loopback
+restriction (terminate TLS in front):
+
+```bash
+nbox serve --http 0.0.0.0:8080 \
+  --oidc-issuer https://idp.example.com --audience https://nbox.example.com
+```
+
+This is accountability, not per-user RBAC — the last hop to NetBox still uses the
+single profile token, so scope that token read-only. An audit log
+(`nbox::audit`) and an optional per-caller rate limit (`--rate-limit`) round it
+out. Full setup, security model, and IdP notes: [docs/MCP.md](docs/MCP.md).
+
+Per-user NetBox identity bridging (so NetBox sees the real caller), writes, and a
+raw escape-hatch tool come later.
 
 ## NetBox Compatibility
 

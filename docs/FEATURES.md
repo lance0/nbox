@@ -80,11 +80,14 @@ are annotated read-only.
 | `nbox_journal` | Recent journal entries for an object. |
 | `nbox_list_tags` | List tags. |
 
-An opt-in loopback HTTP transport is available behind the `http` build feature
-(`nbox serve --http 127.0.0.1:8080`, optional static bearer): same tools, mounted
-at `/mcp`, loopback only with `Origin`/`Host` validation. See [docs/MCP.md](MCP.md).
-Network-reachable binding + OAuth/OIDC, a raw escape-hatch tool, and MCP
-resources/prompts are later.
+A loopback HTTP transport ships in the default build (behind the `http` cargo
+feature, on by default; `--no-default-features` for stdio-only):
+`nbox serve --http 127.0.0.1:8080`, optional static bearer — same tools mounted at
+`/mcp`, loopback only with `Origin`/`Host` validation. Add `--oidc-issuer` +
+`--audience` for OAuth 2.1 resource-server mode (inbound IdP JWT validation,
+Protected Resource Metadata, routable bind allowed) — accountability, not per-user
+RBAC. See [docs/MCP.md](MCP.md). Per-user NetBox identity bridging, a raw
+escape-hatch tool, and MCP resources/prompts are later.
 
 ## Robustness
 
