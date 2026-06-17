@@ -173,14 +173,12 @@ pub async fn run(cli: Cli) -> Result<()> {
             clap_mangen::Man::new(Cli::command()).render(&mut std::io::stdout())?;
             Ok(())
         }
-        Some(Command::Mcp { cmd }) => match cmd {
-            // stdout is reserved for the JSON-RPC stream — connect() and the
-            // server itself print nothing, and logging already goes to stderr.
-            cli::McpCmd::Serve => {
-                let client = connect(&ctx)?;
-                mcp::serve(client).await
-            }
-        },
+        // stdout is reserved for the JSON-RPC stream — connect() and the
+        // server itself print nothing, and logging already goes to stderr.
+        Some(Command::Serve) => {
+            let client = connect(&ctx)?;
+            mcp::serve(client).await
+        }
     }
 }
 

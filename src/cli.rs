@@ -269,17 +269,9 @@ pub enum Command {
     /// Generate a man page (roff) for nbox, e.g. `nbox man > nbox.1`.
     Man,
 
-    /// Run the read-only MCP server (for AI agents).
-    Mcp {
-        #[command(subcommand)]
-        cmd: McpCmd,
-    },
-}
-
-/// `nbox mcp` subcommands.
-#[derive(Debug, Subcommand)]
-pub enum McpCmd {
-    /// Serve the read-only MCP tools over stdio (JSON-RPC on stdout).
+    /// Run the read-only MCP server over stdio (for AI agents / MCP clients).
+    ///
+    /// Exposes nbox's lookups as MCP tools, speaking JSON-RPC on stdout.
     Serve,
 }
 
