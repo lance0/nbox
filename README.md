@@ -1,12 +1,18 @@
 # nbox
 
-> Terminal UI and CLI for NetBox — fast search, IPAM lookups, device context, and (later) safe operational workflows.
+Terminal UI and CLI for NetBox — fast search, IPAM lookups, and device context.
 
-**nbox** gives you k9s/lazygit-style navigation for NetBox data. It is built for the questions you actually ask at the terminal: *What is this IP? Where is this device? What prefix owns this address? What VLAN is this?* — and answers them fast, both interactively and as scriptable one-liners.
+[![Crates.io](https://img.shields.io/crates/v/nbox.svg)](https://crates.io/crates/nbox)
+[![CI](https://github.com/lance0/nbox/actions/workflows/ci.yml/badge.svg)](https://github.com/lance0/nbox/actions/workflows/ci.yml)
+[![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE-MIT)
+[![Ko-fi](https://img.shields.io/badge/Ko--fi-tip-ff5e5b?logo=ko-fi)](https://ko-fi.com/lance0)
 
-> ⚠️ **Status: pre-release / in active development.** v0.1 is read-only. See [ROADMAP.md](ROADMAP.md) for what's shipping when, and [DESIGN.md](DESIGN.md) for the full architecture.
+nbox answers the questions you actually ask at the terminal — *what is this IP,
+where is this device, what prefix owns this address, what VLAN is this* — from
+the shell as scriptable one-liners and interactively in a k9s-style TUI.
 
----
+**Status: pre-1.0 and read-only.** Every command reads; nothing is written.
+Safe, diff-confirmed `PATCH` writes come later. See [ROADMAP.md](ROADMAP.md).
 
 ## Quick Start
 
@@ -15,7 +21,7 @@
 nbox config init
 nbox profile add work https://netbox.example.com --token-env NETBOX_TOKEN
 nbox profile use work
-export NETBOX_TOKEN=...      # or NBOX_TOKEN to override
+export NETBOX_TOKEN=...           # or NBOX_TOKEN to override
 
 # Look things up from the shell
 nbox search edge01
@@ -27,125 +33,209 @@ nbox prefix 10.44.208.0/24
 nbox
 ```
 
-<!-- Demo: replace with an asciinema/VHS recording before the v0.1 release.
+See [Installation](#installation) below for setup instructions.
+
+<!-- Demo: replace with an asciinema/VHS recording before the first release.
      e.g. [![asciicast](https://asciinema.org/a/<id>.svg)](https://asciinema.org/a/<id>)
      or a docs/demo.gif rendered with `vhs docs/demo.tape`. -->
-> 📽️ _A short asciinema/VHS demo lands with the v0.1 release._
-
----
 
 ## Features
 
-- **Fast shell lookups** — `device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `interface`, `search`.
-- **Normalized search** across devices, IPs, prefixes, VLANs, sites, circuits, aggregates, ASNs, and IP ranges in one command.
-- **Interactive TUI** with search, detail panes, navigation history, and a command palette.
-- **IPAM-aware** — IP → parent prefix → VLAN → scope (site/location/region/…) resolution, computed locally with `ipnet`.
-- **Scriptable** — clean `--json` output on every command for piping into `jq`.
-- **Open in browser** and **copy to clipboard** straight from results.
-- **Profiles** for multiple NetBox instances (work, lab, …).
-- **Scriptable / agent-friendly** — `-o json|csv|plain`, `--fields`, `--raw`, versioned `--envelope`, and stable exit codes (see [AGENTS.md](AGENTS.md)).
-- **MCP server** — `nbox serve` exposes the lookups as read-only MCP tools over stdio.
-- **Read-only first**; safe `PATCH`-based writes with diff confirmation come later.
+- **Fast shell lookups** — `device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `circuit`, `aggregate`, `asn`, `ip-range`, and `interface`, each as a one-liner.
+- **Normalized search** — one `search` query runs in parallel across devices, sites, IPs, prefixes, VLANs, circuits, aggregates, ASNs, and IP ranges and returns ranked, deduped hits.
+- **IPAM-aware** — IP → most-specific parent prefix → VLAN → scope resolution, prefix utilization and children, `next-ip` / `next-prefix` for available addresses and free blocks (computed locally with `ipnet`).
+- **Polymorphic scope** — `--site` on `search` resolves the site once and filters prefixes by NetBox 4.2's `scope_type=dcim.site` + `scope_id`; views expose `scope`/`scope_type` (site, location, region, site-group, …).
+- **Interactive TUI** — list/preview split, scrolling, command palette, recents, twelve themes (including a light theme), `NO_COLOR` honored.
+- **Scriptable** — `-o plain|json|csv`, `--fields`, `--raw`, versioned `--envelope`, and stable exit codes; stdout stays clean for piping, logs go to stderr (see [AGENTS.md](AGENTS.md)).
+- **MCP server** — `nbox serve` exposes the lookups as eight read-only MCP tools over stdio for AI agents.
+- **Open and copy** — open any object in the browser or copy a field straight from results.
+- **Profiles** for multiple NetBox instances, **journals** folded into detail lookups, and **tags** listing.
 
-See [docs/FEATURES.md](docs/FEATURES.md) for the full command reference and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the internals.
+See [docs/FEATURES.md](docs/FEATURES.md) for the full command reference and
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the internals.
 
----
+## Real-World Use Cases
+
+### What is this IP?
+
+```bash
+nbox ip 10.44.208.55
+```
+
+Resolves the address, its most-specific parent prefix (VRF-scoped), the prefix's
+VLAN, and its scope (site, location, region, …). Add `--vrf <name>` when the same
+address exists in several VRFs.
+
+### Where is this device, and what's on it?
+
+```bash
+nbox device edge01
+```
+
+Device plus its interfaces, IP addresses, cables, VLANs, and services in one
+lookup. In the TUI, the device screen splits these onto `i`/`p`/`c`/`v`/`s` tabs.
+
+### Find the next free address or block
+
+```bash
+nbox next-ip 10.44.208.0/24 --count 4      # next available addresses
+nbox next-prefix 10.0.0.0/8 --length 26    # first free /26
+```
+
+Read-only — nothing is reserved. Both take `--vrf` to scope the prefix.
+
+### Pull data into a script
+
+```bash
+nbox device edge01 --json | jq '.primary_ip4.address'
+nbox search edge01 -o csv --cols name,site,status > devices.csv
+nbox prefix 10.44.208.0/24 --json --envelope --raw   # versioned, single-line
+```
+
+### Drive it from an agent
+
+```bash
+claude mcp add nbox -e NBOX_TOKEN=nbt_xxx.yyy -- nbox serve
+```
+
+`nbox serve` is a read-only MCP server; an MCP host launches it as a subprocess
+and gets the same JSON view models the CLI returns. See [docs/MCP.md](docs/MCP.md).
 
 ## Installation
 
-```bash
-# From crates.io (requires Rust 1.95+)
-cargo install nbox
+> The first published release is **0.1.1** (0.1.0 is a reserved name-camp). The
+> install channels below go live with that release.
 
-# Or grab a prebuilt binary (Linux/macOS) — downloads the latest release,
-# falls back to `cargo install` if there's no asset for your platform
+### From crates.io (Recommended)
+
+Requires [Rust 1.95+](https://www.rust-lang.org/tools/install):
+
+```bash
+# Install Rust (if not already installed)
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+source ~/.cargo/env
+
+# Install nbox
+cargo install nbox
+```
+
+### Homebrew (macOS/Linux)
+
+```bash
+brew install lance0/tap/nbox
+```
+
+### Docker (GHCR)
+
+Multi-arch image (amd64/arm64):
+
+```bash
+docker run --rm ghcr.io/lance0/nbox:latest --help
+```
+
+Mount a config or pass `-e NBOX_TOKEN=...` plus a profile (or `--config`) to run
+real lookups against your NetBox.
+
+### Pre-built Binaries
+
+Download from [GitHub Releases](https://github.com/lance0/nbox/releases):
+
+| Platform | Target |
+|----------|--------|
+| Linux x86_64 | `nbox-x86_64-unknown-linux-musl.tar.gz` |
+| Linux ARM64 | `nbox-aarch64-unknown-linux-musl.tar.gz` |
+| macOS Apple Silicon | `nbox-aarch64-apple-darwin.tar.gz` |
+| macOS Intel | `nbox-x86_64-apple-darwin.tar.gz` |
+| Windows x86_64 | `nbox-x86_64-pc-windows-msvc.zip` |
+
+```bash
+# Download, verify, and install (Linux x86_64 example)
+curl -LO https://github.com/lance0/nbox/releases/latest/download/nbox-x86_64-unknown-linux-musl.tar.gz
+curl -LO https://github.com/lance0/nbox/releases/latest/download/SHA256SUMS
+sha256sum -c SHA256SUMS --ignore-missing   # macOS: shasum -a 256 -c
+tar xzf nbox-*.tar.gz && sudo mv nbox /usr/local/bin/
+```
+
+### Quick Install Script
+
+> **Note**: Piping a script from the internet to sh is convenient but bypasses
+> your chance to read it first. Use one of the methods above, or
+> [review the script](scripts/install.sh) before running. It downloads the latest
+> release binary for your OS/arch and falls back to `cargo install` if there's no
+> asset for your platform.
+
+```bash
 curl -fsSL https://raw.githubusercontent.com/lance0/nbox/master/scripts/install.sh | sh
 ```
 
-> Prebuilt binaries for Linux (x86_64/aarch64), macOS (Intel/ARM), and Windows
-> are attached to each [GitHub Release](https://github.com/lance0/nbox/releases).
-> A Homebrew tap formula template lives in [`packaging/homebrew/`](packaging/homebrew/nbox.rb).
-
-Build from source:
+### From Source
 
 ```bash
-git clone git@github.com:lance0/nbox.git
-cd nbox
-cargo install --path . --features cache,updates   # optional features
+git clone https://github.com/lance0/nbox
+cd nbox && cargo install --path .
 ```
 
-| Feature     | Default | Description                          |
-| ----------- | ------- | ------------------------------------ |
-| `clipboard` | ✅      | Copy values with `y` (via `arboard`) |
-| `cache`     | —       | Local SQLite cache (`rusqlite`)      |
-| `updates`   | —       | GitHub update notifications          |
+### Optional Features
 
----
+| Feature | Default | Description |
+|---------|---------|-------------|
+| `clipboard` | Yes | Copy values with `y` in the TUI (via `arboard`) |
+| `cache` | No | Local SQLite cache (`rusqlite`) |
+| `updates` | No | GitHub update notifications |
 
-## Configuration
-
-Config lives at:
-
-| OS            | Path                        |
-| ------------- | --------------------------- |
-| Linux / macOS | `~/.config/nbox/config.toml` |
-| Windows       | `%APPDATA%\nbox\config.toml` |
-
-```toml
-config_version = 1
-active_profile = "work"
-
-[ui]
-theme = "default"
-confirm_writes = true
-
-[profiles.work]
-url = "https://netbox.example.com"
-token_env = "NETBOX_TOKEN"
-auth_scheme = "auto"      # auto | bearer | token
-verify_tls = true
-timeout_secs = 15
-page_size = 100
-exclude_config_context = true
+```bash
+cargo install nbox --features cache,updates
 ```
 
-**Tokens are never stored in plaintext by default.** nbox reads them, in order, from:
+### Shell Completions
 
-1. `NBOX_TOKEN` (direct override)
-2. the env var named by `token_env`
-3. *(future)* OS keyring
+```bash
+# Bash
+nbox completions bash > ~/.local/share/bash-completion/completions/nbox
 
-nbox auto-detects v2 tokens (`Bearer nbt_<key>.<token>`) vs legacy v1 tokens (`Token <token>`). See [docs/CONFIG.md](docs/CONFIG.md) for the full config reference.
+# Zsh (add ~/.zfunc to fpath in .zshrc first)
+nbox completions zsh > ~/.zfunc/_nbox
 
----
+# Fish
+nbox completions fish > ~/.config/fish/completions/nbox.fish
+
+# PowerShell (add to $PROFILE)
+nbox completions powershell >> $PROFILE
+
+# Elvish
+nbox completions elvish > ~/.elvish/lib/nbox.elv
+```
+
+A man page is available too: `nbox man > nbox.1`.
 
 ## Usage
 
 ```bash
-nbox                              # launch TUI
+nbox                              # launch the TUI
 nbox status                       # connection + NetBox/Django/Python versions
 nbox search <query> [--limit N] [--status/--site/--tenant/--role/--tag <v>] [--cols a,b,c] [--partial]
                                   # --site resolves the site once and filters prefixes by site scope
                                   # (scope_type=dcim.site + scope_id); an unknown site errors (exit 4)
-nbox tags                         # list tags (slug, name, count)
 nbox device <name-or-id> [--journal] [--journal-limit N]
-nbox ip <address> [--vrf <name>] [--journal]  # --vrf disambiguates duplicates across VRFs
-nbox prefix <cidr> [--vrf <name>] [--journal] # includes utilization + children when present
-nbox next-ip <cidr> [--count N] [--vrf <name>]      # next available address(es)
-nbox next-prefix <cidr> [--length L] [--vrf <name>] # available free block(s)
+nbox ip <address> [--vrf <name>] [--journal]    # --vrf disambiguates duplicates across VRFs
+nbox prefix <cidr> [--vrf <name>] [--journal]   # includes utilization + children when present
+nbox next-ip <cidr> [--count N] [--vrf <name>]        # next available address(es)
+nbox next-prefix <cidr> [--length L] [--vrf <name>]   # available free block(s)
+nbox vlan <vid-or-name> [--site <s>] [--group <g>] [--journal]
 nbox site <name-or-slug> [--journal]
 nbox rack <name-or-id> [--journal]
 nbox circuit <cid-or-id> [--journal]
 nbox aggregate <cidr-or-id> [--journal]
 nbox asn <number> [--journal]
 nbox ip-range <start-or-id> [--journal]
-nbox vlan <vid-or-name> [--site <s>] [--group <g>] [--journal]
 nbox interface <device> <interface>
+nbox tags                         # list tags (slug, name, count)
 nbox journal <kind> <ref>         # recent journal entries for an object
                                   # --journal folds recent entries into a detail lookup (cap 5)
                                   # --journal-limit N overrides the cap (implies --journal)
-nbox open <kind>/<ref>            # device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range,
-                                  # interface/<device>/<name> (the name may contain slashes, e.g. xe-0/0/1)
+nbox open <kind>/<ref>            # device, ip, prefix, vlan, site, rack, circuit, aggregate, asn,
+                                  # ip-range, and interface/<device>/<name> (the name may contain
+                                  # slashes, e.g. xe-0/0/1)
 nbox raw GET <api-path>           # raw read-only API request (escape hatch)
 nbox serve                        # read-only MCP server over stdio (for AI agents)
 nbox config <init|path|show>
@@ -158,103 +248,144 @@ nbox man                          # generate a man page: nbox man > nbox.1
 
 These apply to every command:
 
-| Flag                       | Effect                                                          |
-| -------------------------- | -------------------------------------------------------------- |
-| `-o, --output <fmt>`       | `plain` (default), `json`, or `csv` (tabular/list results only) |
-| `--json`                   | Shortcut for `-o json`                                         |
-| `--fields a,b,c`           | JSON: keep only these top-level fields                         |
-| `--raw`                    | JSON: compact (single line) instead of pretty                 |
-| `--envelope`               | JSON: wrap as `{ schema_version, data }`                       |
-| `-p, --profile <name>`     | Use a specific profile for this invocation                     |
-| `--config <path>`          | Use an alternate config file                                   |
-| `--log-level <spec>`       | `tracing` filter to stderr (`info`, `debug`, `nbox=debug`, …) |
-| `--no-tui`                 | Never fall through to the interactive TUI                      |
+| Flag | Effect |
+|------|--------|
+| `-o, --output <fmt>` | `plain` (default), `json`, or `csv` (tabular/list results only) |
+| `--json` | Shortcut for `-o json` |
+| `--fields a,b,c` | JSON: keep only these top-level fields |
+| `--raw` | JSON: compact (single line) instead of pretty |
+| `--envelope` | JSON: wrap as `{ schema_version, data }` |
+| `-p, --profile <name>` | Use a specific profile for this invocation |
+| `--config <path>` | Use an alternate config file |
+| `--log-level <spec>` | `tracing` filter to stderr (`info`, `debug`, `nbox=debug`, …) |
+| `--no-tui` | Never fall through to the interactive TUI |
 
-Custom fields appear as `cf.<name>` rows (plain) and a `custom_fields` object (JSON).
+`-o csv` is for tabular/list results (e.g. `search`); a single object is rejected
+(use `--json` or plain). Custom fields appear as `cf.<name>` rows in plain output
+and a `custom_fields` object in JSON.
 
-```bash
-nbox device edge01 --json | jq '.primary_ip4.address'
-nbox ip 10.44.208.55 --json
-nbox search edge01 --limit 20 --status active
-nbox search edge01 -o csv --cols name,site,status > devices.csv
-nbox prefix 10.44.208.0/24 --envelope --raw      # versioned, single-line JSON
+Exit codes are stable: `0` success, `1` generic error, `2` usage error, `3`
+auth/permission (401/403), `4` not found, `5` ambiguous reference. See
+[AGENTS.md](AGENTS.md) for the full machine-readable surface.
+
+## Keybindings (TUI)
+
+| Key | Action |
+|-----|--------|
+| `/` | search |
+| `:` | command palette |
+| `Tab` / `Shift+Tab` | switch pane focus |
+| `j` / `k` | move selection / scroll detail |
+| `g` / `G` | top / bottom |
+| `PgUp` / `PgDn` | page up / down |
+| `Enter` | open selected object |
+| `o` | open in browser |
+| `y` | copy selected field |
+| `t` | cycle theme |
+| `r` | refresh |
+| `b` / `Esc` | back |
+| `i p c v s` | device tabs (interfaces / IPs / cables / VLANs / services) |
+| `?` / `F1` | help |
+| `q` / `Ctrl+c` | quit |
+
+The command palette (`:`) accepts `device`/`ip`/`prefix`/`vlan`/`site <ref>`,
+`find <q>` (or bare text), `open`, `copy`, `theme <name>`, and `refresh`. The home
+screen lists recently opened objects (deduped, most-recent-first) when there are
+no search results — press `Enter` to reopen one. Set `[ui].refresh_secs` to
+auto-refresh the current search on an interval (off by default).
+
+## Themes
+
+Twelve built-in themes. Set with `[ui].theme` in the config or press `t` to cycle:
+
+`default`, `kawaii`, `cyber`, `dracula`, `monochrome`, `matrix`, `nord`,
+`gruvbox`, `catppuccin`, `tokyo_night`, `solarized`, `light`.
+
+`light` is the only light-background theme. `NO_COLOR` is honored — when set, the
+TUI renders without color and marks the selection with a `>` cursor.
+
+## Configuration
+
+Config lives at:
+
+| OS | Path |
+|----|------|
+| Linux / macOS | `~/.config/nbox/config.toml` |
+| Windows | `%APPDATA%\nbox\config.toml` |
+
+```toml
+config_version = 1
+active_profile = "work"
+
+[ui]
+theme = "default"
+confirm_writes = true
+# refresh_secs = 30        # TUI auto-refresh (omit/0 = off)
+
+[profiles.work]
+url = "https://netbox.example.com"
+token_env = "NETBOX_TOKEN"
+auth_scheme = "auto"          # auto | bearer | token
+verify_tls = true
+timeout_secs = 15
+page_size = 100
+exclude_config_context = true
 ```
 
----
+Tokens are **never written to config**. nbox resolves them in order: `NBOX_TOKEN`
+(direct override), then the env var named by the profile's `token_env`. See
+[docs/CONFIG.md](docs/CONFIG.md) for the full reference.
 
-## TUI Keybindings
+## MCP Server
 
-| Key                | Action                                   |
-| ------------------ | ---------------------------------------- |
-| `/`                | search                                   |
-| `:`                | command palette                          |
-| `Tab` / `Shift+Tab`| switch pane focus                        |
-| `j` / `k`          | move selection (scroll detail/preview)   |
-| `g` / `G`          | top / bottom                             |
-| `PgUp` / `PgDn`    | page up / down                           |
-| `Enter`            | open selected object                     |
-| `o`                | open in browser                          |
-| `y`                | copy selected field                      |
-| `t`                | cycle theme                              |
-| `r`                | refresh                                  |
-| `b` / `Esc`        | back                                     |
-| `?` / `F1`         | help                                     |
-| `q` / `Ctrl+c`     | quit                                     |
-
-On a device screen: `i` interfaces · `p` IPs · `c` cables · `v` VLANs · `s` services.
-
-The **command palette** (`:`) accepts `device`/`ip`/`prefix`/`vlan`/`site <ref>`, `find <q>` (or bare text), `open`, `copy`, `theme <name>`, and `refresh`. The **home screen** lists recently opened objects (deduped, most-recent-first) when there are no search results — press `Enter` to reopen one. Set `[ui].refresh_secs` to auto-refresh the current search on an interval (off by default), preserving your selection.
-
----
-
-## MCP server
-
-`nbox serve` runs a read-only [MCP](https://modelcontextprotocol.io) server over the stdio transport. An MCP host (Claude Desktop, Claude Code, …) launches `nbox serve` as a subprocess and speaks JSON-RPC over stdin/stdout; it reuses the same query + view layer as the CLI, so the tools return the same JSON view models. NetBox URL and token come from the active profile / env, and it takes the same global flags (`-p/--profile`, `--config`). JSON-RPC goes to stdout; all logging stays on stderr.
+`nbox serve` runs a read-only MCP server over stdio. An MCP host (Claude Desktop,
+Claude Code, …) launches `nbox serve` as a subprocess and speaks JSON-RPC over
+stdin/stdout; it reuses the same query + view layer as the CLI, so the tools
+return the same JSON view models. The NetBox URL and token come from the active
+profile / env, and it takes the same `-p`/`--config` flags. JSON-RPC goes to
+stdout; all logging stays on stderr.
 
 The tools are all annotated read-only:
 
 | Tool | What |
-| ---- | ---- |
+|------|------|
 | `nbox_status` | Connection + NetBox/Django/Python versions. |
 | `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/aggregates/ASNs/IP-ranges; `query` (required), `limit`, `status`, `site`, `tenant`, `role`, `tag`. |
 | `nbox_get` | Fetch one object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range) + `ref`; `vrf`/`site`/`group` disambiguate. |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix. |
-| `nbox_next_prefix` | Next available child prefix(es) of a given length. |
+| `nbox_next_prefix` | Available free child prefix(es) of a given length, or all free blocks. |
 | `nbox_journal` | Recent journal entries for an object. |
 | `nbox_list_tags` | List tags. |
 
-Full setup: [docs/MCP.md](docs/MCP.md).
-
-HTTP transport, OAuth, a raw escape-hatch tool, and MCP resources/prompts come later.
-
----
-
-## Security
-
-- Tokens are sourced from the environment, not written to config by default.
-- `verify_tls = false` is supported for labs but should not be used against production.
-- Logs go to stderr or a file — never mixed into stdout — so JSON output stays pipe-safe.
-
-See [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
-
----
+Full setup: [docs/MCP.md](docs/MCP.md). HTTP transport, OAuth, a raw escape-hatch
+tool, and MCP resources/prompts come later.
 
 ## NetBox Compatibility
 
-- **Requires NetBox 4.2+** (uses the modern polymorphic `scope` model for prefixes/VLANs). nbox checks the instance version via `/api/status/` on connect.
+- **Requires NetBox 4.2+** (the polymorphic `scope` model for prefixes/VLANs).
+  nbox checks the instance version via `/api/status/` on connect.
 - Targets the NetBox **REST API** (`/api/`) as the primary integration path.
-- Supports both **v2 API tokens** (NetBox 4.5+, `Bearer`) and legacy **v1 tokens** (`Token`).
-- Optional, read-only **GraphQL** (`/graphql/`) is used for nested detail views (v0.2+).
+- Auto-detects **v2 API tokens** (NetBox 4.5+, `Authorization: Bearer nbt_…`) and
+  legacy **v1 tokens** (`Authorization: Token …`); force one with `auth_scheme`.
+- Optional, read-only **GraphQL** (`/graphql/`) for nested detail views is on the
+  roadmap (later).
 
----
+## Documentation
 
-## Roadmap
-
-v0.1 is read-only lookups + TUI. Writes (safe, `PATCH`-based, diff-confirmed) arrive in v0.2/v0.3. Full plan in [ROADMAP.md](ROADMAP.md).
-
----
+- [Features](docs/FEATURES.md) — full command reference
+- [Configuration](docs/CONFIG.md) — config, profiles, token resolution
+- [Architecture](docs/ARCHITECTURE.md) — internal design and module structure
+- [MCP server](docs/MCP.md) — agent setup and tools
+- [Agents](AGENTS.md) — machine-readable surface, output formats, exit codes
+- [Known Issues](KNOWN_ISSUES.md) — current limitations
+- [Changelog](CHANGELOG.md) — release history
+- [Roadmap](ROADMAP.md) — planned features
+- [Contributing](CONTRIBUTING.md) — development setup and guidelines
 
 ## License
 
-Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at your option.
+Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at
+your option.
+</content>
+</invoke>
