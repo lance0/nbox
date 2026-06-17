@@ -93,12 +93,14 @@ tokio-util = { version = "0.7", optional = true }
 libc = "0.2"
 
 [features]
-default = ["clipboard"]
+default = ["clipboard", "http"]
 clipboard = ["dep:arboard"]
 cache = ["dep:rusqlite"]
 updates = ["dep:update-informer"]
-# Opt-in loopback HTTP transport for `nbox serve --http` (rung 2 of the MCP
-# transport ladder, DESIGN §24). Not in `default`: stdio stays zero-config.
+# Loopback HTTP transport for `nbox serve --http` (rung 2 of the MCP transport
+# ladder, DESIGN §24). In `default` — HTTP/MCP is the agent-first headline
+# feature, so it ships out of the box; drop it with `--no-default-features` for
+# a lean stdio-only build.
 http = ["dep:axum", "dep:tower", "dep:tokio-util", "rmcp/transport-streamable-http-server"]
 
 [dev-dependencies]

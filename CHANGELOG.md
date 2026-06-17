@@ -8,11 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- `nbox serve --http <ADDR>` — opt-in loopback HTTP transport for the MCP server,
-  behind the non-default `http` build feature. The same eight read-only tools and
-  handler the stdio path serves are mounted at `/mcp` over rmcp's Streamable HTTP
-  server (`LocalSessionManager`); stdio stays the zero-config default and is
-  unchanged. Loopback only: a non-loopback `<ADDR>` is a usage error (exit `2`) —
+- `nbox serve --http <ADDR>` — loopback HTTP transport for the MCP server, shipped
+  in the default build (behind the `http` cargo feature, which is on by default;
+  `--no-default-features` for a lean stdio-only build). The same eight read-only
+  tools and handler the stdio path serves are mounted at `/mcp` over rmcp's
+  Streamable HTTP server (`LocalSessionManager`); stdio stays the zero-config
+  default and is unchanged. Loopback only: a non-loopback `<ADDR>` is a usage error (exit `2`) —
   binding a routable interface needs the OIDC auth mode coming later. The `Origin`
   header is validated on every request (non-loopback → 403, DNS-rebinding
   defense), `MCP-Protocol-Version: 2025-11-25` is advertised, and an optional

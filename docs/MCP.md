@@ -66,13 +66,16 @@ host's MCP documentation; the object shape above is what they consume.
 
 ## HTTP transport (loopback)
 
-Stdio is the default. For local clients that want HTTP framing instead, build
-nbox with the `http` feature and serve over a loopback address:
+Stdio is the default transport. For local clients that want HTTP framing
+instead, serve over a loopback address — the HTTP transport ships in the default
+build, no extra flags:
 
 ```bash
-cargo install nbox --features http   # not in the default build
 nbox serve --http 127.0.0.1:8080
 ```
+
+(The transport lives behind the `http` cargo feature, which is on by default;
+`cargo install nbox --no-default-features` gives a lean stdio-only build.)
 
 The same eight tools are mounted at `/mcp` (Streamable HTTP). It binds **only**
 loopback: a non-loopback address (e.g. `0.0.0.0:8080`) is a usage error —
