@@ -1,0 +1,61 @@
+name: NetBox Integration
+
+# Heavy end-to-end checks against a REAL, pinned NetBox 4.2.x. Kept separate from
+# the fast `ci.yml` (fmt/clippy/build/unit tests) because it boots a full NetBox
+# stack and seeds a fixture. The gated tests in `tests/it_netbox.rs` are
+# `#[ignore]`d, so they never run in the normal suite — only here, via
+# `--ignored`.
+#
+# Note: making this a *required* status check is a GitHub branch-protection
+# setting configured in the repo UI, not in this file.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # The pinned, deterministic superuser API token. MUST match
+  # tests/integration/docker-compose.yml's SUPERUSER_API_TOKEN and seed.py.
+  NETBOX_TOKEN: "0123456789abcdef0123456789abcdef0fedcba9"
+  NBOX_URL: "http://localhost:8000"
+
+jobs:
+  netbox-integration:
+    name: live NetBox 4.2 end-to-end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      # Build the binary up front: `cargo test --test it_netbox` will reuse it,
+      # and building before NetBox is needed keeps the boot wait productive.
+      - name: Build nbox
+        run: cargo build --all-features --verbose
+
+      - name: Boot NetBox 4.2 fixture
+        run: docker compose -f tests/integration/docker-compose.yml up -d
+
+      - name: Wait for NetBox to be ready
+        run: ./tests/integration/wait-for-ready.sh 420
+
+      - name: Seed the fixture
+        run: ./tests/integration/seed.py
+
+      - name: Run gated integration tests
+        run: cargo test --test it_netbox -- --ignored
+
+      # Always surface NetBox logs on failure to debug a flaky boot/seed.
+      - name: Dump NetBox logs on failure
+        if: failure()
+        run: docker compose -f tests/integration/docker-compose.yml logs --no-color netbox
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f tests/integration/docker-compose.yml down -v

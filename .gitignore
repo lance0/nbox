@@ -7,3 +7,7 @@
 # Editor / OS noise
 *.swp
 .DS_Store
+
+# Python bytecode (e.g. from the integration seed script)
+__pycache__/
+*.pyc

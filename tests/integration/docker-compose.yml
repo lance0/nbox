@@ -1,0 +1,84 @@
+# NetBox 4.2 integration fixture for nbox.
+#
+# Boots ONE pinned NetBox 4.2.x plus its Postgres and Redis, exposes the API on
+# a fixed host port, and provisions a DETERMINISTIC superuser API token that the
+# seed script, the gated Rust tests, and CI all share. Read-only smoke target:
+# no worker/housekeeping containers (nbox never enqueues background jobs).
+#
+# Usage (see README.md in this directory):
+#   docker compose -f tests/integration/docker-compose.yml up -d
+#   ./tests/integration/wait-for-ready.sh
+#   ./tests/integration/seed.py
+#   NBOX_URL=http://localhost:8000 NETBOX_TOKEN=$NETBOX_TOKEN \
+#     cargo test --test it_netbox -- --ignored
+#   docker compose -f tests/integration/docker-compose.yml down -v
+
+name: nbox-it
+
+services:
+  postgres:
+    # Pinned: NetBox 4.2 supports PostgreSQL 14+; 17-alpine is what netbox-docker
+    # ships in its reference compose for this line.
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: netbox
+      POSTGRES_USER: netbox
+      POSTGRES_PASSWORD: netbox
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U netbox -d netbox"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+    tmpfs:
+      # Ephemeral DB: this is a throwaway CI fixture, no persistence wanted.
+      - /var/lib/postgresql/data
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "no", "--save", ""]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 3s
+      timeout: 3s
+      retries: 30
+
+  netbox:
+    # EXACT, non-floating tag. v4.2.9 is the latest 4.2.x patch at authoring time.
+    # Bump deliberately (and re-run the smoke test) when adopting a newer 4.2.x.
+    image: netboxcommunity/netbox:v4.2.9
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      # --- Database ---
+      DB_HOST: postgres
+      DB_NAME: netbox
+      DB_USER: netbox
+      DB_PASSWORD: netbox
+      # --- Redis (tasks + cache share one instance; different logical DBs) ---
+      REDIS_HOST: redis
+      REDIS_PORT: "6379"
+      REDIS_DATABASE: "0"
+      REDIS_CACHE_HOST: redis
+      REDIS_CACHE_PORT: "6379"
+      REDIS_CACHE_DATABASE: "1"
+      # --- Django ---
+      # Static, non-secret key — this instance is a disposable CI fixture.
+      SECRET_KEY: "0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghij"
+      ALLOWED_HOSTS: "*"
+      # --- Superuser + DETERMINISTIC API token ---
+      # The image's docker-entrypoint.sh creates the superuser and a Token with
+      # this exact key on first boot (only when no superuser exists yet). The
+      # tmpfs Postgres above guarantees a fresh DB every `up`, so this is always
+      # the token in play. Keep it in sync with NETBOX_TOKEN in wait/seed/CI.
+      SKIP_SUPERUSER: "false"
+      SUPERUSER_NAME: admin
+      SUPERUSER_EMAIL: admin@example.com
+      SUPERUSER_PASSWORD: admin
+      SUPERUSER_API_TOKEN: "0123456789abcdef0123456789abcdef0fedcba9"
+    ports:
+      # NetBox's nginx-unit serves the app on 8080 inside the container; expose
+      # it on host 8000 (NBOX_URL=http://localhost:8000).
+      - "8000:8080"
