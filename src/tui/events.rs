@@ -43,3 +43,25 @@ pub fn spawn_ticks(tx: Sender<AppEvent>, secs: u64) {
         }
     });
 }
+
+/// The preview debounce interval: short enough to feel live, long enough that a
+/// burst of cursor movement settles into a single fetch.
+const PREVIEW_DEBOUNCE: Duration = Duration::from_millis(180);
+
+/// Spawn a fast, always-on ticker that emits [`AppEvent::PreviewTick`]. The pure
+/// handler flushes a settled selection into a single preview load on each tick,
+/// so scrolling the list never fires a network call per keystroke. Exits when
+/// the receiver is dropped.
+pub fn spawn_preview_ticks(tx: Sender<AppEvent>) {
+    tokio::spawn(async move {
+        let mut ticker = tokio::time::interval(PREVIEW_DEBOUNCE);
+        ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
+        ticker.tick().await; // skip the immediate first tick
+        loop {
+            ticker.tick().await;
+            if tx.send(AppEvent::PreviewTick).await.is_err() {
+                break;
+            }
+        }
+    });
+}

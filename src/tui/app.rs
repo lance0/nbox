@@ -7,7 +7,7 @@ use tokio::sync::mpsc;
 use crate::domain::detail::{load_detail, load_detail_by_ref};
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::search::{SearchFilters, SearchRequest};
-use crate::tui::events::{spawn_terminal_events, spawn_ticks};
+use crate::tui::events::{spawn_preview_ticks, spawn_terminal_events, spawn_ticks};
 use crate::tui::state::{App, AppCommand, AppEvent};
 use crate::tui::ui;
 
@@ -36,6 +36,8 @@ async fn event_loop(
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<AppEvent>(64);
     spawn_terminal_events(tx.clone());
+    // The preview debounce is always on (independent of the optional auto-refresh).
+    spawn_preview_ticks(tx.clone());
     if let Some(secs) = refresh_secs.filter(|s| *s > 0) {
         spawn_ticks(tx.clone(), secs);
     }
@@ -71,6 +73,14 @@ fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent
             tokio::spawn(async move {
                 let result = load_detail(&client, kind, id).await;
                 let _ = tx.send(AppEvent::DetailLoaded(result)).await;
+            });
+        }
+        AppCommand::LoadPreview { kind, id } => {
+            tokio::spawn(async move {
+                let result = load_detail(&client, kind, id).await;
+                // Tag with (kind, id) so a stale response (cursor moved on) can
+                // be dropped by the pure handler.
+                let _ = tx.send(AppEvent::PreviewLoaded { kind, id, result }).await;
             });
         }
         AppCommand::LoadByRef { kind, value } => {

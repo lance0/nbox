@@ -31,13 +31,32 @@ pub enum Mode {
     Command,
 }
 
+/// Which pane on the split home screen has focus. Movement keys route to it:
+/// the list moves the selection, the preview scrolls its body.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Focus {
+    List,
+    Preview,
+}
+
 /// Events delivered to the event loop.
 pub enum AppEvent {
     Key(KeyEvent),
     Resize(u16, u16),
     Tick,
+    /// A fast, always-on debounce tick: flushes a settled selection into a
+    /// preview load (see [`App::on_preview_tick`]). Distinct from `Tick`, which
+    /// is the optional auto-refresh and may not be running.
+    PreviewTick,
     SearchComplete(anyhow::Result<SearchOutcome>),
     DetailLoaded(anyhow::Result<DetailView>),
+    /// A preview-pane detail load, tagged with the (kind, id) it was issued for
+    /// so a stale response (the selection moved on) can be dropped.
+    PreviewLoaded {
+        kind: ObjectKind,
+        id: u64,
+        result: anyhow::Result<DetailView>,
+    },
     Status(String),
 }
 
@@ -61,8 +80,21 @@ const PAGE_JUMP: usize = 10;
 #[derive(Debug, Clone)]
 pub enum AppCommand {
     Search(String),
-    LoadDetail { kind: ObjectKind, id: u64 },
-    LoadByRef { kind: ObjectKind, value: String },
+    LoadDetail {
+        kind: ObjectKind,
+        id: u64,
+    },
+    /// Load the highlighted result's detail into the live preview pane. Carries
+    /// its (kind, id) so the response can be matched against the selection it
+    /// was issued for (stale ones are dropped on arrival).
+    LoadPreview {
+        kind: ObjectKind,
+        id: u64,
+    },
+    LoadByRef {
+        kind: ObjectKind,
+        value: String,
+    },
     OpenBrowser(String),
     Copy(String),
 }
@@ -80,6 +112,9 @@ pub struct App {
 
     pub mode: Mode,
     pub screen: Screen,
+    /// Which home pane has focus: the results list or the preview. Movement keys
+    /// route to it. `Tab`/`Shift+Tab` toggle it; only meaningful on Home.
+    pub focus: Focus,
     pub history: Vec<Screen>,
     pub status: String,
 
@@ -112,6 +147,26 @@ pub struct App {
     /// so the pure handler can clamp scrolling at the bottom without doing I/O.
     /// Mirrors the home list's live-viewport pattern. 0 until the first render.
     pub detail_viewport: u16,
+
+    /// The (kind, id) whose full detail is currently loaded in the preview pane,
+    /// if any. Compared against the live selection to detect staleness.
+    pub preview_for: Option<(ObjectKind, u64)>,
+    /// The detail loaded into the preview pane (None until a load returns, or
+    /// while the selection is empty). Separate from `detail` so opening the full
+    /// detail screen (Enter) never collides with the live peek.
+    pub preview: Option<DetailView>,
+    /// Set whenever the selection changes; cleared once a `LoadPreview` for the
+    /// settled selection has been dispatched. The debounce: a preview load fires
+    /// on the next `PreviewTick`, not on every keystroke — so a burst of j/k
+    /// scrolling issues at most one fetch when the cursor finally settles.
+    pub preview_dirty: bool,
+    /// Vertical scroll offset of the preview body, owned by the pure scroll keys
+    /// while the Preview pane is focused. Reset when the previewed object changes.
+    pub preview_scroll: u16,
+    /// Last-known preview pane inner height (content rows), stashed at render so
+    /// the pure scroll handler can clamp at the bottom. 0 until the first render.
+    pub preview_viewport: u16,
+
     pub should_quit: bool,
 }
 
@@ -136,6 +191,7 @@ impl App {
             netbox_version,
             mode: Mode::Normal,
             screen: Screen::Home,
+            focus: Focus::List,
             history: Vec::new(),
             status: String::new(),
             search_input: String::new(),
@@ -151,6 +207,11 @@ impl App {
             detail_tab: 0,
             detail_scroll: 0,
             detail_viewport: 0,
+            preview_for: None,
+            preview: None,
+            preview_dirty: false,
+            preview_scroll: 0,
+            preview_viewport: 0,
             should_quit: false,
         }
     }
@@ -161,6 +222,7 @@ impl App {
             AppEvent::Key(key) => self.handle_key(key),
             AppEvent::Resize(_, _) => Vec::new(),
             AppEvent::Tick => self.on_tick(),
+            AppEvent::PreviewTick => self.on_preview_tick(),
             AppEvent::SearchComplete(result) => {
                 match result {
                     Ok(outcome) => {
@@ -184,6 +246,9 @@ impl App {
                                 })
                             })
                             .unwrap_or(0);
+                        // The highlighted result may have changed; let the
+                        // debounce decide whether to (re)load the preview.
+                        self.mark_preview_dirty();
                     }
                     Err(e) => self.status = format!("error: {e:#}"),
                 }
@@ -200,6 +265,23 @@ impl App {
                         self.status.clear();
                     }
                     Err(e) => self.status = format!("error: {e:#}"),
+                }
+                Vec::new()
+            }
+            AppEvent::PreviewLoaded { kind, id, result } => {
+                // Stale-response suppression: only adopt this load if it still
+                // matches the highlighted result. A response for a selection the
+                // user has already scrolled past is dropped.
+                if self.preview_selection() == Some((kind, id)) {
+                    match result {
+                        Ok(view) => {
+                            self.preview = Some(view);
+                            self.preview_for = Some((kind, id));
+                            self.preview_scroll = 0;
+                        }
+                        // Keep the lightweight peek; surface the failure quietly.
+                        Err(e) => self.status = format!("preview error: {e:#}"),
+                    }
                 }
                 Vec::new()
             }
@@ -250,25 +332,23 @@ impl App {
                 self.command_input.clear();
             }
             KeyCode::Char('t') => self.cycle_theme(),
-            // On the detail screen the movement keys scroll the body; elsewhere
-            // (the home list) they move the selection cursor.
-            KeyCode::Char('j') | KeyCode::Down if self.screen == Screen::Detail => {
-                self.detail_scroll_down(1)
+            // Tab / Shift+Tab cycle focus between the home split's panes.
+            KeyCode::Tab if self.screen == Screen::Home => self.toggle_focus(),
+            KeyCode::BackTab if self.screen == Screen::Home => self.toggle_focus(),
+            // Movement keys route to whatever owns scrolling/selection right now:
+            // the detail screen scrolls its body; on Home the focused pane decides
+            // (List → move the selection, Preview → scroll the preview body).
+            KeyCode::Char('j') | KeyCode::Down if self.scrolls_body() => self.body_scroll_down(1),
+            KeyCode::Char('k') | KeyCode::Up if self.scrolls_body() => self.body_scroll_up(1),
+            KeyCode::Char('g') | KeyCode::Home if self.scrolls_body() => self.body_scroll_top(),
+            KeyCode::Char('G') | KeyCode::End if self.scrolls_body() => self.body_scroll_bottom(),
+            KeyCode::PageDown if self.scrolls_body() => {
+                let page = self.body_page();
+                self.body_scroll_down(page)
             }
-            KeyCode::Char('k') | KeyCode::Up if self.screen == Screen::Detail => {
-                self.detail_scroll_up(1)
-            }
-            KeyCode::Char('g') | KeyCode::Home if self.screen == Screen::Detail => {
-                self.detail_scroll_top()
-            }
-            KeyCode::Char('G') | KeyCode::End if self.screen == Screen::Detail => {
-                self.detail_scroll_bottom()
-            }
-            KeyCode::PageDown if self.screen == Screen::Detail => {
-                self.detail_scroll_down(self.detail_page())
-            }
-            KeyCode::PageUp if self.screen == Screen::Detail => {
-                self.detail_scroll_up(self.detail_page())
+            KeyCode::PageUp if self.scrolls_body() => {
+                let page = self.body_page();
+                self.body_scroll_up(page)
             }
             KeyCode::Char('j') | KeyCode::Down => self.select_next(),
             KeyCode::Char('k') | KeyCode::Up => self.select_prev(),
@@ -412,6 +492,70 @@ impl App {
         self.screen = self.history.pop().unwrap_or(Screen::Home);
     }
 
+    /// Flip focus between the home split's list and preview panes. Switching to
+    /// the preview re-clamps its scroll in case the loaded body changed since.
+    fn toggle_focus(&mut self) {
+        self.focus = match self.focus {
+            Focus::List => Focus::Preview,
+            Focus::Preview => Focus::List,
+        };
+    }
+
+    /// True when the active movement keys should scroll a body rather than move a
+    /// selection: the detail screen always, or the home Preview pane when focused.
+    fn scrolls_body(&self) -> bool {
+        self.screen == Screen::Detail
+            || (self.screen == Screen::Home && self.focus == Focus::Preview)
+    }
+
+    /// The (kind, id) of the result the preview should reflect — the highlighted
+    /// search result or recent. `None` when nothing is selectable. This is the
+    /// identity preview loads are tagged with for stale-response suppression.
+    pub fn preview_selection(&self) -> Option<(ObjectKind, u64)> {
+        self.home_target()
+    }
+
+    /// Note that the highlighted result may have changed, so the preview is now
+    /// potentially out of date. The actual (de-duplicated, debounced) load is
+    /// deferred to the next [`Self::on_preview_tick`] — never fired per keystroke.
+    fn mark_preview_dirty(&mut self) {
+        self.preview_dirty = true;
+    }
+
+    /// Test-only: force the dirty flag so the debounce flush can be exercised
+    /// without driving a real selection change.
+    #[cfg(test)]
+    fn mark_preview_dirty_for_test(&mut self) {
+        self.preview_dirty = true;
+    }
+
+    /// The debounce flush. Called on the fast always-on `PreviewTick`. When the
+    /// selection has settled on something the preview doesn't already hold, issue
+    /// exactly one [`AppCommand::LoadPreview`] tagged with that selection's
+    /// identity. A burst of cursor movement coalesces into a single fetch here;
+    /// no movement (or no change) issues nothing.
+    fn on_preview_tick(&mut self) -> Vec<AppCommand> {
+        // Only reconcile the preview while it's on screen and we're not mid-typing
+        // a search/command (a fuzzy filter marks dirty; let the cursor settle).
+        if self.screen != Screen::Home || self.mode != Mode::Normal || !self.preview_dirty {
+            return Vec::new();
+        }
+        self.preview_dirty = false;
+        match self.preview_selection() {
+            // Already showing this object → no fetch (idempotent on a still cursor).
+            Some(target) if self.preview_for == Some(target) => Vec::new(),
+            Some((kind, id)) => vec![AppCommand::LoadPreview { kind, id }],
+            None => {
+                // Nothing selectable: drop any stale preview so the pane shows
+                // its placeholder instead of an orphaned object.
+                self.preview = None;
+                self.preview_for = None;
+                self.preview_scroll = 0;
+                Vec::new()
+            }
+        }
+    }
+
     /// On an auto-refresh tick, re-run the last query (preserving the cursor)
     /// only when idle on the home screen — so it never fights user input.
     fn on_tick(&mut self) -> Vec<AppCommand> {
@@ -444,6 +588,8 @@ impl App {
         let displays: Vec<&str> = self.results.iter().map(|r| r.display.as_str()).collect();
         self.view = crate::tui::fuzzy::rank(&self.search_input, &displays);
         self.selected = 0;
+        // The highlighted result moved; let the debounce reconcile the preview.
+        self.mark_preview_dirty();
     }
 
     /// The currently selected result (through the filtered view), if any.
@@ -533,6 +679,157 @@ impl App {
         self.detail_scroll = self.detail_scroll.min(self.detail_max_scroll());
     }
 
+    // --- Body-scroll routing -------------------------------------------------
+    //
+    // The movement keys (j/k/g/G/PgUp/PgDn) scroll a body when [`Self::scrolls_body`]
+    // is true. These dispatchers send that scroll to the detail screen's body or,
+    // on Home, to the focused preview pane — reusing the same clamp-at-bottom
+    // mechanics for both.
+
+    fn body_scroll_down(&mut self, lines: u16) {
+        if self.screen == Screen::Detail {
+            self.detail_scroll_down(lines);
+        } else {
+            self.preview_scroll_down(lines);
+        }
+    }
+
+    fn body_scroll_up(&mut self, lines: u16) {
+        if self.screen == Screen::Detail {
+            self.detail_scroll_up(lines);
+        } else {
+            self.preview_scroll_up(lines);
+        }
+    }
+
+    fn body_scroll_top(&mut self) {
+        if self.screen == Screen::Detail {
+            self.detail_scroll_top();
+        } else {
+            self.preview_scroll = 0;
+        }
+    }
+
+    fn body_scroll_bottom(&mut self) {
+        if self.screen == Screen::Detail {
+            self.detail_scroll_bottom();
+        } else {
+            self.preview_scroll = self.preview_max_scroll();
+        }
+    }
+
+    /// A page of scroll for whichever body is active (detail vs preview).
+    fn body_page(&self) -> u16 {
+        if self.screen == Screen::Detail {
+            self.detail_page()
+        } else {
+            self.preview_page()
+        }
+    }
+
+    // --- Preview pane scrolling ----------------------------------------------
+    //
+    // Mirrors the detail-scroll machinery, scoped to the live preview body. The
+    // preview shows the loaded detail's summary (tab 0); tabs aren't switchable
+    // in the peek, so the line count is just the body's lines.
+
+    /// The preview body shown in the right pane: the loaded detail's summary when
+    /// it matches the highlighted row, otherwise a built-from-the-result
+    /// lightweight peek (shown instantly while a full load is in flight, so the
+    /// pane never displays a stale object's body under a moved cursor).
+    pub fn preview_body(&self) -> String {
+        match &self.preview {
+            Some(d) if self.preview_for == self.preview_selection() => d.body.clone(),
+            _ => self.preview_placeholder(),
+        }
+    }
+
+    /// The preview pane's title: the loaded detail's title when current, else a
+    /// short label from the highlighted row, else a neutral "Preview".
+    pub fn preview_title(&self) -> String {
+        match &self.preview {
+            Some(d) if self.preview_for == self.preview_selection() => d.title.clone(),
+            _ => match self.selected_home_preview() {
+                Some(stub) => format!("{} {}", stub.kind, stub.display),
+                None => "Preview".to_string(),
+            },
+        }
+    }
+
+    /// A lightweight peek assembled from the data already in the `SearchResult`
+    /// (kind, display, subtitle, url) — shown instantly with no fetch while the
+    /// full detail loads, or as the resting content if the load hasn't fired yet.
+    fn preview_placeholder(&self) -> String {
+        match self.selected_home_preview() {
+            Some(PreviewStub {
+                kind,
+                display,
+                subtitle,
+                url,
+            }) => {
+                let mut s = format!("{kind}: {display}\n");
+                if let Some(sub) = subtitle {
+                    s.push_str(&format!("{sub}\n"));
+                }
+                if let Some(url) = url {
+                    s.push_str(&format!("\n{url}\n"));
+                }
+                s.push_str("\nLoading details…");
+                s
+            }
+            None => "Nothing selected.\n\nPress / to search NetBox.".to_string(),
+        }
+    }
+
+    /// The data for a lightweight preview of the highlighted home row: a search
+    /// result carries a URL/subtitle; a recent carries only its title.
+    fn selected_home_preview(&self) -> Option<PreviewStub<'_>> {
+        if self.results.is_empty() {
+            self.recent.get(self.selected).map(|r| PreviewStub {
+                kind: r.kind.as_str(),
+                display: &r.title,
+                subtitle: None,
+                url: None,
+            })
+        } else {
+            self.selected_result().map(|r| PreviewStub {
+                kind: r.kind.as_str(),
+                display: &r.display,
+                subtitle: r.subtitle.as_deref(),
+                url: Some(&r.url),
+            })
+        }
+    }
+
+    /// Number of rendered preview content lines (the body only — no tab bar).
+    pub fn preview_content_lines(&self) -> usize {
+        self.preview_body().lines().count()
+    }
+
+    fn preview_max_scroll(&self) -> u16 {
+        (self.preview_content_lines() as u16).saturating_sub(self.preview_viewport)
+    }
+
+    fn preview_page(&self) -> u16 {
+        self.preview_viewport.saturating_sub(1).max(1)
+    }
+
+    fn preview_scroll_down(&mut self, lines: u16) {
+        let max = self.preview_max_scroll();
+        self.preview_scroll = self.preview_scroll.saturating_add(lines).min(max);
+    }
+
+    fn preview_scroll_up(&mut self, lines: u16) {
+        self.preview_scroll = self.preview_scroll.saturating_sub(lines);
+    }
+
+    /// Stash the preview pane's inner height and re-clamp the offset, mirroring
+    /// [`Self::sync_detail_viewport`]. Called from the render path each frame.
+    pub fn sync_preview_viewport(&mut self, height: u16) {
+        self.preview_viewport = height;
+        self.preview_scroll = self.preview_scroll.min(self.preview_max_scroll());
+    }
+
     /// Record an opened object at the front of the recents list (deduped, capped).
     fn record_recent(&mut self, kind: ObjectKind, id: u64, title: String) {
         self.recent.retain(|r| !(r.kind == kind && r.id == id));
@@ -561,28 +858,48 @@ impl App {
     fn select_next(&mut self) {
         if self.selected + 1 < self.home_len() {
             self.selected += 1;
+            self.mark_preview_dirty();
         }
     }
 
     fn select_prev(&mut self) {
+        let before = self.selected;
         self.selected = self.selected.saturating_sub(1);
+        if self.selected != before {
+            self.mark_preview_dirty();
+        }
     }
 
     fn select_first(&mut self) {
-        self.selected = 0;
+        if self.selected != 0 {
+            self.selected = 0;
+            self.mark_preview_dirty();
+        }
     }
 
     fn select_last(&mut self) {
-        self.selected = self.home_len().saturating_sub(1);
+        let last = self.home_len().saturating_sub(1);
+        if self.selected != last {
+            self.selected = last;
+            self.mark_preview_dirty();
+        }
     }
 
     fn select_page_down(&mut self) {
         let last = self.home_len().saturating_sub(1);
-        self.selected = (self.selected + PAGE_JUMP).min(last);
+        let next = (self.selected + PAGE_JUMP).min(last);
+        if next != self.selected {
+            self.selected = next;
+            self.mark_preview_dirty();
+        }
     }
 
     fn select_page_up(&mut self) {
-        self.selected = self.selected.saturating_sub(PAGE_JUMP);
+        let next = self.selected.saturating_sub(PAGE_JUMP);
+        if next != self.selected {
+            self.selected = next;
+            self.mark_preview_dirty();
+        }
     }
 
     /// Sync the stateful-list selection from the pure `selected` index so the
@@ -597,6 +914,15 @@ impl App {
             self.list_state.select(Some(self.selected));
         }
     }
+}
+
+/// A borrowed, lightweight view of the highlighted home row used to render the
+/// preview placeholder before (or without) a full detail load.
+struct PreviewStub<'a> {
+    kind: &'a str,
+    display: &'a str,
+    subtitle: Option<&'a str>,
+    url: Option<&'a str>,
 }
 
 /// Delete the trailing word (and its preceding spaces) from `s`.
@@ -1314,5 +1640,202 @@ mod tests {
         // A tab key with no matching section is a no-op (no cables here).
         a.handle_event(press(KeyCode::Char('c')));
         assert_eq!(a.detail_tab, 0);
+    }
+
+    // --- Home split: focus + preview ----------------------------------------
+
+    /// Drive the debounce flush: the preview load only fires on a `PreviewTick`,
+    /// never per keystroke.
+    fn preview_tick(a: &mut App) -> Vec<AppCommand> {
+        a.handle_event(AppEvent::PreviewTick)
+    }
+
+    fn preview_view(id: u64, body: &str) -> DetailView {
+        DetailView {
+            kind: ObjectKind::Device,
+            id,
+            title: format!("device {id}"),
+            body: body.into(),
+            tabs: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn tab_and_backtab_cycle_focus() {
+        let mut a = app();
+        set_results(&mut a, results_n(3));
+        assert_eq!(a.focus, Focus::List);
+        a.handle_event(press(KeyCode::Tab));
+        assert_eq!(a.focus, Focus::Preview);
+        a.handle_event(press(KeyCode::Tab));
+        assert_eq!(a.focus, Focus::List);
+        // Shift+Tab (BackTab) toggles the same way.
+        a.handle_event(press(KeyCode::BackTab));
+        assert_eq!(a.focus, Focus::Preview);
+        a.handle_event(press(KeyCode::BackTab));
+        assert_eq!(a.focus, Focus::List);
+    }
+
+    #[test]
+    fn list_focus_moves_selection_preview_focus_scrolls_preview() {
+        let mut a = app();
+        set_results(&mut a, results_n(5));
+        // Load a tall preview so there's something to scroll.
+        let _ = preview_tick(&mut a); // dirty from SearchComplete → issues a load
+        let body = (0..30)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        a.handle_event(AppEvent::PreviewLoaded {
+            kind: ObjectKind::Device,
+            id: 1,
+            result: Ok(preview_view(1, &body)),
+        });
+        a.sync_preview_viewport(10);
+
+        // List focused (default): j/k move the selection, preview unscrolled.
+        a.handle_event(press(KeyCode::Char('j')));
+        assert_eq!(a.selected, 1);
+        assert_eq!(a.preview_scroll, 0);
+
+        // Move back to id=1 and let its preview reload+settle so the body is tall.
+        a.handle_event(press(KeyCode::Char('k')));
+        assert_eq!(a.selected, 0);
+        let _ = preview_tick(&mut a);
+        a.handle_event(AppEvent::PreviewLoaded {
+            kind: ObjectKind::Device,
+            id: 1,
+            result: Ok(preview_view(1, &body)),
+        });
+        a.sync_preview_viewport(10);
+
+        // Focus the preview: now j/k scroll its body; the selection holds still.
+        a.handle_event(press(KeyCode::Tab));
+        assert_eq!(a.focus, Focus::Preview);
+        let sel = a.selected;
+        a.handle_event(press(KeyCode::Char('j')));
+        a.handle_event(press(KeyCode::Char('j')));
+        assert_eq!(a.preview_scroll, 2);
+        assert_eq!(
+            a.selected, sel,
+            "preview scroll must not move the selection"
+        );
+        // g/G jump to top/bottom of the preview body.
+        a.handle_event(press(KeyCode::Char('G')));
+        assert!(a.preview_scroll > 0);
+        a.handle_event(press(KeyCode::Char('g')));
+        assert_eq!(a.preview_scroll, 0);
+    }
+
+    #[test]
+    fn preview_loads_only_on_settle_not_per_keystroke() {
+        // A burst of cursor movement must NOT fire a preview load per key — only
+        // the debounce tick flushes a single load for the settled selection.
+        let mut a = app();
+        set_results(&mut a, results_n(10));
+        // Each j returns no command (no per-keystroke fetch).
+        for _ in 0..5 {
+            let cmds = a.handle_event(press(KeyCode::Char('j')));
+            assert!(cmds.is_empty(), "movement must not issue a network command");
+        }
+        assert_eq!(a.selected, 5);
+        // The tick coalesces the whole burst into one load for the settled row.
+        let cmds = preview_tick(&mut a);
+        assert!(matches!(
+            cmds.as_slice(),
+            [AppCommand::LoadPreview {
+                kind: ObjectKind::Device,
+                id: 6
+            }]
+        ));
+        // A second tick with the cursor unmoved issues nothing (idempotent).
+        a.handle_event(AppEvent::PreviewLoaded {
+            kind: ObjectKind::Device,
+            id: 6,
+            result: Ok(preview_view(6, "body")),
+        });
+        assert!(preview_tick(&mut a).is_empty());
+    }
+
+    #[test]
+    fn stale_preview_response_is_dropped_matching_one_is_shown() {
+        let mut a = app();
+        set_results(&mut a, results_n(3)); // ids 1,2,3; selected = 0 (id 1)
+        let _ = preview_tick(&mut a); // issues LoadPreview for id 1
+
+        // A stale response for a *different* selection (id 2) must be ignored.
+        a.handle_event(AppEvent::PreviewLoaded {
+            kind: ObjectKind::Device,
+            id: 2,
+            result: Ok(preview_view(2, "STALE body for id 2")),
+        });
+        assert_eq!(a.preview_for, None, "stale response must not be adopted");
+        assert!(a.preview.is_none());
+
+        // The matching response (id 1) is shown.
+        a.handle_event(AppEvent::PreviewLoaded {
+            kind: ObjectKind::Device,
+            id: 1,
+            result: Ok(preview_view(1, "FRESH body for id 1")),
+        });
+        assert_eq!(a.preview_for, Some((ObjectKind::Device, 1)));
+        assert_eq!(a.preview_body(), "FRESH body for id 1");
+    }
+
+    #[test]
+    fn preview_body_falls_back_to_lightweight_peek_when_cursor_moves() {
+        // After loading id 1's preview, moving to id 2 must not show id 1's body;
+        // the pane falls back to the lightweight peek for the new row.
+        let mut a = app();
+        set_results(&mut a, results_n(3));
+        let _ = preview_tick(&mut a);
+        a.handle_event(AppEvent::PreviewLoaded {
+            kind: ObjectKind::Device,
+            id: 1,
+            result: Ok(preview_view(1, "full id 1 body")),
+        });
+        assert_eq!(a.preview_body(), "full id 1 body");
+        a.handle_event(press(KeyCode::Char('j'))); // now on id 2
+        assert_ne!(a.preview_body(), "full id 1 body");
+        assert!(a.preview_body().contains("dev2")); // lightweight peek of the row
+    }
+
+    #[test]
+    fn empty_results_focus_and_movement_are_safe() {
+        let mut a = app();
+        // No results, no recents. Tab focus, scroll-in-preview, and select keys
+        // are all harmless no-ops.
+        a.handle_event(press(KeyCode::Tab));
+        assert_eq!(a.focus, Focus::Preview);
+        for key in [
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Char('G'),
+            KeyCode::Char('g'),
+            KeyCode::PageDown,
+            KeyCode::PageUp,
+        ] {
+            a.handle_event(press(key));
+        }
+        assert_eq!(a.preview_scroll, 0);
+        assert_eq!(a.selected, 0);
+        // A tick with no selectable target clears any preview and issues nothing.
+        a.mark_preview_dirty_for_test();
+        let cmds = preview_tick(&mut a);
+        assert!(cmds.is_empty());
+        assert!(a.preview.is_none());
+        // The preview body shows a tasteful placeholder, not a panic.
+        assert!(a.preview_body().contains("Nothing selected"));
+    }
+
+    #[test]
+    fn preview_tick_is_inert_off_home_screen() {
+        // A pending dirty flag must not fire a preview fetch while reading detail.
+        let mut a = app();
+        set_results(&mut a, results_n(3));
+        a.handle_event(AppEvent::DetailLoaded(Ok(preview_view(1, "detail"))));
+        assert_eq!(a.screen, Screen::Detail);
+        a.mark_preview_dirty_for_test();
+        assert!(preview_tick(&mut a).is_empty());
     }
 }

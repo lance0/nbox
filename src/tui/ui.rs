@@ -2,11 +2,11 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
-use ratatui::style::Style;
+use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
-use crate::tui::state::{App, Mode, Screen};
+use crate::tui::state::{App, Focus, Mode, Screen};
 use crate::tui::theme::Theme;
 
 /// Render the whole UI for the current frame.
@@ -47,17 +47,38 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 }
 
 fn render_home(frame: &mut Frame, area: Rect, app: &mut App) {
+    // Split the body: list on the left (~40%), live preview on the right (~60%).
+    let panes =
+        Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(area);
+    render_home_list(frame, panes[0], app);
+    render_home_preview(frame, panes[1], app);
+}
+
+/// Border style for a pane given whether it currently holds focus: the focused
+/// pane gets the theme's focused-border color, the other a dim border.
+fn pane_border(theme: &Theme, focused: bool) -> Style {
+    if focused {
+        Style::default().fg(theme.border_focused)
+    } else {
+        Style::default()
+            .fg(theme.border)
+            .add_modifier(Modifier::DIM)
+    }
+}
+
+fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
     // Keep the stateful selection/offset in step with the cursor so the
     // selected row is always on screen and the list scrolls under it.
     app.sync_list_state();
     let theme = &app.theme;
+    let border = pane_border(theme, app.focus == Focus::List);
 
     // With search results, show them. Otherwise fall back to recents, then a hint.
     if !app.view.is_empty() {
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" Results ")
-            .border_style(Style::default().fg(theme.border));
+            .border_style(border);
         let items: Vec<ListItem> = app
             .view
             .iter()
@@ -79,7 +100,7 @@ fn render_home(frame: &mut Frame, area: Rect, app: &mut App) {
         let block = Block::default()
             .borders(Borders::ALL)
             .title(" Recent ")
-            .border_style(Style::default().fg(theme.border));
+            .border_style(border);
         let items: Vec<ListItem> = app
             .recent
             .iter()
@@ -93,11 +114,37 @@ fn render_home(frame: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Results ")
-        .border_style(Style::default().fg(theme.border));
+        .border_style(border);
     frame.render_widget(
         Paragraph::new("Press / to search NetBox.")
             .block(block)
             .style(Style::default().fg(theme.text_dim)),
+        area,
+    );
+}
+
+/// The right pane: a live peek at the highlighted result. Shows the full loaded
+/// detail when available, otherwise a lightweight placeholder built from the row.
+fn render_home_preview(frame: &mut Frame, area: Rect, app: &mut App) {
+    // Stash the inner height so the pure scroll handler can clamp at the bottom.
+    let inner_height = area.height.saturating_sub(2);
+    app.sync_preview_viewport(inner_height);
+
+    let theme = &app.theme;
+    let border = pane_border(theme, app.focus == Focus::Preview);
+    let title = app.preview_title();
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" {title} "))
+        .border_style(border);
+
+    let body = app.preview_body();
+    let lines: Vec<Line> = body.lines().map(|l| Line::from(l.to_string())).collect();
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .style(Style::default().fg(theme.text))
+            .scroll((app.preview_scroll, 0)),
         area,
     );
 }
@@ -120,9 +167,11 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(""),
         Line::from("/        search"),
         Line::from(":        command palette"),
-        Line::from("j / k    move selection (scroll detail body)"),
+        Line::from("Tab      switch list / preview pane"),
+        Line::from("j / k    move selection (scroll focused pane / detail body)"),
         Line::from("g / G    top / bottom"),
         Line::from("PgUp/PgDn  page up / down"),
+        Line::from("Enter    open full detail"),
         Line::from("t        cycle theme"),
         Line::from("i/p/c/v/s  device tabs (interfaces/IPs/cables/VLANs/services)"),
         Line::from("b / Esc  back"),
@@ -206,7 +255,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         Mode::Command => Line::from(format!(":{}", app.command_input)),
         Mode::Normal if !app.status.is_empty() => Line::from(format!(" {} ", app.status)),
         Mode::Normal => Line::from(Span::styled(
-            " / search   Enter open   o browser   y copy   b back   t theme   ? help   q quit ",
+            " / search   Tab pane   Enter open   o browser   y copy   b back   t theme   ? help   q quit ",
             Style::default().fg(theme.text_dim),
         )),
     };
