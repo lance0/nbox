@@ -144,7 +144,8 @@ nbox interface <device> <interface>
 nbox journal <kind> <ref>         # recent journal entries for an object
                                   # --journal folds recent entries into a detail lookup (cap 5)
                                   # --journal-limit N overrides the cap (implies --journal)
-nbox open <kind>/<ref>            # device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range
+nbox open <kind>/<ref>            # device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range,
+                                  # interface/<device>/<name> (the name may contain slashes, e.g. xe-0/0/1)
 nbox raw GET <api-path>           # raw read-only API request (escape hatch)
 nbox serve                        # read-only MCP server over stdio (for AI agents)
 nbox config <init|path|show>

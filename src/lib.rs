@@ -762,8 +762,24 @@ pub(crate) async fn resolve_object_url(
             client.asn_by_ref(number).await?.map(|a| a.url)
         }
         "ip-range" | "iprange" => client.ip_range_by_ref(value).await?.map(|r| r.url),
+        // `interface/<device-ref>/<name>`: the device ref is the first segment of
+        // `value`, and EVERYTHING after the next `/` is the interface name —
+        // taken verbatim, since names contain slashes (e.g. `xe-0/0/1`,
+        // `Ethernet1/49`). A future `interface-id/<id>` form could be added here.
+        "interface" => {
+            let (device, name) = value.split_once('/').filter(|(d, n)| !d.is_empty() && !n.is_empty()).ok_or_else(|| {
+                error::NboxError::Usage(format!(
+                    "interface reference must be `interface/<device>/<name>` (e.g. interface/edge01/xe-0/0/1)\n\nInterface names may contain slashes; the part after the device is the name verbatim. Got \"interface/{value}\"."
+                ))
+            })?;
+            let dev = client
+                .device_by_ref(device)
+                .await?
+                .ok_or_else(|| not_found("device", device))?;
+            client.device_interface(dev.id, name).await?.map(|i| i.url)
+        }
         other => anyhow::bail!(
-            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range)"
+            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, interface)"
         ),
     };
     Ok(url)
@@ -1149,5 +1165,95 @@ mod tests {
             .await
             .unwrap_err();
         assert!(format!("{err:#}").contains("unknown object kind"));
+    }
+
+    /// Mount the device-by-id + interface-by-name mocks `open interface/...` needs:
+    /// a numeric device ref hits `/devices/{id}/` directly, then the interface is
+    /// resolved by exact `name` (device-scoped) returning a single result.
+    async fn mount_interface(server: &MockServer, device_id: u64, iface_id: u64, name: &str) {
+        Mock::given(method("GET"))
+            .and(path(format!("/api/dcim/devices/{device_id}/")))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": device_id,
+                "url": format!("{}/api/dcim/devices/{device_id}/", server.uri()),
+                "name": "edge01"
+            })))
+            .mount(server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/interfaces/"))
+            .and(query_param("device_id", device_id.to_string()))
+            .and(query_param("name", name))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{
+                    "id": iface_id,
+                    "url": format!("{}/api/dcim/interfaces/{iface_id}/", server.uri()),
+                    "name": name
+                }]
+            })))
+            .mount(server)
+            .await;
+    }
+
+    #[tokio::test]
+    async fn open_interface_url_resolves_device_then_interface() {
+        let server = MockServer::start().await;
+        mount_interface(&server, 7, 42, "xe-0/0/1").await;
+
+        // `interface/edge01/xe-0/0/1` → device=7, name=xe-0/0/1 (rest is the name).
+        let url = open_web_url(&open_client(&server), "interface", "7/xe-0/0/1").await;
+        assert_eq!(url, format!("{}/dcim/interfaces/42/", server.uri()));
+    }
+
+    #[tokio::test]
+    async fn open_interface_name_may_contain_slashes() {
+        let server = MockServer::start().await;
+        // A name WITH a slash: proves "everything after the device is the name".
+        mount_interface(&server, 7, 49, "Ethernet1/49").await;
+
+        let url = open_web_url(&open_client(&server), "interface", "7/Ethernet1/49").await;
+        assert_eq!(url, format!("{}/dcim/interfaces/49/", server.uri()));
+    }
+
+    #[tokio::test]
+    async fn open_interface_not_found_is_exit_4() {
+        let server = MockServer::start().await;
+        // Device resolves, but no interface matches (exact + contains both empty).
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/devices/7/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 7, "url": format!("{}/api/dcim/devices/7/", server.uri()),
+                "name": "edge01"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/interfaces/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 0, "next": null, "previous": null, "results": []
+            })))
+            .mount(&server)
+            .await;
+
+        // `resolve_object_url` returns Ok(None); `run_open` maps that to not_found
+        // (exit 4). Mirror that mapping here.
+        let resolved = resolve_object_url(&open_client(&server), "interface", "7/xe-0/0/9")
+            .await
+            .unwrap();
+        assert!(resolved.is_none());
+        let err = not_found("interface", "7/xe-0/0/9");
+        assert_eq!(error::NboxError::exit_code_for(&err), 4);
+    }
+
+    #[tokio::test]
+    async fn open_interface_missing_name_is_usage_exit_2() {
+        let server = MockServer::start().await;
+        // `interface/edge01` with no name part → usage error (exit 2), no request.
+        let err = resolve_object_url(&open_client(&server), "interface", "edge01")
+            .await
+            .unwrap_err();
+        assert_eq!(error::NboxError::exit_code_for(&err), 2);
+        assert!(format!("{err:#}").contains("interface/<device>/<name>"));
     }
 }
