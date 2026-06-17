@@ -518,6 +518,143 @@ mod tests {
         Cli::command().debug_assert();
     }
 
+    /// Render the bash completion script in-process (the exact path
+    /// `nbox completions bash` takes) and return it as a string.
+    fn render_completion(shell: clap_complete::Shell) -> String {
+        let mut cmd = Cli::command();
+        let bin = cmd.get_name().to_string();
+        let mut buf = Vec::new();
+        clap_complete::generate(shell, &mut cmd, bin, &mut buf);
+        String::from_utf8(buf).expect("completion output is utf-8")
+    }
+
+    /// Render the man page (roff) in-process (the exact path `nbox man` takes).
+    /// `clap_mangen` renders the top-level page; subcommand flags are reached via
+    /// the per-subcommand pages, so this asserts on the bits the top page carries
+    /// (global flags + subcommand list) and uses completions for subcommand flags.
+    fn render_man() -> String {
+        let mut buf = Vec::new();
+        clap_mangen::Man::new(Cli::command())
+            .render(&mut buf)
+            .expect("man render");
+        String::from_utf8(buf).expect("man output is utf-8")
+    }
+
+    #[test]
+    fn bash_completion_includes_all_new_flags() {
+        // The serve flags are NOT feature-gated in the clap tree (no `cfg` on the
+        // `Serve` variant), so they appear in the default-feature completion
+        // regardless of the `http` build feature.
+        let bash = render_completion(clap_complete::Shell::Bash);
+        for flag in [
+            // serve
+            "--http",
+            "--http-token",
+            "--oidc-issuer",
+            "--audience",
+            "--oidc-jwks-url",
+            "--rate-limit",
+            // global
+            "--log-file",
+            // search
+            "--vrf",
+            "--site",
+            "--region",
+            "--site-group",
+            "--location",
+        ] {
+            assert!(bash.contains(flag), "bash completion is missing `{flag}`");
+        }
+    }
+
+    #[test]
+    fn zsh_completion_includes_all_new_flags() {
+        let zsh = render_completion(clap_complete::Shell::Zsh);
+        for flag in [
+            "--http",
+            "--http-token",
+            "--oidc-issuer",
+            "--audience",
+            "--oidc-jwks-url",
+            "--rate-limit",
+            "--log-file",
+            "--vrf",
+            "--site",
+            "--region",
+            "--site-group",
+            "--location",
+        ] {
+            assert!(zsh.contains(flag), "zsh completion is missing `{flag}`");
+        }
+    }
+
+    #[test]
+    fn man_page_includes_global_flags_and_subcommands() {
+        // The top-level man page carries the global flags and the subcommand
+        // list. Per-subcommand flags (serve/search) live on their own pages, so
+        // those are covered by the completion tests above; here we assert the
+        // global `--log-file` and that `serve`/`search` are advertised.
+        //
+        // roff escapes hyphens as `\-`, so the flag renders as `\-\-log\-file`.
+        let man = render_man();
+        assert!(
+            man.contains(r"\-\-log\-file"),
+            "man page missing --log-file (roff-escaped)"
+        );
+        assert!(
+            man.contains("serve"),
+            "man page missing the serve subcommand"
+        );
+        assert!(
+            man.contains("search"),
+            "man page missing the search subcommand"
+        );
+    }
+
+    #[test]
+    fn per_subcommand_man_pages_include_their_flags() {
+        // The serve/search flags live on the per-subcommand man pages (clap_mangen
+        // renders one page per command). Render those pages directly and assert
+        // each new flag is present (roff-escaped), proving the man surface covers
+        // them even though they don't appear on the top-level page.
+        let cmd = Cli::command();
+        let render_sub = |name: &str| -> String {
+            let sub = cmd
+                .get_subcommands()
+                .find(|c| c.get_name() == name)
+                .unwrap_or_else(|| panic!("subcommand `{name}` not found"))
+                .clone();
+            let mut buf = Vec::new();
+            clap_mangen::Man::new(sub)
+                .render(&mut buf)
+                .expect("man render");
+            String::from_utf8(buf).expect("man output is utf-8")
+        };
+
+        let serve = render_sub("serve");
+        for flag in [
+            r"\-\-http",
+            r"\-\-http\-token",
+            r"\-\-oidc\-issuer",
+            r"\-\-audience",
+            r"\-\-oidc\-jwks\-url",
+            r"\-\-rate\-limit",
+        ] {
+            assert!(serve.contains(flag), "serve man page missing `{flag}`");
+        }
+
+        let search = render_sub("search");
+        for flag in [
+            r"\-\-vrf",
+            r"\-\-site",
+            r"\-\-region",
+            r"\-\-site\-group",
+            r"\-\-location",
+        ] {
+            assert!(search.contains(flag), "search man page missing `{flag}`");
+        }
+    }
+
     #[test]
     fn parses_global_flag_and_subcommand() {
         let cli = Cli::try_parse_from(["nbox", "--json", "device", "edge01"]).unwrap();

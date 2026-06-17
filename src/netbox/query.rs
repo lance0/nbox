@@ -778,6 +778,154 @@ mod tests {
         assert!(resolved.is_none());
     }
 
+    #[tokio::test]
+    async fn region_by_ref_falls_back_slug_then_name_ie_then_name_ic() {
+        // The resolver tries slug, then exact name (`name__ie`), then contains
+        // (`name__ic`). Slug + exact miss; the contains query resolves the one hit.
+        let server = MockServer::start().await;
+        for q in [("slug", "us east"), ("name__ie", "us east")] {
+            Mock::given(method("GET"))
+                .and(path("/api/dcim/regions/"))
+                .and(query_param(q.0, q.1))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "count": 0, "next": null, "previous": null, "results": []
+                })))
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/regions/"))
+            .and(query_param("name__ic", "us east"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{"id": 9, "name": "US East", "slug": "us-east"}]
+            })))
+            .mount(&server)
+            .await;
+
+        let region = client_for(&server)
+            .region_by_ref("us east")
+            .await
+            .expect("region lookup")
+            .expect("region present");
+        assert_eq!(region.id, 9);
+    }
+
+    #[tokio::test]
+    async fn location_by_ref_resolves_by_slug() {
+        // `--location` resolution mirrors site/region: slug first.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/locations/"))
+            .and(query_param("slug", "row-a"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{"id": 4, "name": "Row A", "slug": "row-a"}]
+            })))
+            .mount(&server)
+            .await;
+
+        let loc = client_for(&server)
+            .location_by_ref("row-a")
+            .await
+            .expect("location lookup")
+            .expect("location present");
+        assert_eq!(loc.id, 4);
+    }
+
+    #[tokio::test]
+    async fn location_by_ref_ambiguous_name_contains_is_exit_5() {
+        // Slug + exact miss; the contains query returns two → an Ambiguous error
+        // (exit code 5), listing the candidates.
+        let server = MockServer::start().await;
+        for key in ["slug", "name__ie"] {
+            Mock::given(method("GET"))
+                .and(path("/api/dcim/locations/"))
+                .and(query_param(key, "row"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "count": 0, "next": null, "previous": null, "results": []
+                })))
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/locations/"))
+            .and(query_param("name__ic", "row"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 2, "next": null, "previous": null,
+                "results": [
+                    {"id": 1, "name": "Row A", "slug": "row-a"},
+                    {"id": 2, "name": "Row B", "slug": "row-b"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let err = client_for(&server)
+            .location_by_ref("row")
+            .await
+            .expect_err("ambiguous location should error");
+        assert_eq!(NboxError::exit_code_for(&err), 5);
+        // The candidate names are surfaced for the user to disambiguate.
+        let msg = format!("{err}");
+        assert!(msg.contains("Row A") && msg.contains("Row B"), "got: {msg}");
+    }
+
+    #[tokio::test]
+    async fn region_by_ref_unknown_returns_none() {
+        // Slug + name__ie + name__ic all empty → unresolved (None). In search this
+        // becomes a not-found (exit 4); the resolver itself returns None, no error.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/regions/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 0, "next": null, "previous": null, "results": []
+            })))
+            .mount(&server)
+            .await;
+
+        let resolved = client_for(&server)
+            .region_by_ref("does-not-exist")
+            .await
+            .expect("region lookup");
+        assert!(resolved.is_none());
+    }
+
+    #[tokio::test]
+    async fn vrf_by_ref_ambiguous_name_contains_is_exit_5() {
+        // id parse fails; rd + name__ie miss; name__ic returns two → Ambiguous
+        // (exit 5). Confirms the VRF resolver shares the exit-5 contract.
+        let server = MockServer::start().await;
+        for key in ["rd", "name__ie"] {
+            Mock::given(method("GET"))
+                .and(path("/api/ipam/vrfs/"))
+                .and(query_param(key, "blu"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "count": 0, "next": null, "previous": null, "results": []
+                })))
+                .mount(&server)
+                .await;
+        }
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/vrfs/"))
+            .and(query_param("name__ic", "blu"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 2, "next": null, "previous": null,
+                "results": [
+                    {"id": 1, "url": "u", "name": "blue"},
+                    {"id": 2, "url": "u", "name": "blue-mgmt"}
+                ]
+            })))
+            .mount(&server)
+            .await;
+
+        let err = client_for(&server)
+            .vrf_by_ref("blu")
+            .await
+            .expect_err("ambiguous VRF should error");
+        assert_eq!(NboxError::exit_code_for(&err), 5);
+    }
+
     #[test]
     fn friendly_scope_type_maps_known_and_passes_through_unknown() {
         assert_eq!(friendly_scope_type("dcim.site"), "site");

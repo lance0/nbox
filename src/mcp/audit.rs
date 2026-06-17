@@ -304,6 +304,42 @@ mod tests {
     }
 
     #[test]
+    fn caller_key_ip_fallback_cannot_collide_with_a_sub_or_client() {
+        // The `ip:` prefix isolates an IP-keyed caller from a `sub`/`client_id`
+        // that happens to look like an address. A peer at 10.0.0.1 and a token
+        // whose `sub` is literally "10.0.0.1" are different buckets.
+        let ip: IpAddr = "10.0.0.1".parse().unwrap();
+        let by_ip = caller_key(None, Some(ip));
+        let by_sub = caller_key(Some(&identity(Some("10.0.0.1"), None)), None);
+        assert_eq!(by_ip, "ip:10.0.0.1");
+        assert_eq!(by_sub, "sub:10.0.0.1");
+        assert_ne!(by_ip, by_sub);
+    }
+
+    #[test]
+    fn caller_key_handles_ipv6_peers() {
+        let ip: IpAddr = "::1".parse().unwrap();
+        assert_eq!(caller_key(None, Some(ip)), "ip:::1");
+    }
+
+    #[test]
+    fn auth_mode_as_str_is_stable() {
+        // The audit `auth` field strings are a stable contract.
+        assert_eq!(AuthMode::Loopback.as_str(), "loopback");
+        assert_eq!(AuthMode::StaticBearer.as_str(), "static-bearer");
+        assert_eq!(AuthMode::Oidc.as_str(), "oidc");
+    }
+
+    #[test]
+    fn outcome_as_str_is_stable() {
+        // The audit `outcome` field strings are a stable, greppable contract.
+        assert_eq!(Outcome::Ok.as_str(), "ok");
+        assert_eq!(Outcome::AuthFailed.as_str(), "auth-failed");
+        assert_eq!(Outcome::RateLimited.as_str(), "rate-limited");
+        assert_eq!(Outcome::Error.as_str(), "error");
+    }
+
+    #[test]
     fn outcome_classifies_status_codes() {
         assert_eq!(Outcome::from_status(200), Outcome::Ok);
         assert_eq!(Outcome::from_status(204), Outcome::Ok);
@@ -379,5 +415,180 @@ mod tests {
             }
             RateDecision::Allow => panic!("expected Limited, got Allow"),
         }
+    }
+
+    #[test]
+    fn window_boundary_exactly_n_allowed_then_n_plus_one_limited() {
+        // The fixed-window contract at its exact edge: with limit N and all
+        // requests inside one window, requests 1..=N are allowed and the (N+1)th
+        // is rejected. At the window's start the full minute remains, so the
+        // Retry-After is the whole window (60).
+        let n = 5;
+        let rl = RateLimiter::new(n).unwrap();
+        let t0 = Instant::now();
+        for i in 1..=n {
+            assert_eq!(
+                rl.check_at("sub:edge", t0),
+                RateDecision::Allow,
+                "request {i} of {n} should be allowed"
+            );
+        }
+        assert_eq!(
+            rl.check_at("sub:edge", t0),
+            RateDecision::Limited {
+                retry_after_secs: 60
+            },
+            "the (N+1)th request in the window is rejected with a full-window Retry-After"
+        );
+    }
+
+    #[test]
+    fn limited_requests_do_not_extend_the_window() {
+        // A request rejected mid-window must not reset/extend the window: once the
+        // original minute elapses (measured from the FIRST request, not the last
+        // rejected one), the caller is allowed again.
+        let rl = RateLimiter::new(1).unwrap();
+        let t0 = Instant::now();
+        assert_eq!(rl.check_at("sub:a", t0), RateDecision::Allow);
+        // Several rejections partway through the window.
+        for dt in [10, 20, 30] {
+            assert!(matches!(
+                rl.check_at("sub:a", t0 + Duration::from_secs(dt)),
+                RateDecision::Limited { .. }
+            ));
+        }
+        // 61 s after the FIRST request the window has reset despite the rejections.
+        assert_eq!(
+            rl.check_at("sub:a", t0 + Duration::from_secs(61)),
+            RateDecision::Allow
+        );
+    }
+
+    #[test]
+    fn audit_event_emits_only_the_allow_listed_fields_and_no_secret() {
+        use std::sync::{Arc, Mutex as StdMutex};
+
+        use tracing::field::{Field, Visit};
+        use tracing::subscriber::with_default;
+        use tracing_subscriber::layer::{Context, SubscriberExt};
+        use tracing_subscriber::{Layer, Registry};
+
+        // A tracing layer that records the field NAMES (and stringified values)
+        // of every event under the audit target. We use it to prove the emitted
+        // record carries exactly the documented allow-list — and, crucially, no
+        // `token`/`authorization` field — regardless of what an operator filters.
+        #[derive(Default)]
+        struct Capture {
+            names: Arc<StdMutex<Vec<String>>>,
+            values: Arc<StdMutex<Vec<String>>>,
+        }
+        struct NameVisitor<'a> {
+            names: &'a mut Vec<String>,
+            values: &'a mut Vec<String>,
+        }
+        impl Visit for NameVisitor<'_> {
+            fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+                self.names.push(field.name().to_string());
+                self.values.push(format!("{value:?}"));
+            }
+            fn record_str(&mut self, field: &Field, value: &str) {
+                self.names.push(field.name().to_string());
+                self.values.push(value.to_string());
+            }
+        }
+        impl<S: tracing::Subscriber> Layer<S> for Capture {
+            fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+                if event.metadata().target() != AUDIT_TARGET {
+                    return;
+                }
+                let mut names = self.names.lock().unwrap();
+                let mut values = self.values.lock().unwrap();
+                let mut v = NameVisitor {
+                    names: &mut names,
+                    values: &mut values,
+                };
+                event.record(&mut v);
+            }
+        }
+
+        let names = Arc::new(StdMutex::new(Vec::new()));
+        let values = Arc::new(StdMutex::new(Vec::new()));
+        let layer = Capture {
+            names: names.clone(),
+            values: values.clone(),
+        };
+        let subscriber = Registry::default().with(layer);
+
+        with_default(subscriber, || {
+            AuditEvent {
+                request_id: "req-abc",
+                auth: AuthMode::Oidc,
+                caller: "sub:user-1",
+                sub: Some("user-1"),
+                client_id: Some("agent-x"),
+                scope: Some("netbox:read"),
+                jti: Some("jti-123"),
+                iss: Some("https://idp.example.com"),
+                method: "POST",
+                path: "/mcp",
+                session_id: Some("sess-9"),
+                status: 200,
+                outcome: Outcome::Ok,
+                latency_ms: 12,
+            }
+            .emit();
+        });
+
+        let names = names.lock().unwrap();
+        let values = values.lock().unwrap();
+
+        // The exact documented allow-list (plus the `message`).
+        let allowed = [
+            "message",
+            "request_id",
+            "auth",
+            "caller",
+            "sub",
+            "client_id",
+            "scope",
+            "jti",
+            "iss",
+            "method",
+            "path",
+            "session_id",
+            "status",
+            "outcome",
+            "latency_ms",
+        ];
+        for name in names.iter() {
+            assert!(
+                allowed.contains(&name.as_str()),
+                "audit event emitted an unexpected field: {name}"
+            );
+        }
+        // The forbidden fields must never be present, under any name.
+        for forbidden in [
+            "token",
+            "authorization",
+            "Authorization",
+            "bearer",
+            "secret",
+        ] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "audit event must never emit a `{forbidden}` field"
+            );
+        }
+        // And no recorded value carries an Authorization/bearer-shaped secret.
+        for v in values.iter() {
+            let lower = v.to_lowercase();
+            assert!(
+                !lower.contains("bearer ") && !lower.contains("authorization"),
+                "audit value leaked a secret-shaped string: {v}"
+            );
+        }
+        // Sanity: the safe identity fields did make it through.
+        assert!(names.iter().any(|n| n == "sub"));
+        assert!(values.iter().any(|v| v == "user-1"));
     }
 }

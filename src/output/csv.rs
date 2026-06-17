@@ -133,6 +133,79 @@ mod tests {
     }
 
     #[test]
+    fn escapes_newlines_and_carriage_returns_rfc4180() {
+        // RFC 4180: a field containing CR or LF must be quoted (the line break is
+        // preserved verbatim inside the quotes, not doubled).
+        assert_eq!(escape("line1\nline2"), "\"line1\nline2\"");
+        assert_eq!(escape("a\rb"), "\"a\rb\"");
+        assert_eq!(escape("a\r\nb"), "\"a\r\nb\"");
+        // Quote-and-newline together: the quote is doubled, the field quoted.
+        assert_eq!(escape("a\"\nb"), "\"a\"\"\nb\"");
+    }
+
+    #[test]
+    fn newline_in_a_cell_value_is_quoted_in_the_table() {
+        // A multi-line cell value (e.g. a description) renders as a single quoted
+        // field, keeping the embedded newline inside the quotes — one logical row.
+        let v = json!([{"name": "edge01", "note": "first\nsecond"}]);
+        assert_eq!(
+            to_csv(&v, None).unwrap(),
+            "name,note\nedge01,\"first\nsecond\"\n"
+        );
+    }
+
+    #[test]
+    fn ragged_objects_union_columns_in_first_seen_order() {
+        // Columns are the union of keys across all rows, in first-seen order;
+        // a row missing a column emits an empty cell for it.
+        let v = json!([
+            {"a": 1, "b": 2},
+            {"b": 3, "c": 4}
+        ]);
+        assert_eq!(to_csv(&v, None).unwrap(), "a,b,c\n1,2,\n,3,4\n");
+    }
+
+    #[test]
+    fn cols_with_an_unknown_column_emits_an_empty_cell() {
+        // An explicitly requested column that no row has becomes an empty cell —
+        // the header still appears, so the shape is predictable for scripts.
+        let v = json!([{"name": "edge01", "kind": "device"}]);
+        let cols = vec!["name".to_string(), "missing".to_string()];
+        assert_eq!(to_csv(&v, Some(&cols)).unwrap(), "name,missing\nedge01,\n");
+    }
+
+    #[test]
+    fn empty_array_emits_only_the_inferred_header_row() {
+        // No items → no columns to infer → a single (empty) header line.
+        assert_eq!(to_csv(&json!([]), None).unwrap(), "\n");
+        // With explicit cols, the header is those columns and there are no rows.
+        let cols = vec!["kind".to_string(), "name".to_string()];
+        assert_eq!(to_csv(&json!([]), Some(&cols)).unwrap(), "kind,name\n");
+    }
+
+    #[test]
+    fn nested_object_and_array_cells_are_compact_json() {
+        // Complex cell values stringify as compact JSON (not pretty-printed); a
+        // value containing a comma is then quoted per RFC 4180. Inferred columns
+        // follow the serialized key order (serde_json sorts object keys), so the
+        // header here is `cf,name,tags`. Pin columns explicitly to keep the focus
+        // on the cell encoding rather than ordering.
+        let v = json!([{"name": "edge01", "tags": ["a", "b"], "cf": {"x": 1}}]);
+        let cols = vec!["name".to_string(), "tags".to_string(), "cf".to_string()];
+        assert_eq!(
+            to_csv(&v, Some(&cols)).unwrap(),
+            "name,tags,cf\nedge01,\"[\"\"a\"\",\"\"b\"\"]\",\"{\"\"x\"\":1}\"\n"
+        );
+    }
+
+    #[test]
+    fn null_and_bool_and_number_cells_stringify() {
+        // Scalars render predictably; null is an empty cell.
+        let v = json!([{"a": null, "b": true, "n": 7}]);
+        assert_eq!(to_csv(&v, None).unwrap(), "a,b,n\n,true,7\n");
+    }
+
+    #[test]
     fn single_object_is_rejected_as_non_tabular() {
         // CSV is tabular-only. `-o csv` on a single detail object (e.g. `nbox
         // site`) is rejected with a usage error (exit 2) instead of the old
