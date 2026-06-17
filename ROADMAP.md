@@ -109,18 +109,18 @@ Scriptable / agent-friendly output:
 
 ## Prioritized backlog
 
-| # | Feature | Lands |
+| # | Feature | Status |
 |---|---|---|
-| 1 | `next-ip` / `next-prefix` (available IPs/prefixes) | v0.2 (with safe writes) |
-| 2 | `nbox status` | v0.1 Phase 4 |
-| 3 | Structured filter flags (`--status`/`--site`/…) | v0.1 Phase 4 |
-| 4 | Prefix utilization in output | v0.1 Phase 4 |
-| 5 | Cable/interface trace (`/interfaces/{id}/trace/`) | v0.2 (interface detail) |
-| 6 | Custom fields in detail output | v0.1 Phase 4 |
-| 7 | Column selection (`--cols`) | v0.1 Phase 4 |
-| 8 | CSV output | v0.1 Phase 4 |
-| 9 | Hierarchical prefix tree in TUI | v0.2 |
-| 10 | Auto-refresh tick in TUI | v0.1 Phase 4 |
+| 1 | `next-ip` / `next-prefix` (available IPs/prefixes) | ☑ v0.1.1 (read-only; allocate-on-write later) |
+| 2 | `nbox status` | ☑ v0.1.1 |
+| 3 | Structured filter flags (`--status`/`--site`/…) | ☑ v0.1.1 (scope filters `--region`/`--site-group`/`--location` added since) |
+| 4 | Prefix utilization in output | ☑ v0.1.1 |
+| 5 | Cable/interface trace (`/interfaces/{id}/trace/`) | ☑ v0.1.1 |
+| 6 | Custom fields in detail output | ☑ v0.1.1 |
+| 7 | Column selection (`--cols`) | ☑ v0.1.1 |
+| 8 | CSV output | ☑ v0.1.1 |
+| 9 | Hierarchical prefix tree in TUI | ☐ v0.2 |
+| 10 | Auto-refresh tick in TUI | ☑ v0.1.1 |
 
 ---
 
@@ -141,7 +141,7 @@ v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implemen
 
 ## v0.2 — Nested views, IPAM power, first writes
 
-- ☑ **MCP server (read-only): `nbox serve`** — command core as MCP tools (`rmcp` 1.7, all read-only annotated): `nbox_status`, `nbox_search`, `nbox_get`, `nbox_get_interface`, `nbox_next_ip`, `nbox_next_prefix`, `nbox_journal`, `nbox_list_tags`. stdio shipped; HTTP transport, OAuth, a raw escape-hatch tool, and MCP resources/prompts later.
+- ☑ **MCP server (read-only): `nbox serve`** — command core as MCP tools (`rmcp` 1.7, all read-only annotated): `nbox_status`, `nbox_search`, `nbox_get`, `nbox_get_interface`, `nbox_next_ip`, `nbox_next_prefix`, `nbox_journal`, `nbox_list_tags`. stdio shipped; the loopback HTTP transport (`--http`, behind the default-on `http` feature) shipped too. Network-reachable binding + OAuth/OIDC (resource-server design in DESIGN §24), a raw escape-hatch tool, and MCP resources/prompts later.
 - ◐ **Large-instance robustness** — ☑ honor 429 `Retry-After` (capped, with exponential backoff) in the client; search is already a bounded 5-way fan-out and `list_all` is `max`-capped. Remaining: configurable concurrency if needed.
 - ☐ **IPAM allocate (write)** — claim the next IP/prefix (POST to `available-ips`/`available-prefixes`). Read-only half is v0.1.1.
 - ☑ **Cable / interface trace** — `/api/dcim/interfaces/{id}/trace/`; surfaced as a Cable Path section on `nbox interface`.

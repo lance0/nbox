@@ -28,6 +28,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `group_scope_type` (a friendly label). These are additive and distinct from the
   VLAN's own `scope`/`scope_type`; both are omitted when the VLAN has no group or
   the group is unscoped. The extra group fetch happens only when a group exists.
+- `nbox search` and prefix lookups gain `--region`, `--site-group`, and
+  `--location` scope filters alongside `--site` (NetBox 4.2+ polymorphic scope).
+  At most one may be given (more than one is a usage error, exit `2`); each
+  resolves the reference to an id and filters by `scope_type` + `scope_id`
+  (devices use the `region_id`/`site_group_id`/`location_id` filters). An unknown
+  reference errors (exit `4`) rather than returning empty. The same filters are
+  exposed as `region`/`site_group`/`location` params on the `nbox_search` MCP tool.
+- File logging: a global `--log-file <PATH>` flag (and config `log_file` /
+  `log_level`) tees `tracing` output to a file via a non-blocking
+  `tracing-appender` writer. Level precedence is flag > config > `NBOX_LOG` >
+  `RUST_LOG` > `warn`; the file is flag > config > none. The writer's
+  `WorkerGuard` is held for the process lifetime so buffered lines flush on exit.
+
+### Changed
+- The TUI help is now a centered modal overlay drawn over the live screen
+  (ttl/xfr style), replacing the old full-screen Help screen. `?`/`F1` toggle it;
+  any key or `Esc` closes it (consumed — no underlying action fires). The `cheese`
+  Help wrapper was dropped; the layout helpers are pure and unit-tested.
 
 ## [0.1.1] - 2026-06-17
 
@@ -97,6 +115,7 @@ The first real release. (`0.1.0` was a name reservation on crates.io.)
 - `device`/`rack` lookup by a non-existent numeric ID now returns "not found" (HTTP 404 → `Ok(None)`) instead of surfacing a raw API error; added `NetBoxClient::get_optional`.
 - The TUI now actually probes `/api/status/` on launch (`verify_compatible`) — enforcing the 4.2 floor and showing the NetBox version in the header; corrected the `status.rs` doc to match (CLI commands intentionally skip the probe).
 - Logging is now initialized (`nbox::init_logging`): `tracing` output goes to stderr, controlled by `--log-level` / `NBOX_LOG` / `RUST_LOG` (quiet by default). Previously `--log-level` was ignored and all `tracing` output was discarded.
+- The dependency manifest keeps `rmcp`, `update-informer`, and `rusqlite` in the cross-platform `[dependencies]` table. A `[target.'cfg(unix)'.dependencies]` block (added for `libc`) had been placed mid-list, which silently scoped every dependency below it to unix-only and broke the Windows release build (`cannot find crate rmcp`). Only `libc` is unix-gated now.
 
 ### Added
 - Initial project design and documentation: `DESIGN.md`, `README.md`, `ROADMAP.md`, `CHANGELOG.md`.

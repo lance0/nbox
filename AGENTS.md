@@ -44,7 +44,7 @@ nbox circuit <cid|id>
 nbox aggregate <cidr|id>
 nbox asn <number>
 nbox ip-range <start|id>
-nbox search <query> [--limit N] [--status S] [--site SLUG] [--tenant SLUG] [--role SLUG] [--tag SLUG] [--cols a,b,c] [--partial]
+nbox search <query> [--limit N] [--status S] [--site SLUG] [--region SLUG] [--site-group SLUG] [--location SLUG] [--tenant SLUG] [--role SLUG] [--tag SLUG] [--cols a,b,c] [--partial]
 nbox tags
 nbox journal <kind> <ref>
 nbox open <kind>/<ref>
@@ -70,7 +70,7 @@ stderr. Every tool is annotated read-only.
 | Tool | Purpose |
 | ---- | ------- |
 | `nbox_status` | Connection + NetBox/Django/Python versions (call first to confirm reachability). |
-| `nbox_search` | Search devices/sites/IPs/prefixes/VLANs; `query` (required), `limit`, `status`, `site`, `tenant`, `role`, `tag`. Find a reference before `nbox_get`. |
+| `nbox_search` | Search devices/sites/IPs/prefixes/VLANs; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag` (one scope filter at a time). Find a reference before `nbox_get`. |
 | `nbox_get` | One object: `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range) + `ref`; `vrf`/`site`/`group` disambiguate (an ambiguous ref returns the candidates). |
 | `nbox_get_interface` | One interface on a device: config, addresses, cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix (nothing reserved); `count`, `vrf`. |
@@ -78,16 +78,21 @@ stderr. Every tool is annotated read-only.
 | `nbox_journal` | Recent journal entries for an object (`kind`/`ref` as `nbox_get`). |
 | `nbox_list_tags` | List tags (name, slug, color, usage count) — valid `tag` values for `nbox_search`. |
 
-An opt-in loopback HTTP transport is available behind the `http` build feature
-(`nbox serve --http 127.0.0.1:8080`, optional `--http-token`): same tools at `/mcp`,
-loopback only, with `Origin`/`Host` validation. Network-reachable binding + OAuth,
-a raw escape-hatch tool, and MCP resources/prompts are later. See `docs/MCP.md`.
+A loopback HTTP transport ships in the default build (behind the `http` cargo
+feature, which is on by default; `--no-default-features` for stdio-only):
+`nbox serve --http 127.0.0.1:8080`, optional `--http-token` — same tools at
+`/mcp`, loopback only, with `Origin`/`Host` validation. Network-reachable binding
++ OAuth, a raw escape-hatch tool, and MCP resources/prompts are later. See
+`docs/MCP.md`.
 
 ## Configuration
 
 - Config: `~/.config/nbox/config.toml` (`nbox config init` to create).
 - Token: never stored in the config; read from `NBOX_TOKEN` or the profile's
   `token_env` variable. Select a profile with `--profile <name>` or set the active one.
+- Logging: quiet by default (warnings to stderr). `--log-level` / `NBOX_LOG` /
+  `RUST_LOG` set verbosity; `--log-file <PATH>` (or config `log_file`) also tees
+  `tracing` output to a file. stdout stays data-only on every path.
 - Targets NetBox 4.2+.
 
 ## Examples
