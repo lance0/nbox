@@ -551,13 +551,16 @@ pub async fn serve(client: NetBoxClient) -> anyhow::Result<()> {
 
 /// Opt-in HTTP transport (`nbox serve --http`), behind the `http` feature. The
 /// same [`NboxMcp`] backs it; see [`http::serve_http`]. [`oidc`] is the OAuth 2.1
-/// resource-server layer applied to `/mcp` when `--oidc-issuer` is configured.
+/// resource-server layer applied to `/mcp` when `--oidc-issuer` is configured;
+/// [`audit`] is the v1 ops layer (structured audit log + per-caller rate limit).
+#[cfg(feature = "http")]
+pub mod audit;
 #[cfg(feature = "http")]
 pub mod http;
 #[cfg(feature = "http")]
 pub mod oidc;
 #[cfg(feature = "http")]
-pub use http::{OidcArgs, serve_http};
+pub use http::{OidcArgs, ServeOptions, serve_http};
 
 #[cfg(test)]
 mod tests;

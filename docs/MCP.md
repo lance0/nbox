@@ -178,11 +178,93 @@ descriptor, **without** auth:
 }
 ```
 
-Note: the last hop to NetBox still uses the local profile token today (a single
-read-only service token). Per-user identity → NetBox token bridging (so NetBox
-sees the real caller for RBAC + changelog) is the next unit; the validated caller
-identity (`sub`, `client_id`, `scope`, `jti`, `iss`) is already plumbed through
-for it.
+### Accountability, not per-user RBAC (read-only Pattern 3)
+
+This OIDC mode is **read-only Pattern 3** (DESIGN §24). nbox verifies the caller's
+IdP token and attributes every request to that caller in the audit log — but the
+last hop to NetBox still uses the **single local profile token** (a read-only
+service credential). So NetBox itself sees *one* service identity, not the real
+caller. That is **accountability, not authorization**: the audit log says who
+asked, but NetBox's object permissions and changelog still attribute the call to
+the service account. Every authenticated caller therefore gets the service
+account's read rights — there is no per-user RBAC.
+
+Run this mode only for a **trusted, read-only, ideally single-team** deployment.
+Use a NetBox token scoped to exactly what an agent should see (read-only); that
+token is the real privilege boundary. Multi-tenant use, writes, and real per-user
+NetBox RBAC require per-user identity → NetBox-token bridging (a credential vault
+keyed by the OIDC `sub`, so NetBox sees the real user) — the documented v2
+(DESIGN §24, Pattern 2). The validated caller identity (`sub`, `client_id`,
+`scope`, `jti`, `iss`) is already plumbed through for it.
+
+## Operations (HTTP transport)
+
+Two operational features apply to the HTTP `/mcp` endpoint (not the
+`/.well-known/*` routes), in both loopback and OIDC modes.
+
+### Audit log
+
+Every authenticated request to `/mcp` emits **one** structured `tracing` event
+under the target `nbox::audit`, recording:
+
+- **WHO** — from the validated identity in OIDC mode: `sub`, `client_id`, `scope`,
+  `jti`, `iss`. In loopback / static-bearer mode there is no token identity, so
+  the event records the auth mode (`loopback` / `static-bearer`) and the peer IP.
+  An `auth` field always names the mode; a `caller` field is the attributed key
+  (`sub:` → `client:` → `ip:`).
+- **WHAT** — the HTTP `method` and `path`. The JSON-RPC method / MCP tool name is
+  **not** surfaced: extracting it would mean buffering the request body and would
+  break the streaming transport, so the audit is request-level (method + path),
+  which is honest and cheap.
+- **WHEN / correlate** — a per-request `request_id`, plus `session_id`
+  (`Mcp-Session-Id`) when the client sends one.
+- **OUTCOME** — the response `status`, a coarse `outcome`
+  (`ok` / `auth-failed` / `rate-limited` / `error`), and `latency_ms`.
+
+The token, the `Authorization` header, and any secret are **never** logged — the
+fields are an explicit allow-list. Audit events follow the same sink discipline
+as all logging (stderr or the configured `--log-file`, never stdout).
+
+The events log at `info` under `nbox::audit`, so the default `warn` filter
+**excludes** them. Opt in via `--log-level` / `NBOX_LOG` / `RUST_LOG`:
+
+```bash
+# Just the audit log:
+NBOX_LOG="warn,nbox::audit=info" nbox serve --http 127.0.0.1:8080
+# nbox at debug including audit, then silence audit specifically:
+NBOX_LOG="nbox=debug,nbox::audit=off" nbox serve --http 127.0.0.1:8080
+```
+
+Pair it with `--log-file` for a durable, JSON-friendly record:
+
+```bash
+nbox serve --http 127.0.0.1:8080 --log-file /var/log/nbox-audit.log \
+  --log-level "warn,nbox::audit=info"
+```
+
+### Per-caller rate limit
+
+`--rate-limit <N>` (or `[serve].rate_limit`) caps each caller at `N` requests per
+minute on `/mcp`. The flag wins over the config; absent / `0` disables it (the
+default — existing behavior is unchanged unless you opt in).
+
+The limit is keyed on the **caller**, not just the connection: the OIDC `sub` if
+present, else `client_id`, else the peer IP (which covers loopback /
+static-bearer). Each caller has its own window, so one caller hitting the limit
+never affects another. Over the limit → `429 Too Many Requests` with a
+`Retry-After` (seconds) header, and a `rate-limited` audit event.
+
+```bash
+nbox serve --http 0.0.0.0:8080 \
+  --oidc-issuer https://idp.example.com --audience https://nbox.example.com \
+  --rate-limit 120
+```
+
+```toml
+[serve]
+http = "0.0.0.0:8080"
+rate_limit = 120   # requests per caller per minute; 0/absent = disabled
+```
 
 ## Tools
 

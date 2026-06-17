@@ -397,6 +397,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             oidc_issuer,
             audience,
             oidc_jwks_url,
+            rate_limit,
         }) => {
             run_serve(
                 &ctx,
@@ -406,6 +407,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                     oidc_issuer,
                     audience,
                     oidc_jwks_url,
+                    rate_limit,
                 },
             )
             .await
@@ -414,13 +416,15 @@ pub async fn run(cli: Cli) -> Result<()> {
 }
 
 /// The `nbox serve` flags, resolved from the CLI before layering in the config's
-/// `[serve]` section. Grouped so [`run_serve`] takes one argument, not six.
+/// `[serve]` section. Grouped so [`run_serve`] takes one argument, not many.
 struct ServeFlags {
     http: Option<String>,
     http_token: Option<String>,
     oidc_issuer: Option<String>,
     audience: Option<String>,
     oidc_jwks_url: Option<String>,
+    /// Per-caller requests-per-minute cap; `None` ⇒ fall back to config / off.
+    rate_limit: Option<u32>,
 }
 
 /// `nbox serve` — run the read-only MCP server.
@@ -440,6 +444,9 @@ async fn run_serve(ctx: &Ctx, flags: ServeFlags) -> Result<()> {
     let oidc_issuer = flags.oidc_issuer.or(serve_cfg.oidc_issuer);
     let audience = flags.audience.or(serve_cfg.audience);
     let jwks_url = flags.oidc_jwks_url.or(serve_cfg.jwks_url);
+    // Per-caller rate limit: flag wins, then config, then off (0). Absent / 0 =
+    // disabled, so existing behavior is unchanged unless the operator opts in.
+    let rate_limit = flags.rate_limit.or(serve_cfg.rate_limit).unwrap_or(0);
 
     // OIDC resource-server mode is enabled by the issuer's presence; the audience
     // is then required (RFC 8707 — without an expected `aud`, nbox can't bind a
@@ -462,7 +469,9 @@ async fn run_serve(ctx: &Ctx, flags: ServeFlags) -> Result<()> {
     let client = connect(ctx)?;
     match http {
         None => mcp::serve(client).await,
-        Some(addr) => serve_http_or_explain(client, &addr, http_token, oidc, jwks_url).await,
+        Some(addr) => {
+            serve_http_or_explain(client, &addr, http_token, oidc, jwks_url, rate_limit).await
+        }
     }
 }
 
@@ -490,13 +499,23 @@ async fn serve_http_or_explain(
     token: Option<String>,
     oidc: Option<(String, String)>,
     jwks_url: Option<String>,
+    rate_limit: u32,
 ) -> Result<()> {
     let oidc = oidc.map(|(issuer, audience)| mcp::OidcArgs {
         issuer,
         audience,
         jwks_url,
     });
-    mcp::serve_http(client, addr, token, oidc).await
+    mcp::serve_http(
+        client,
+        addr,
+        mcp::ServeOptions {
+            token,
+            oidc,
+            rate_limit,
+        },
+    )
+    .await
 }
 
 // Mirrors the `http`-feature variant's async signature so the `run_serve` call
@@ -510,6 +529,7 @@ async fn serve_http_or_explain(
     _token: Option<String>,
     _oidc: Option<(String, String)>,
     _jwks_url: Option<String>,
+    _rate_limit: u32,
 ) -> Result<()> {
     Err(error::NboxError::Usage(
         "`nbox serve --http` requires the `http` build feature, which this binary \

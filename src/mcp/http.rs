@@ -32,11 +32,12 @@
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
+use std::time::Instant;
 
 use anyhow::{Context, Result};
 use axum::Json;
 use axum::body::Body;
-use axum::extract::State;
+use axum::extract::{ConnectInfo, State};
 use axum::http::{Request, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
@@ -48,6 +49,7 @@ use serde_json::json;
 use tokio_util::sync::CancellationToken;
 
 use super::NboxMcp;
+use super::audit::{self, AuditEvent, AuthMode, Outcome, RateDecision, RateLimiter};
 use super::oidc::{self, AuthError, Identity, JwksCache, OidcConfig, SCOPE_READ, SCOPE_WRITE};
 use crate::error::NboxError;
 use crate::netbox::client::NetBoxClient;
@@ -85,19 +87,41 @@ enum Guard {
     Oidc(OidcConfig),
 }
 
+/// The full state the `/mcp` gate middleware rides on: the auth [`Guard`] plus
+/// the optional per-caller [`RateLimiter`] (`None` ⇒ rate limiting disabled).
+/// Cheap to clone (an `Arc` + an `Option<Arc>`).
+#[derive(Clone)]
+struct GateState {
+    guard: Guard,
+    rate_limiter: Option<Arc<RateLimiter>>,
+}
+
+/// Operational inputs for [`serve_http`], grouped so the call site stays one
+/// argument rather than a widening parameter list. The auth `token`/`oidc` and
+/// the `rate_limit` are all resolved (flag-over-config) before this is built.
+pub struct ServeOptions {
+    /// Optional static bearer for loopback mode (ignored in OIDC mode).
+    pub token: Option<String>,
+    /// OIDC resource-server inputs; `Some` ⇒ rung 3 (validate IdP JWTs).
+    pub oidc: Option<OidcArgs>,
+    /// Per-caller requests-per-minute cap; `0` ⇒ disabled (default).
+    pub rate_limit: u32,
+}
+
 /// Serve the read-only MCP server over HTTP until interrupted.
 ///
-/// Without `oidc`, `addr` must be a loopback socket address (rung 2): the trust
-/// boundary is loopback, plus the optional static `token`. With `oidc`, JWTs are
-/// validated on `/mcp` (rung 3) and `addr` may be routable — TLS must terminate
-/// in front (a reverse proxy). The same [`NboxMcp`] backs every request. stdout
-/// is never written; the token is never logged.
-pub async fn serve_http(
-    client: NetBoxClient,
-    addr: &str,
-    token: Option<String>,
-    oidc: Option<OidcArgs>,
-) -> Result<()> {
+/// Without `opts.oidc`, `addr` must be a loopback socket address (rung 2): the
+/// trust boundary is loopback, plus the optional static `opts.token`. With
+/// `opts.oidc`, JWTs are validated on `/mcp` (rung 3) and `addr` may be routable —
+/// TLS must terminate in front (a reverse proxy). `opts.rate_limit` (>0) caps
+/// requests per caller per minute. The same [`NboxMcp`] backs every request.
+/// stdout is never written; the token is never logged.
+pub async fn serve_http(client: NetBoxClient, addr: &str, opts: ServeOptions) -> Result<()> {
+    let ServeOptions {
+        token,
+        oidc,
+        rate_limit,
+    } = opts;
     let oidc_on = oidc.is_some();
     let socket = parse_bind_addr(addr, oidc_on)?;
     if oidc_on && !is_loopback(socket.ip()) {
@@ -115,6 +139,15 @@ pub async fn serve_http(
         None => Guard::Loopback {
             token: token.map(|t| Arc::from(t.as_str())),
         },
+    };
+    // `None` ⇒ rate limiting disabled (the hot path then skips the limiter).
+    let rate_limiter = RateLimiter::new(rate_limit).map(Arc::new);
+    if rate_limiter.is_some() {
+        tracing::info!(per_minute = rate_limit, "per-caller rate limit enabled");
+    }
+    let state = GateState {
+        guard: guard.clone(),
+        rate_limiter,
     };
 
     // Build the server once; the service factory hands rmcp a fresh clone per
@@ -137,10 +170,10 @@ pub async fn serve_http(
 
     // The PRM well-known route is public (no auth, no gate) and only meaningful
     // in OIDC mode; mount it there. `/mcp` carries the gate (bearer/JWT + Origin
-    // + protocol-version header); `/.well-known/*` is left public.
+    // + audit + rate limit + protocol-version header); `/.well-known/*` is public.
     let mut router = axum::Router::new()
         .nest_service("/mcp", mcp)
-        .layer(middleware::from_fn_with_state(guard.clone(), gate));
+        .layer(middleware::from_fn_with_state(state, gate));
     if let Guard::Oidc(cfg) = &guard {
         router = router.route(PRM_PATH, get(prm_handler).with_state(cfg.clone()));
     }
@@ -155,10 +188,16 @@ pub async fn serve_http(
         let _ = tokio::signal::ctrl_c().await;
         cancel.cancel();
     };
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown)
-        .await
-        .context("HTTP server error")?;
+    // `into_make_service_with_connect_info` surfaces the peer `SocketAddr` to the
+    // gate (via `ConnectInfo`) so a loopback / static-bearer caller — which has
+    // no token identity — is still attributable by IP in the audit log + limiter.
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown)
+    .await
+    .context("HTTP server error")?;
     Ok(())
 }
 
@@ -223,17 +262,40 @@ fn is_loopback(ip: IpAddr) -> bool {
     ip.is_loopback()
 }
 
-/// Axum middleware on `/mcp`: enforce auth, validate the `Origin` header, and
-/// advertise the MCP protocol version on the response.
+/// Axum middleware on `/mcp`: enforce auth, validate the `Origin` header,
+/// rate-limit per caller, advertise the MCP protocol version, and emit one
+/// structured audit event for the request.
 ///
-/// Loopback mode: optional static bearer (401) → origin (403) → inner.
-/// OIDC mode: validate the JWT + scope (401/403) → origin (403) → inner, and
-/// plumb the validated [`Identity`] into request extensions for downstream.
-/// Every path fails closed.
-async fn gate(State(guard): State<Guard>, mut request: Request<Body>, next: Next) -> Response {
+/// Loopback mode: optional static bearer (401) → origin (403) → rate (429) → inner.
+/// OIDC mode: validate the JWT + scope (401/403) → origin (403) → rate (429) →
+/// inner, and plumb the validated [`Identity`] into request extensions for
+/// downstream. Every path fails closed, and every path emits exactly one audit
+/// event (target [`audit::AUDIT_TARGET`]) recording WHO/WHAT/WHEN/OUTCOME. The
+/// token, the `Authorization` header, and any secret are never logged.
+async fn gate(State(state): State<GateState>, mut request: Request<Body>, next: Next) -> Response {
+    let start = Instant::now();
+    // WHAT/WHEN, captured up front (the request body is never read — request-line
+    // fields only, so the rmcp stream is untouched). The JSON-RPC method / tool
+    // name is *not* extracted: pulling it would mean buffering/cloning the body,
+    // which would break the streaming transport — request-level WHAT is honest
+    // and cheap (see docs/MCP.md).
+    let method = request.method().as_str().to_string();
+    let path = request.uri().path().to_string();
+    let session_id = request
+        .headers()
+        .get("mcp-session-id")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip());
+    let request_id = new_request_id();
+
     // 1) Authenticate by mode. The auth check runs first; only an authenticated
-    //    (or auth-not-required) request proceeds to the Origin check.
-    match &guard {
+    //    (or auth-not-required) request proceeds to the Origin check. An auth
+    //    failure emits an `auth-failed` audit event before the challenge.
+    let (auth_mode, identity) = match &state.guard {
         Guard::Loopback { token } => {
             if let Some(expected) = token.as_deref() {
                 let presented = request
@@ -243,8 +305,23 @@ async fn gate(State(guard): State<Guard>, mut request: Request<Body>, next: Next
                     .and_then(|v| v.strip_prefix("Bearer "));
                 let ok = presented.is_some_and(|got| ct_eq(got.as_bytes(), expected.as_bytes()));
                 if !ok {
-                    return loopback_unauthorized();
+                    let resp = loopback_unauthorized();
+                    audit(
+                        &request_id,
+                        AuthMode::StaticBearer,
+                        None,
+                        peer,
+                        &method,
+                        &path,
+                        session_id.as_deref(),
+                        &resp,
+                        start,
+                    );
+                    return resp;
                 }
+                (AuthMode::StaticBearer, None)
+            } else {
+                (AuthMode::Loopback, None)
             }
         }
         Guard::Oidc(cfg) => {
@@ -257,17 +334,40 @@ async fn gate(State(guard): State<Guard>, mut request: Request<Body>, next: Next
                     // All eight current tools are reads → require `nbox:read`.
                     // (`nbox:write` gating is wired below for future write tools.)
                     if let Err(scope_err) = require_scope(&identity, SCOPE_READ) {
-                        return oidc_challenge(cfg, &scope_err);
+                        let resp = oidc_challenge(cfg, &scope_err);
+                        audit(
+                            &request_id,
+                            AuthMode::Oidc,
+                            Some(&identity),
+                            peer,
+                            &method,
+                            &path,
+                            session_id.as_deref(),
+                            &resp,
+                            start,
+                        );
+                        return resp;
                     }
-                    // Plumb the validated identity through for Unit 3's audit log
-                    // + NetBox bridge. rmcp doesn't surface caller identity, so
-                    // request extensions are the handoff.
-                    request.extensions_mut().insert(identity);
+                    (AuthMode::Oidc, Some(identity))
                 }
-                Err(e) => return oidc_challenge(cfg, &e),
+                Err(e) => {
+                    let resp = oidc_challenge(cfg, &e);
+                    audit(
+                        &request_id,
+                        AuthMode::Oidc,
+                        None,
+                        peer,
+                        &method,
+                        &path,
+                        session_id.as_deref(),
+                        &resp,
+                        start,
+                    );
+                    return resp;
+                }
             }
         }
-    }
+    };
 
     // 2) Origin validation (DNS-rebinding defense). A request *with* an Origin
     //    must carry a loopback origin in loopback mode; in OIDC mode the bearer
@@ -275,13 +375,52 @@ async fn gate(State(guard): State<Guard>, mut request: Request<Body>, next: Next
     //    that lacks a loopback origin only when bound to loopback. To keep the
     //    defense simple and uniform, the loopback-origin rule applies whenever an
     //    Origin header is present *and* we are in loopback mode.
-    if matches!(guard, Guard::Loopback { .. })
+    if matches!(state.guard, Guard::Loopback { .. })
         && let Some(origin) = request.headers().get(header::ORIGIN)
     {
         let allowed = origin.to_str().ok().is_some_and(origin_is_loopback);
         if !allowed {
-            return forbidden();
+            let resp = forbidden();
+            audit(
+                &request_id,
+                auth_mode,
+                identity.as_ref(),
+                peer,
+                &method,
+                &path,
+                session_id.as_deref(),
+                &resp,
+                start,
+            );
+            return resp;
         }
+    }
+
+    // 3) Per-caller rate limit (keyed sub → client_id → peer IP). Disabled when no
+    //    limiter is configured. Over the limit → 429 + Retry-After, audited.
+    let caller = audit::caller_key(identity.as_ref(), peer);
+    if let Some(rl) = &state.rate_limiter
+        && let RateDecision::Limited { retry_after_secs } = rl.check(&caller)
+    {
+        let resp = too_many_requests(retry_after_secs);
+        audit(
+            &request_id,
+            auth_mode,
+            identity.as_ref(),
+            peer,
+            &method,
+            &path,
+            session_id.as_deref(),
+            &resp,
+            start,
+        );
+        return resp;
+    }
+
+    // Plumb the validated identity through for the NetBox bridge (v2). rmcp
+    // doesn't surface caller identity, so request extensions are the handoff.
+    if let Some(id) = &identity {
+        request.extensions_mut().insert(id.clone());
     }
 
     let mut response = next.run(request).await;
@@ -289,7 +428,77 @@ async fn gate(State(guard): State<Guard>, mut request: Request<Body>, next: Next
         "mcp-protocol-version",
         header::HeaderValue::from_static(MCP_PROTOCOL_VERSION),
     );
+    audit(
+        &request_id,
+        auth_mode,
+        identity.as_ref(),
+        peer,
+        &method,
+        &path,
+        session_id.as_deref(),
+        &response,
+        start,
+    );
     response
+}
+
+/// A short random request id for correlating the audit event with the response.
+/// Not security-sensitive — just enough entropy to disambiguate concurrent
+/// requests in a log. Derived from the current time's nanos + a process-local
+/// counter so it needs no extra dependency.
+fn new_request_id() -> String {
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static COUNTER: AtomicU64 = AtomicU64::new(0);
+    let n = COUNTER.fetch_add(1, Ordering::Relaxed);
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |d| d.subsec_nanos());
+    format!("{nanos:08x}{n:08x}")
+}
+
+/// Build and emit the one audit event for a request, given the final response.
+/// Pulls the safe identity fields (never the token), classifies the outcome from
+/// the status, and records the latency. Centralized so every return path in
+/// [`gate`] logs identically.
+#[allow(clippy::too_many_arguments)]
+fn audit(
+    request_id: &str,
+    auth: AuthMode,
+    identity: Option<&Identity>,
+    peer: Option<IpAddr>,
+    method: &str,
+    path: &str,
+    session_id: Option<&str>,
+    response: &Response,
+    start: Instant,
+) {
+    let status = response.status().as_u16();
+    let caller = audit::caller_key(identity, peer);
+    // Space-join the scopes for a compact, greppable field; `None` when empty.
+    let scope = identity.and_then(|id| {
+        if id.scopes.is_empty() {
+            None
+        } else {
+            Some(id.scopes.join(" "))
+        }
+    });
+    AuditEvent {
+        request_id,
+        auth,
+        caller: &caller,
+        sub: identity.and_then(|id| id.sub.as_deref()),
+        client_id: identity.and_then(|id| id.client_id.as_deref()),
+        scope: scope.as_deref(),
+        jti: identity.and_then(|id| id.jti.as_deref()),
+        iss: identity.and_then(|id| id.iss.as_deref()),
+        method,
+        path,
+        session_id,
+        status,
+        outcome: Outcome::from_status(status),
+        latency_ms: start.elapsed().as_millis(),
+    }
+    .emit();
 }
 
 /// Enforce that `identity` carries `required`. `nbox:write` implies `nbox:read`
@@ -433,6 +642,17 @@ fn loopback_unauthorized() -> Response {
 fn forbidden() -> Response {
     let mut response = Response::new(Body::from("Forbidden: Origin not allowed"));
     *response.status_mut() = StatusCode::FORBIDDEN;
+    response
+}
+
+/// 429 for a caller over its per-minute rate limit, with a `Retry-After` (in
+/// seconds, RFC 9110). The body is generic — it names no caller and no secret.
+fn too_many_requests(retry_after_secs: u64) -> Response {
+    let mut response = Response::new(Body::from("Too Many Requests"));
+    *response.status_mut() = StatusCode::TOO_MANY_REQUESTS;
+    if let Ok(value) = header::HeaderValue::from_str(&retry_after_secs.to_string()) {
+        response.headers_mut().insert(header::RETRY_AFTER, value);
+    }
     response
 }
 
@@ -692,10 +912,25 @@ mod rs_tests {
     }
 
     /// The gated router under test: the real `gate` + PRM route over a stub `/mcp`.
+    /// Rate limiting off (the default); see [`router_rl`] for the limited variant.
     fn router(guard: Guard) -> Router {
+        router_with(guard, None)
+    }
+
+    /// As [`router`], but with `per_minute` requests-per-caller rate limiting on.
+    fn router_rl(guard: Guard, per_minute: u32) -> Router {
+        router_with(guard, RateLimiter::new(per_minute).map(Arc::new))
+    }
+
+    /// Build the gated router with an explicit (possibly absent) rate limiter.
+    fn router_with(guard: Guard, rate_limiter: Option<Arc<RateLimiter>>) -> Router {
+        let state = GateState {
+            guard: guard.clone(),
+            rate_limiter,
+        };
         let mut router = Router::new()
             .route("/mcp", any(stub_mcp))
-            .layer(middleware::from_fn_with_state(guard.clone(), gate));
+            .layer(middleware::from_fn_with_state(state, gate));
         if let Guard::Oidc(cfg) = &guard {
             router = router.route(PRM_PATH, get(prm_handler).with_state(cfg.clone()));
         }
@@ -938,5 +1173,306 @@ mod rs_tests {
             .unwrap();
         let (status, _www, _) = send(router(guard), req).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    // --- Unit 3: structured audit log + per-caller rate limit -----------------
+
+    use super::super::audit::AUDIT_TARGET;
+    use axum::extract::ConnectInfo;
+    use std::net::SocketAddr;
+    use std::sync::Mutex as StdMutex;
+    use tracing::field::{Field, Visit};
+    use tracing::subscriber::DefaultGuard;
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::{Context as LayerContext, SubscriberExt};
+    use tracing_subscriber::registry::Registry;
+
+    /// One captured audit event: its fields flattened to `name → value` strings.
+    #[derive(Clone, Default)]
+    struct Captured {
+        fields: std::collections::HashMap<String, String>,
+    }
+
+    impl Captured {
+        fn get(&self, key: &str) -> Option<&str> {
+            self.fields.get(key).map(String::as_str)
+        }
+    }
+
+    /// A `tracing` layer that records every event on [`AUDIT_TARGET`] into a
+    /// shared vec, so a test can assert on the emitted audit fields.
+    struct CaptureLayer {
+        events: Arc<StdMutex<Vec<Captured>>>,
+    }
+
+    /// A visitor that flattens an event's fields into the `Captured` map. Records
+    /// the debug form so both string and numeric fields are comparable as text.
+    struct FieldVisitor<'a>(&'a mut Captured);
+
+    impl Visit for FieldVisitor<'_> {
+        fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
+            self.0
+                .fields
+                .insert(field.name().to_string(), format!("{value:?}"));
+        }
+        fn record_str(&mut self, field: &Field, value: &str) {
+            self.0
+                .fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+        fn record_u64(&mut self, field: &Field, value: u64) {
+            self.0
+                .fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+        fn record_i64(&mut self, field: &Field, value: i64) {
+            self.0
+                .fields
+                .insert(field.name().to_string(), value.to_string());
+        }
+    }
+
+    impl<S: tracing::Subscriber> Layer<S> for CaptureLayer {
+        fn on_event(&self, event: &tracing::Event<'_>, _ctx: LayerContext<'_, S>) {
+            if event.metadata().target() != AUDIT_TARGET {
+                return;
+            }
+            let mut captured = Captured::default();
+            event.record(&mut FieldVisitor(&mut captured));
+            self.events.lock().unwrap().push(captured);
+        }
+    }
+
+    /// Install a thread-scoped capturing subscriber. The returned guard restores
+    /// the previous subscriber on drop; the vec collects audit events emitted
+    /// while it's in scope (the `oneshot` future polls on this thread).
+    fn capture() -> (Arc<StdMutex<Vec<Captured>>>, DefaultGuard) {
+        let events = Arc::new(StdMutex::new(Vec::new()));
+        let layer = CaptureLayer {
+            events: events.clone(),
+        };
+        let subscriber = Registry::default().with(layer);
+        let guard = tracing::subscriber::set_default(subscriber);
+        (events, guard)
+    }
+
+    /// A `GET /mcp` request with a peer `SocketAddr` injected as `ConnectInfo`,
+    /// the way `into_make_service_with_connect_info` would at runtime — so the
+    /// IP-keyed caller path (loopback / static-bearer) is exercised in tests.
+    fn mcp_request_from(bearer: Option<&str>, peer: SocketAddr) -> Request<Body> {
+        let mut req = mcp_request(bearer);
+        req.extensions_mut().insert(ConnectInfo(peer));
+        req
+    }
+
+    #[tokio::test]
+    async fn audit_event_emitted_for_authenticated_oidc_request() {
+        let (events, _guard) = capture();
+
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+        let token = idp.mint(&good_claims());
+
+        let (status, _www, _) = send(router(Guard::Oidc(cfg)), mcp_request(Some(&token))).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 1, "exactly one audit event per request");
+        let e = &events[0];
+        // WHO: the validated identity.
+        assert_eq!(e.get("sub"), Some("user-42"));
+        assert_eq!(e.get("client_id"), Some("agent-cli"));
+        assert_eq!(e.get("jti"), Some("tok-1"));
+        assert_eq!(e.get("iss"), Some(ISSUER));
+        assert_eq!(e.get("auth"), Some("oidc"));
+        assert_eq!(e.get("caller"), Some("sub:user-42"));
+        assert!(e.get("scope").is_some_and(|s| s.contains("nbox:read")));
+        // WHAT / WHEN / OUTCOME.
+        assert_eq!(e.get("method"), Some("GET"));
+        assert_eq!(e.get("path"), Some("/mcp"));
+        assert_eq!(e.get("status"), Some("200"));
+        assert_eq!(e.get("outcome"), Some("ok"));
+        assert!(e.get("request_id").is_some_and(|r| !r.is_empty()));
+        assert!(e.get("latency_ms").is_some());
+    }
+
+    #[tokio::test]
+    async fn audit_event_never_contains_the_token_or_authorization() {
+        let (events, _guard) = capture();
+
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+        let token = idp.mint(&good_claims());
+
+        let (status, _, _) = send(router(Guard::Oidc(cfg)), mcp_request(Some(&token))).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        // No field value may contain the raw token or the word "Bearer".
+        for (name, value) in &events[0].fields {
+            assert!(
+                !value.contains(&token),
+                "audit field {name} leaked the token: {value}"
+            );
+            assert!(
+                !value.contains("Bearer"),
+                "audit field {name} leaked an Authorization scheme: {value}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn audit_event_records_auth_failure() {
+        let (events, _guard) = capture();
+
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+
+        // No token → 401, audited as auth-failed with no identity.
+        let (status, _www, _) = send(router(Guard::Oidc(cfg)), mcp_request(None)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        let e = &events[0];
+        assert_eq!(e.get("status"), Some("401"));
+        assert_eq!(e.get("outcome"), Some("auth-failed"));
+        assert_eq!(e.get("auth"), Some("oidc"));
+        assert_eq!(e.get("sub"), None, "no identity on a failed auth");
+    }
+
+    #[tokio::test]
+    async fn audit_event_for_loopback_records_mode_and_peer() {
+        let (events, _guard) = capture();
+        let peer: SocketAddr = "127.0.0.1:54321".parse().unwrap();
+
+        let (status, _www, _) = send(
+            router(Guard::Loopback { token: None }),
+            mcp_request_from(None, peer),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        let e = &events[0];
+        // No OIDC identity → auth mode is loopback, caller is the peer IP.
+        assert_eq!(e.get("auth"), Some("loopback"));
+        assert_eq!(e.get("caller"), Some("ip:127.0.0.1"));
+        assert_eq!(e.get("sub"), None);
+        assert_eq!(e.get("outcome"), Some("ok"));
+    }
+
+    #[tokio::test]
+    async fn rate_limit_429s_after_n_for_same_caller() {
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+        let token = idp.mint(&good_claims());
+
+        // Limit of 2 per caller. The router (and its limiter) persists across the
+        // calls below; each clone shares the same Arc'd limiter.
+        let app = router_rl(Guard::Oidc(cfg), 2);
+
+        for i in 1..=2 {
+            let resp = app
+                .clone()
+                .oneshot(mcp_request(Some(&token)))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK, "request {i} should pass");
+        }
+        // The 3rd from the same `sub` → 429 with Retry-After.
+        let resp = app.oneshot(mcp_request(Some(&token))).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        let retry = resp
+            .headers()
+            .get(header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok())
+            .and_then(|v| v.parse::<u64>().ok())
+            .expect("a numeric Retry-After");
+        assert!((1..=60).contains(&retry), "Retry-After: {retry}");
+    }
+
+    #[tokio::test]
+    async fn rate_limit_isolates_distinct_callers() {
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+
+        // Two distinct subjects → two distinct callers.
+        let token_a = idp.mint(&good_claims());
+        let mut claims_b = good_claims();
+        claims_b["sub"] = json!("user-99");
+        let token_b = idp.mint(&claims_b);
+
+        let app = router_rl(Guard::Oidc(cfg), 1);
+
+        // user-42 spends its one allowance, then is limited.
+        let ok = app
+            .clone()
+            .oneshot(mcp_request(Some(&token_a)))
+            .await
+            .unwrap();
+        assert_eq!(ok.status(), StatusCode::OK);
+        let limited = app
+            .clone()
+            .oneshot(mcp_request(Some(&token_a)))
+            .await
+            .unwrap();
+        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+        // user-99 is unaffected — its own fresh bucket.
+        let other = app.oneshot(mcp_request(Some(&token_b))).await.unwrap();
+        assert_eq!(other.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn rate_limit_disabled_never_429s() {
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+        let token = idp.mint(&good_claims());
+
+        // Disabled (default): the router has no limiter.
+        let app = router(Guard::Oidc(cfg));
+        for _ in 0..10 {
+            let resp = app
+                .clone()
+                .oneshot(mcp_request(Some(&token)))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::OK);
+        }
+    }
+
+    #[tokio::test]
+    async fn rate_limited_request_is_audited() {
+        let (events, _guard) = capture();
+
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+        let token = idp.mint(&good_claims());
+
+        let app = router_rl(Guard::Oidc(cfg), 1);
+        let _ = app
+            .clone()
+            .oneshot(mcp_request(Some(&token)))
+            .await
+            .unwrap();
+        let limited = app.oneshot(mcp_request(Some(&token))).await.unwrap();
+        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let events = events.lock().unwrap();
+        // Two requests → two audit events; the second is rate-limited.
+        assert_eq!(events.len(), 2);
+        let last = events.last().unwrap();
+        assert_eq!(last.get("status"), Some("429"));
+        assert_eq!(last.get("outcome"), Some("rate-limited"));
+        assert_eq!(last.get("caller"), Some("sub:user-42"));
     }
 }

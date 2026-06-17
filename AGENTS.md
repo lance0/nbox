@@ -85,9 +85,17 @@ which is on by default; `--no-default-features` for stdio-only):
 + `--audience <VALUE>` for OAuth 2.1 resource-server mode: inbound IdP JWTs are
 validated on `/mcp` (alg allowlist, `iss`/`aud`/`exp`, `nbox:read` scope), a
 routable bind is allowed (TLS terminates in front), and Protected Resource
-Metadata is served at `/.well-known/oauth-protected-resource`. The last hop to
-NetBox still uses the local profile token; per-user NetBox identity bridging, a
-raw escape-hatch tool, and MCP resources/prompts are later. See `docs/MCP.md`.
+Metadata is served at `/.well-known/oauth-protected-resource`. The HTTP `/mcp`
+path also has an ops layer: a structured audit log (one `tracing` event per
+authenticated request under the target `nbox::audit` — WHO/WHAT/WHEN/OUTCOME, no
+token ever; off under the default `warn` filter, opt in with
+`NBOX_LOG=…,nbox::audit=info`) and an opt-in per-caller rate limit
+(`--rate-limit <N>` / `[serve].rate_limit`, keyed `sub`→`client_id`→peer IP, over
+the limit → `429`+`Retry-After`; `0`/absent = off). This is **read-only Pattern 3**:
+the last hop to NetBox still uses the one local profile token, so the audit log is
+accountability, not per-user RBAC — trusted single-team read-only only. Per-user
+NetBox identity bridging (the Pattern 2 vault, v2), a raw escape-hatch tool, and
+MCP resources/prompts are later. See `docs/MCP.md`.
 
 ## Configuration
 

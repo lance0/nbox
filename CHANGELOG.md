@@ -8,6 +8,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Operational layer for the HTTP transport (`nbox serve --http`): a structured
+  audit log and a per-caller rate limit (completes the read-only HTTP/OAuth v1,
+  DESIGN §24). Every authenticated request to `/mcp` emits one structured
+  `tracing` event under the target `nbox::audit` — WHO (`sub`, `client_id`,
+  `scope`, `jti`, `iss` in OIDC mode; the auth mode + peer IP in loopback /
+  static-bearer mode), WHAT (HTTP method + path — the JSON-RPC/tool name is *not*
+  surfaced, to avoid buffering the body and breaking the rmcp stream), WHEN
+  (`request_id`, `session_id` from `Mcp-Session-Id`), and OUTCOME (status, a
+  coarse `ok`/`auth-failed`/`rate-limited`/`error`, latency in ms). The token, the
+  `Authorization` header, and secrets are never logged (the fields are an explicit
+  allow-list); events log at `info` so the default `warn` filter excludes them
+  until you opt in (`NBOX_LOG=warn,nbox::audit=info`), and they follow the usual
+  stderr/`--log-file` sink (never stdout). `--rate-limit <N>` (or
+  `[serve].rate_limit`) caps each caller at N requests/minute, keyed on the caller
+  (`sub`, else `client_id`, else peer IP) so callers are isolated; over the limit
+  → `429` + `Retry-After`, audited as `rate-limited`. Absent / `0` = disabled (the
+  default — existing behavior is unchanged unless opted in); the flag wins over
+  config. Applies to `/mcp` only, not `/.well-known/*`. Documented as **read-only
+  Pattern 3** (DESIGN §24): the audit log attributes calls to the verified caller,
+  but the last hop to NetBox still uses the one local service token, so this is
+  accountability, not per-user RBAC — suitable for a trusted, read-only,
+  single-team deployment. Per-user identity→NetBox-token RBAC (the Pattern 2
+  vault) is v2. Behind the `http` cargo feature.
 - OIDC resource-server auth for the HTTP transport (`nbox serve`). Setting
   `--oidc-issuer <URL>` + `--audience <VALUE>` (or `[serve].oidc_issuer` /
   `audience`) puts nbox in OAuth 2.1 resource-server mode: inbound IdP JWTs are

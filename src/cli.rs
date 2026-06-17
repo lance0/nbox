@@ -412,6 +412,13 @@ pub enum Command {
         /// `/.well-known/openid-configuration` (then `oauth-authorization-server`).
         #[arg(long, value_name = "URL")]
         oidc_jwks_url: Option<String>,
+
+        /// Per-caller request cap, in requests per minute, on the HTTP `/mcp`
+        /// endpoint. Keyed on the caller (`sub`, else `client_id`, else peer IP).
+        /// Over the limit → `429` with `Retry-After`. `0` (the default) disables
+        /// it. Only meaningful with `--http`.
+        #[arg(long, value_name = "N")]
+        rate_limit: Option<u32>,
     },
 }
 
@@ -551,7 +558,7 @@ mod tests {
 
     #[test]
     fn serve_defaults_to_stdio_and_parses_http_flags() {
-        // Bare `serve` → stdio (no http address, no token, no OIDC).
+        // Bare `serve` → stdio (no http address, no token, no OIDC, no limit).
         let stdio = Cli::try_parse_from(["nbox", "serve"]).unwrap();
         assert!(matches!(
             stdio.command,
@@ -561,6 +568,7 @@ mod tests {
                 oidc_issuer: None,
                 audience: None,
                 oidc_jwks_url: None,
+                rate_limit: None,
             })
         ));
         // `--http` (and the optional `--http-token`) parse onto the variant.
@@ -607,6 +615,35 @@ mod tests {
                 && iss == "https://idp.example.com"
                 && aud == "https://nbox.example.com"
                 && jwks == "https://idp.example.com/keys"
+        ));
+    }
+
+    #[test]
+    fn serve_parses_rate_limit_flag() {
+        let rl = Cli::try_parse_from([
+            "nbox",
+            "serve",
+            "--http",
+            "127.0.0.1:8080",
+            "--rate-limit",
+            "120",
+        ])
+        .unwrap();
+        assert!(matches!(
+            rl.command,
+            Some(Command::Serve {
+                rate_limit: Some(120),
+                ..
+            })
+        ));
+        // Absent → None (disabled by default).
+        let none = Cli::try_parse_from(["nbox", "serve", "--http", "127.0.0.1:8080"]).unwrap();
+        assert!(matches!(
+            none.command,
+            Some(Command::Serve {
+                rate_limit: None,
+                ..
+            })
         ));
     }
 

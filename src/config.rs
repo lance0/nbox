@@ -108,6 +108,11 @@ pub struct ServeConfig {
     /// Overridden by `--oidc-jwks-url`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jwks_url: Option<String>,
+
+    /// Per-caller request cap on the HTTP `/mcp` endpoint, in requests per
+    /// minute. Absent / `0` ⇒ disabled (default). Overridden by `--rate-limit`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rate_limit: Option<u32>,
 }
 
 /// UI / TUI preferences.
@@ -465,6 +470,7 @@ page_size = 250
         assert_eq!(bare.serve.oidc_issuer, None);
         assert_eq!(bare.serve.audience, None);
         assert_eq!(bare.serve.jwks_url, None);
+        assert_eq!(bare.serve.rate_limit, None);
 
         // A present `[serve]` populates the fields.
         let with: Config = toml::from_str(
@@ -473,6 +479,7 @@ page_size = 250
              [serve]\n\
              http = \"127.0.0.1:8080\"\n\
              http_token = \"local-secret\"\n\
+             rate_limit = 120\n\
              \n\
              [profiles.work]\n\
              url = \"https://netbox.example.com\"\n",
@@ -480,6 +487,7 @@ page_size = 250
         .unwrap();
         assert_eq!(with.serve.http.as_deref(), Some("127.0.0.1:8080"));
         assert_eq!(with.serve.http_token.as_deref(), Some("local-secret"));
+        assert_eq!(with.serve.rate_limit, Some(120));
 
         // The OIDC resource-server fields parse onto the same section.
         let oidc: Config = toml::from_str(
