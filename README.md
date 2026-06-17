@@ -141,7 +141,7 @@ nbox vlan <vid-or-name> [--site <s>] [--group <g>] [--journal]
 nbox interface <device> <interface>
 nbox journal <kind> <ref>         # recent journal entries for an object
                                   # --journal folds recent entries into a detail lookup
-nbox open <object-ref>
+nbox open <kind>/<ref>            # device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range
 nbox raw GET <api-path>           # raw read-only API request (escape hatch)
 nbox serve                        # read-only MCP server over stdio (for AI agents)
 nbox config <init|path|show>

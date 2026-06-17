@@ -597,7 +597,12 @@ async fn run_open(ctx: &Ctx, object_ref: &str) -> Result<()> {
 }
 
 /// Resolve a `<kind>/<ref>` pair to the object's API URL, or `None` if no match.
-async fn resolve_object_url(
+///
+/// Each kind reuses the same `*_by_ref` resolver the `device`/`search`/`journal`
+/// commands use and reads the NetBox `url` the resolved object already carries,
+/// so `open`'s link is identical to what those commands emit — no web routes are
+/// hardcoded here.
+pub(crate) async fn resolve_object_url(
     client: &NetBoxClient,
     kind: &str,
     value: &str,
@@ -614,8 +619,17 @@ async fn resolve_object_url(
             .into_iter()
             .next()
             .map(|ip| ip.url),
+        "circuit" => client.circuit_by_ref(value).await?.map(|c| c.url),
+        "aggregate" => client.aggregate_by_ref(value).await?.map(|a| a.url),
+        "asn" => {
+            let number: u32 = value
+                .parse()
+                .map_err(|_| anyhow::anyhow!("ASN must be a number, got \"{value}\""))?;
+            client.asn_by_ref(number).await?.map(|a| a.url)
+        }
+        "ip-range" | "iprange" => client.ip_range_by_ref(value).await?.map(|r| r.url),
         other => anyhow::bail!(
-            "unknown object kind \"{other}\" (expected: device, site, rack, vlan, prefix, ip)"
+            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range)"
         ),
     };
     Ok(url)
@@ -628,7 +642,7 @@ fn parse_object_ref(s: &str) -> Result<(&str, &str)> {
         .filter(|(kind, value)| !kind.is_empty() && !value.is_empty())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "object reference must be `<kind>/<ref>` (e.g. device/edge01)\n\nKinds: device, site, rack, vlan, prefix, ip"
+                "object reference must be `<kind>/<ref>` (e.g. device/edge01)\n\nKinds: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range"
             )
         })
 }
@@ -832,5 +846,153 @@ mod tests {
         assert!(parse_object_ref("garbage").is_err());
         assert!(parse_object_ref("device/").is_err());
         assert!(parse_object_ref("/edge01").is_err());
+    }
+
+    // --- `nbox open` URL resolution ----------------------------------------
+    //
+    // `open` reuses each kind's `*_by_ref` resolver and reads the NetBox `url`
+    // the resolved object carries, then `api_to_web_url` strips `/api`. These
+    // tests mock the resolve and assert the final web URL per kind, so the link
+    // `open` prints stays consistent with what `device`/`search` emit.
+
+    use super::{NetBoxClient, resolve_object_url};
+    use crate::config::ProfileConfig;
+    use crate::util::format::api_to_web_url;
+    use serde_json::json;
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn open_client(server: &MockServer) -> NetBoxClient {
+        let profile = ProfileConfig {
+            url: server.uri(),
+            ..Default::default()
+        };
+        NetBoxClient::new(&profile, None).unwrap()
+    }
+
+    /// Resolve `<kind>/<value>` and return the web URL `open` would print/open.
+    async fn open_web_url(client: &NetBoxClient, kind: &str, value: &str) -> String {
+        let api_url = resolve_object_url(client, kind, value)
+            .await
+            .unwrap()
+            .expect("object should resolve");
+        api_to_web_url(&api_url)
+    }
+
+    #[tokio::test]
+    async fn open_device_url_drops_api_segment() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/devices/7/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 7, "url": format!("{}/api/dcim/devices/7/", server.uri()),
+                "name": "edge07"
+            })))
+            .mount(&server)
+            .await;
+
+        let url = open_web_url(&open_client(&server), "device", "7").await;
+        assert_eq!(url, format!("{}/dcim/devices/7/", server.uri()));
+    }
+
+    #[tokio::test]
+    async fn open_ip_url_uses_first_candidate() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/ip-addresses/"))
+            .and(query_param("address", "10.0.0.1/32"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{
+                    "id": 3, "url": format!("{}/api/ipam/ip-addresses/3/", server.uri()),
+                    "address": "10.0.0.1/32"
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let url = open_web_url(&open_client(&server), "ip", "10.0.0.1/32").await;
+        assert_eq!(url, format!("{}/ipam/ip-addresses/3/", server.uri()));
+    }
+
+    #[tokio::test]
+    async fn open_circuit_url_by_id() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/circuits/circuits/9/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 9, "url": format!("{}/api/circuits/circuits/9/", server.uri()),
+                "cid": "WAN-9"
+            })))
+            .mount(&server)
+            .await;
+
+        let url = open_web_url(&open_client(&server), "circuit", "9").await;
+        assert_eq!(url, format!("{}/circuits/circuits/9/", server.uri()));
+    }
+
+    #[tokio::test]
+    async fn open_aggregate_url_by_id() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/aggregates/4/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 4, "url": format!("{}/api/ipam/aggregates/4/", server.uri()),
+                "prefix": "10.0.0.0/8"
+            })))
+            .mount(&server)
+            .await;
+
+        let url = open_web_url(&open_client(&server), "aggregate", "4").await;
+        assert_eq!(url, format!("{}/ipam/aggregates/4/", server.uri()));
+    }
+
+    #[tokio::test]
+    async fn open_asn_url_by_number() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/asns/"))
+            .and(query_param("asn", "65000"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{
+                    "id": 2, "url": format!("{}/api/ipam/asns/2/", server.uri()),
+                    "asn": 65000
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let url = open_web_url(&open_client(&server), "asn", "65000").await;
+        assert_eq!(url, format!("{}/ipam/asns/2/", server.uri()));
+    }
+
+    #[tokio::test]
+    async fn open_ip_range_url_by_id_and_alias() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/ip-ranges/6/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 6, "url": format!("{}/api/ipam/ip-ranges/6/", server.uri()),
+                "start_address": "10.0.0.1/32", "end_address": "10.0.0.9/32"
+            })))
+            .expect(2)
+            .mount(&server)
+            .await;
+
+        let client = open_client(&server);
+        // Both the canonical kind and the `iprange` alias resolve identically.
+        let expected = format!("{}/ipam/ip-ranges/6/", server.uri());
+        assert_eq!(open_web_url(&client, "ip-range", "6").await, expected);
+        assert_eq!(open_web_url(&client, "iprange", "6").await, expected);
+    }
+
+    #[tokio::test]
+    async fn open_unknown_kind_errors() {
+        let server = MockServer::start().await;
+        let err = resolve_object_url(&open_client(&server), "wormhole", "x")
+            .await
+            .unwrap_err();
+        assert!(format!("{err:#}").contains("unknown object kind"));
     }
 }
