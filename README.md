@@ -2,6 +2,10 @@
 
 Terminal UI and CLI for NetBox — fast search, IPAM lookups, and device context.
 
+<p align="center">
+  <img src="nbox-ss.png" alt="nbox TUI — list/preview split with a live detail pane" width="900">
+</p>
+
 [![Crates.io](https://img.shields.io/crates/v/nbox.svg)](https://crates.io/crates/nbox)
 [![CI](https://github.com/lance0/nbox/actions/workflows/ci.yml/badge.svg)](https://github.com/lance0/nbox/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE-MIT)
@@ -34,10 +38,6 @@ nbox
 ```
 
 See [Installation](#installation) below for setup instructions.
-
-<!-- Demo: replace with an asciinema/VHS recording before the first release.
-     e.g. [![asciicast](https://asciinema.org/a/<id>.svg)](https://asciinema.org/a/<id>)
-     or a docs/demo.gif rendered with `vhs docs/demo.tape`. -->
 
 ## Features
 
