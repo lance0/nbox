@@ -7,16 +7,16 @@ nbox is a read-only NetBox client (v0.1) — a CLI and a TUI over the same core.
 | Command | What |
 | ------- | ---- |
 | `nbox search <q>` | Parallel search across devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP-ranges. Filters: `--status/--site/--tenant/--role/--tag`, `--limit`, `--cols`, `--partial`. |
-| `nbox device <name\|slug\|id>` | Device + interfaces, IPs, cables, VLANs, services. |
+| `nbox device <name\|slug\|id> [--journal]` | Device + interfaces, IPs, cables, VLANs, services. |
 | `nbox interface <device> <iface>` | One interface: type, MTU, MAC, mode, VLANs, cable, **cable path** (trace), addresses. |
-| `nbox ip <addr> [--vrf]` | IP + most-specific parent prefix (VRF-scoped) and its VLAN/site. |
-| `nbox prefix <cidr> [--vrf]` | Prefix with utilization, children, and contained IPs. |
+| `nbox ip <addr> [--vrf] [--journal]` | IP + most-specific parent prefix (VRF-scoped) and its VLAN/site. |
+| `nbox prefix <cidr> [--vrf] [--journal]` | Prefix with utilization, children, and contained IPs. |
 | `nbox next-ip <cidr> [--count] [--vrf]` | Next available address(es). |
 | `nbox next-prefix <cidr> [--length] [--vrf]` | Available free block(s). |
-| `nbox vlan <vid\|name> [--site] [--group]` | VLAN + referencing prefixes. |
-| `nbox site` / `rack` / `circuit` / `aggregate` / `asn` / `ip-range` | Object lookups. |
+| `nbox vlan <vid\|name> [--site] [--group] [--journal]` | VLAN + referencing prefixes. |
+| `nbox site` / `rack` / `circuit` `[--journal]`, `aggregate` / `asn` / `ip-range` | Object lookups. |
 | `nbox tags` | List tags. |
-| `nbox journal <kind> <ref>` | Recent journal entries for an object. |
+| `nbox journal <kind> <ref>` | Recent journal entries for an object. `--journal` on a detail lookup (device, ip, prefix, vlan, site, rack, circuit) folds the most recent entries inline. |
 | `nbox status` | Connection + NetBox/Django/Python versions. |
 | `nbox open <kind>/<ref>` | Open an object in the browser. |
 | `nbox raw GET <path>` | Raw read-only API request (escape hatch). |

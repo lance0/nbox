@@ -21,3 +21,25 @@ pub mod rack_view;
 pub mod site_view;
 pub mod tag_view;
 pub mod vlan_view;
+
+use serde::Serialize;
+
+use crate::domain::journal_view::JournalEntryRow;
+
+/// A detail view augmented with its recent journal entries, emitted only when a
+/// detail command is run with `--journal`. The inner view serializes exactly as
+/// it does without the flag (it is flattened), so JSON gains a single top-level
+/// `journal` array and is otherwise byte-identical to the bare view.
+#[derive(Debug, Clone, Serialize)]
+pub struct WithJournal<T> {
+    #[serde(flatten)]
+    pub inner: T,
+    pub journal: Vec<JournalEntryRow>,
+}
+
+impl<T> WithJournal<T> {
+    /// Wrap a view with its journal rows.
+    pub fn new(inner: T, journal: Vec<JournalEntryRow>) -> Self {
+        Self { inner, journal }
+    }
+}

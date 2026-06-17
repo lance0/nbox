@@ -101,6 +101,10 @@ pub enum Command {
     Device {
         /// Device name, slug, or numeric ID.
         value: String,
+
+        /// Also fetch the object's recent journal entries.
+        #[arg(long)]
+        journal: bool,
     },
 
     /// Look up an IP address.
@@ -111,6 +115,10 @@ pub enum Command {
         /// Disambiguate by VRF (name, slug, or RD) when the address exists in several.
         #[arg(long)]
         vrf: Option<String>,
+
+        /// Also fetch the object's recent journal entries.
+        #[arg(long)]
+        journal: bool,
     },
 
     /// Show prefix details and children.
@@ -121,6 +129,10 @@ pub enum Command {
         /// Disambiguate by VRF (name, slug, or RD) when the CIDR exists in several.
         #[arg(long)]
         vrf: Option<String>,
+
+        /// Also fetch the object's recent journal entries.
+        #[arg(long)]
+        journal: bool,
     },
 
     /// Show the next available IP address(es) in a prefix.
@@ -155,18 +167,30 @@ pub enum Command {
     Site {
         /// Site name or slug.
         value: String,
+
+        /// Also fetch the object's recent journal entries.
+        #[arg(long)]
+        journal: bool,
     },
 
     /// Show a rack.
     Rack {
         /// Rack name or numeric ID.
         value: String,
+
+        /// Also fetch the object's recent journal entries.
+        #[arg(long)]
+        journal: bool,
     },
 
     /// Show a circuit by CID or numeric ID.
     Circuit {
         /// Circuit ID (CID) or numeric ID.
         value: String,
+
+        /// Also fetch the object's recent journal entries.
+        #[arg(long)]
+        journal: bool,
     },
 
     /// Show an aggregate by CIDR or numeric ID.
@@ -199,6 +223,10 @@ pub enum Command {
         /// Disambiguate by VLAN group (name or slug) when a VID exists in several.
         #[arg(long)]
         group: Option<String>,
+
+        /// Also fetch the object's recent journal entries.
+        #[arg(long)]
+        journal: bool,
     },
 
     /// Show an interface on a device.
@@ -352,7 +380,7 @@ mod tests {
     fn parses_global_flag_and_subcommand() {
         let cli = Cli::try_parse_from(["nbox", "--json", "device", "edge01"]).unwrap();
         assert!(cli.json);
-        assert!(matches!(cli.command, Some(Command::Device { value }) if value == "edge01"));
+        assert!(matches!(cli.command, Some(Command::Device { value, .. }) if value == "edge01"));
     }
 
     #[test]
@@ -361,6 +389,26 @@ mod tests {
         assert!(matches!(
             cli.command,
             Some(Command::Search { limit: 25, .. })
+        ));
+    }
+
+    #[test]
+    fn journal_flag_defaults_off_and_parses() {
+        let off = Cli::try_parse_from(["nbox", "device", "edge01"]).unwrap();
+        assert!(matches!(
+            off.command,
+            Some(Command::Device { journal: false, .. })
+        ));
+        let on = Cli::try_parse_from(["nbox", "device", "edge01", "--journal"]).unwrap();
+        assert!(matches!(
+            on.command,
+            Some(Command::Device { journal: true, .. })
+        ));
+        // The flag is also accepted on the other wired detail commands.
+        let site = Cli::try_parse_from(["nbox", "site", "iad1", "--journal"]).unwrap();
+        assert!(matches!(
+            site.command,
+            Some(Command::Site { journal: true, .. })
         ));
     }
 }

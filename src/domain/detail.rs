@@ -20,6 +20,7 @@ use crate::domain::device_detail::DeviceDetail;
 use crate::domain::interface_view::InterfaceView;
 use crate::domain::ip_range_view::IpRangeView;
 use crate::domain::ip_view::{IpView, most_specific};
+use crate::domain::journal_view::{JournalEntryRow, JournalView};
 use crate::domain::prefix_view::PrefixView;
 use crate::domain::rack_view::RackView;
 use crate::domain::site_view::SiteView;
@@ -37,6 +38,22 @@ use crate::netbox::search::ObjectKind;
 const DEVICE_CAP: usize = 200;
 /// Cap on child/IP rows pulled into a prefix or VLAN section (CLI, MCP, TUI).
 const SECTION_CAP: usize = 50;
+/// How many recent journal entries to fold into a detail view with `--journal`.
+pub const JOURNAL_INLINE_MAX: usize = 5;
+
+/// Fetch the most recent journal entries for an object (by dotted content type
+/// and numeric ID) as display rows, reusing the same query + mapping as the
+/// standalone `nbox journal` command. Returns at most [`JOURNAL_INLINE_MAX`].
+pub async fn journal_rows(
+    client: &NetBoxClient,
+    content_type: &str,
+    object_id: u64,
+) -> Result<Vec<JournalEntryRow>> {
+    let entries = client
+        .journal_entries(content_type, object_id, JOURNAL_INLINE_MAX)
+        .await?;
+    Ok(JournalView::from_models(entries).entries)
+}
 
 /// Drop candidates whose scope object doesn't match a user-supplied reference
 /// (e.g. `--vrf`). A no-op when `query` is `None`. Shared by the CLI handlers
