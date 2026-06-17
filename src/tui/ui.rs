@@ -120,7 +120,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(""),
         Line::from("/        search"),
         Line::from(":        command palette"),
-        Line::from("j / k    move selection"),
+        Line::from("j / k    move selection (scroll detail body)"),
         Line::from("g / G    top / bottom"),
         Line::from("PgUp/PgDn  page up / down"),
         Line::from("t        cycle theme"),
@@ -141,7 +141,13 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn render_detail(frame: &mut Frame, area: Rect, app: &App) {
+fn render_detail(frame: &mut Frame, area: Rect, app: &mut App) {
+    // Inner height (rows for content) is the pane minus the top/bottom borders.
+    // Stash it so the pure scroll handler can clamp at the bottom, and re-clamp
+    // the current offset in case the pane just shrank under it.
+    let inner_height = area.height.saturating_sub(2);
+    app.sync_detail_viewport(inner_height);
+
     let theme = &app.theme;
     let title = match &app.detail {
         Some(d) => d.title.as_str(),
@@ -166,7 +172,8 @@ fn render_detail(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(lines)
             .block(block)
-            .style(Style::default().fg(theme.text)),
+            .style(Style::default().fg(theme.text))
+            .scroll((app.detail_scroll, 0)),
         area,
     );
 }

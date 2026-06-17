@@ -104,6 +104,14 @@ pub struct App {
     pub detail: Option<DetailView>,
     /// Active detail tab: 0 = summary, n>0 = `detail.tabs[n-1]`.
     pub detail_tab: usize,
+    /// Vertical scroll offset (in lines) of the detail body. The pure scroll
+    /// keys (j/k/g/G/PgUp/PgDn) own this; the render path feeds it straight to
+    /// `Paragraph::scroll`. Reset to 0 on navigation and on a tab switch.
+    pub detail_scroll: u16,
+    /// Last-known detail pane inner height (content rows), stashed during render
+    /// so the pure handler can clamp scrolling at the bottom without doing I/O.
+    /// Mirrors the home list's live-viewport pattern. 0 until the first render.
+    pub detail_viewport: u16,
     pub should_quit: bool,
 }
 
@@ -141,6 +149,8 @@ impl App {
             recent: Vec::new(),
             detail: None,
             detail_tab: 0,
+            detail_scroll: 0,
+            detail_viewport: 0,
             should_quit: false,
         }
     }
@@ -186,6 +196,7 @@ impl App {
                         self.navigate_to(Screen::Detail);
                         self.detail = Some(view);
                         self.detail_tab = 0;
+                        self.detail_scroll = 0;
                         self.status.clear();
                     }
                     Err(e) => self.status = format!("error: {e:#}"),
@@ -239,6 +250,26 @@ impl App {
                 self.command_input.clear();
             }
             KeyCode::Char('t') => self.cycle_theme(),
+            // On the detail screen the movement keys scroll the body; elsewhere
+            // (the home list) they move the selection cursor.
+            KeyCode::Char('j') | KeyCode::Down if self.screen == Screen::Detail => {
+                self.detail_scroll_down(1)
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.screen == Screen::Detail => {
+                self.detail_scroll_up(1)
+            }
+            KeyCode::Char('g') | KeyCode::Home if self.screen == Screen::Detail => {
+                self.detail_scroll_top()
+            }
+            KeyCode::Char('G') | KeyCode::End if self.screen == Screen::Detail => {
+                self.detail_scroll_bottom()
+            }
+            KeyCode::PageDown if self.screen == Screen::Detail => {
+                self.detail_scroll_down(self.detail_page())
+            }
+            KeyCode::PageUp if self.screen == Screen::Detail => {
+                self.detail_scroll_up(self.detail_page())
+            }
             KeyCode::Char('j') | KeyCode::Down => self.select_next(),
             KeyCode::Char('k') | KeyCode::Up => self.select_prev(),
             KeyCode::Char('g') | KeyCode::Home => self.select_first(),
@@ -433,6 +464,8 @@ impl App {
         {
             let target = pos + 1;
             self.detail_tab = if self.detail_tab == target { 0 } else { target };
+            // Each tab (and the summary) starts scrolled to the top.
+            self.detail_scroll = 0;
         }
     }
 
@@ -447,6 +480,57 @@ impl App {
             Some(d) => d.body.as_str(),
             None => "loading…",
         }
+    }
+
+    /// Total number of rendered content lines for the active detail view: the
+    /// body's lines, plus the two-row tab bar (the bar + a blank spacer) when a
+    /// device view has tabs. Mirrors what `render_detail` paints.
+    pub fn detail_content_lines(&self) -> usize {
+        let body_lines = self.detail_body().lines().count();
+        let tab_rows = match &self.detail {
+            Some(d) if !d.tabs.is_empty() => 2,
+            _ => 0,
+        };
+        body_lines + tab_rows
+    }
+
+    /// The largest valid scroll offset: enough that the last content line sits at
+    /// the bottom of the pane, never past it. 0 when the content fits (a no-op).
+    /// Uses the last-known viewport height stashed at render time.
+    fn detail_max_scroll(&self) -> u16 {
+        let content = self.detail_content_lines() as u16;
+        content.saturating_sub(self.detail_viewport)
+    }
+
+    /// A page of detail scroll: the visible height, minus one row of overlap so
+    /// the reader keeps their place. At least one line even on a tiny pane.
+    fn detail_page(&self) -> u16 {
+        self.detail_viewport.saturating_sub(1).max(1)
+    }
+
+    fn detail_scroll_down(&mut self, lines: u16) {
+        let max = self.detail_max_scroll();
+        self.detail_scroll = self.detail_scroll.saturating_add(lines).min(max);
+    }
+
+    fn detail_scroll_up(&mut self, lines: u16) {
+        self.detail_scroll = self.detail_scroll.saturating_sub(lines);
+    }
+
+    fn detail_scroll_top(&mut self) {
+        self.detail_scroll = 0;
+    }
+
+    fn detail_scroll_bottom(&mut self) {
+        self.detail_scroll = self.detail_max_scroll();
+    }
+
+    /// Stash the detail pane's inner height (content rows) so the pure scroll
+    /// handler can clamp at the bottom, and re-clamp the current offset in case
+    /// the pane shrank under it. Called from the render path each frame.
+    pub fn sync_detail_viewport(&mut self, height: u16) {
+        self.detail_viewport = height;
+        self.detail_scroll = self.detail_scroll.min(self.detail_max_scroll());
     }
 
     /// Record an opened object at the front of the recents list (deduped, capped).
@@ -940,6 +1024,259 @@ mod tests {
         a.sync_list_state();
         assert_eq!(a.selected, 2);
         assert_eq!(a.list_state.selected(), Some(2));
+    }
+
+    /// Load a tab-less detail whose body is `n` lines, then stash a viewport so
+    /// the scroll handler can clamp at the bottom.
+    fn detail_with_body_lines(a: &mut App, n: usize, viewport: u16) {
+        let body = (0..n)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
+            kind: ObjectKind::Device,
+            id: 1,
+            title: "device edge01".into(),
+            body,
+            tabs: Vec::new(),
+        })));
+        a.sync_detail_viewport(viewport);
+    }
+
+    #[test]
+    fn detail_scroll_down_and_up_clamp_at_both_ends() {
+        let mut a = app();
+        // 30 lines of content in a 10-row pane → max offset is 20.
+        detail_with_body_lines(&mut a, 30, 10);
+        assert_eq!(a.detail_scroll, 0);
+
+        // Up at the top is a no-op (no underflow).
+        a.handle_event(press(KeyCode::Up));
+        assert_eq!(a.detail_scroll, 0);
+        a.handle_event(press(KeyCode::Char('k')));
+        assert_eq!(a.detail_scroll, 0);
+
+        // j / Down scroll one line each.
+        a.handle_event(press(KeyCode::Char('j')));
+        a.handle_event(press(KeyCode::Down));
+        assert_eq!(a.detail_scroll, 2);
+
+        // Walk past the bottom; the offset clamps at content - viewport = 20.
+        for _ in 0..50 {
+            a.handle_event(press(KeyCode::Char('j')));
+        }
+        assert_eq!(a.detail_scroll, 20);
+
+        // k walks back up and clamps at the top.
+        for _ in 0..50 {
+            a.handle_event(press(KeyCode::Char('k')));
+        }
+        assert_eq!(a.detail_scroll, 0);
+    }
+
+    #[test]
+    fn detail_page_jump_and_clamp() {
+        let mut a = app();
+        // 100 lines in a 10-row pane → a page is viewport-1 = 9, max offset 90.
+        detail_with_body_lines(&mut a, 100, 10);
+
+        a.handle_event(press(KeyCode::PageDown));
+        assert_eq!(a.detail_scroll, 9);
+        a.handle_event(press(KeyCode::PageDown));
+        assert_eq!(a.detail_scroll, 18);
+
+        a.handle_event(press(KeyCode::PageUp));
+        assert_eq!(a.detail_scroll, 9);
+
+        // PgUp clamps at the top.
+        a.handle_event(press(KeyCode::PageUp));
+        a.handle_event(press(KeyCode::PageUp));
+        assert_eq!(a.detail_scroll, 0);
+
+        // PgDn clamps at the bottom (max = 90).
+        for _ in 0..50 {
+            a.handle_event(press(KeyCode::PageDown));
+        }
+        assert_eq!(a.detail_scroll, 90);
+    }
+
+    #[test]
+    fn detail_g_and_capital_g_jump_to_top_and_bottom() {
+        let mut a = app();
+        detail_with_body_lines(&mut a, 50, 10); // max offset = 40
+
+        a.handle_event(press(KeyCode::Char('G')));
+        assert_eq!(a.detail_scroll, 40);
+        a.handle_event(press(KeyCode::Char('g')));
+        assert_eq!(a.detail_scroll, 0);
+
+        // Home / End are aliases for g / G.
+        a.handle_event(press(KeyCode::End));
+        assert_eq!(a.detail_scroll, 40);
+        a.handle_event(press(KeyCode::Home));
+        assert_eq!(a.detail_scroll, 0);
+    }
+
+    #[test]
+    fn detail_short_content_scrolling_is_a_noop() {
+        let mut a = app();
+        // 5 lines comfortably fit a 20-row pane → nothing scrolls.
+        detail_with_body_lines(&mut a, 5, 20);
+        for key in [
+            KeyCode::Char('j'),
+            KeyCode::Down,
+            KeyCode::Char('G'),
+            KeyCode::End,
+            KeyCode::PageDown,
+        ] {
+            a.handle_event(press(key));
+            assert_eq!(
+                a.detail_scroll, 0,
+                "key {key:?} must not scroll short content"
+            );
+        }
+    }
+
+    #[test]
+    fn detail_empty_body_is_safe() {
+        let mut a = app();
+        a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
+            kind: ObjectKind::Device,
+            id: 1,
+            title: "device edge01".into(),
+            body: String::new(),
+            tabs: Vec::new(),
+        })));
+        a.sync_detail_viewport(10);
+        // Every scroll key is a harmless no-op on an empty body.
+        for key in [
+            KeyCode::Char('j'),
+            KeyCode::Char('G'),
+            KeyCode::PageDown,
+            KeyCode::Char('k'),
+        ] {
+            a.handle_event(press(key));
+        }
+        assert_eq!(a.detail_scroll, 0);
+    }
+
+    #[test]
+    fn detail_scroll_clamps_when_viewport_unknown() {
+        // Before the first render the viewport is 0, so max scroll equals the
+        // full content length — but we must never panic or overflow.
+        let mut a = app();
+        a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
+            kind: ObjectKind::Device,
+            id: 1,
+            title: "t".into(),
+            body: "a\nb\nc".into(),
+            tabs: Vec::new(),
+        })));
+        assert_eq!(a.detail_viewport, 0);
+        for _ in 0..10 {
+            a.handle_event(press(KeyCode::Char('j')));
+        }
+        // Content is 3 lines; with a 0 viewport max scroll is 3.
+        assert_eq!(a.detail_scroll, 3);
+    }
+
+    #[test]
+    fn detail_scroll_resets_on_navigation_to_new_object() {
+        let mut a = app();
+        detail_with_body_lines(&mut a, 50, 10);
+        a.handle_event(press(KeyCode::Char('G')));
+        assert_eq!(a.detail_scroll, 40);
+
+        // Opening a different object resets the offset to the top.
+        a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
+            kind: ObjectKind::Device,
+            id: 2,
+            title: "device edge02".into(),
+            body: "fresh".into(),
+            tabs: Vec::new(),
+        })));
+        assert_eq!(a.detail_scroll, 0);
+    }
+
+    #[test]
+    fn detail_scroll_resets_on_tab_switch() {
+        use crate::domain::detail::DetailTab;
+        let long = |label: &str| {
+            (0..40)
+                .map(|i| format!("{label} {i}"))
+                .collect::<Vec<_>>()
+                .join("\n")
+        };
+        let mut a = app();
+        a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
+            kind: ObjectKind::Device,
+            id: 1,
+            title: "device edge01".into(),
+            body: long("summary"),
+            tabs: vec![DetailTab {
+                key: 'i',
+                label: "interfaces".into(),
+                body: long("iface"),
+            }],
+        })));
+        a.sync_detail_viewport(10);
+        a.handle_event(press(KeyCode::Char('G')));
+        assert!(a.detail_scroll > 0);
+
+        // Switching to the interfaces tab starts at the top.
+        a.handle_event(press(KeyCode::Char('i')));
+        assert_eq!(a.detail_tab, 1);
+        assert_eq!(a.detail_scroll, 0);
+
+        // Scroll within the tab, then toggle back to summary — also top.
+        a.sync_detail_viewport(10);
+        a.handle_event(press(KeyCode::Char('G')));
+        assert!(a.detail_scroll > 0);
+        a.handle_event(press(KeyCode::Char('i')));
+        assert_eq!(a.detail_tab, 0);
+        assert_eq!(a.detail_scroll, 0);
+    }
+
+    #[test]
+    fn detail_scroll_keys_do_not_collide_with_device_tab_keys() {
+        use crate::domain::detail::DetailTab;
+        let mut a = app();
+        a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
+            kind: ObjectKind::Device,
+            id: 1,
+            title: "device edge01".into(),
+            body: (0..40)
+                .map(|i| format!("s {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+            tabs: vec![DetailTab {
+                key: 'i',
+                label: "interfaces".into(),
+                body: "iface body".into(),
+            }],
+        })));
+        a.sync_detail_viewport(10);
+        // The tab key still switches tabs (and resets scroll)…
+        a.handle_event(press(KeyCode::Char('i')));
+        assert_eq!(a.detail_tab, 1);
+        // …while j/k scroll without disturbing the active tab.
+        a.sync_detail_viewport(10);
+        a.handle_event(press(KeyCode::Char('j')));
+        assert_eq!(a.detail_tab, 1);
+        assert_eq!(a.detail_scroll, 0); // 10-line body fits a 10-row pane → no-op
+    }
+
+    #[test]
+    fn home_movement_keys_still_move_selection_not_scroll() {
+        // Guarding the detail-scroll arms on Screen::Detail must not change the
+        // home list behaviour: j/G there still move the selection cursor.
+        let mut a = app();
+        set_results(&mut a, results_n(20));
+        a.handle_event(press(KeyCode::Char('j')));
+        assert_eq!(a.selected, 1);
+        assert_eq!(a.detail_scroll, 0);
+        a.handle_event(press(KeyCode::Char('G')));
+        assert_eq!(a.selected, 19);
     }
 
     #[test]
