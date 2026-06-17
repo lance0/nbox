@@ -1,11 +1,12 @@
 //! Journal-entry view for `nbox journal` (plain + JSON).
 
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::netbox::models::extras::JournalEntry;
 
 /// One journal entry, flattened for display.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct JournalEntryRow {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub created: Option<String>,
@@ -17,7 +18,7 @@ pub struct JournalEntryRow {
 }
 
 /// A list of journal entries for an object.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct JournalView {
     pub entries: Vec<JournalEntryRow>,
 }

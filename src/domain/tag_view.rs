@@ -1,11 +1,12 @@
 //! Tag listing view for `nbox tags` (plain + JSON).
 
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::netbox::models::extras::TagInfo;
 
 /// One tag row.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TagRow {
     pub name: String,
     pub slug: String,
@@ -16,7 +17,7 @@ pub struct TagRow {
 }
 
 /// A list of tags.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct TagsView {
     pub tags: Vec<TagRow>,
 }

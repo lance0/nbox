@@ -163,7 +163,7 @@ async fn search_returns_results_and_errors() {
             .await;
     }
 
-    let Json(value) = server_for(&mock)
+    let Json(report) = server_for(&mock)
         .nbox_search(Parameters(SearchArgs {
             query: "edge".to_string(),
             limit: None,
@@ -176,6 +176,9 @@ async fn search_returns_results_and_errors() {
         .await
         .expect("search");
 
+    // The tool now returns a typed `SearchReport`; serialize it to confirm the
+    // JSON shape rmcp emits is unchanged.
+    let value = serde_json::to_value(&report).expect("serialize report");
     let results = value["results"].as_array().expect("results array");
     assert_eq!(results.len(), 1);
     assert_eq!(results[0]["display"], "edge01");
@@ -196,7 +199,8 @@ async fn status_returns_versions() {
         .mount(&mock)
         .await;
 
-    let Json(value) = server_for(&mock).nbox_status().await.expect("status");
+    let Json(report) = server_for(&mock).nbox_status().await.expect("status");
+    let value = serde_json::to_value(&report).expect("serialize report");
 
     assert_eq!(value["netbox_version"], "4.5.5");
     assert_eq!(value["django_version"], "5.0.9");
@@ -228,7 +232,7 @@ async fn search_reports_partial_endpoint_errors() {
         mount_empty(&mock, p).await;
     }
 
-    let Json(value) = server_for(&mock)
+    let Json(report) = server_for(&mock)
         .nbox_search(Parameters(SearchArgs {
             query: "edge".to_string(),
             limit: None,
@@ -241,6 +245,7 @@ async fn search_reports_partial_endpoint_errors() {
         .await
         .expect("search");
 
+    let value = serde_json::to_value(&report).expect("serialize report");
     // The device result still comes through alongside the surfaced failure.
     assert_eq!(value["results"].as_array().expect("results").len(), 1);
     let errors = value["errors"].as_array().expect("errors array");
@@ -620,7 +625,7 @@ async fn get_interface_includes_cable_path_trace() {
         .mount(&mock)
         .await;
 
-    let Json(value) = server_for(&mock)
+    let Json(view) = server_for(&mock)
         .nbox_get_interface(Parameters(InterfaceArgs {
             device: "edge01".to_string(),
             interface: "xe-0/0/0".to_string(),
@@ -628,6 +633,7 @@ async fn get_interface_includes_cable_path_trace() {
         .await
         .expect("interface lookup");
 
+    let value = serde_json::to_value(&view).expect("serialize view");
     assert_eq!(value["name"], "xe-0/0/0");
     assert_eq!(value["device"], "edge01");
     assert_eq!(value["ip_addresses"][0], "10.0.0.1/31");
@@ -661,7 +667,7 @@ async fn next_ip_returns_available_addresses() {
         .mount(&mock)
         .await;
 
-    let Json(value) = server_for(&mock)
+    let Json(report) = server_for(&mock)
         .nbox_next_ip(Parameters(NextIpArgs {
             prefix: "10.44.208.0/24".to_string(),
             count: Some(2),
@@ -670,6 +676,7 @@ async fn next_ip_returns_available_addresses() {
         .await
         .expect("next ip");
 
+    let value = serde_json::to_value(&report).expect("serialize report");
     assert_eq!(value["prefix"], "10.44.208.0/24");
     let available = value["available"].as_array().expect("available array");
     assert_eq!(available.len(), 2);
@@ -699,7 +706,7 @@ async fn next_prefix_with_length_returns_first_block() {
         .mount(&mock)
         .await;
 
-    let Json(value) = server_for(&mock)
+    let Json(report) = server_for(&mock)
         .nbox_next_prefix(Parameters(NextPrefixArgs {
             prefix: "10.44.208.0/24".to_string(),
             length: Some(26),
@@ -708,6 +715,7 @@ async fn next_prefix_with_length_returns_first_block() {
         .await
         .expect("next prefix");
 
+    let value = serde_json::to_value(&report).expect("serialize report");
     assert_eq!(value["prefix"], "10.44.208.0/24");
     // The first free /26 carved out of the free space.
     let available = value["available"].as_array().expect("available array");
@@ -736,7 +744,7 @@ async fn next_prefix_without_length_lists_all_free_blocks() {
         .mount(&mock)
         .await;
 
-    let Json(value) = server_for(&mock)
+    let Json(report) = server_for(&mock)
         .nbox_next_prefix(Parameters(NextPrefixArgs {
             prefix: "10.44.208.0/24".to_string(),
             length: None,
@@ -745,6 +753,7 @@ async fn next_prefix_without_length_lists_all_free_blocks() {
         .await
         .expect("next prefix");
 
+    let value = serde_json::to_value(&report).expect("serialize report");
     let available = value["available"].as_array().expect("available array");
     assert_eq!(available.len(), 2);
     assert_eq!(available[0], "10.44.208.0/25");
@@ -776,7 +785,7 @@ async fn journal_returns_entries_for_device() {
         .mount(&mock)
         .await;
 
-    let Json(value) = server_for(&mock)
+    let Json(view) = server_for(&mock)
         .nbox_journal(Parameters(JournalArgs {
             kind: GetKind::Device,
             reference: "edge01".to_string(),
@@ -785,6 +794,7 @@ async fn journal_returns_entries_for_device() {
         .await
         .expect("journal");
 
+    let value = serde_json::to_value(&view).expect("serialize view");
     let entries = value["entries"].as_array().expect("entries array");
     assert_eq!(entries.len(), 1);
     assert_eq!(entries[0]["comments"], "rebooted");
@@ -834,11 +844,12 @@ async fn list_tags_returns_tag_rows() {
         .mount(&mock)
         .await;
 
-    let Json(value) = server_for(&mock)
+    let Json(view) = server_for(&mock)
         .nbox_list_tags(Parameters(ListTagsArgs { limit: None }))
         .await
         .expect("list tags");
 
+    let value = serde_json::to_value(&view).expect("serialize view");
     let tags = value["tags"].as_array().expect("tags array");
     assert_eq!(tags.len(), 2);
     assert_eq!(tags[0]["slug"], "critical");

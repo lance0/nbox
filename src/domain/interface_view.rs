@@ -2,6 +2,7 @@
 
 use std::collections::BTreeMap;
 
+use schemars::JsonSchema;
 use serde::Serialize;
 use serde_json::Value;
 
@@ -11,7 +12,7 @@ use crate::netbox::models::ipam::IpAddress;
 use crate::output::plain::KeyValues;
 
 /// An interface, normalized to flat fields plus its assigned addresses.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct InterfaceView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub device: Option<String>,

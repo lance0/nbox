@@ -33,6 +33,10 @@ clap_mangen = "0.2"
 # Serialization
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# JSON Schema derivation for MCP tool output schemas. Pinned to the exact
+# version rmcp 1.7 depends on so `Json<T>` accepts our `JsonSchema` types
+# (the trait bound is satisfied only by that one schemars instance).
+schemars = "=1.2.1"
 toml = "1"
 toml_edit = "0.25"
 

@@ -7,6 +7,7 @@
 use std::collections::HashSet;
 
 use anyhow::Result;
+use schemars::JsonSchema;
 use serde::Serialize;
 
 use crate::netbox::client::NetBoxClient;
@@ -17,7 +18,7 @@ use crate::netbox::pagination::Page;
 use crate::util::format::api_to_web_url;
 
 /// The kind of object a [`SearchResult`] refers to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ObjectKind {
     Device,
@@ -97,7 +98,7 @@ pub struct SearchOutcome {
 }
 
 /// A normalized search hit.
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct SearchResult {
     pub kind: ObjectKind,
     pub id: u64,

@@ -18,7 +18,7 @@ use rmcp::{
     ErrorData, ServerHandler, ServiceExt, schemars, tool, tool_handler, tool_router,
     transport::stdio,
 };
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::domain::aggregate_view::AggregateView;
 use crate::domain::asn_view::AsnView;
@@ -37,7 +37,7 @@ use crate::error::NboxError;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::models::common::BriefObject;
 use crate::netbox::query;
-use crate::netbox::search::{SearchFilters, SearchRequest};
+use crate::netbox::search::{SearchFilters, SearchRequest, SearchResult};
 
 /// How many child/IP rows to pull into a section view. Mirrors the CLI caps.
 const SECTION_CAP: usize = 50;
@@ -157,6 +157,42 @@ pub struct ListTagsArgs {
     pub limit: Option<usize>,
 }
 
+/// `nbox_status` result: connection target plus NetBox/Django/Python versions.
+///
+/// The version keys mirror the previous `serde_json::json!` shape exactly: they
+/// are always present, with `null` when NetBox omits the value (no
+/// `skip_serializing_if`).
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct StatusReport {
+    /// The NetBox base URL the server is connected to.
+    pub netbox_url: String,
+    /// The NetBox application version.
+    pub netbox_version: String,
+    /// The Django framework version NetBox runs on (`null` if unreported).
+    pub django_version: Option<String>,
+    /// The Python runtime version NetBox runs on (`null` if unreported).
+    pub python_version: Option<String>,
+}
+
+/// `nbox_search` result: ranked hits plus any per-endpoint failures.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct SearchReport {
+    /// Ranked search hits across devices, sites, IPs, prefixes, and VLANs.
+    pub results: Vec<SearchResult>,
+    /// Per-endpoint failures (partial result); empty when every endpoint succeeded.
+    pub errors: Vec<String>,
+}
+
+/// `nbox_next_ip` / `nbox_next_prefix` result: the resolved prefix plus the
+/// available addresses/blocks (rendered as CIDR strings).
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct AvailableReport {
+    /// The prefix (CIDR) the allocation was computed from.
+    pub prefix: String,
+    /// The available addresses or free child prefixes, as CIDR strings.
+    pub available: Vec<String>,
+}
+
 /// Map an `anyhow`/`NboxError` chain to an MCP error. Not-found and ambiguous
 /// references are caller-fixable, so they become `invalid_params` (with the
 /// candidate list in the message); everything else is `internal_error`.
@@ -170,14 +206,16 @@ fn to_mcp_error(err: anyhow::Error) -> ErrorData {
     }
 }
 
-/// A permissive `{"type":"object"}` output schema.
+/// A permissive `{"type":"object"}` output schema, used only by `nbox_get`.
 ///
-/// Tools return the existing domain view models as free-form JSON via
-/// `Json<serde_json::Value>` rather than threading `JsonSchema` through the ~15
-/// view structs. The `#[tool]` macro would otherwise derive an output schema
-/// from `serde_json::Value`, whose schema has no root `type` and fails rmcp's
-/// "outputSchema must be an object" check. This honest, permissive schema is
-/// supplied explicitly to each tool to satisfy that check.
+/// `nbox_get` is polymorphic — its return shape depends on `kind`
+/// (device/ip/prefix/vlan/…), so it returns `Json<serde_json::Value>` and can't
+/// advertise a single concrete schema. The `#[tool]` macro would otherwise
+/// derive an output schema from `serde_json::Value`, whose schema has no root
+/// `type` and fails rmcp's "outputSchema must be an object" check. This honest,
+/// permissive schema is supplied explicitly to satisfy that check. Every
+/// type-stable tool instead returns its concrete view type, from which rmcp
+/// derives a precise schema via schemars.
 fn output_schema() -> Arc<JsonObject> {
     let mut obj = JsonObject::new();
     obj.insert(
@@ -185,13 +223,6 @@ fn output_schema() -> Arc<JsonObject> {
         serde_json::Value::String("object".into()),
     );
     Arc::new(obj)
-}
-
-/// Serialize a domain view to JSON, mapping any failure to an internal error.
-fn json_view<T: serde::Serialize>(view: &T) -> Result<Json<serde_json::Value>, ErrorData> {
-    let value =
-        serde_json::to_value(view).map_err(|e| ErrorData::internal_error(e.to_string(), None))?;
-    Ok(Json(value))
 }
 
 /// A friendly "not found" error, mirroring the CLI's actionable message.
@@ -257,31 +288,28 @@ impl NboxMcp {
     #[tool(
         name = "nbox_status",
         description = "Show NetBox connection and version info (NetBox/Django/Python versions). Use to confirm reachability before other lookups.",
-        output_schema = output_schema(),
         annotations(read_only_hint = true)
     )]
-    async fn nbox_status(&self) -> Result<Json<serde_json::Value>, ErrorData> {
+    async fn nbox_status(&self) -> Result<Json<StatusReport>, ErrorData> {
         let status = self.client.status().await.map_err(to_mcp_error)?;
-        let report = serde_json::json!({
-            "netbox_url": self.client.base_url().as_str(),
-            "netbox_version": status.netbox_version,
-            "django_version": status.django_version,
-            "python_version": status.python_version,
-        });
-        Ok(Json(report))
+        Ok(Json(StatusReport {
+            netbox_url: self.client.base_url().as_str().to_string(),
+            netbox_version: status.netbox_version,
+            django_version: status.django_version,
+            python_version: status.python_version,
+        }))
     }
 
     /// Search across devices, sites, IPs, prefixes, and VLANs.
     #[tool(
         name = "nbox_search",
         description = "Search across devices, sites, IP addresses, prefixes, and VLANs by free text. Returns ranked hits with kind, display name, and URL. Use this to find an object's exact reference before nbox_get. Optional filters narrow by status/site/tenant/role/tag.",
-        output_schema = output_schema(),
         annotations(read_only_hint = true)
     )]
     async fn nbox_search(
         &self,
         Parameters(args): Parameters<SearchArgs>,
-    ) -> Result<Json<serde_json::Value>, ErrorData> {
+    ) -> Result<Json<SearchReport>, ErrorData> {
         let outcome = self
             .client
             .search(SearchRequest {
@@ -300,14 +328,16 @@ impl NboxMcp {
 
         // Fail-closed reporting: surface partial-failure endpoints alongside the
         // results so the agent can decide whether the set is trustworthy.
-        let report = serde_json::json!({
-            "results": outcome.results,
-            "errors": outcome.errors,
-        });
-        Ok(Json(report))
+        Ok(Json(SearchReport {
+            results: outcome.results,
+            errors: outcome.errors,
+        }))
     }
 
     /// Look up a single NetBox object by kind and reference.
+    // Polymorphic: the return shape varies by `kind`, so this stays
+    // `Json<serde_json::Value>` with the permissive object schema rather than a
+    // single concrete type (a oneOf over ~10 view types is out of scope).
     #[tool(
         name = "nbox_get",
         description = "Look up a single object and its context. `kind` is one of: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range. `ref` is the natural reference for that kind (name/slug/ID; CIDR for prefix/aggregate; address for ip; VID or name for vlan; AS number for asn). On an ambiguous reference the error lists the candidates: pass `vrf` for an ip/prefix in several VRFs, or `site`/`group` for a VLAN VID present at several sites.",
@@ -325,13 +355,12 @@ impl NboxMcp {
     #[tool(
         name = "nbox_get_interface",
         description = "Show one interface on a device: its config, assigned IP addresses, and the cable-path trace (what it connects to). Resolve the device by name, slug, or ID.",
-        output_schema = output_schema(),
         annotations(read_only_hint = true)
     )]
     async fn nbox_get_interface(
         &self,
         Parameters(args): Parameters<InterfaceArgs>,
-    ) -> Result<Json<serde_json::Value>, ErrorData> {
+    ) -> Result<Json<InterfaceView>, ErrorData> {
         let dev = self
             .client
             .device_by_ref(&args.device)
@@ -350,20 +379,19 @@ impl NboxMcp {
         )
         .map_err(to_mcp_error)?;
 
-        json_view(&InterfaceView::build(iface, ips, trace))
+        Ok(Json(InterfaceView::build(iface, ips, trace)))
     }
 
     /// The next available IP address(es) within a prefix.
     #[tool(
         name = "nbox_next_ip",
         description = "Return the next available IP address(es) within a prefix (read-only — nothing is reserved). Pass `count` for several; `vrf` to disambiguate a prefix present in multiple VRFs.",
-        output_schema = output_schema(),
         annotations(read_only_hint = true)
     )]
     async fn nbox_next_ip(
         &self,
         Parameters(args): Parameters<NextIpArgs>,
-    ) -> Result<Json<serde_json::Value>, ErrorData> {
+    ) -> Result<Json<AvailableReport>, ErrorData> {
         let count = args.count.unwrap_or(1);
         let p = self
             .resolve_prefix(&args.prefix, args.vrf.as_deref())
@@ -379,23 +407,22 @@ impl NboxMcp {
             .take(count)
             .map(|a| a.address)
             .collect();
-        Ok(Json(serde_json::json!({
-            "prefix": p.prefix,
-            "available": addresses,
-        })))
+        Ok(Json(AvailableReport {
+            prefix: p.prefix,
+            available: addresses,
+        }))
     }
 
     /// The available (free) prefix(es) within a prefix.
     #[tool(
         name = "nbox_next_prefix",
         description = "Return available (free) child prefixes within a prefix. With `length` (e.g. 26) returns the first free block of that size; without it, lists all free blocks. Pass `vrf` to disambiguate. Read-only — nothing is reserved.",
-        output_schema = output_schema(),
         annotations(read_only_hint = true)
     )]
     async fn nbox_next_prefix(
         &self,
         Parameters(args): Parameters<NextPrefixArgs>,
-    ) -> Result<Json<serde_json::Value>, ErrorData> {
+    ) -> Result<Json<AvailableReport>, ErrorData> {
         let p = self
             .resolve_prefix(&args.prefix, args.vrf.as_deref())
             .await
@@ -411,23 +438,22 @@ impl NboxMcp {
                 .collect(),
             None => free.into_iter().map(|f| f.prefix).collect(),
         };
-        Ok(Json(serde_json::json!({
-            "prefix": p.prefix,
-            "available": available,
-        })))
+        Ok(Json(AvailableReport {
+            prefix: p.prefix,
+            available,
+        }))
     }
 
     /// Recent journal entries for an object.
     #[tool(
         name = "nbox_journal",
         description = "Return recent journal entries (operator notes) for an object, newest first. `kind` and `ref` follow nbox_get; supported kinds are device, ip, prefix, vlan, site, rack, circuit.",
-        output_schema = output_schema(),
         annotations(read_only_hint = true)
     )]
     async fn nbox_journal(
         &self,
         Parameters(args): Parameters<JournalArgs>,
-    ) -> Result<Json<serde_json::Value>, ErrorData> {
+    ) -> Result<Json<JournalView>, ErrorData> {
         let limit = args.limit.unwrap_or(20);
         let (content_type, id) = self
             .resolve_content_type_id(args.kind, &args.reference)
@@ -438,26 +464,25 @@ impl NboxMcp {
             .journal_entries(content_type, id, limit)
             .await
             .map_err(to_mcp_error)?;
-        json_view(&JournalView::from_models(entries))
+        Ok(Json(JournalView::from_models(entries)))
     }
 
     /// List the tags defined in NetBox.
     #[tool(
         name = "nbox_list_tags",
         description = "List the tags defined in NetBox (name, slug, color, usage count). Useful for discovering valid `tag` filter values for nbox_search.",
-        output_schema = output_schema(),
         annotations(read_only_hint = true)
     )]
     async fn nbox_list_tags(
         &self,
         Parameters(args): Parameters<ListTagsArgs>,
-    ) -> Result<Json<serde_json::Value>, ErrorData> {
+    ) -> Result<Json<TagsView>, ErrorData> {
         let tags = self
             .client
             .tags(args.limit.unwrap_or(200))
             .await
             .map_err(to_mcp_error)?;
-        json_view(&TagsView::from_models(tags))
+        Ok(Json(TagsView::from_models(tags)))
     }
 }
 
