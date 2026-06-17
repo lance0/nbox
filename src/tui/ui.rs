@@ -7,10 +7,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
 
 use crate::tui::state::{App, Mode, Screen};
+use crate::tui::theme::Theme;
 
 /// Render the whole UI for the current frame.
-pub fn render(frame: &mut Frame, app: &App) {
-    let theme = &app.theme;
+pub fn render(frame: &mut Frame, app: &mut App) {
     let areas = Layout::vertical([
         Constraint::Length(1),
         Constraint::Min(1),
@@ -18,20 +18,23 @@ pub fn render(frame: &mut Frame, app: &App) {
     ])
     .split(frame.area());
 
-    let header = Line::from(vec![
-        Span::styled(
-            format!(" profile: {} ", app.profile_name),
-            Style::default().fg(theme.header),
-        ),
-        Span::styled(
-            format!("netbox: {} (v{}) ", app.base_url, app.netbox_version),
-            Style::default().fg(theme.text_dim),
-        ),
-        Span::styled(
-            format!("mode: {} ", mode_label(app.mode)),
-            Style::default().fg(theme.accent),
-        ),
-    ]);
+    let header = {
+        let theme = &app.theme;
+        Line::from(vec![
+            Span::styled(
+                format!(" profile: {} ", app.profile_name),
+                Style::default().fg(theme.header),
+            ),
+            Span::styled(
+                format!("netbox: {} (v{}) ", app.base_url, app.netbox_version),
+                Style::default().fg(theme.text_dim),
+            ),
+            Span::styled(
+                format!("mode: {} ", mode_label(app.mode)),
+                Style::default().fg(theme.accent),
+            ),
+        ])
+    };
     frame.render_widget(Paragraph::new(header), areas[0]);
 
     match app.screen {
@@ -43,7 +46,10 @@ pub fn render(frame: &mut Frame, app: &App) {
     render_footer(frame, areas[2], app);
 }
 
-fn render_home(frame: &mut Frame, area: Rect, app: &App) {
+fn render_home(frame: &mut Frame, area: Rect, app: &mut App) {
+    // Keep the stateful selection/offset in step with the cursor so the
+    // selected row is always on screen and the list scrolls under it.
+    app.sync_list_state();
     let theme = &app.theme;
 
     // With search results, show them. Otherwise fall back to recents, then a hint.
@@ -55,22 +61,17 @@ fn render_home(frame: &mut Frame, area: Rect, app: &App) {
         let items: Vec<ListItem> = app
             .view
             .iter()
-            .enumerate()
-            .filter_map(|(pos, &idx)| app.results.get(idx).map(|r| (pos, r)))
-            .map(|(pos, r)| {
+            .filter_map(|&idx| app.results.get(idx))
+            .map(|r| {
                 let text = match &r.subtitle {
-                    Some(s) => format!(
-                        "{}{:<7} {}  ({s})",
-                        marker(pos, app),
-                        r.kind.as_str(),
-                        r.display
-                    ),
-                    None => format!("{}{:<7} {}", marker(pos, app), r.kind.as_str(), r.display),
+                    Some(s) => format!("{:<7} {}  ({s})", r.kind.as_str(), r.display),
+                    None => format!("{:<7} {}", r.kind.as_str(), r.display),
                 };
-                ListItem::new(text).style(row_style(pos, app))
+                ListItem::new(text)
             })
             .collect();
-        frame.render_widget(List::new(items).block(block), area);
+        let list = results_list(items, block, theme);
+        frame.render_stateful_widget(list, area, &mut app.list_state);
         return;
     }
 
@@ -82,13 +83,10 @@ fn render_home(frame: &mut Frame, area: Rect, app: &App) {
         let items: Vec<ListItem> = app
             .recent
             .iter()
-            .enumerate()
-            .map(|(pos, item)| {
-                ListItem::new(format!("{}{}", marker(pos, app), item.title))
-                    .style(row_style(pos, app))
-            })
+            .map(|item| ListItem::new(item.title.clone()))
             .collect();
-        frame.render_widget(List::new(items).block(block), area);
+        let list = results_list(items, block, theme);
+        frame.render_stateful_widget(list, area, &mut app.list_state);
         return;
     }
 
@@ -104,18 +102,15 @@ fn render_home(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-fn marker(pos: usize, app: &App) -> &'static str {
-    if pos == app.selected { "> " } else { "  " }
-}
-
-fn row_style(pos: usize, app: &App) -> Style {
-    if pos == app.selected {
-        Style::default()
-            .fg(app.theme.text)
-            .bg(app.theme.highlight_bg)
-    } else {
-        Style::default().fg(app.theme.text)
-    }
+/// A stateful list with the project's selection marker/highlight. ratatui draws
+/// the `highlight_symbol`/`highlight_style` on the row matching `ListState`'s
+/// selection and scrolls the offset to keep it visible.
+fn results_list<'a>(items: Vec<ListItem<'a>>, block: Block<'a>, theme: &Theme) -> List<'a> {
+    List::new(items)
+        .block(block)
+        .style(Style::default().fg(theme.text))
+        .highlight_symbol("> ")
+        .highlight_style(Style::default().fg(theme.text).bg(theme.highlight_bg))
 }
 
 fn render_help(frame: &mut Frame, area: Rect, app: &App) {
@@ -127,6 +122,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(":        command palette"),
         Line::from("j / k    move selection"),
         Line::from("g / G    top / bottom"),
+        Line::from("PgUp/PgDn  page up / down"),
         Line::from("t        cycle theme"),
         Line::from("i/p/c/v/s  device tabs (interfaces/IPs/cables/VLANs/services)"),
         Line::from("b / Esc  back"),

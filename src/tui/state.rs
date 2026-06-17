@@ -7,6 +7,7 @@
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
+use ratatui::widgets::ListState;
 
 use crate::domain::detail::DetailView;
 use crate::netbox::client::NetBoxClient;
@@ -51,6 +52,11 @@ pub struct RecentItem {
 /// Most-recent-first cap for the recents list.
 const RECENT_CAP: usize = 20;
 
+/// Rows the cursor jumps on PgUp/PgDn. A fixed step (rather than the live
+/// viewport height) keeps the movement logic pure and testable; ratatui still
+/// scrolls so the landed-on row stays visible.
+const PAGE_JUMP: usize = 10;
+
 /// Side-effecting work the loop should spawn off the render thread.
 #[derive(Debug, Clone)]
 pub enum AppCommand {
@@ -84,7 +90,13 @@ pub struct App {
     pub results: Vec<SearchResult>,
     /// Indices into `results` in display order (fuzzy-filtered while searching).
     pub view: Vec<usize>,
+    /// Index of the cursor into the active home list (results or recents). The
+    /// pure movement keys (j/k/g/G/PgUp/PgDn) own this; `list_state` is synced
+    /// from it at render time so ratatui scrolls the offset to keep it visible.
     pub selected: usize,
+    /// Stateful-list selection/offset, driven by `selected` each frame so the
+    /// selected row is always on screen no matter how tall the list gets.
+    pub list_state: ListState,
     /// On the next `SearchComplete`, try to re-select this (kind, id) — used to
     /// keep the cursor stable across an auto-refresh.
     pub pending_reselect: Option<(ObjectKind, u64)>,
@@ -124,6 +136,7 @@ impl App {
             results: Vec::new(),
             view: Vec::new(),
             selected: 0,
+            list_state: ListState::default(),
             pending_reselect: None,
             recent: Vec::new(),
             detail: None,
@@ -228,8 +241,10 @@ impl App {
             KeyCode::Char('t') => self.cycle_theme(),
             KeyCode::Char('j') | KeyCode::Down => self.select_next(),
             KeyCode::Char('k') | KeyCode::Up => self.select_prev(),
-            KeyCode::Char('g') => self.selected = 0,
-            KeyCode::Char('G') => self.selected = self.home_len().saturating_sub(1),
+            KeyCode::Char('g') | KeyCode::Home => self.select_first(),
+            KeyCode::Char('G') | KeyCode::End => self.select_last(),
+            KeyCode::PageDown => self.select_page_down(),
+            KeyCode::PageUp => self.select_page_up(),
             KeyCode::Enter => {
                 if self.screen == Screen::Home
                     && let Some((kind, id)) = self.home_target()
@@ -467,6 +482,36 @@ impl App {
 
     fn select_prev(&mut self) {
         self.selected = self.selected.saturating_sub(1);
+    }
+
+    fn select_first(&mut self) {
+        self.selected = 0;
+    }
+
+    fn select_last(&mut self) {
+        self.selected = self.home_len().saturating_sub(1);
+    }
+
+    fn select_page_down(&mut self) {
+        let last = self.home_len().saturating_sub(1);
+        self.selected = (self.selected + PAGE_JUMP).min(last);
+    }
+
+    fn select_page_up(&mut self) {
+        self.selected = self.selected.saturating_sub(PAGE_JUMP);
+    }
+
+    /// Sync the stateful-list selection from the pure `selected` index so the
+    /// render path scrolls the offset to keep the cursor visible. Empty lists
+    /// select nothing (no panic); otherwise the index is clamped into range.
+    pub fn sync_list_state(&mut self) {
+        let len = self.home_len();
+        if len == 0 {
+            self.list_state.select(None);
+        } else {
+            self.selected = self.selected.min(len - 1);
+            self.list_state.select(Some(self.selected));
+        }
     }
 }
 
@@ -773,6 +818,128 @@ mod tests {
         // New results arrive in a different order; cursor should track id=3.
         set_results(&mut a, vec![result(3, "c"), result(1, "a"), result(2, "b")]);
         assert_eq!(a.selected_result().map(|r| r.id), Some(3));
+    }
+
+    fn results_n(n: u64) -> Vec<SearchResult> {
+        (1..=n).map(|i| result(i, &format!("dev{i}"))).collect()
+    }
+
+    #[test]
+    fn j_k_clamp_at_both_ends() {
+        let mut a = app();
+        set_results(&mut a, results_n(3));
+        // k at the top stays at 0 (no underflow).
+        a.handle_event(press(KeyCode::Up));
+        assert_eq!(a.selected, 0);
+        // j walks down and stops at the last row.
+        for _ in 0..10 {
+            a.handle_event(press(KeyCode::Down));
+        }
+        assert_eq!(a.selected, 2);
+        // k walks back up to the top.
+        for _ in 0..10 {
+            a.handle_event(press(KeyCode::Up));
+        }
+        assert_eq!(a.selected, 0);
+    }
+
+    #[test]
+    fn g_and_capital_g_jump_to_first_and_last() {
+        let mut a = app();
+        set_results(&mut a, results_n(50));
+        a.handle_event(press(KeyCode::Char('G')));
+        assert_eq!(a.selected, 49);
+        a.handle_event(press(KeyCode::Char('g')));
+        assert_eq!(a.selected, 0);
+        // Home/End are aliases for g/G.
+        a.handle_event(press(KeyCode::End));
+        assert_eq!(a.selected, 49);
+        a.handle_event(press(KeyCode::Home));
+        assert_eq!(a.selected, 0);
+    }
+
+    #[test]
+    fn page_down_and_up_jump_and_clamp() {
+        let mut a = app();
+        set_results(&mut a, results_n(50));
+        a.handle_event(press(KeyCode::PageDown));
+        assert_eq!(a.selected, PAGE_JUMP);
+        a.handle_event(press(KeyCode::PageDown));
+        assert_eq!(a.selected, PAGE_JUMP * 2);
+        // PgUp steps back by a page.
+        a.handle_event(press(KeyCode::PageUp));
+        assert_eq!(a.selected, PAGE_JUMP);
+        // PgUp clamps at the top without underflow.
+        a.handle_event(press(KeyCode::PageUp));
+        a.handle_event(press(KeyCode::PageUp));
+        assert_eq!(a.selected, 0);
+        // PgDn clamps at the last row.
+        for _ in 0..20 {
+            a.handle_event(press(KeyCode::PageDown));
+        }
+        assert_eq!(a.selected, 49);
+    }
+
+    #[test]
+    fn selection_past_viewport_stays_valid_and_syncs_list_state() {
+        // Walk the cursor well past any plausible viewport height; the index
+        // must stay in range and the stateful selection must track it so
+        // ratatui scrolls the offset to keep the row visible.
+        let mut a = app();
+        set_results(&mut a, results_n(100));
+        for _ in 0..40 {
+            a.handle_event(press(KeyCode::Down));
+        }
+        assert_eq!(a.selected, 40);
+        a.sync_list_state();
+        assert_eq!(a.list_state.selected(), Some(40));
+        // And the selected row resolves to a real result.
+        assert_eq!(a.selected_result().map(|r| r.id), Some(41));
+    }
+
+    #[test]
+    fn empty_list_movement_is_a_noop_and_selects_nothing() {
+        let mut a = app();
+        // No results, no recents: every movement key is harmless.
+        for key in [
+            KeyCode::Down,
+            KeyCode::Up,
+            KeyCode::Char('G'),
+            KeyCode::Char('g'),
+            KeyCode::PageDown,
+            KeyCode::PageUp,
+        ] {
+            a.handle_event(press(key));
+        }
+        assert_eq!(a.selected, 0);
+        a.sync_list_state();
+        assert_eq!(a.list_state.selected(), None);
+    }
+
+    #[test]
+    fn single_item_list_does_not_panic_and_selects_row_zero() {
+        let mut a = app();
+        set_results(&mut a, results_n(1));
+        a.handle_event(press(KeyCode::Down));
+        a.handle_event(press(KeyCode::Char('G')));
+        a.handle_event(press(KeyCode::PageDown));
+        assert_eq!(a.selected, 0);
+        a.sync_list_state();
+        assert_eq!(a.list_state.selected(), Some(0));
+    }
+
+    #[test]
+    fn sync_clamps_stale_selection_into_range() {
+        // If the list shrinks under a stale cursor, sync must clamp rather than
+        // hand ratatui an out-of-range selection.
+        let mut a = app();
+        set_results(&mut a, results_n(10));
+        a.selected = 8;
+        set_results(&mut a, results_n(3)); // SearchComplete resets selected to 0…
+        a.selected = 9; // …but simulate a stale index anyway.
+        a.sync_list_state();
+        assert_eq!(a.selected, 2);
+        assert_eq!(a.list_state.selected(), Some(2));
     }
 
     #[test]
