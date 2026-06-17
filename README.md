@@ -44,6 +44,7 @@ nbox
 - **Open in browser** and **copy to clipboard** straight from results.
 - **Profiles** for multiple NetBox instances (work, lab, …).
 - **Scriptable / agent-friendly** — `-o json|csv|plain`, `--fields`, `--raw`, versioned `--envelope`, and stable exit codes (see [AGENTS.md](AGENTS.md)).
+- **MCP server** — `nbox serve` exposes the lookups as read-only MCP tools over stdio.
 - **Read-only first**; safe `PATCH`-based writes with diff confirmation come later.
 
 See [docs/FEATURES.md](docs/FEATURES.md) for the full command reference and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the internals.
@@ -141,6 +142,7 @@ nbox interface <device> <interface>
 nbox journal <kind> <ref>         # recent journal entries for an object
 nbox open <object-ref>
 nbox raw GET <api-path>           # raw read-only API request (escape hatch)
+nbox serve                        # read-only MCP server over stdio (for AI agents)
 nbox config <init|path|show>
 nbox profile <add|use|list|show>
 nbox completions <bash|zsh|fish|powershell|elvish>
@@ -195,6 +197,27 @@ nbox prefix 10.44.208.0/24 --envelope --raw      # versioned, single-line JSON
 On a device screen: `i` interfaces · `p` IPs · `c` cables · `v` VLANs · `s` services.
 
 The **command palette** (`:`) accepts `device`/`ip`/`prefix`/`vlan`/`site <ref>`, `find <q>` (or bare text), `open`, `copy`, `theme <name>`, and `refresh`. The **home screen** lists recently opened objects (deduped, most-recent-first) when there are no search results — press `Enter` to reopen one. Set `[ui].refresh_secs` to auto-refresh the current search on an interval (off by default), preserving your selection.
+
+---
+
+## MCP server
+
+`nbox serve` runs a read-only [MCP](https://modelcontextprotocol.io) server over the stdio transport. An MCP host (Claude Desktop, Claude Code, …) launches `nbox serve` as a subprocess and speaks JSON-RPC over stdin/stdout; it reuses the same query + view layer as the CLI, so the tools return the same JSON view models. NetBox URL and token come from the active profile / env, and it takes the same global flags (`-p/--profile`, `--config`). JSON-RPC goes to stdout; all logging stays on stderr.
+
+The tools are all annotated read-only:
+
+| Tool | What |
+| ---- | ---- |
+| `nbox_status` | Connection + NetBox/Django/Python versions. |
+| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites; `query` (required), `limit`, `status`, `site`, `tenant`, `role`, `tag`. |
+| `nbox_get` | Fetch one object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range) + `ref`; `vrf`/`site`/`group` disambiguate. |
+| `nbox_get_interface` | One interface on a device, with its cable-path trace. |
+| `nbox_next_ip` | Next available address(es) in a prefix. |
+| `nbox_next_prefix` | Next available child prefix(es) of a given length. |
+| `nbox_journal` | Recent journal entries for an object. |
+| `nbox_list_tags` | List tags. |
+
+HTTP transport, OAuth, a raw escape-hatch tool, and MCP resources/prompts come later.
 
 ---
 

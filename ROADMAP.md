@@ -6,7 +6,7 @@ Legend: ☐ planned · ◐ in progress · ☑ done
 
 ## Principles
 
-- **Agent-first.** The CLI, TUI, and `nbox mcp serve` all run off the same command core. JSON/envelope/`--fields`/`--raw` and `AGENTS.md` exist now; MCP lands in v0.2/v0.3.
+- **Agent-first.** The CLI, TUI, and `nbox serve` (MCP) all run off the same command core. JSON/envelope/`--fields`/`--raw` and `AGENTS.md` exist now; the read-only MCP server (stdio) has shipped.
 - **Read-only first.** Reads ship before writes. Writes are `PATCH`-based, diff-previewed, confirmable, and opt-in over MCP.
 - **Correctness over breadth.** Typed errors and CI against a real NetBox before more surface area.
 
@@ -141,7 +141,7 @@ v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implemen
 
 ## v0.2 — Nested views, IPAM power, first writes
 
-- ☐ **MCP server (read-only): `nbox mcp serve`** — command core as MCP tools: search, device, ip, prefix, vlan, site, status, next-ip/next-prefix. stdio first, HTTP later.
+- ☑ **MCP server (read-only): `nbox serve`** — command core as MCP tools (`rmcp` 1.7, all read-only annotated): `nbox_status`, `nbox_search`, `nbox_get`, `nbox_get_interface`, `nbox_next_ip`, `nbox_next_prefix`, `nbox_journal`, `nbox_list_tags`. stdio shipped; HTTP transport, OAuth, a raw escape-hatch tool, and MCP resources/prompts later.
 - ◐ **Large-instance robustness** — ☑ honor 429 `Retry-After` (capped, with exponential backoff) in the client; search is already a bounded 5-way fan-out and `list_all` is `max`-capped. Remaining: configurable concurrency if needed.
 - ☐ **IPAM allocate (write)** — claim the next IP/prefix (POST to `available-ips`/`available-prefixes`). Read-only half is v0.1.1.
 - ☑ **Cable / interface trace** — `/api/dcim/interfaces/{id}/trace/`; surfaced as a Cable Path section on `nbox interface`.

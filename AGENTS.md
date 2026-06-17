@@ -59,6 +59,27 @@ with `--vrf` / `--site` / `--group`. `search` fails closed: if any endpoint erro
 it exits non-zero rather than return partial results — pass `--partial` for
 best-effort results (failed endpoints are reported on stderr).
 
+## MCP server
+
+`nbox serve` runs a read-only MCP server over stdio. An MCP host launches it as a
+subprocess and speaks JSON-RPC over stdin/stdout; the tools reuse the CLI's query +
+view layer, so they return the same JSON view models. URL/token come from the active
+profile (same `--profile` / `--config` flags). JSON-RPC is on stdout; logs go to
+stderr. Every tool is annotated read-only.
+
+| Tool | Purpose |
+| ---- | ------- |
+| `nbox_status` | Connection + NetBox/Django/Python versions (call first to confirm reachability). |
+| `nbox_search` | Search devices/sites/IPs/prefixes/VLANs; `query` (required), `limit`, `status`, `site`, `tenant`, `role`, `tag`. Find a reference before `nbox_get`. |
+| `nbox_get` | One object: `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range) + `ref`; `vrf`/`site`/`group` disambiguate (an ambiguous ref returns the candidates). |
+| `nbox_get_interface` | One interface on a device: config, addresses, cable-path trace. |
+| `nbox_next_ip` | Next available address(es) in a prefix (nothing reserved); `count`, `vrf`. |
+| `nbox_next_prefix` | Available child prefix(es) in a prefix; `length` for a block of a size, else all free blocks; `vrf`. |
+| `nbox_journal` | Recent journal entries for an object (`kind`/`ref` as `nbox_get`). |
+| `nbox_list_tags` | List tags (name, slug, color, usage count) — valid `tag` values for `nbox_search`. |
+
+HTTP transport, OAuth, a raw escape-hatch tool, and MCP resources/prompts are later.
+
 ## Configuration
 
 - Config: `~/.config/nbox/config.toml` (`nbox config init` to create).

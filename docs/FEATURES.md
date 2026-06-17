@@ -37,6 +37,27 @@ for the machine-readable surface and exit codes.
 `o` browser, `y` copy, `t` theme, device tabs `i`/`p`/`c`/`v`/`s`, recents on the
 home screen, optional auto-refresh (`[ui].refresh_secs`).
 
+## MCP server
+
+`nbox serve` is a read-only MCP server over stdio. An MCP host launches it as a
+subprocess and speaks JSON-RPC over stdin/stdout; the tools reuse the CLI's query
++ view layer and return the same JSON view models. JSON-RPC on stdout, logs on
+stderr; URL/token from the active profile (same `-p`/`--config` flags). All tools
+are annotated read-only.
+
+| Tool | What |
+| ---- | ---- |
+| `nbox_status` | Connection + NetBox/Django/Python versions. |
+| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites; `query`, `limit`, `status`, `site`, `tenant`, `role`, `tag`. |
+| `nbox_get` | One object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range) + `ref`; `vrf`/`site`/`group` disambiguate. |
+| `nbox_get_interface` | One interface on a device, with its cable-path trace. |
+| `nbox_next_ip` | Next available address(es) in a prefix. |
+| `nbox_next_prefix` | Next available child prefix(es) of a given length. |
+| `nbox_journal` | Recent journal entries for an object. |
+| `nbox_list_tags` | List tags. |
+
+HTTP transport, OAuth, a raw escape-hatch tool, and MCP resources/prompts are later.
+
 ## Robustness
 
 Retries HTTP 429 (`Retry-After` + backoff). `search` fails closed if an endpoint
