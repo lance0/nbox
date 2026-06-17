@@ -12,8 +12,9 @@ use serde::Serialize;
 
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
+use crate::netbox::models::circuits::Circuit;
 use crate::netbox::models::dcim::{Device, Site};
-use crate::netbox::models::ipam::{IpAddress, Prefix, Vlan};
+use crate::netbox::models::ipam::{Aggregate, Asn, IpAddress, IpRange, Prefix, Vlan};
 use crate::netbox::pagination::Page;
 use crate::util::format::api_to_web_url;
 
@@ -26,6 +27,10 @@ pub enum ObjectKind {
     IpAddress,
     Prefix,
     Vlan,
+    Circuit,
+    Aggregate,
+    Asn,
+    IpRange,
 }
 
 impl ObjectKind {
@@ -37,6 +42,10 @@ impl ObjectKind {
             ObjectKind::IpAddress => "ip",
             ObjectKind::Prefix => "prefix",
             ObjectKind::Vlan => "vlan",
+            ObjectKind::Circuit => "circuit",
+            ObjectKind::Aggregate => "aggregate",
+            ObjectKind::Asn => "asn",
+            ObjectKind::IpRange => "ip-range",
         }
     }
 }
@@ -143,7 +152,8 @@ fn endpoint_params(
 }
 
 impl NetBoxClient {
-    /// Search across devices, sites, IPs, prefixes, and VLANs in parallel.
+    /// Search across devices, sites, IPs, prefixes, VLANs, circuits,
+    /// aggregates, ASNs, and IP ranges in parallel.
     ///
     /// Returns ranked results plus a list of endpoints that failed. If every
     /// endpoint fails and nothing matched, returns the underlying `Err` (so a
@@ -154,12 +164,16 @@ impl NetBoxClient {
         let q = req.query.trim().to_string();
         let f = &req.filters;
 
-        let (devices, sites, ips, prefixes, vlans) = tokio::join!(
+        let (devices, sites, ips, prefixes, vlans, circuits, aggregates, asns, ip_ranges) = tokio::join!(
             self.search_devices(&q, f),
             self.search_sites(&q, f),
             self.search_ips(&q, f),
             self.search_prefixes(&q, f),
             self.search_vlans(&q, f),
+            self.search_circuits(&q, f),
+            self.search_aggregates(&q, f),
+            self.search_asns(&q, f),
+            self.search_ip_ranges(&q, f),
         );
 
         let mut merged = Vec::new();
@@ -171,6 +185,10 @@ impl NetBoxClient {
             ("ips", ips),
             ("prefixes", prefixes),
             ("vlans", vlans),
+            ("circuits", circuits),
+            ("aggregates", aggregates),
+            ("asns", asns),
+            ("ip-ranges", ip_ranges),
         ];
         for (name, branch) in branches {
             match branch {
@@ -307,6 +325,96 @@ impl NetBoxClient {
             })
             .collect())
     }
+
+    async fn search_circuits(&self, q: &str, f: &SearchFilters) -> Result<Vec<SearchResult>> {
+        let Some(params) = endpoint_params(q, f, &["status", "tenant", "tag"]) else {
+            return Ok(Vec::new());
+        };
+        let page: Page<Circuit> = self.list(Endpoint::Circuits, params).await?;
+        Ok(page
+            .results
+            .into_iter()
+            .map(|c| SearchResult {
+                kind: ObjectKind::Circuit,
+                id: c.id,
+                score: score_match(q, &c.cid),
+                subtitle: c.provider.as_ref().map(|p| p.label()),
+                url: api_to_web_url(&c.url),
+                display: c.cid,
+            })
+            .collect())
+    }
+
+    async fn search_aggregates(&self, q: &str, f: &SearchFilters) -> Result<Vec<SearchResult>> {
+        let Some(params) = endpoint_params(q, f, &["tenant", "tag"]) else {
+            return Ok(Vec::new());
+        };
+        let page: Page<Aggregate> = self.list(Endpoint::Aggregates, params).await?;
+        Ok(page
+            .results
+            .into_iter()
+            .map(|a| SearchResult {
+                kind: ObjectKind::Aggregate,
+                id: a.id,
+                score: score_match(q, &a.prefix),
+                subtitle: a.rir.as_ref().map(|r| r.label()),
+                url: api_to_web_url(&a.url),
+                display: a.prefix,
+            })
+            .collect())
+    }
+
+    async fn search_asns(&self, q: &str, f: &SearchFilters) -> Result<Vec<SearchResult>> {
+        let Some(mut params) = endpoint_params(q, f, &["tenant", "tag"]) else {
+            return Ok(Vec::new());
+        };
+        // A bare AS number won't be matched by the `q` quick-search (it scans
+        // text fields, not the numeric `asn`). When the query is purely numeric,
+        // match the `asn` field directly instead of `q` (NetBox ANDs filters, so
+        // keeping both would over-filter to nothing).
+        if let Ok(asn) = q.parse::<u32>() {
+            params.retain(|(k, _)| *k != "q");
+            params.push(("asn", asn.to_string()));
+        }
+        let page: Page<Asn> = self.list(Endpoint::Asns, params).await?;
+        Ok(page
+            .results
+            .into_iter()
+            .map(|a| {
+                let display = format!("AS{}", a.asn);
+                SearchResult {
+                    kind: ObjectKind::Asn,
+                    id: a.id,
+                    score: score_match(q, &a.asn.to_string()),
+                    subtitle: a.rir.as_ref().map(|r| r.label()),
+                    url: api_to_web_url(&a.url),
+                    display,
+                }
+            })
+            .collect())
+    }
+
+    async fn search_ip_ranges(&self, q: &str, f: &SearchFilters) -> Result<Vec<SearchResult>> {
+        let Some(params) = endpoint_params(q, f, &["status", "tenant", "role", "tag"]) else {
+            return Ok(Vec::new());
+        };
+        let page: Page<IpRange> = self.list(Endpoint::IpRanges, params).await?;
+        Ok(page
+            .results
+            .into_iter()
+            .map(|r| {
+                let display = format!("{}-{}", r.start_address, r.end_address);
+                SearchResult {
+                    kind: ObjectKind::IpRange,
+                    id: r.id,
+                    score: score_match(q, &display),
+                    subtitle: r.vrf.as_ref().or(r.role.as_ref()).map(|b| b.label()),
+                    url: api_to_web_url(&r.url),
+                    display,
+                }
+            })
+            .collect())
+    }
 }
 
 #[cfg(test)]
@@ -353,5 +461,13 @@ mod tests {
         let f = SearchFilters::default();
         let p = endpoint_params("edge", &f, &["status"]).unwrap();
         assert_eq!(p, vec![("q", "edge".to_string())]);
+    }
+
+    #[test]
+    fn object_kind_labels_cover_new_kinds() {
+        assert_eq!(ObjectKind::Circuit.as_str(), "circuit");
+        assert_eq!(ObjectKind::Aggregate.as_str(), "aggregate");
+        assert_eq!(ObjectKind::Asn.as_str(), "asn");
+        assert_eq!(ObjectKind::IpRange.as_str(), "ip-range");
     }
 }

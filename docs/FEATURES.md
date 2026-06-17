@@ -6,7 +6,7 @@ nbox is a read-only NetBox client (v0.1) — a CLI and a TUI over the same core.
 
 | Command | What |
 | ------- | ---- |
-| `nbox search <q>` | Parallel search across devices/sites/IPs/prefixes/VLANs. Filters: `--status/--site/--tenant/--role/--tag`, `--limit`, `--cols`, `--partial`. |
+| `nbox search <q>` | Parallel search across devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP-ranges. Filters: `--status/--site/--tenant/--role/--tag`, `--limit`, `--cols`, `--partial`. |
 | `nbox device <name\|slug\|id>` | Device + interfaces, IPs, cables, VLANs, services. |
 | `nbox interface <device> <iface>` | One interface: type, MTU, MAC, mode, VLANs, cable, **cable path** (trace), addresses. |
 | `nbox ip <addr> [--vrf]` | IP + most-specific parent prefix (VRF-scoped) and its VLAN/site. |
@@ -48,7 +48,7 @@ are annotated read-only.
 | Tool | What |
 | ---- | ---- |
 | `nbox_status` | Connection + NetBox/Django/Python versions. |
-| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites; `query`, `limit`, `status`, `site`, `tenant`, `role`, `tag`. |
+| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/aggregates/ASNs/IP-ranges; `query`, `limit`, `status`, `site`, `tenant`, `role`, `tag`. |
 | `nbox_get` | One object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range) + `ref`; `vrf`/`site`/`group` disambiguate. |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix. |

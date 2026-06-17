@@ -177,7 +177,8 @@ pub struct StatusReport {
 /// `nbox_search` result: ranked hits plus any per-endpoint failures.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct SearchReport {
-    /// Ranked search hits across devices, sites, IPs, prefixes, and VLANs.
+    /// Ranked search hits across devices, sites, IPs, prefixes, VLANs,
+    /// circuits, aggregates, ASNs, and IP ranges.
     pub results: Vec<SearchResult>,
     /// Per-endpoint failures (partial result); empty when every endpoint succeeded.
     pub errors: Vec<String>,
@@ -300,10 +301,11 @@ impl NboxMcp {
         }))
     }
 
-    /// Search across devices, sites, IPs, prefixes, and VLANs.
+    /// Search across devices, sites, IPs, prefixes, VLANs, circuits,
+    /// aggregates, ASNs, and IP ranges.
     #[tool(
         name = "nbox_search",
-        description = "Search across devices, sites, IP addresses, prefixes, and VLANs by free text. Returns ranked hits with kind, display name, and URL. Use this to find an object's exact reference before nbox_get. Optional filters narrow by status/site/tenant/role/tag.",
+        description = "Search across devices, sites, IP addresses, prefixes, VLANs, circuits, aggregates, ASNs, and IP ranges by free text. Returns ranked hits with kind, display name, and URL. Use this to find an object's exact reference before nbox_get. Optional filters narrow by status/site/tenant/role/tag.",
         annotations(read_only_hint = true)
     )]
     async fn nbox_search(

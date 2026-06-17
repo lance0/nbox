@@ -55,6 +55,10 @@ async fn search_merges_ranks_and_dedups_across_endpoints() {
     mount_empty(&server, "/api/dcim/sites/").await;
     mount_empty(&server, "/api/ipam/ip-addresses/").await;
     mount_empty(&server, "/api/ipam/prefixes/").await;
+    mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/ipam/aggregates/").await;
+    mount_empty(&server, "/api/ipam/asns/").await;
+    mount_empty(&server, "/api/ipam/ip-ranges/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -96,6 +100,10 @@ async fn search_truncates_to_limit() {
     mount_empty(&server, "/api/ipam/ip-addresses/").await;
     mount_empty(&server, "/api/ipam/prefixes/").await;
     mount_empty(&server, "/api/ipam/vlans/").await;
+    mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/ipam/aggregates/").await;
+    mount_empty(&server, "/api/ipam/asns/").await;
+    mount_empty(&server, "/api/ipam/ip-ranges/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -129,6 +137,10 @@ async fn search_reports_partial_endpoint_failures() {
     mount_empty(&server, "/api/ipam/ip-addresses/").await;
     mount_empty(&server, "/api/ipam/prefixes/").await;
     mount_empty(&server, "/api/ipam/vlans/").await;
+    mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/ipam/aggregates/").await;
+    mount_empty(&server, "/api/ipam/asns/").await;
+    mount_empty(&server, "/api/ipam/ip-ranges/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -146,4 +158,132 @@ async fn search_reports_partial_endpoint_failures() {
         "got: {:?}",
         outcome.errors
     );
+}
+
+#[tokio::test]
+async fn search_surfaces_circuits_aggregates_asns_and_ip_ranges() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/circuits/circuits/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 1, "url": "http://nb/api/circuits/circuits/1/", "cid": "edge-wan-1",
+                "provider": {"id": 7, "display": "ACME"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/aggregates/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 2, "url": "http://nb/api/ipam/aggregates/2/", "prefix": "10.0.0.0/8",
+                "rir": {"id": 3, "display": "RFC 1918"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/asns/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 3, "url": "http://nb/api/ipam/asns/3/", "asn": 64512,
+                "rir": {"id": 3, "display": "RFC 6996"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/ip-ranges/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 4, "url": "http://nb/api/ipam/ip-ranges/4/",
+                "start_address": "10.0.0.10/24", "end_address": "10.0.0.20/24"
+            }]
+        })))
+        .mount(&server)
+        .await;
+    mount_empty(&server, "/api/dcim/devices/").await;
+    mount_empty(&server, "/api/dcim/sites/").await;
+    mount_empty(&server, "/api/ipam/ip-addresses/").await;
+    mount_empty(&server, "/api/ipam/prefixes/").await;
+    mount_empty(&server, "/api/ipam/vlans/").await;
+
+    let results = client(&server)
+        .search(SearchRequest {
+            query: "edge".into(),
+            limit: 25,
+            filters: SearchFilters::default(),
+        })
+        .await
+        .unwrap()
+        .results;
+
+    let kinds: Vec<ObjectKind> = results.iter().map(|r| r.kind).collect();
+    assert!(kinds.contains(&ObjectKind::Circuit), "got: {kinds:?}");
+    assert!(kinds.contains(&ObjectKind::Aggregate), "got: {kinds:?}");
+    assert!(kinds.contains(&ObjectKind::Asn), "got: {kinds:?}");
+    assert!(kinds.contains(&ObjectKind::IpRange), "got: {kinds:?}");
+
+    let circuit = results
+        .iter()
+        .find(|r| r.kind == ObjectKind::Circuit)
+        .unwrap();
+    assert_eq!(circuit.display, "edge-wan-1");
+    assert_eq!(circuit.subtitle.as_deref(), Some("ACME"));
+    assert_eq!(circuit.url, "http://nb/circuits/circuits/1/");
+
+    let asn = results.iter().find(|r| r.kind == ObjectKind::Asn).unwrap();
+    assert_eq!(asn.display, "AS64512");
+
+    let range = results
+        .iter()
+        .find(|r| r.kind == ObjectKind::IpRange)
+        .unwrap();
+    assert_eq!(range.display, "10.0.0.10/24-10.0.0.20/24");
+}
+
+#[tokio::test]
+async fn search_matches_asn_by_number() {
+    let server = MockServer::start().await;
+    // A numeric query is routed to the `asn=` filter (not the text `q`), so the
+    // ASN endpoint must see `asn=64512` and no `q`.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/asns/"))
+        .and(wiremock::matchers::query_param("asn", "64512"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 3, "url": "http://nb/api/ipam/asns/3/", "asn": 64512}]
+        })))
+        .mount(&server)
+        .await;
+    mount_empty(&server, "/api/dcim/devices/").await;
+    mount_empty(&server, "/api/dcim/sites/").await;
+    mount_empty(&server, "/api/ipam/ip-addresses/").await;
+    mount_empty(&server, "/api/ipam/prefixes/").await;
+    mount_empty(&server, "/api/ipam/vlans/").await;
+    mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/ipam/aggregates/").await;
+    mount_empty(&server, "/api/ipam/ip-ranges/").await;
+
+    let results = client(&server)
+        .search(SearchRequest {
+            query: "64512".into(),
+            limit: 25,
+            filters: SearchFilters::default(),
+        })
+        .await
+        .unwrap()
+        .results;
+
+    let asn = results
+        .iter()
+        .find(|r| r.kind == ObjectKind::Asn)
+        .expect("asn surfaced by number");
+    assert_eq!(asn.display, "AS64512");
 }

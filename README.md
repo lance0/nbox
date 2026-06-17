@@ -37,7 +37,7 @@ nbox
 ## Features
 
 - **Fast shell lookups** — `device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `interface`, `search`.
-- **Normalized search** across devices, IPs, prefixes, VLANs, and sites in one command.
+- **Normalized search** across devices, IPs, prefixes, VLANs, sites, circuits, aggregates, ASNs, and IP ranges in one command.
 - **Interactive TUI** with search, detail panes, navigation history, and a command palette.
 - **IPAM-aware** — IP → parent prefix → VLAN → site resolution, computed locally with `ipnet`.
 - **Scriptable** — clean `--json` output on every command for piping into `jq`.
@@ -209,7 +209,7 @@ The tools are all annotated read-only:
 | Tool | What |
 | ---- | ---- |
 | `nbox_status` | Connection + NetBox/Django/Python versions. |
-| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites; `query` (required), `limit`, `status`, `site`, `tenant`, `role`, `tag`. |
+| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/aggregates/ASNs/IP-ranges; `query` (required), `limit`, `status`, `site`, `tenant`, `role`, `tag`. |
 | `nbox_get` | Fetch one object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range) + `ref`; `vrf`/`site`/`group` disambiguate. |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix. |

@@ -3,14 +3,19 @@
 
 use anyhow::{Context, Result};
 
+use crate::domain::aggregate_view::AggregateView;
+use crate::domain::asn_view::AsnView;
+use crate::domain::circuit_view::CircuitView;
 use crate::domain::device_detail::DeviceDetail;
+use crate::domain::ip_range_view::IpRangeView;
 use crate::domain::ip_view::{IpView, most_specific};
 use crate::domain::prefix_view::PrefixView;
 use crate::domain::site_view::SiteView;
 use crate::domain::vlan_view::VlanView;
 use crate::netbox::client::NetBoxClient;
+use crate::netbox::models::circuits::Circuit;
 use crate::netbox::models::dcim::{Device, Site};
-use crate::netbox::models::ipam::{IpAddress, Prefix, Vlan};
+use crate::netbox::models::ipam::{Aggregate, Asn, IpAddress, IpRange, Prefix, Vlan};
 use crate::netbox::search::ObjectKind;
 
 /// Maximum sub-resources to load for a device detail screen.
@@ -128,6 +133,38 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             let v = VlanView::build(vlan, prefixes);
             (format!("vlan {}", v.vid), v.to_plain())
         }
+        ObjectKind::Circuit => {
+            let c: Circuit = client
+                .get(&format!("/api/circuits/circuits/{id}/"), &[])
+                .await?;
+            let v = CircuitView::from_model(c);
+            (format!("circuit {}", v.cid), v.to_key_values().render())
+        }
+        ObjectKind::Aggregate => {
+            let a: Aggregate = client
+                .get(&format!("/api/ipam/aggregates/{id}/"), &[])
+                .await?;
+            let v = AggregateView::from_model(a);
+            (
+                format!("aggregate {}", v.prefix),
+                v.to_key_values().render(),
+            )
+        }
+        ObjectKind::Asn => {
+            let a: Asn = client.get(&format!("/api/ipam/asns/{id}/"), &[]).await?;
+            let v = AsnView::from_model(a);
+            (format!("asn {}", v.asn), v.to_key_values().render())
+        }
+        ObjectKind::IpRange => {
+            let r: IpRange = client
+                .get(&format!("/api/ipam/ip-ranges/{id}/"), &[])
+                .await?;
+            let v = IpRangeView::from_model(r);
+            (
+                format!("ip-range {}-{}", v.start_address, v.end_address),
+                v.to_key_values().render(),
+            )
+        }
     };
     Ok(DetailView::new(kind, id, title, body).with_tabs(tabs))
 }
@@ -200,6 +237,55 @@ pub async fn load_detail_by_ref(
             let prefixes = client.vlan_prefixes(vlan.id, 50).await?;
             let v = VlanView::build(vlan, prefixes);
             (id, format!("vlan {}", v.vid), v.to_plain())
+        }
+        ObjectKind::Circuit => {
+            let c = client
+                .circuit_by_ref(value)
+                .await?
+                .with_context(|| format!("no circuit matched \"{value}\""))?;
+            let id = c.id;
+            let v = CircuitView::from_model(c);
+            (id, format!("circuit {}", v.cid), v.to_key_values().render())
+        }
+        ObjectKind::Aggregate => {
+            let a = client
+                .aggregate_by_ref(value)
+                .await?
+                .with_context(|| format!("no aggregate matched \"{value}\""))?;
+            let id = a.id;
+            let v = AggregateView::from_model(a);
+            (
+                id,
+                format!("aggregate {}", v.prefix),
+                v.to_key_values().render(),
+            )
+        }
+        ObjectKind::Asn => {
+            let asn: u32 = value
+                .trim()
+                .trim_start_matches(['A', 'a', 'S', 's'])
+                .parse()
+                .with_context(|| format!("invalid AS number \"{value}\""))?;
+            let a = client
+                .asn_by_ref(asn)
+                .await?
+                .with_context(|| format!("no ASN matched \"{value}\""))?;
+            let id = a.id;
+            let v = AsnView::from_model(a);
+            (id, format!("asn {}", v.asn), v.to_key_values().render())
+        }
+        ObjectKind::IpRange => {
+            let r = client
+                .ip_range_by_ref(value)
+                .await?
+                .with_context(|| format!("no IP range matched \"{value}\""))?;
+            let id = r.id;
+            let v = IpRangeView::from_model(r);
+            (
+                id,
+                format!("ip-range {}-{}", v.start_address, v.end_address),
+                v.to_key_values().render(),
+            )
         }
     };
     Ok(DetailView::new(kind, id, title, body).with_tabs(tabs))

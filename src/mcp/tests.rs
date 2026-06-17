@@ -141,7 +141,8 @@ async fn get_missing_device_is_invalid_params() {
 #[tokio::test]
 async fn search_returns_results_and_errors() {
     let mock = MockServer::start().await;
-    // search fans out across devices, sites, ips, prefixes, vlans (q=…).
+    // search fans out across devices, sites, ips, prefixes, vlans, circuits,
+    // aggregates, asns, ip-ranges (q=…).
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -155,6 +156,10 @@ async fn search_returns_results_and_errors() {
         "/api/ipam/ip-addresses/",
         "/api/ipam/prefixes/",
         "/api/ipam/vlans/",
+        "/api/circuits/circuits/",
+        "/api/ipam/aggregates/",
+        "/api/ipam/asns/",
+        "/api/ipam/ip-ranges/",
     ] {
         Mock::given(method("GET"))
             .and(path(p))
@@ -228,6 +233,10 @@ async fn search_reports_partial_endpoint_errors() {
         "/api/ipam/ip-addresses/",
         "/api/ipam/prefixes/",
         "/api/ipam/vlans/",
+        "/api/circuits/circuits/",
+        "/api/ipam/aggregates/",
+        "/api/ipam/asns/",
+        "/api/ipam/ip-ranges/",
     ] {
         mount_empty(&mock, p).await;
     }
