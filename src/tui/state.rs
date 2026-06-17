@@ -741,8 +741,15 @@ impl App {
         }
     }
 
-    /// Advance to the next built-in theme.
+    /// Advance to the next built-in theme. A no-op under `NO_COLOR`: when the app
+    /// was started in no-color mode (see [`Self::set_no_color`]) cycling to a
+    /// colored theme would override the user's `NO_COLOR` request, so the no-color
+    /// theme is left in place and a brief status explains why.
     pub fn cycle_theme(&mut self) {
+        if self.theme.is_no_color() {
+            self.set_status("NO_COLOR is set — theme cycling disabled", Severity::Info);
+            return;
+        }
         let list = Theme::list();
         self.theme_index = (self.theme_index + 1) % list.len();
         self.theme = Theme::by_name(list[self.theme_index]);
@@ -1772,6 +1779,28 @@ mod tests {
         // guard (theme.name() != initial_theme) stays a no-op: NO_COLOR must not
         // overwrite the user's configured theme.
         assert_eq!(a.initial_theme, a.theme.name());
+    }
+
+    #[test]
+    fn cycle_theme_is_disabled_under_no_color() {
+        let mut a = app();
+        a.set_no_color();
+        assert!(a.theme.is_no_color());
+        let name_before = a.theme.name().to_string();
+
+        a.cycle_theme();
+
+        // The no-color theme stays put (no swap to a colored theme) and a status
+        // explains why, instead of overriding the user's NO_COLOR request.
+        assert!(a.theme.is_no_color(), "still no-color after cycle");
+        assert_eq!(a.theme.name(), name_before);
+        assert_eq!(a.status, "NO_COLOR is set — theme cycling disabled");
+
+        // Control: a normal (colored) theme still cycles to a different one.
+        let mut b = app();
+        let before = b.theme.name().to_string();
+        b.cycle_theme();
+        assert_ne!(b.theme.name(), before, "a colored theme cycles normally");
     }
 
     #[test]
