@@ -375,16 +375,19 @@ pub enum Command {
     /// Defaults to the stdio transport: an MCP host launches `nbox serve` as a
     /// subprocess and speaks JSON-RPC over its stdin/stdout. Passing `--http`
     /// switches to a loopback HTTP transport instead (requires the `http`
-    /// build feature).
+    /// build feature). Add `--oidc-issuer` + `--audience` to validate inbound
+    /// IdP JWTs on `/mcp` and bind a routable interface.
     Serve {
-        /// Serve over HTTP on this loopback address instead of stdio, e.g.
-        /// `127.0.0.1:8080`. Only loopback addresses are accepted; binding a
-        /// routable interface needs the OIDC auth mode (a later release).
+        /// Serve over HTTP on this address instead of stdio, e.g.
+        /// `127.0.0.1:8080`. Loopback only unless `--oidc-issuer` is set; a
+        /// routable bind requires the OIDC resource-server auth mode and a TLS
+        /// terminator in front (reverse proxy).
         #[arg(long, value_name = "ADDR")]
         http: Option<String>,
 
         /// Require `Authorization: Bearer <TOKEN>` on the HTTP `/mcp` endpoint.
-        /// Only meaningful with `--http`. Also read from `NBOX_SERVE_TOKEN`.
+        /// Only meaningful with `--http` (and only in loopback/no-OIDC mode).
+        /// Also read from `NBOX_SERVE_TOKEN`.
         #[arg(
             long,
             value_name = "TOKEN",
@@ -392,6 +395,23 @@ pub enum Command {
             hide_env_values = true
         )]
         http_token: Option<String>,
+
+        /// OIDC issuer URL. Enables OAuth 2.1 resource-server mode: inbound IdP
+        /// JWTs are validated on `/mcp` and Protected Resource Metadata is
+        /// advertised. Requires `--audience`. Only meaningful with `--http`.
+        #[arg(long, value_name = "URL")]
+        oidc_issuer: Option<String>,
+
+        /// Expected token audience — nbox's canonical resource URI. Required
+        /// when `--oidc-issuer` is set; the IdP must mint this `aud` via the
+        /// RFC 8707 `resource` parameter.
+        #[arg(long, value_name = "VALUE")]
+        audience: Option<String>,
+
+        /// JWKS URL override. Default: discovered from the issuer's
+        /// `/.well-known/openid-configuration` (then `oauth-authorization-server`).
+        #[arg(long, value_name = "URL")]
+        oidc_jwks_url: Option<String>,
     },
 }
 
@@ -531,13 +551,16 @@ mod tests {
 
     #[test]
     fn serve_defaults_to_stdio_and_parses_http_flags() {
-        // Bare `serve` → stdio (no http address, no token).
+        // Bare `serve` → stdio (no http address, no token, no OIDC).
         let stdio = Cli::try_parse_from(["nbox", "serve"]).unwrap();
         assert!(matches!(
             stdio.command,
             Some(Command::Serve {
                 http: None,
-                http_token: None
+                http_token: None,
+                oidc_issuer: None,
+                audience: None,
+                oidc_jwks_url: None,
             })
         ));
         // `--http` (and the optional `--http-token`) parse onto the variant.
@@ -552,8 +575,38 @@ mod tests {
         .unwrap();
         assert!(matches!(
             http.command,
-            Some(Command::Serve { http: Some(a), http_token: Some(t) })
+            Some(Command::Serve { http: Some(a), http_token: Some(t), .. })
                 if a == "127.0.0.1:8080" && t == "abc123"
+        ));
+    }
+
+    #[test]
+    fn serve_parses_oidc_resource_server_flags() {
+        let oidc = Cli::try_parse_from([
+            "nbox",
+            "serve",
+            "--http",
+            "0.0.0.0:8080",
+            "--oidc-issuer",
+            "https://idp.example.com",
+            "--audience",
+            "https://nbox.example.com",
+            "--oidc-jwks-url",
+            "https://idp.example.com/keys",
+        ])
+        .unwrap();
+        assert!(matches!(
+            oidc.command,
+            Some(Command::Serve {
+                http: Some(addr),
+                oidc_issuer: Some(iss),
+                audience: Some(aud),
+                oidc_jwks_url: Some(jwks),
+                ..
+            }) if addr == "0.0.0.0:8080"
+                && iss == "https://idp.example.com"
+                && aud == "https://nbox.example.com"
+                && jwks == "https://idp.example.com/keys"
         ));
     }
 

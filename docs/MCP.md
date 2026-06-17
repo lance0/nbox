@@ -78,10 +78,10 @@ nbox serve --http 127.0.0.1:8080
 `cargo install nbox --no-default-features` gives a lean stdio-only build.)
 
 The same eight tools are mounted at `/mcp` (Streamable HTTP). It binds **only**
-loopback: a non-loopback address (e.g. `0.0.0.0:8080`) is a usage error —
-exposing nbox on a routable interface needs the OIDC auth mode coming in a later
-release, and there is no bypass flag. The trust boundary is the loopback
-interface; the same profile/token resolution and `-p`/`--config` flags apply.
+loopback: a non-loopback address (e.g. `0.0.0.0:8080`) is a usage error unless
+the OIDC resource-server auth mode is configured (see below) — there is no other
+bypass flag. The trust boundary is the loopback interface; the same profile/token
+resolution and `-p`/`--config` flags apply.
 
 Security on the HTTP path:
 
@@ -110,6 +110,79 @@ Or in the config file (prefer the env var over storing a secret here):
 http = "127.0.0.1:8080"
 http_token = "…"   # optional
 ```
+
+## OIDC resource-server auth (network-reachable)
+
+For a network-reachable, multi-user deployment, run nbox as an OAuth 2.1
+**resource server**: it validates inbound IdP JWTs on `/mcp` and advertises
+Protected Resource Metadata. nbox does not mint tokens or run login — issuance
+and the user interaction are the IdP's job. This works with any conformant OIDC
+provider (Okta, Entra ID, Keycloak, Authentik, …); nbox is provider-agnostic.
+
+```bash
+nbox serve --http 0.0.0.0:8080 \
+  --oidc-issuer https://idp.example.com \
+  --audience https://nbox.example.com
+```
+
+`--oidc-issuer` enables the mode; `--audience` is then **required** — it is the
+`aud` nbox expects, i.e. nbox's own canonical resource URI. With OIDC configured
+the bind may be routable (the loopback restriction is lifted); **terminate TLS in
+front** (a reverse proxy) — nbox serves plain HTTP and logs a warning on a
+non-loopback bind. By default the JWKS URL is discovered from the issuer's
+`/.well-known/openid-configuration` (falling back to
+`/.well-known/oauth-authorization-server`); pass `--oidc-jwks-url` to set it
+explicitly.
+
+What nbox validates on each `/mcp` request: the bearer from the `Authorization`
+header (tokens in the query string are rejected); the JWT signature against the
+issuer's JWKS, selected by `kid`, with an explicit algorithm allowlist
+(RS256/ES256 — the token's own `alg` is never trusted, `none` is rejected); `iss`
+exact-match; `aud` contains the configured audience; and `exp` in the future (with
+a ≤120 s clock-skew leeway). The 8 read-only tools require the `nbox:read` scope.
+JWKS is cached by `kid` (an unknown `kid` triggers a single rate-limited refresh,
+then rejects; a transient JWKS outage keeps serving from the cache).
+
+Failures use the standard challenges: a missing/invalid/expired token → `401`
+with `WWW-Authenticate: Bearer resource_metadata="…", error="invalid_token"`; an
+authenticated request lacking the scope → `403` with
+`WWW-Authenticate: Bearer error="insufficient_scope", scope="nbox:read"`. The
+token is never logged or echoed in an error.
+
+```toml
+[serve]
+http = "0.0.0.0:8080"
+oidc_issuer = "https://idp.example.com"
+audience = "https://nbox.example.com"
+jwks_url = "https://idp.example.com/keys"   # optional override
+```
+
+**#1 misconfiguration:** the IdP must be configured to mint the `aud` that
+matches `--audience`, via the RFC 8707 `resource` parameter on the token request.
+If it doesn't, the IdP returns a 200 with a token and nbox returns 401 — the
+token is valid but its audience isn't nbox. The Protected Resource Metadata
+endpoint (below) advertises the exact `resource` value clients should request.
+
+### Protected Resource Metadata (RFC 9728)
+
+`GET /.well-known/oauth-protected-resource` returns the resource-server
+descriptor, **without** auth:
+
+```json
+{
+  "resource": "https://nbox.example.com",
+  "authorization_servers": ["https://idp.example.com"],
+  "scopes_supported": ["nbox:read", "nbox:write"],
+  "bearer_methods_supported": ["header"],
+  "jwks_uri": "https://idp.example.com/keys"
+}
+```
+
+Note: the last hop to NetBox still uses the local profile token today (a single
+read-only service token). Per-user identity → NetBox token bridging (so NetBox
+sees the real caller for RBAC + changelog) is the next unit; the validated caller
+identity (`sub`, `client_id`, `scope`, `jti`, `iss`) is already plumbed through
+for it.
 
 ## Tools
 

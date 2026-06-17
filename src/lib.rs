@@ -391,27 +391,78 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
         // stdout is reserved for the JSON-RPC stream — connect() and the
         // server itself print nothing, and logging already goes to stderr.
-        Some(Command::Serve { http, http_token }) => run_serve(&ctx, http, http_token).await,
+        Some(Command::Serve {
+            http,
+            http_token,
+            oidc_issuer,
+            audience,
+            oidc_jwks_url,
+        }) => {
+            run_serve(
+                &ctx,
+                ServeFlags {
+                    http,
+                    http_token,
+                    oidc_issuer,
+                    audience,
+                    oidc_jwks_url,
+                },
+            )
+            .await
+        }
     }
+}
+
+/// The `nbox serve` flags, resolved from the CLI before layering in the config's
+/// `[serve]` section. Grouped so [`run_serve`] takes one argument, not six.
+struct ServeFlags {
+    http: Option<String>,
+    http_token: Option<String>,
+    oidc_issuer: Option<String>,
+    audience: Option<String>,
+    oidc_jwks_url: Option<String>,
 }
 
 /// `nbox serve` — run the read-only MCP server.
 ///
 /// Stdio is the zero-config default. `--http <ADDR>` (or `[serve].http` in the
-/// config) switches to the opt-in loopback HTTP transport, which requires the
-/// `http` build feature. Flags take precedence over the config file.
-async fn run_serve(ctx: &Ctx, http: Option<String>, http_token: Option<String>) -> Result<()> {
-    // Resolve the HTTP address + bearer from flags first, then the config's
-    // `[serve]` section. A missing/unreadable config is fine here — stdio needs
-    // none of it, and `connect()` reports a missing config on its own.
+/// config) switches to the opt-in HTTP transport, which requires the `http`
+/// build feature. Adding `--oidc-issuer` + `--audience` puts it in OAuth 2.1
+/// resource-server mode (inbound IdP JWTs validated on `/mcp`, a routable bind
+/// allowed). Flags take precedence over the config file.
+async fn run_serve(ctx: &Ctx, flags: ServeFlags) -> Result<()> {
+    // Resolve every serve input from flags first, then the config's `[serve]`
+    // section. A missing/unreadable config is fine here — stdio needs none of it,
+    // and `connect()` reports a missing config on its own.
     let serve_cfg = load_serve_config(ctx);
-    let http = http.or(serve_cfg.http);
-    let http_token = http_token.or(serve_cfg.http_token);
+    let http = flags.http.or(serve_cfg.http);
+    let http_token = flags.http_token.or(serve_cfg.http_token);
+    let oidc_issuer = flags.oidc_issuer.or(serve_cfg.oidc_issuer);
+    let audience = flags.audience.or(serve_cfg.audience);
+    let jwks_url = flags.oidc_jwks_url.or(serve_cfg.jwks_url);
+
+    // OIDC resource-server mode is enabled by the issuer's presence; the audience
+    // is then required (RFC 8707 — without an expected `aud`, nbox can't bind a
+    // token to itself). Validate this before connecting so it fails fast (exit 2).
+    // The (issuer, audience) pair, validated. `jwks_url` rides into the transport.
+    let oidc = match (oidc_issuer, audience) {
+        (Some(issuer), Some(audience)) => Some((issuer, audience)),
+        (Some(_), None) => {
+            return Err(error::NboxError::Usage(
+                "--oidc-issuer requires --audience (the expected token `aud`, i.e. nbox's \
+                 canonical resource URI). The IdP must mint that audience via the RFC 8707 \
+                 `resource` parameter."
+                    .to_string(),
+            )
+            .into());
+        }
+        (None, _) => None,
+    };
 
     let client = connect(ctx)?;
     match http {
         None => mcp::serve(client).await,
-        Some(addr) => serve_http_or_explain(client, &addr, http_token).await,
+        Some(addr) => serve_http_or_explain(client, &addr, http_token, oidc, jwks_url).await,
     }
 }
 
@@ -429,23 +480,36 @@ fn load_serve_config(ctx: &Ctx) -> config::ServeConfig {
 
 /// Dispatch to the HTTP transport when the `http` feature is built in; otherwise
 /// fail with a clear usage error rather than silently falling back to stdio.
+///
+/// `oidc` is the validated `(issuer, audience)` pair (OIDC resource-server mode);
+/// `jwks_url` is the optional JWKS override. Both are ignored without `--http`.
 #[cfg(feature = "http")]
 async fn serve_http_or_explain(
     client: NetBoxClient,
     addr: &str,
     token: Option<String>,
+    oidc: Option<(String, String)>,
+    jwks_url: Option<String>,
 ) -> Result<()> {
-    mcp::serve_http(client, addr, token).await
+    let oidc = oidc.map(|(issuer, audience)| mcp::OidcArgs {
+        issuer,
+        audience,
+        jwks_url,
+    });
+    mcp::serve_http(client, addr, token, oidc).await
 }
 
 // Mirrors the `http`-feature variant's async signature so the `run_serve` call
-// site is feature-agnostic; it has nothing to await, hence the allow.
+// site is feature-agnostic; it has nothing to await, hence the allow. The OIDC
+// inputs are unused — without the feature there is no transport to configure.
 #[cfg(not(feature = "http"))]
 #[allow(clippy::unused_async)]
 async fn serve_http_or_explain(
     _client: NetBoxClient,
     _addr: &str,
     _token: Option<String>,
+    _oidc: Option<(String, String)>,
+    _jwks_url: Option<String>,
 ) -> Result<()> {
     Err(error::NboxError::Usage(
         "`nbox serve --http` requires the `http` build feature, which this binary \

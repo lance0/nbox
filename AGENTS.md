@@ -78,12 +78,16 @@ stderr. Every tool is annotated read-only.
 | `nbox_journal` | Recent journal entries for an object (`kind`/`ref` as `nbox_get`). |
 | `nbox_list_tags` | List tags (name, slug, color, usage count) — valid `tag` values for `nbox_search`. |
 
-A loopback HTTP transport ships in the default build (behind the `http` cargo
-feature, which is on by default; `--no-default-features` for stdio-only):
+An HTTP transport ships in the default build (behind the `http` cargo feature,
+which is on by default; `--no-default-features` for stdio-only):
 `nbox serve --http 127.0.0.1:8080`, optional `--http-token` — same tools at
-`/mcp`, loopback only, with `Origin`/`Host` validation. Network-reachable binding
-+ OAuth, a raw escape-hatch tool, and MCP resources/prompts are later. See
-`docs/MCP.md`.
+`/mcp`, loopback only, with `Origin`/`Host` validation. Add `--oidc-issuer <URL>`
++ `--audience <VALUE>` for OAuth 2.1 resource-server mode: inbound IdP JWTs are
+validated on `/mcp` (alg allowlist, `iss`/`aud`/`exp`, `nbox:read` scope), a
+routable bind is allowed (TLS terminates in front), and Protected Resource
+Metadata is served at `/.well-known/oauth-protected-resource`. The last hop to
+NetBox still uses the local profile token; per-user NetBox identity bridging, a
+raw escape-hatch tool, and MCP resources/prompts are later. See `docs/MCP.md`.
 
 ## Configuration
 

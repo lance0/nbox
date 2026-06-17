@@ -8,6 +8,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- OIDC resource-server auth for the HTTP transport (`nbox serve`). Setting
+  `--oidc-issuer <URL>` + `--audience <VALUE>` (or `[serve].oidc_issuer` /
+  `audience`) puts nbox in OAuth 2.1 resource-server mode: inbound IdP JWTs are
+  validated on `/mcp` and Protected Resource Metadata (RFC 9728) is advertised at
+  `GET /.well-known/oauth-protected-resource` (public, no auth). Provider-agnostic
+  (Okta, Entra, Keycloak, Authentik, …). Validation: bearer from the
+  `Authorization` header only (query-string tokens rejected); JWT signature via
+  the issuer's JWKS selected by `kid` with an explicit RS256/ES256 allowlist (the
+  token's `alg` is never trusted, `none` rejected); `iss` exact-match; `aud`
+  contains the configured audience (RFC 8707); `exp` with a ≤120 s clock-skew
+  leeway. The 8 read tools require the `nbox:read` scope (`nbox:write` is wired for
+  future writes). JWKS is cached by `kid` with a single rate-limited, single-flight
+  refresh on an unknown `kid`, keeping all published keys (rotation overlap); a
+  transient JWKS outage keeps serving from cache (serve-stale), an unknown-`kid`
+  cache miss during an outage fails closed. Failures use the standard challenges —
+  `401 invalid_token` (+ `resource_metadata`) and `403 insufficient_scope`
+  (+ `scope`); the token is never logged or echoed. The JWKS URL is discovered
+  from the issuer's `/.well-known/openid-configuration` (then
+  `oauth-authorization-server`) unless `--oidc-jwks-url` overrides it. With OIDC
+  configured a routable `--http` bind is allowed (the loopback restriction is
+  lifted) — terminate TLS in front (reverse proxy); nbox serves plain HTTP and
+  warns on a non-loopback bind. Flags win over config, exactly as the loopback
+  path. The validated caller identity (`sub`, `client_id`/`azp`, `scope`, `jti`,
+  `iss`) is plumbed into request extensions for the upcoming audit log + NetBox
+  identity bridge; the last hop to NetBox still uses the local profile token for
+  now. Behind the `http` cargo feature (`jsonwebtoken` with the pure-Rust crypto
+  backend; JWKS fetch/cache hand-rolled over `reqwest`).
 - `nbox serve --http <ADDR>` — loopback HTTP transport for the MCP server, shipped
   in the default build (behind the `http` cargo feature, which is on by default;
   `--no-default-features` for a lean stdio-only build). The same eight read-only

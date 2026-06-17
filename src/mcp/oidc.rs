@@ -1,0 +1,461 @@
+//! OIDC resource-server auth for the HTTP transport (rung 3 of the MCP transport
+//! ladder; see `DESIGN.md` §24).
+//!
+//! When `--oidc-issuer` + `--audience` are configured, nbox validates inbound IdP
+//! JWTs on `/mcp` and advertises RFC 9728 Protected Resource Metadata. nbox is an
+//! OAuth 2.1 **resource server only**: it validates bearer tokens, it does not
+//! mint them or run login. The token-validation obligations (RFC 9068 / OAuth 2.1
+//! §5.2) are:
+//!
+//! - bearer from the `Authorization` header (query-string tokens rejected);
+//! - signature via the IdP's JWKS selected by `kid`, with an explicit **alg
+//!   allowlist** (RS256/ES256 — never trust the token's `alg`, reject `none`);
+//! - `iss` exact-match the configured issuer;
+//! - `aud` *contains* the configured audience (RFC 8707 — reject otherwise);
+//! - `exp` in the future with ≤120 s clock-skew leeway.
+//!
+//! Provider-agnostic: works for any conformant IdP (Okta, Entra, Keycloak,
+//! Authentik, …). No vendor is named or special-cased.
+//!
+//! **Fail closed**, but validation is *offline* against cached JWKS: a transient
+//! JWKS-fetch failure with the key already cached still validates (serve-stale);
+//! an unknown-`kid` cache miss during an outage fails closed. JWKS is cached by
+//! `kid`; an unknown `kid` triggers a single rate-limited, single-flight refresh
+//! (defeats DoS-by-unknown-kid) and keeps all currently-published keys (rotation
+//! overlap).
+
+use std::collections::HashMap;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+
+use jsonwebtoken::jwk::{Jwk, JwkSet};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
+use serde::Deserialize;
+use tokio::sync::Mutex;
+
+/// The two scopes nbox understands (DESIGN §24). Reads need `nbox:read`; writes
+/// (none yet) will need `nbox:write`.
+pub const SCOPE_READ: &str = "nbox:read";
+pub const SCOPE_WRITE: &str = "nbox:write";
+
+/// The algorithms nbox will verify with — the explicit allowlist. The token's
+/// own `alg` is never trusted: `decode` is told exactly these, so `none` and any
+/// alg-confusion variant is rejected before a key is even selected.
+const ALLOWED_ALGS: [Algorithm; 2] = [Algorithm::RS256, Algorithm::ES256];
+
+/// Clock-skew leeway for `exp` (and `nbf`), in seconds (DESIGN §24: ≤120 s).
+const CLOCK_SKEW_LEEWAY_SECS: u64 = 120;
+
+/// Minimum gap between JWKS refreshes triggered by an unknown `kid`. Rate-limits
+/// the refresh so a stream of unknown-`kid` tokens can't hammer the IdP.
+const JWKS_REFRESH_MIN_INTERVAL: Duration = Duration::from_secs(30);
+
+/// Resolved OIDC resource-server configuration. Cheap to clone (`Arc` internals);
+/// rides as axum router state.
+#[derive(Clone)]
+pub struct OidcConfig {
+    /// The IdP issuer — `iss` must match this exactly.
+    pub issuer: Arc<str>,
+    /// The expected audience (nbox's canonical resource URI). A token's `aud`
+    /// must contain this (RFC 8707).
+    pub audience: Arc<str>,
+    /// The JWKS endpoint URL, resolved at startup (override or discovered).
+    pub jwks_uri: Arc<str>,
+    /// The shared, by-`kid` JWKS cache.
+    pub jwks: Arc<JwksCache>,
+}
+
+/// The validated identity, plumbed into axum request extensions so downstream
+/// (Unit 3's audit log + NetBox bridge) can read the caller without re-parsing
+/// the token. Never carries the raw token.
+#[derive(Clone, Debug)]
+pub struct Identity {
+    /// `sub` — the stable subject identifier.
+    pub sub: Option<String>,
+    /// `client_id`, falling back to `azp` — the calling OAuth client.
+    pub client_id: Option<String>,
+    /// The granted scopes (parsed from `scope` and/or `scp`).
+    pub scopes: Vec<String>,
+    /// `jti` — the token id, for audit reference (never the token itself).
+    pub jti: Option<String>,
+    /// `iss` — the issuer the token was minted by.
+    pub iss: Option<String>,
+}
+
+impl Identity {
+    /// Whether the caller was granted `scope`.
+    pub fn has_scope(&self, scope: &str) -> bool {
+        self.scopes.iter().any(|s| s == scope)
+    }
+}
+
+/// The access-token claims nbox reads. Only the fields the RS needs; unknown
+/// claims are ignored. `iss`/`aud`/`exp` are validated by `jsonwebtoken` itself
+/// (via [`Validation`]); these are pulled out afterward for the [`Identity`].
+#[derive(Debug, Deserialize)]
+struct Claims {
+    sub: Option<String>,
+    iss: Option<String>,
+    #[serde(default)]
+    client_id: Option<String>,
+    #[serde(default)]
+    azp: Option<String>,
+    #[serde(default)]
+    jti: Option<String>,
+    /// Space-delimited scope string (OAuth 2.0 / RFC 8693).
+    #[serde(default)]
+    scope: Option<String>,
+    /// Scope array (`scp`) — some IdPs use this instead of/alongside `scope`.
+    #[serde(default)]
+    scp: Option<ScopeField>,
+}
+
+/// `scp` is a string or an array of strings depending on the IdP. Accept both.
+#[derive(Debug, Deserialize)]
+#[serde(untagged)]
+enum ScopeField {
+    One(String),
+    Many(Vec<String>),
+}
+
+/// Why a token was rejected. Maps to the 401/403 challenge the middleware emits.
+/// The `Display` text is the safe `error_description` — it never echoes the token
+/// or any claim value.
+#[derive(Debug)]
+pub enum AuthError {
+    /// No bearer in the `Authorization` header (or a non-`Bearer` scheme).
+    MissingToken,
+    /// The token failed validation (signature, `iss`, `aud`, `exp`, malformed,
+    /// unknown `kid`, disallowed `alg`, …). → 401 `invalid_token`.
+    InvalidToken(&'static str),
+    /// Valid token, but it lacks the scope the tool requires. → 403
+    /// `insufficient_scope`.
+    InsufficientScope { required: &'static str },
+}
+
+impl std::fmt::Display for AuthError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            AuthError::MissingToken => f.write_str("a bearer token is required"),
+            AuthError::InvalidToken(why) => write!(f, "the token is not valid ({why})"),
+            AuthError::InsufficientScope { required } => {
+                write!(f, "the token is missing the {required} scope")
+            }
+        }
+    }
+}
+
+/// The by-`kid` JWKS cache with single-flight, rate-limited refresh.
+///
+/// Keys are cached by their `kid`; a lookup miss triggers at most one refresh
+/// (guarded by a mutex so concurrent misses coalesce — single-flight) and only
+/// if the rate limit has elapsed. On a refresh, *all* currently-published keys
+/// are kept (rotation overlap), and a transient fetch failure leaves the existing
+/// cache intact so already-cached keys keep validating (serve-stale).
+pub struct JwksCache {
+    /// The JWKS endpoint to fetch.
+    jwks_uri: Arc<str>,
+    /// The shared reqwest client (same style as the NetBox client).
+    http: reqwest::Client,
+    /// The cached state, behind a mutex. The mutex also serializes refreshes,
+    /// giving single-flight for free.
+    state: Mutex<CacheState>,
+}
+
+/// The mutable cache state: keys by `kid` plus the last-refresh instant.
+struct CacheState {
+    /// `kid` → JWK. A JWK with no `kid` is stored under the empty string so a
+    /// single-key IdP still works.
+    keys: HashMap<String, Jwk>,
+    /// When the last refresh completed, for rate-limiting unknown-`kid` refreshes.
+    last_refresh: Option<Instant>,
+}
+
+impl JwksCache {
+    /// Build an empty cache for `jwks_uri` over `http`. The first validation
+    /// triggers the initial fetch; nothing is fetched at construction.
+    pub fn new(jwks_uri: Arc<str>, http: reqwest::Client) -> Self {
+        Self {
+            jwks_uri,
+            http,
+            state: Mutex::new(CacheState {
+                keys: HashMap::new(),
+                last_refresh: None,
+            }),
+        }
+    }
+
+    /// Resolve the decoding key for `kid`, fetching/refreshing if needed.
+    ///
+    /// Cache hit → use it. Miss → if the rate limit allows, refresh once
+    /// (single-flight via the held lock) and retry the lookup; still missing →
+    /// `None` (fail closed). A `None` `kid` matches a single unnamed key.
+    async fn decoding_key_for(&self, kid: Option<&str>) -> Option<Jwk> {
+        let key = kid.unwrap_or("");
+        let mut state = self.state.lock().await;
+
+        // Fast path: already cached, or empty cache on first use.
+        if let Some(jwk) = state.keys.get(key) {
+            return Some(jwk.clone());
+        }
+        // A single-key IdP with no `kid` in the token: if the cache holds exactly
+        // one key, use it regardless of the lookup key.
+        if kid.is_none() && state.keys.len() == 1 {
+            return state.keys.values().next().cloned();
+        }
+
+        // Miss. Refresh at most once per rate-limit window (single-flight: we
+        // hold the lock). On the very first use there's no prior refresh, so the
+        // initial fetch always runs.
+        let allow_refresh = state
+            .last_refresh
+            .is_none_or(|t| t.elapsed() >= JWKS_REFRESH_MIN_INTERVAL);
+        if allow_refresh {
+            self.refresh(&mut state).await;
+            if let Some(jwk) = state.keys.get(key) {
+                return Some(jwk.clone());
+            }
+            if kid.is_none() && state.keys.len() == 1 {
+                return state.keys.values().next().cloned();
+            }
+        }
+        None
+    }
+
+    /// Fetch the JWKS and replace the cache, keeping all published keys. A fetch
+    /// or parse failure is logged and leaves the existing cache untouched
+    /// (serve-stale); `last_refresh` is still bumped so the rate limit holds even
+    /// on repeated failures. Never logs token/key material.
+    async fn refresh(&self, state: &mut CacheState) {
+        state.last_refresh = Some(Instant::now());
+        let fetched = match self.fetch_jwks().await {
+            Ok(set) => set,
+            Err(e) => {
+                tracing::warn!(jwks_uri = %self.jwks_uri, error = %e, "JWKS refresh failed; serving from cache");
+                return;
+            }
+        };
+        let mut keys = HashMap::with_capacity(fetched.keys.len());
+        for jwk in fetched.keys {
+            let kid = jwk.common.key_id.clone().unwrap_or_default();
+            keys.insert(kid, jwk);
+        }
+        tracing::debug!(jwks_uri = %self.jwks_uri, count = keys.len(), "JWKS refreshed");
+        state.keys = keys;
+    }
+
+    /// GET the JWKS document and parse it into a [`JwkSet`].
+    async fn fetch_jwks(&self) -> anyhow::Result<JwkSet> {
+        let resp = self
+            .http
+            .get(&*self.jwks_uri)
+            .send()
+            .await?
+            .error_for_status()?;
+        let set: JwkSet = resp.json().await?;
+        Ok(set)
+    }
+}
+
+/// Validate a bearer token from the `Authorization` header against `cfg`.
+///
+/// On success returns the caller's [`Identity`]. On failure returns an
+/// [`AuthError`] that the middleware turns into the right 401/403 challenge.
+/// Scope is **not** checked here (that's per-tool / per-route); the returned
+/// identity carries the granted scopes for the caller to enforce.
+pub async fn validate_bearer(
+    cfg: &OidcConfig,
+    auth_header: Option<&str>,
+) -> Result<Identity, AuthError> {
+    // 1) Extract the bearer. Tokens in the query string are never accepted; only
+    //    the `Authorization: Bearer <token>` header.
+    let token = bearer_token(auth_header).ok_or(AuthError::MissingToken)?;
+
+    // 2) Decode just the header to pick the key by `kid`. A malformed header or a
+    //    disallowed `alg` is rejected before any signature work.
+    let header = decode_header(token).map_err(|_| AuthError::InvalidToken("malformed header"))?;
+    if !ALLOWED_ALGS.contains(&header.alg) {
+        return Err(AuthError::InvalidToken("unsupported algorithm"));
+    }
+
+    // 3) Select the JWK (cached by `kid`, refreshing once on a miss). A cache
+    //    miss during an outage fails closed.
+    let jwk = cfg
+        .jwks
+        .decoding_key_for(header.kid.as_deref())
+        .await
+        .ok_or(AuthError::InvalidToken("no matching key"))?;
+    let decoding_key =
+        DecodingKey::from_jwk(&jwk).map_err(|_| AuthError::InvalidToken("unusable key"))?;
+
+    // 4) Validate signature + claims. The alg allowlist was enforced in step 2
+    //    (`header.alg` is provably one of `ALLOWED_ALGS`), so `algorithms` here is
+    //    that single verified alg — jsonwebtoken 10 requires the validation algs
+    //    to match the key's family, and an RSA key can't carry both RS256+ES256.
+    //    `none`/alg-confusion never reaches this point. Plus `iss` exact-match,
+    //    `aud` contains the configured audience, and `exp` with the skew leeway.
+    let mut validation = Validation::new(header.alg);
+    validation.algorithms = vec![header.alg];
+    validation.leeway = CLOCK_SKEW_LEEWAY_SECS;
+    validation.set_issuer(&[cfg.issuer.as_ref()]);
+    validation.set_audience(&[cfg.audience.as_ref()]);
+    validation.set_required_spec_claims(&["exp", "iss", "aud"]);
+
+    let data = decode::<Claims>(token, &decoding_key, &validation)
+        .map_err(|e| AuthError::InvalidToken(classify_jwt_error(&e)))?;
+
+    Ok(identity_from_claims(data.claims))
+}
+
+/// Map a `jsonwebtoken` error to a stable, non-leaking reason string for the
+/// `error_description`. Never includes the token or any claim value.
+fn classify_jwt_error(e: &jsonwebtoken::errors::Error) -> &'static str {
+    use jsonwebtoken::errors::ErrorKind;
+    match e.kind() {
+        ErrorKind::ExpiredSignature => "expired",
+        ErrorKind::InvalidIssuer => "wrong issuer",
+        ErrorKind::InvalidAudience => "wrong audience",
+        ErrorKind::InvalidSignature => "bad signature",
+        ErrorKind::ImmatureSignature => "not yet valid",
+        ErrorKind::MissingRequiredClaim(_) => "missing a required claim",
+        _ => "invalid",
+    }
+}
+
+/// Build the [`Identity`] from validated claims. `client_id` falls back to `azp`;
+/// scopes merge `scope` (space-delimited) and `scp` (string or array).
+fn identity_from_claims(claims: Claims) -> Identity {
+    let mut scopes: Vec<String> = Vec::new();
+    if let Some(scope) = &claims.scope {
+        scopes.extend(scope.split_whitespace().map(str::to_string));
+    }
+    match claims.scp {
+        Some(ScopeField::One(s)) => scopes.extend(s.split_whitespace().map(str::to_string)),
+        Some(ScopeField::Many(many)) => scopes.extend(many),
+        None => {}
+    }
+    scopes.sort();
+    scopes.dedup();
+
+    Identity {
+        sub: claims.sub,
+        client_id: claims.client_id.or(claims.azp),
+        scopes,
+        jti: claims.jti,
+        iss: claims.iss,
+    }
+}
+
+/// Extract the bearer token from an `Authorization` header value. Only the
+/// `Bearer ` scheme (case-insensitive) is accepted; the token must be non-empty.
+fn bearer_token(header: Option<&str>) -> Option<&str> {
+    let value = header?;
+    let (scheme, token) = value.split_once(' ')?;
+    if scheme.eq_ignore_ascii_case("Bearer") && !token.trim().is_empty() {
+        Some(token.trim())
+    } else {
+        None
+    }
+}
+
+/// Discover the JWKS URI for `issuer`.
+///
+/// Tries the OpenID Connect discovery document first
+/// (`<issuer>/.well-known/openid-configuration`), then the OAuth 2.0
+/// authorization-server metadata (`<issuer>/.well-known/oauth-authorization-server`).
+/// The first to yield a `jwks_uri` wins.
+pub async fn discover_jwks_uri(http: &reqwest::Client, issuer: &str) -> anyhow::Result<String> {
+    /// The one field of the discovery document we need.
+    #[derive(Deserialize)]
+    struct Discovery {
+        jwks_uri: Option<String>,
+    }
+
+    let base = issuer.trim_end_matches('/');
+    let candidates = [
+        format!("{base}/.well-known/openid-configuration"),
+        format!("{base}/.well-known/oauth-authorization-server"),
+    ];
+
+    let mut last_err: Option<anyhow::Error> = None;
+    for url in candidates {
+        match http
+            .get(&url)
+            .send()
+            .await
+            .and_then(reqwest::Response::error_for_status)
+        {
+            Ok(resp) => match resp.json::<Discovery>().await {
+                Ok(doc) => {
+                    if let Some(uri) = doc.jwks_uri.filter(|u| !u.is_empty()) {
+                        return Ok(uri);
+                    }
+                    last_err = Some(anyhow::anyhow!("{url} has no jwks_uri"));
+                }
+                Err(e) => last_err = Some(e.into()),
+            },
+            Err(e) => last_err = Some(e.into()),
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no discovery endpoint responded")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn bearer_extraction_accepts_only_the_bearer_scheme() {
+        assert_eq!(
+            bearer_token(Some("Bearer abc.def.ghi")),
+            Some("abc.def.ghi")
+        );
+        // Scheme is case-insensitive.
+        assert_eq!(bearer_token(Some("bearer xyz")), Some("xyz"));
+        // Other schemes / missing token are rejected.
+        assert_eq!(bearer_token(Some("Token abc")), None);
+        assert_eq!(bearer_token(Some("Basic abc")), None);
+        assert_eq!(bearer_token(Some("Bearer ")), None);
+        assert_eq!(bearer_token(Some("Bearer   ")), None);
+        assert_eq!(bearer_token(None), None);
+    }
+
+    #[test]
+    fn scopes_merge_scope_string_and_scp_array() {
+        let claims = Claims {
+            sub: Some("user-1".into()),
+            iss: Some("https://idp".into()),
+            client_id: None,
+            azp: Some("client-9".into()),
+            jti: Some("jti-1".into()),
+            scope: Some("nbox:read profile".into()),
+            scp: Some(ScopeField::Many(vec!["email".into(), "nbox:read".into()])),
+        };
+        let id = identity_from_claims(claims);
+        // `client_id` falls back to `azp`.
+        assert_eq!(id.client_id.as_deref(), Some("client-9"));
+        // Scopes from both fields, deduped.
+        assert!(id.has_scope("nbox:read"));
+        assert!(id.has_scope("profile"));
+        assert!(id.has_scope("email"));
+        assert!(!id.has_scope("nbox:write"));
+        assert_eq!(id.sub.as_deref(), Some("user-1"));
+        assert_eq!(id.jti.as_deref(), Some("jti-1"));
+    }
+
+    #[test]
+    fn client_id_preferred_over_azp() {
+        let claims = Claims {
+            sub: None,
+            iss: None,
+            client_id: Some("explicit".into()),
+            azp: Some("fallback".into()),
+            jti: None,
+            scope: None,
+            scp: None,
+        };
+        let id = identity_from_claims(claims);
+        assert_eq!(id.client_id.as_deref(), Some("explicit"));
+        assert!(id.scopes.is_empty());
+    }
+}

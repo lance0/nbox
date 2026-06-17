@@ -91,6 +91,23 @@ pub struct ServeConfig {
     /// secret in the config file.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub http_token: Option<String>,
+
+    /// OIDC issuer URL. Its presence switches the HTTP transport into OAuth 2.1
+    /// resource-server mode: inbound IdP JWTs are validated on `/mcp` and
+    /// Protected Resource Metadata is advertised. Overridden by `--oidc-issuer`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub oidc_issuer: Option<String>,
+
+    /// Expected token audience — nbox's canonical resource URI (RFC 8707).
+    /// Required when `oidc_issuer` is set. Overridden by `--audience`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub audience: Option<String>,
+
+    /// Optional JWKS URL override. Absent ⇒ discover it from the issuer's
+    /// `/.well-known/openid-configuration` (then `oauth-authorization-server`).
+    /// Overridden by `--oidc-jwks-url`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub jwks_url: Option<String>,
 }
 
 /// UI / TUI preferences.
@@ -441,10 +458,13 @@ page_size = 250
 
     #[test]
     fn serve_section_is_optional_and_parses() {
-        // Absent `[serve]` ⇒ defaults (no HTTP, no token) — stdio.
+        // Absent `[serve]` ⇒ defaults (no HTTP, no token, no OIDC) — stdio.
         let bare: Config = toml::from_str(SAMPLE).unwrap();
         assert_eq!(bare.serve.http, None);
         assert_eq!(bare.serve.http_token, None);
+        assert_eq!(bare.serve.oidc_issuer, None);
+        assert_eq!(bare.serve.audience, None);
+        assert_eq!(bare.serve.jwks_url, None);
 
         // A present `[serve]` populates the fields.
         let with: Config = toml::from_str(
@@ -460,6 +480,33 @@ page_size = 250
         .unwrap();
         assert_eq!(with.serve.http.as_deref(), Some("127.0.0.1:8080"));
         assert_eq!(with.serve.http_token.as_deref(), Some("local-secret"));
+
+        // The OIDC resource-server fields parse onto the same section.
+        let oidc: Config = toml::from_str(
+            "active_profile = \"work\"\n\
+             \n\
+             [serve]\n\
+             http = \"0.0.0.0:8080\"\n\
+             oidc_issuer = \"https://idp.example.com\"\n\
+             audience = \"https://nbox.example.com\"\n\
+             jwks_url = \"https://idp.example.com/keys\"\n\
+             \n\
+             [profiles.work]\n\
+             url = \"https://netbox.example.com\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            oidc.serve.oidc_issuer.as_deref(),
+            Some("https://idp.example.com")
+        );
+        assert_eq!(
+            oidc.serve.audience.as_deref(),
+            Some("https://nbox.example.com")
+        );
+        assert_eq!(
+            oidc.serve.jwks_url.as_deref(),
+            Some("https://idp.example.com/keys")
+        );
     }
 
     #[test]

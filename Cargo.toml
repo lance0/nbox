@@ -77,11 +77,16 @@ rmcp = { version = "1.7", default-features = false, features = ["server", "macro
 
 # Optional loopback HTTP transport for `nbox serve --http` (behind the `http`
 # feature). Pulls in the rmcp Streamable HTTP server plus an axum router to mount
-# it on; `tokio-util` supplies the CancellationToken for graceful shutdown. Kept
-# out of `default` so `cargo install nbox` stays lean — stdio is the default.
+# it on; `tokio-util` supplies the CancellationToken for graceful shutdown. The
+# OIDC resource-server mode (rung 3) adds JWT validation on `/mcp`: `jsonwebtoken`
+# does the decode + signature/iss/aud/exp checks, JWKS fetch + cache-by-`kid` is
+# hand-rolled over the existing `reqwest` so we keep full control of the 401/403
+# bodies and `WWW-Authenticate` headers the spec mandates. The pure-Rust crypto
+# backend (`rust_crypto`, no aws-lc-rs C build) keeps the musl/rustls story clean.
 axum = { version = "0.8", optional = true }
 tower = { version = "0.5", optional = true }
 tokio-util = { version = "0.7", optional = true }
+jsonwebtoken = { version = "10", default-features = false, features = ["rust_crypto", "use_pem"], optional = true }
 
 # Unix syscalls — used in `main` to reset the SIGPIPE disposition to SIG_DFL so a
 # closed stdout pipe (e.g. `nbox … | head`) terminates the process normally
@@ -101,13 +106,20 @@ updates = ["dep:update-informer"]
 # ladder, DESIGN §24). In `default` — HTTP/MCP is the agent-first headline
 # feature, so it ships out of the box; drop it with `--no-default-features` for
 # a lean stdio-only build.
-http = ["dep:axum", "dep:tower", "dep:tokio-util", "rmcp/transport-streamable-http-server"]
+http = ["dep:axum", "dep:tower", "dep:tokio-util", "dep:jsonwebtoken", "rmcp/transport-streamable-http-server"]
 
 [dev-dependencies]
 tokio-test = "0.4"
 tempfile = "3"
 insta = "1"
 wiremock = "0.6"
+# Mint a real RSA keypair in the OIDC resource-server tests: derive the JWKS the
+# mock IdP serves from the public key (n/e components) and sign tokens with the
+# private key via `jsonwebtoken`. Gated by the http-only tests at use sites.
+# `rand` 0.8 supplies the RNG for keygen (matches `rsa`'s `rand_core` 0.6).
+rsa = { version = "0.9", features = ["pem"] }
+rand = "0.8"
+base64 = "0.22"
 
 [profile.release]
 lto = true
