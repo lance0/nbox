@@ -64,6 +64,6 @@ jobs:
           certutil -hashfile "$dist.zip" SHA256 > "$dist.zip.sha256"
 
       - name: Upload release assets
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: nbox-${{ matrix.target }}.*
