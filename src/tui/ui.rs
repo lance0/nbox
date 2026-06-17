@@ -286,34 +286,55 @@ fn results_table<'a>(rows: Vec<Row<'a>>, block: Block<'a>, theme: &Theme) -> Tab
         .row_highlight_style(Style::default().fg(theme.text).bg(theme.highlight_bg))
 }
 
+/// The keybindings shown in the `?`/`F1` help overlay, grouped into the columns
+/// the cheese `Help` grid lays out side by side. Pure data, kept TRUTHFUL to
+/// what the key handlers actually bind (see `state::App::handle_normal_key`) —
+/// no aspirational bindings. Split out so the content is unit-testable without a
+/// terminal; the render path feeds it straight to [`cheese::Help::new`].
+pub fn help_bindings() -> Vec<Vec<(&'static str, &'static str)>> {
+    vec![
+        // Navigation / search.
+        vec![
+            ("/", "search"),
+            (":", "command palette"),
+            ("Tab / S-Tab", "switch pane"),
+            ("j / k", "move / scroll"),
+            ("g / G", "top / bottom"),
+            ("PgUp / PgDn", "page up / down"),
+            ("Enter", "open detail"),
+        ],
+        // Actions / detail tabs / app.
+        vec![
+            ("o", "open in browser"),
+            ("y", "copy"),
+            ("t", "cycle theme"),
+            ("i p c v s", "device tabs"),
+            ("b / Esc", "back"),
+            ("? / F1", "toggle help"),
+            ("q", "quit"),
+        ],
+    ]
+}
+
 fn render_help(frame: &mut Frame, area: Rect, app: &App) {
     let theme = &app.theme;
-    let lines = vec![
-        Line::from("nbox — keybindings"),
-        Line::from(""),
-        Line::from("/        search"),
-        Line::from(":        command palette"),
-        Line::from("Tab      switch list / preview pane"),
-        Line::from("j / k    move selection (scroll focused pane / detail body)"),
-        Line::from("g / G    top / bottom"),
-        Line::from("PgUp/PgDn  page up / down"),
-        Line::from("Enter    open full detail"),
-        Line::from("t        cycle theme"),
-        Line::from("i/p/c/v/s  device tabs (interfaces/IPs/cables/VLANs/services)"),
-        Line::from("b / Esc  back"),
-        Line::from("?  / F1  toggle this help"),
-        Line::from("q        quit"),
-    ];
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Help ")
         .border_style(Style::default().fg(theme.border));
-    frame.render_widget(
-        Paragraph::new(lines)
-            .block(block)
-            .style(Style::default().fg(theme.text)),
-        area,
-    );
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Build the cheese Help grid from the real keybindings and center it
+    // vertically within the bordered inner area.
+    let columns = help_bindings();
+    let column_refs: Vec<&[(&str, &str)]> = columns.iter().map(|c| c.as_slice()).collect();
+    let help = crate::tui::cheese::Help::new(&column_refs);
+
+    let h = help.required_height().min(inner.height);
+    let top = inner.y + inner.height.saturating_sub(h) / 2;
+    let grid = Rect::new(inner.x, top, inner.width, h);
+    help.render(frame, grid, theme);
 }
 
 fn render_detail(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -556,6 +577,49 @@ mod tests {
         let theme = Theme::default_theme();
         let body = "name: edge01\nstatus: active\nsite: iad1";
         assert_eq!(body_lines(body, &theme).len(), 3);
+    }
+
+    #[test]
+    fn help_bindings_reflect_the_real_keys() {
+        // The help overlay is built from this list, so it must mirror what the
+        // key handlers actually bind (state::App::handle_normal_key) — no
+        // aspirational bindings. Assert each real key/description is present.
+        let all: Vec<(&str, &str)> = help_bindings().into_iter().flatten().collect();
+        let has = |key: &str| all.iter().any(|(k, _)| *k == key);
+        // Search / palette modes.
+        assert!(has("/"), "/ search");
+        assert!(has(":"), ": command palette");
+        // Focus + movement (incl. the recently-added Tab/Shift-Tab + paging).
+        assert!(has("Tab / S-Tab"), "Tab/Shift+Tab pane focus");
+        assert!(has("j / k"), "j/k move/scroll");
+        assert!(has("g / G"), "g/G top/bottom");
+        assert!(has("PgUp / PgDn"), "PgUp/PgDn paging");
+        assert!(has("Enter"), "Enter open detail");
+        // Actions.
+        assert!(has("o"), "o open in browser");
+        assert!(has("y"), "y copy");
+        assert!(has("t"), "t cycle theme");
+        // The device-tab keys i/p/c/v/s.
+        assert!(has("i p c v s"), "device tab keys");
+        // Back / help / quit.
+        assert!(has("b / Esc"), "b/Esc back");
+        assert!(has("? / F1"), "?/F1 toggle help");
+        assert!(has("q"), "q quit");
+    }
+
+    #[test]
+    fn help_bindings_have_no_aspirational_keys() {
+        // Guard against advertising bindings the handlers don't implement. Every
+        // listed key maps to a real handler arm; spot-check that obvious unbound
+        // keys are absent.
+        let all: Vec<(&str, &str)> = help_bindings().into_iter().flatten().collect();
+        let keys: Vec<&str> = all.iter().map(|(k, _)| *k).collect();
+        for bogus in ["x", "d", "F2", "Ctrl+R", "n"] {
+            assert!(
+                !keys.contains(&bogus),
+                "help must not advertise unbound key {bogus}"
+            );
+        }
     }
 
     #[test]
