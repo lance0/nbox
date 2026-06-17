@@ -332,7 +332,7 @@ mod tests {
         // Capped so a huge value can't stall the client.
         assert_eq!(
             parse_retry_after(Some("9999")),
-            Some(Duration::from_secs(60))
+            Some(Duration::from_mins(1))
         );
         // HTTP-date form and garbage are ignored (fall back to backoff).
         assert_eq!(
