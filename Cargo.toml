@@ -34,7 +34,7 @@ unicode-width = "0.2"
 # CLI
 clap = { version = "4", features = ["derive", "env"] }
 clap_complete = "4.6"
-clap_mangen = "0.2"
+clap_mangen = "0.3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
