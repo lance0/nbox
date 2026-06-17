@@ -107,3 +107,8 @@ nbox device edge01 --json | jq '.primary_ip4'
   content type for anything else). `ip` derives `scope`/`scope_type` from its
   most-specific parent prefix. Each is omitted when there is no scope. (There is
   no `site` field on these views — use `scope`/`scope_type`.)
+- A `vlan` that belongs to a *VLAN group* additionally carries `group_scope` and
+  `group_scope_type`: a VLAN group is itself polymorphically scoped (the VLAN is
+  not), so this is the group's scope, surfaced separately from the VLAN's own
+  `scope`. Populated by one follow-up fetch of the group, only when the VLAN has
+  a group and that group is scoped; both fields are omitted otherwise.

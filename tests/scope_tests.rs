@@ -200,3 +200,122 @@ async fn ip_derives_non_site_scope_from_parent_prefix() {
     assert!(plain.contains("scope_type: location"), "got: {plain}");
     assert!(!plain.contains("site:"), "no site row expected: {plain}");
 }
+
+/// A VLAN that belongs to a *group* surfaces the GROUP's scope on the new
+/// additive `group_scope` / `group_scope_type` fields. A VLAN group is itself
+/// polymorphically scoped (the VLAN is not), and the nested `group` brief omits
+/// that scope, so the view does ONE follow-up GET of the group by id. The VLAN's
+/// own scope fields are untouched.
+#[tokio::test]
+async fn vlan_with_grouped_scope_surfaces_group_scope() {
+    let server = MockServer::start().await;
+    // The VLAN: directly sited (its own scope), plus a group reference.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/vlans/"))
+        .and(query_param("vid", "208"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 3, "url": "http://nb/api/ipam/vlans/3/", "vid": 208, "name": "users",
+                "status": {"value": "active", "label": "Active"},
+                "site": {"id": 1, "name": "iad1", "display": "iad1"},
+                "group": {"id": 9, "name": "iad1-campus", "display": "iad1-campus"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .and(query_param("vlan_id", "3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 0, "next": null, "previous": null, "results": []
+        })))
+        .mount(&server)
+        .await;
+    // The follow-up group fetch by id — region-scoped. Asserted to be hit once.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/vlan-groups/9/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 9, "name": "iad1-campus", "slug": "iad1-campus",
+            "scope_type": "dcim.region",
+            "scope_id": 5,
+            "scope": {"id": 5, "name": "us-east", "display": "us-east"}
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let view = detail::vlan_view_by_ref(&client(&server), "208", None, None, &not_found)
+        .await
+        .unwrap();
+
+    // The VLAN's own scope (its direct site) is unchanged.
+    assert_eq!(view.scope.as_deref(), Some("iad1"));
+    assert_eq!(view.scope_type.as_deref(), Some("site"));
+    assert_eq!(view.group.as_deref(), Some("iad1-campus"));
+    // The group's scope is surfaced on the new additive fields.
+    assert_eq!(view.group_scope.as_deref(), Some("us-east"));
+    assert_eq!(view.group_scope_type.as_deref(), Some("region"));
+
+    let v: Value = serde_json::to_value(&view).unwrap();
+    assert_eq!(v["group_scope"], json!("us-east"));
+    assert_eq!(v["group_scope_type"], json!("region"));
+
+    let plain = view.to_plain();
+    assert!(plain.contains("group_scope: us-east"), "got: {plain}");
+    assert!(plain.contains("group_scope_type: region"), "got: {plain}");
+}
+
+/// A VLAN with NO group makes NO second request: the group fetch is gated on the
+/// VLAN actually having a group. The vlan-groups endpoint is mounted with
+/// `.expect(0)` so any stray fetch fails the test, and the new `group_scope` /
+/// `group_scope_type` fields are omitted (output otherwise unchanged).
+#[tokio::test]
+async fn vlan_without_group_makes_no_group_fetch() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/vlans/"))
+        .and(query_param("vid", "208"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 3, "url": "http://nb/api/ipam/vlans/3/", "vid": 208, "name": "users",
+                "status": {"value": "active", "label": "Active"},
+                "site": {"id": 1, "name": "iad1", "display": "iad1"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .and(query_param("vlan_id", "3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 0, "next": null, "previous": null, "results": []
+        })))
+        .mount(&server)
+        .await;
+    // No group → this must never be requested.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/vlan-groups/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({})))
+        .expect(0)
+        .mount(&server)
+        .await;
+
+    let view = detail::vlan_view_by_ref(&client(&server), "208", None, None, &not_found)
+        .await
+        .unwrap();
+
+    // Unchanged output: own scope present, group-scope fields absent.
+    assert_eq!(view.scope.as_deref(), Some("iad1"));
+    assert_eq!(view.scope_type.as_deref(), Some("site"));
+    assert!(view.group_scope.is_none());
+    assert!(view.group_scope_type.is_none());
+
+    let v: Value = serde_json::to_value(&view).unwrap();
+    assert!(v.get("group_scope").is_none(), "no group_scope key: {v}");
+    assert!(
+        v.get("group_scope_type").is_none(),
+        "no group_scope_type key: {v}"
+    );
+}

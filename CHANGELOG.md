@@ -5,6 +5,16 @@ All notable changes to nbox are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- `nbox vlan` now surfaces the VLAN group's scope. A VLAN group is itself
+  polymorphically scoped (the VLAN is not), so when a VLAN belongs to a scoped
+  group the view gains `group_scope` (the group's scope object name) and
+  `group_scope_type` (a friendly label). These are additive and distinct from the
+  VLAN's own `scope`/`scope_type`; both are omitted when the VLAN has no group or
+  the group is unscoped. The extra group fetch happens only when a group exists.
+
 ## [0.1.1] - 2026-06-17
 
 The first real release. (`0.1.0` was a name reservation on crates.io.)

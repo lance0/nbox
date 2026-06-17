@@ -13,7 +13,7 @@ nbox is a read-only NetBox client (v0.1) — a CLI and a TUI over the same core.
 | `nbox prefix <cidr> [--vrf] [--journal]` | Prefix with utilization, children, and contained IPs. |
 | `nbox next-ip <cidr> [--count] [--vrf]` | Next available address(es). |
 | `nbox next-prefix <cidr> [--length] [--vrf]` | Available free block(s). |
-| `nbox vlan <vid\|name> [--site] [--group] [--journal]` | VLAN + referencing prefixes. |
+| `nbox vlan <vid\|name> [--site] [--group] [--journal]` | VLAN + referencing prefixes, plus the VLAN's own `scope`/`scope_type` and, when it belongs to a scoped VLAN group, the group's `group_scope`/`group_scope_type`. |
 | `nbox site` / `rack` / `circuit` / `aggregate` / `asn` / `ip-range` `[--journal]` | Object lookups. |
 | `nbox tags` | List tags. |
 | `nbox journal <kind> <ref>` | Recent journal entries for an object. `--journal` on a detail lookup (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range) folds the most recent entries inline (default 5); `--journal-limit <N>` overrides the cap and implies `--journal`. |

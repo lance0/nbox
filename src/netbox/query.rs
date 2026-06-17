@@ -12,6 +12,7 @@ use crate::netbox::models::dcim::{Device, Interface, Location, Rack, Region, Sit
 use crate::netbox::models::extras::{JournalEntry, TagInfo};
 use crate::netbox::models::ipam::{
     Aggregate, Asn, AvailableIp, AvailablePrefix, IpAddress, IpRange, Prefix, Service, Vlan,
+    VlanGroup,
 };
 use crate::netbox::pagination::Page;
 
@@ -305,6 +306,15 @@ impl NetBoxClient {
         ambiguous_or_first("VLAN", value, contains.results, |v| {
             format!("{} {}", v.vid, v.name)
         })
+    }
+
+    /// Fetch a VLAN group by numeric id (`/api/ipam/vlan-groups/<id>/`). A VLAN
+    /// group, unlike a VLAN, is polymorphically scoped; the VLAN serializer's
+    /// nested `group` brief omits that scope, so this follow-up fetch reads it.
+    /// 404 → `Ok(None)` (a stale group reference is "not found", not an error).
+    pub async fn vlan_group_by_id(&self, id: u64) -> Result<Option<VlanGroup>> {
+        self.get_optional(&format!("/api/ipam/vlan-groups/{id}/"), &[])
+            .await
     }
 
     /// Prefixes that reference a VLAN (up to `max`).

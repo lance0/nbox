@@ -122,6 +122,28 @@ pub struct Vlan {
     pub custom_fields: serde_json::Value,
 }
 
+/// A VLAN group (`/api/ipam/vlan-groups/`).
+///
+/// Unlike a VLAN, a VLAN group IS polymorphically scoped: it carries
+/// `scope_type`/`scope_id`/`scope`. The VLAN serializer's nested `group` brief
+/// omits that scope, so surfacing a VLAN's group scope needs a follow-up fetch
+/// of the group by id. Permissive — only the identity + scope fields are read.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct VlanGroup {
+    pub id: u64,
+    #[serde(default)]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub slug: Option<String>,
+
+    #[serde(default)]
+    pub scope_type: Option<String>,
+    #[serde(default)]
+    pub scope_id: Option<u64>,
+    #[serde(default)]
+    pub scope: Option<BriefObject>,
+}
+
 /// A VRF (`/api/ipam/vrfs/`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Vrf {

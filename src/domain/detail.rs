@@ -30,7 +30,7 @@ use crate::netbox::client::NetBoxClient;
 use crate::netbox::models::circuits::Circuit;
 use crate::netbox::models::common::BriefObject;
 use crate::netbox::models::dcim::{Device, Site};
-use crate::netbox::models::ipam::{Aggregate, Asn, IpAddress, IpRange, Prefix, Vlan};
+use crate::netbox::models::ipam::{Aggregate, Asn, IpAddress, IpRange, Prefix, Vlan, VlanGroup};
 use crate::netbox::query;
 use crate::netbox::search::ObjectKind;
 
@@ -207,6 +207,19 @@ pub async fn prefix_view_by_ref(
     Ok(PrefixView::build(prefix, children, ips))
 }
 
+/// Fetch the VLAN's group (for its scope) only when the VLAN actually has one.
+/// A VLAN group is polymorphically scoped but the VLAN's nested `group` brief
+/// omits that scope, so this does one follow-up GET of the group by id. No group
+/// ⇒ no request (`Ok(None)`), keeping the unscoped path's behavior unchanged.
+/// A stale/missing group id is tolerated (404 → `None`), so a dangling reference
+/// never fails an otherwise-good VLAN lookup.
+async fn vlan_group_scope(client: &NetBoxClient, vlan: &Vlan) -> Result<Option<VlanGroup>> {
+    match vlan.group.as_ref() {
+        Some(g) => client.vlan_group_by_id(g.id).await,
+        None => Ok(None),
+    }
+}
+
 /// `vlan <vid|name>`: resolve a VLAN (a VID present at several sites/groups is
 /// scoped by `site`/`group`, ambiguity-checked) and build its view with the
 /// prefixes that reference it (cap [`SECTION_CAP`]). Shared by CLI/MCP.
@@ -235,7 +248,8 @@ pub async fn vlan_view_by_ref(
             .ok_or_else(|| not_found("VLAN", value))?
     };
     let prefixes = client.vlan_prefixes(vlan.id, SECTION_CAP).await?;
-    Ok(VlanView::build(vlan, prefixes))
+    let group = vlan_group_scope(client, &vlan).await?;
+    Ok(VlanView::build(vlan, prefixes, group))
 }
 
 /// `site <name|slug>`: resolve a site and build its view. Shared by CLI/MCP.
@@ -425,7 +439,8 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
         ObjectKind::Vlan => {
             let vlan: Vlan = client.get(&format!("/api/ipam/vlans/{id}/"), &[]).await?;
             let prefixes = client.vlan_prefixes(vlan.id, SECTION_CAP).await?;
-            let v = VlanView::build(vlan, prefixes);
+            let group = vlan_group_scope(client, &vlan).await?;
+            let v = VlanView::build(vlan, prefixes, group);
             (format!("vlan {}", v.vid), v.to_plain())
         }
         ObjectKind::Circuit => {
@@ -530,7 +545,8 @@ pub async fn load_detail_by_ref(
                 .with_context(|| format!("no VLAN matched \"{value}\""))?;
             let id = vlan.id;
             let prefixes = client.vlan_prefixes(vlan.id, SECTION_CAP).await?;
-            let v = VlanView::build(vlan, prefixes);
+            let group = vlan_group_scope(client, &vlan).await?;
+            let v = VlanView::build(vlan, prefixes, group);
             (id, format!("vlan {}", v.vid), v.to_plain())
         }
         ObjectKind::Circuit => {
