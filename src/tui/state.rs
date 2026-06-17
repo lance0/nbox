@@ -509,6 +509,14 @@ mod tests {
         }
     }
 
+    fn result_of(kind: ObjectKind, id: u64, display: &str) -> SearchResult {
+        SearchResult {
+            kind,
+            display: display.into(),
+            ..result(id, display)
+        }
+    }
+
     fn press(code: KeyCode) -> AppEvent {
         AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
     }
@@ -602,6 +610,54 @@ mod tests {
 
         a.handle_event(press(KeyCode::Char('b')));
         assert_eq!(a.screen, Screen::Home);
+    }
+
+    #[test]
+    fn enter_on_new_kind_result_loads_detail_with_that_kind() {
+        // The newer search kinds (circuit/aggregate/ASN/IP-range) must dispatch
+        // a LoadDetail carrying their own ObjectKind + id — the same glue the
+        // device path uses — so they open in the TUI like every other kind.
+        for kind in [
+            ObjectKind::Circuit,
+            ObjectKind::Aggregate,
+            ObjectKind::Asn,
+            ObjectKind::IpRange,
+        ] {
+            let mut a = app();
+            set_results(&mut a, vec![result_of(kind, 7, "thing")]);
+            let cmds = a.handle_event(press(KeyCode::Enter));
+            match cmds.as_slice() {
+                [AppCommand::LoadDetail { kind: k, id }] => {
+                    assert_eq!(*k, kind, "wrong kind dispatched for {kind:?}");
+                    assert_eq!(*id, 7);
+                }
+                other => panic!("expected LoadDetail for {kind:?}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn new_kind_detail_renders_non_empty_body() {
+        // Once a new-kind detail loads, its (tab-less) view body must be the
+        // string the render path paints — non-empty and unaffected by the
+        // device-only tab machinery.
+        let mut a = app();
+        a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
+            kind: ObjectKind::Asn,
+            id: 3,
+            title: "asn 64500".into(),
+            body: "asn: 64500\nrir: ARIN".into(),
+            tabs: Vec::new(),
+        })));
+        assert_eq!(a.screen, Screen::Detail);
+        assert_eq!(a.detail_tab, 0);
+        assert_eq!(a.detail_body(), "asn: 64500\nrir: ARIN");
+        // No sub-resource tabs for these kinds, so a device tab key is a no-op.
+        a.handle_event(press(KeyCode::Char('i')));
+        assert_eq!(a.detail_tab, 0);
+        assert_eq!(a.detail_body(), "asn: 64500\nrir: ARIN");
+        // Reopening recorded it under its own kind.
+        assert_eq!(a.recent[0].kind, ObjectKind::Asn);
     }
 
     #[test]
