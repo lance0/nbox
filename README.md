@@ -134,9 +134,9 @@ nbox next-prefix <cidr> [--length L] [--vrf <name>] # available free block(s)
 nbox site <name-or-slug> [--journal]
 nbox rack <name-or-id> [--journal]
 nbox circuit <cid-or-id> [--journal]
-nbox aggregate <cidr-or-id>
-nbox asn <number>
-nbox ip-range <start-or-id>
+nbox aggregate <cidr-or-id> [--journal]
+nbox asn <number> [--journal]
+nbox ip-range <start-or-id> [--journal]
 nbox vlan <vid-or-name> [--site <s>] [--group <g>] [--journal]
 nbox interface <device> <interface>
 nbox journal <kind> <ref>         # recent journal entries for an object

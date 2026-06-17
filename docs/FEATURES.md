@@ -14,9 +14,9 @@ nbox is a read-only NetBox client (v0.1) — a CLI and a TUI over the same core.
 | `nbox next-ip <cidr> [--count] [--vrf]` | Next available address(es). |
 | `nbox next-prefix <cidr> [--length] [--vrf]` | Available free block(s). |
 | `nbox vlan <vid\|name> [--site] [--group] [--journal]` | VLAN + referencing prefixes. |
-| `nbox site` / `rack` / `circuit` `[--journal]`, `aggregate` / `asn` / `ip-range` | Object lookups. |
+| `nbox site` / `rack` / `circuit` / `aggregate` / `asn` / `ip-range` `[--journal]` | Object lookups. |
 | `nbox tags` | List tags. |
-| `nbox journal <kind> <ref>` | Recent journal entries for an object. `--journal` on a detail lookup (device, ip, prefix, vlan, site, rack, circuit) folds the most recent entries inline. |
+| `nbox journal <kind> <ref>` | Recent journal entries for an object. `--journal` on a detail lookup (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range) folds the most recent entries inline. |
 | `nbox status` | Connection + NetBox/Django/Python versions. |
 | `nbox open <kind>/<ref>` | Open an object in the browser. |
 | `nbox raw GET <path>` | Raw read-only API request (escape hatch). |

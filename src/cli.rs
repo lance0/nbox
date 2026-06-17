@@ -197,18 +197,30 @@ pub enum Command {
     Aggregate {
         /// Aggregate prefix (CIDR) or numeric ID.
         value: String,
+
+        /// Also fetch the object's recent journal entries.
+        #[arg(long)]
+        journal: bool,
     },
 
     /// Show an ASN by number.
     Asn {
         /// The AS number.
         asn: u32,
+
+        /// Also fetch the object's recent journal entries.
+        #[arg(long)]
+        journal: bool,
     },
 
     /// Show an IP range by start address or numeric ID.
     IpRange {
         /// Range start address or numeric ID.
         value: String,
+
+        /// Also fetch the object's recent journal entries.
+        #[arg(long)]
+        journal: bool,
     },
 
     /// Show a VLAN by VID or name.
@@ -253,7 +265,8 @@ pub enum Command {
 
     /// Show recent journal entries for an object.
     Journal {
-        /// Object kind: device, ip, prefix, vlan, site, rack, or circuit.
+        /// Object kind: device, ip, prefix, vlan, site, rack, circuit,
+        /// aggregate, asn, or ip-range.
         kind: String,
 
         /// Object reference (name, address, CIDR, VID, slug, or ID).
@@ -409,6 +422,31 @@ mod tests {
         assert!(matches!(
             site.command,
             Some(Command::Site { journal: true, .. })
+        ));
+    }
+
+    #[test]
+    fn journal_flag_wired_on_aggregate_asn_and_ip_range() {
+        let agg = Cli::try_parse_from(["nbox", "aggregate", "10.0.0.0/8", "--journal"]).unwrap();
+        assert!(matches!(
+            agg.command,
+            Some(Command::Aggregate { journal: true, .. })
+        ));
+        let asn = Cli::try_parse_from(["nbox", "asn", "64512", "--journal"]).unwrap();
+        assert!(matches!(
+            asn.command,
+            Some(Command::Asn { journal: true, .. })
+        ));
+        let range = Cli::try_parse_from(["nbox", "ip-range", "10.0.0.10", "--journal"]).unwrap();
+        assert!(matches!(
+            range.command,
+            Some(Command::IpRange { journal: true, .. })
+        ));
+        // Defaults off when the flag is absent.
+        let bare = Cli::try_parse_from(["nbox", "aggregate", "10.0.0.0/8"]).unwrap();
+        assert!(matches!(
+            bare.command,
+            Some(Command::Aggregate { journal: false, .. })
         ));
     }
 }

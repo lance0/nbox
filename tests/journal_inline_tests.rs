@@ -186,6 +186,178 @@ async fn site_with_journal_carries_entries_and_leaves_object_unchanged() {
 }
 
 #[tokio::test]
+async fn aggregate_with_journal_carries_entries_and_leaves_object_unchanged() {
+    let server = MockServer::start().await;
+    // `aggregate_by_ref` (non-numeric) filters by exact prefix.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/aggregates/"))
+        .and(query_param("prefix", "10.0.0.0/8"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 3, "url": "http://nb/api/ipam/aggregates/3/", "prefix": "10.0.0.0/8",
+                "rir": {"id": 1, "display": "RFC 1918"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+    // The inline journal fetch addresses the aggregate by its dotted content type.
+    mock_journal(
+        &server,
+        "ipam.aggregate",
+        3,
+        json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 11, "created": "2024-05-01",
+                "kind": {"value": "info", "label": "Info"},
+                "created_by": {"display": "ipam"},
+                "comments": "allocated"
+            }]
+        }),
+    )
+    .await;
+
+    let cli = client(&server);
+
+    let view = detail::aggregate_view_by_ref(&cli, "10.0.0.0/8", &not_found)
+        .await
+        .unwrap();
+    let bare: Value = serde_json::to_value(&view).unwrap();
+    assert!(bare.get("journal").is_none(), "bare view has no journal");
+
+    let entries = detail::journal_rows(&cli, "ipam.aggregate", 3)
+        .await
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    let wrapped = WithJournal::new(view, entries);
+    let v: Value = serde_json::to_value(&wrapped).unwrap();
+
+    let journal = v["journal"].as_array().expect("journal array");
+    assert_eq!(journal.len(), 1);
+    assert_eq!(journal[0]["comments"], json!("allocated"));
+    assert_eq!(journal[0]["author"], json!("ipam"));
+
+    // Additive: the aggregate object is unchanged once `journal` is removed.
+    let mut without = v.clone();
+    without.as_object_mut().unwrap().remove("journal");
+    assert_eq!(without, bare);
+    assert_eq!(v["prefix"], json!("10.0.0.0/8"));
+}
+
+#[tokio::test]
+async fn asn_with_journal_carries_entries_and_leaves_object_unchanged() {
+    let server = MockServer::start().await;
+    // `asn_by_ref` filters by the AS number.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/asns/"))
+        .and(query_param("asn", "64512"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 9, "url": "http://nb/api/ipam/asns/9/", "asn": 64512}]
+        })))
+        .mount(&server)
+        .await;
+    mock_journal(
+        &server,
+        "ipam.asn",
+        9,
+        json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 21, "created": "2024-06-01",
+                "kind": {"value": "info", "label": "Info"},
+                "created_by": {"display": "neteng"},
+                "comments": "reserved"
+            }]
+        }),
+    )
+    .await;
+
+    let cli = client(&server);
+
+    let view = detail::asn_view_by_ref(&cli, 64512, "64512", &not_found)
+        .await
+        .unwrap();
+    let bare: Value = serde_json::to_value(&view).unwrap();
+    assert!(bare.get("journal").is_none(), "bare view has no journal");
+
+    let entries = detail::journal_rows(&cli, "ipam.asn", 9).await.unwrap();
+    assert_eq!(entries.len(), 1);
+    let wrapped = WithJournal::new(view, entries);
+    let v: Value = serde_json::to_value(&wrapped).unwrap();
+
+    let journal = v["journal"].as_array().expect("journal array");
+    assert_eq!(journal.len(), 1);
+    assert_eq!(journal[0]["comments"], json!("reserved"));
+    assert_eq!(journal[0]["author"], json!("neteng"));
+
+    // Additive: the ASN object is unchanged once `journal` is removed.
+    let mut without = v.clone();
+    without.as_object_mut().unwrap().remove("journal");
+    assert_eq!(without, bare);
+    assert_eq!(v["asn"], json!(64512));
+}
+
+#[tokio::test]
+async fn ip_range_with_journal_carries_entries_and_leaves_object_unchanged() {
+    let server = MockServer::start().await;
+    // `ip_range_by_ref` (non-numeric) filters by start address.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/ip-ranges/"))
+        .and(query_param("start_address", "10.0.0.10/24"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 4, "url": "http://nb/api/ipam/ip-ranges/4/",
+                "start_address": "10.0.0.10/24", "end_address": "10.0.0.20/24", "size": 11
+            }]
+        })))
+        .mount(&server)
+        .await;
+    // The inline journal fetch addresses the range by its dotted content type.
+    mock_journal(
+        &server,
+        "ipam.iprange",
+        4,
+        json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 31, "created": "2024-06-10",
+                "kind": {"value": "info", "label": "Info"},
+                "created_by": {"display": "ipam"},
+                "comments": "carved out"
+            }]
+        }),
+    )
+    .await;
+
+    let cli = client(&server);
+
+    let view = detail::ip_range_view_by_ref(&cli, "10.0.0.10/24", &not_found)
+        .await
+        .unwrap();
+    let bare: Value = serde_json::to_value(&view).unwrap();
+    assert!(bare.get("journal").is_none(), "bare view has no journal");
+
+    let entries = detail::journal_rows(&cli, "ipam.iprange", 4).await.unwrap();
+    assert_eq!(entries.len(), 1);
+    let wrapped = WithJournal::new(view, entries);
+    let v: Value = serde_json::to_value(&wrapped).unwrap();
+
+    let journal = v["journal"].as_array().expect("journal array");
+    assert_eq!(journal.len(), 1);
+    assert_eq!(journal[0]["comments"], json!("carved out"));
+    assert_eq!(journal[0]["author"], json!("ipam"));
+
+    // Additive: the range object is unchanged once `journal` is removed.
+    let mut without = v.clone();
+    without.as_object_mut().unwrap().remove("journal");
+    assert_eq!(without, bare);
+    assert_eq!(v["start_address"], json!("10.0.0.10/24"));
+}
+
+#[tokio::test]
 async fn journal_rows_caps_at_inline_max() {
     let server = MockServer::start().await;
     // The endpoint returns more entries than the inline cap; `journal_rows` must

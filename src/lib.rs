@@ -165,9 +165,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Site { value, journal }) => run_site(&ctx, &value, journal).await,
         Some(Command::Rack { value, journal }) => run_rack(&ctx, &value, journal).await,
         Some(Command::Circuit { value, journal }) => run_circuit(&ctx, &value, journal).await,
-        Some(Command::Aggregate { value }) => run_aggregate(&ctx, &value).await,
-        Some(Command::Asn { asn }) => run_asn(&ctx, asn).await,
-        Some(Command::IpRange { value }) => run_ip_range(&ctx, &value).await,
+        Some(Command::Aggregate { value, journal }) => run_aggregate(&ctx, &value, journal).await,
+        Some(Command::Asn { asn, journal }) => run_asn(&ctx, asn, journal).await,
+        Some(Command::IpRange { value, journal }) => run_ip_range(&ctx, &value, journal).await,
         Some(Command::Vlan {
             value,
             site,
@@ -512,25 +512,43 @@ async fn run_circuit(ctx: &Ctx, value: &str, journal: bool) -> Result<()> {
 }
 
 /// `nbox ip-range <start|id>` — show an IP range.
-async fn run_ip_range(ctx: &Ctx, value: &str) -> Result<()> {
+async fn run_ip_range(ctx: &Ctx, value: &str, journal: bool) -> Result<()> {
     let client = connect(ctx)?;
     let view = detail::ip_range_view_by_ref(&client, value, &not_found).await?;
-    emit(ctx, &view, || view.to_key_values().print())
+    if journal {
+        let entries = inline_journal(&client, "ip-range", value).await?;
+        let plain = view.to_key_values().render();
+        emit_with_journal(ctx, view, entries, plain)
+    } else {
+        emit(ctx, &view, || view.to_key_values().print())
+    }
 }
 
 /// `nbox aggregate <cidr|id>` — show an aggregate.
-async fn run_aggregate(ctx: &Ctx, value: &str) -> Result<()> {
+async fn run_aggregate(ctx: &Ctx, value: &str, journal: bool) -> Result<()> {
     let client = connect(ctx)?;
     let view = detail::aggregate_view_by_ref(&client, value, &not_found).await?;
-    emit(ctx, &view, || view.to_key_values().print())
+    if journal {
+        let entries = inline_journal(&client, "aggregate", value).await?;
+        let plain = view.to_key_values().render();
+        emit_with_journal(ctx, view, entries, plain)
+    } else {
+        emit(ctx, &view, || view.to_key_values().print())
+    }
 }
 
 /// `nbox asn <asn>` — show an ASN.
-async fn run_asn(ctx: &Ctx, asn: u32) -> Result<()> {
+async fn run_asn(ctx: &Ctx, asn: u32, journal: bool) -> Result<()> {
     let client = connect(ctx)?;
     let value = asn.to_string();
     let view = detail::asn_view_by_ref(&client, asn, &value, &not_found).await?;
-    emit(ctx, &view, || view.to_key_values().print())
+    if journal {
+        let entries = inline_journal(&client, "asn", &value).await?;
+        let plain = view.to_key_values().render();
+        emit_with_journal(ctx, view, entries, plain)
+    } else {
+        emit(ctx, &view, || view.to_key_values().print())
+    }
 }
 
 /// `nbox site <name|slug>` — show a site.
@@ -671,8 +689,22 @@ async fn resolve_content_type_id(
             .circuit_by_ref(value)
             .await?
             .map(|c| ("circuits.circuit", c.id)),
+        "aggregate" => client
+            .aggregate_by_ref(value)
+            .await?
+            .map(|a| ("ipam.aggregate", a.id)),
+        "asn" => {
+            let number: u32 = value
+                .parse()
+                .map_err(|_| anyhow::anyhow!("ASN must be a number, got \"{value}\""))?;
+            client.asn_by_ref(number).await?.map(|a| ("ipam.asn", a.id))
+        }
+        "ip-range" | "iprange" => client
+            .ip_range_by_ref(value)
+            .await?
+            .map(|r| ("ipam.iprange", r.id)),
         other => anyhow::bail!(
-            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit)"
+            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range)"
         ),
     };
     resolved.ok_or_else(|| not_found(kind, value))
