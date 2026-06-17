@@ -39,7 +39,7 @@ nbox
 - **Fast shell lookups** — `device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `interface`, `search`.
 - **Normalized search** across devices, IPs, prefixes, VLANs, sites, circuits, aggregates, ASNs, and IP ranges in one command.
 - **Interactive TUI** with search, detail panes, navigation history, and a command palette.
-- **IPAM-aware** — IP → parent prefix → VLAN → site resolution, computed locally with `ipnet`.
+- **IPAM-aware** — IP → parent prefix → VLAN → scope (site/location/region/…) resolution, computed locally with `ipnet`.
 - **Scriptable** — clean `--json` output on every command for piping into `jq`.
 - **Open in browser** and **copy to clipboard** straight from results.
 - **Profiles** for multiple NetBox instances (work, lab, …).

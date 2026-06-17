@@ -308,9 +308,14 @@ async fn get_ip_returns_ip_view_with_parent_context() {
     assert_eq!(value["address"], "10.44.208.55/24");
     assert_eq!(value["status"], "active");
     assert_eq!(value["dns_name"], "printer-55.example.com");
-    // Enrichment chose the longest-match prefix and pulled its site/VLAN.
+    // Enrichment chose the longest-match prefix and pulled its scope/VLAN.
     assert_eq!(value["parent_prefix"], "10.44.208.0/24");
-    assert_eq!(value["site"], "iad1");
+    assert_eq!(value["scope"], "iad1");
+    assert_eq!(value["scope_type"], "site");
+    assert!(
+        value.get("site").is_none(),
+        "ip view has no site key: {value}"
+    );
     assert_eq!(value["vlan"], "208 (users)");
 }
 
@@ -397,7 +402,13 @@ async fn get_vlan_by_vid_returns_vlan_view_with_prefixes() {
 
     assert_eq!(value["vid"], 208);
     assert_eq!(value["name"], "users");
-    assert_eq!(value["site"], "iad1");
+    // A directly-assigned site surfaces as the type-agnostic scope (type "site").
+    assert_eq!(value["scope"], "iad1");
+    assert_eq!(value["scope_type"], "site");
+    assert!(
+        value.get("site").is_none(),
+        "vlan view has no site key: {value}"
+    );
     assert_eq!(value["prefixes"][0], "10.44.208.0/24");
 }
 
@@ -476,7 +487,8 @@ async fn get_vlan_disambiguated_by_site_resolves() {
         .expect("vlan disambiguated by site");
 
     assert_eq!(value["vid"], 208);
-    assert_eq!(value["site"], "sfo1");
+    assert_eq!(value["scope"], "sfo1");
+    assert_eq!(value["scope_type"], "site");
 }
 
 #[tokio::test]

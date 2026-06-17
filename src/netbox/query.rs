@@ -40,6 +40,20 @@ fn ambiguous_or_first<T>(
     Ok(results.into_iter().next())
 }
 
+/// Map a NetBox scope content type (`scope_type`) to a friendly label, e.g.
+/// `dcim.site` → `site`, `dcim.location` → `location`, `dcim.region` → `region`,
+/// `dcim.sitegroup` → `site-group`. Unknown content types pass through verbatim,
+/// so a NetBox release that adds a new scope kind still gets a usable label.
+pub(crate) fn friendly_scope_type(content_type: &str) -> String {
+    match content_type {
+        "dcim.site" => "site".to_string(),
+        "dcim.location" => "location".to_string(),
+        "dcim.region" => "region".to_string(),
+        "dcim.sitegroup" => "site-group".to_string(),
+        other => other.to_string(),
+    }
+}
+
 /// Disambiguation label for a prefix, e.g. `10.0.0.0/24 (vrf: blue)` / `(global)`.
 pub(crate) fn prefix_scope_label(p: &Prefix) -> String {
     match &p.vrf {
@@ -48,12 +62,16 @@ pub(crate) fn prefix_scope_label(p: &Prefix) -> String {
     }
 }
 
-/// Disambiguation label for a VLAN, e.g. `208 users (site: iad1)`.
+/// Disambiguation label for a VLAN, e.g. `208 users (site: iad1)`. Prefers a
+/// polymorphic `scope` (labelled by its friendly type) when present, falling back
+/// to the direct `site`, then the VLAN `group`.
 pub(crate) fn vlan_scope_label(v: &Vlan) -> String {
-    let scope = match (&v.site, &v.group) {
-        (Some(s), _) => format!(" (site: {})", s.label()),
-        (None, Some(g)) => format!(" (group: {})", g.label()),
-        (None, None) => String::new(),
+    let scope = match (&v.scope, &v.scope_type, &v.site, &v.group) {
+        (Some(s), Some(t), _, _) => format!(" ({}: {})", friendly_scope_type(t), s.label()),
+        (Some(s), None, _, _) => format!(" (scope: {})", s.label()),
+        (None, _, Some(s), _) => format!(" (site: {})", s.label()),
+        (None, _, None, Some(g)) => format!(" (group: {})", g.label()),
+        (None, _, None, None) => String::new(),
     };
     format!("{} {}{}", v.vid, v.name, scope)
 }
@@ -412,5 +430,49 @@ impl NetBoxClient {
             .list(Endpoint::Racks, vec![("name__ic", value.to_string())])
             .await?;
         ambiguous_or_first("rack", value, contains.results, |r| r.name.clone())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn friendly_scope_type_maps_known_and_passes_through_unknown() {
+        assert_eq!(friendly_scope_type("dcim.site"), "site");
+        assert_eq!(friendly_scope_type("dcim.location"), "location");
+        assert_eq!(friendly_scope_type("dcim.region"), "region");
+        assert_eq!(friendly_scope_type("dcim.sitegroup"), "site-group");
+        // Unknown content types are surfaced verbatim, not dropped.
+        assert_eq!(friendly_scope_type("dcim.newscope"), "dcim.newscope");
+    }
+
+    #[test]
+    fn vlan_scope_label_prefers_polymorphic_scope_then_site_then_group() {
+        let scoped: Vlan = serde_json::from_value(json!({
+            "id": 1, "url": "u", "vid": 10, "name": "a",
+            "scope_type": "dcim.region", "scope": {"id": 1, "display": "us-east"}
+        }))
+        .unwrap();
+        assert_eq!(vlan_scope_label(&scoped), "10 a (region: us-east)");
+
+        let sited: Vlan = serde_json::from_value(json!({
+            "id": 2, "url": "u", "vid": 11, "name": "b",
+            "site": {"id": 1, "display": "iad1"}
+        }))
+        .unwrap();
+        assert_eq!(vlan_scope_label(&sited), "11 b (site: iad1)");
+
+        let grouped: Vlan = serde_json::from_value(json!({
+            "id": 3, "url": "u", "vid": 12, "name": "c",
+            "group": {"id": 1, "display": "campus"}
+        }))
+        .unwrap();
+        assert_eq!(vlan_scope_label(&grouped), "12 c (group: campus)");
+
+        let bare: Vlan =
+            serde_json::from_value(json!({"id": 4, "url": "u", "vid": 13, "name": "d"})).unwrap();
+        assert_eq!(vlan_scope_label(&bare), "13 d");
     }
 }

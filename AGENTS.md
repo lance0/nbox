@@ -91,7 +91,7 @@ HTTP transport, OAuth, a raw escape-hatch tool, and MCP resources/prompts are la
 
 ```bash
 nbox device edge01 --json --envelope
-nbox ip 10.44.208.55 --json --fields address,parent_prefix,assigned
+nbox ip 10.44.208.55 --json --fields address,parent_prefix,scope,scope_type,assigned
 nbox search edge --status active --site dc1 -o csv --cols kind,display,url
 nbox device edge01 --json | jq '.primary_ip4'
 ```
@@ -101,3 +101,9 @@ nbox device edge01 --json | jq '.primary_ip4'
 - Read-only today (v0.1). Safe, diff-confirmed writes are planned for v0.2.
 - Filters that an object type can't satisfy cause that type to be skipped in
   `search` (nbox does not send NetBox unknown query params).
+- Scope fields (NetBox 4.2+ polymorphic scope): `prefix` and `vlan` carry
+  `scope` (the scope object's name, for any scope type) and `scope_type` (a
+  friendly label — `site`, `location`, `region`, `site-group`, or the raw
+  content type for anything else). `ip` derives `scope`/`scope_type` from its
+  most-specific parent prefix. Each is omitted when there is no scope. (There is
+  no `site` field on these views — use `scope`/`scope_type`.)

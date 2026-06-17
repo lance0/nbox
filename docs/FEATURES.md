@@ -9,7 +9,7 @@ nbox is a read-only NetBox client (v0.1) — a CLI and a TUI over the same core.
 | `nbox search <q>` | Parallel search across devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP-ranges. Filters: `--status/--site/--tenant/--role/--tag`, `--limit`, `--cols`, `--partial`. |
 | `nbox device <name\|slug\|id> [--journal]` | Device + interfaces, IPs, cables, VLANs, services. |
 | `nbox interface <device> <iface>` | One interface: type, MTU, MAC, mode, VLANs, cable, **cable path** (trace), addresses. |
-| `nbox ip <addr> [--vrf] [--journal]` | IP + most-specific parent prefix (VRF-scoped) and its VLAN/site. |
+| `nbox ip <addr> [--vrf] [--journal]` | IP + most-specific parent prefix (VRF-scoped) and its VLAN plus the prefix's `scope`/`scope_type` (site, location, region, …). |
 | `nbox prefix <cidr> [--vrf] [--journal]` | Prefix with utilization, children, and contained IPs. |
 | `nbox next-ip <cidr> [--count] [--vrf]` | Next available address(es). |
 | `nbox next-prefix <cidr> [--length] [--vrf]` | Available free block(s). |

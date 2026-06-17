@@ -1,7 +1,7 @@
 //! Flattened IP-address view for `nbox ip` (plain + JSON).
 //!
 //! Resolves the most-specific containing prefix locally with `ipnet`, and pulls
-//! VLAN/site context from that prefix.
+//! VLAN/scope context from that prefix.
 
 use std::collections::BTreeMap;
 
@@ -11,6 +11,7 @@ use serde_json::Value;
 
 use crate::domain::custom;
 use crate::netbox::models::ipam::{IpAddress, Prefix};
+use crate::netbox::query::friendly_scope_type;
 use crate::output::plain::KeyValues;
 
 /// An IP address with resolved parent-prefix context.
@@ -31,8 +32,13 @@ pub struct IpView {
     pub parent_prefix: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vlan: Option<String>,
+    /// Name of the parent prefix's scope object (site, location, region, …) for
+    /// any scope type — see [`scope_type`](Self::scope_type) for which kind.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub site: Option<String>,
+    pub scope: Option<String>,
+    /// Friendly scope type of the parent prefix, e.g. `site`/`location`/`region`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_type: Option<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub custom_fields: BTreeMap<String, Value>,
 }
@@ -42,16 +48,13 @@ impl IpView {
     pub fn build(ip: IpAddress, parent: Option<Prefix>) -> Self {
         let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
 
-        let (parent_prefix, vlan, site) = match parent {
+        let (parent_prefix, vlan, scope, scope_type) = match parent {
             Some(p) => {
-                let site = p
-                    .scope
-                    .as_ref()
-                    .filter(|_| p.scope_type.as_deref() == Some("dcim.site"))
-                    .map(|b| b.label());
-                (Some(p.prefix), p.vlan.map(|b| b.label()), site)
+                let scope = p.scope.as_ref().map(|b| b.label());
+                let scope_type = p.scope_type.as_deref().map(friendly_scope_type);
+                (Some(p.prefix), p.vlan.map(|b| b.label()), scope, scope_type)
             }
-            None => (None, None, None),
+            None => (None, None, None, None),
         };
 
         Self {
@@ -63,7 +66,8 @@ impl IpView {
             assigned: ip.assigned_object.as_ref().and_then(assigned_label),
             parent_prefix,
             vlan,
-            site,
+            scope,
+            scope_type,
             custom_fields: custom::fields(&ip.custom_fields),
         }
     }
@@ -79,7 +83,8 @@ impl IpView {
             .push_opt("assigned", self.assigned.clone())
             .push_opt("parent_prefix", self.parent_prefix.clone())
             .push_opt("vlan", self.vlan.clone())
-            .push_opt("site", self.site.clone());
+            .push_opt("scope", self.scope.clone())
+            .push_opt("scope_type", self.scope_type.clone());
         custom::append(&mut kv, &self.custom_fields);
         kv
     }
@@ -173,8 +178,38 @@ mod tests {
 
         let view = IpView::build(ip, Some(parent));
         assert_eq!(view.parent_prefix.as_deref(), Some("10.44.208.0/24"));
-        assert_eq!(view.site.as_deref(), Some("iad1"));
+        assert_eq!(view.scope.as_deref(), Some("iad1"));
+        assert_eq!(view.scope_type.as_deref(), Some("site"));
         assert_eq!(view.vlan.as_deref(), Some("208 (users)"));
         assert_eq!(view.dns_name.as_deref(), Some("printer-55.example.com"));
+    }
+
+    #[test]
+    fn build_derives_non_site_scope_from_parent() {
+        let ip: IpAddress = serde_json::from_value(json!({
+            "id": 7, "url": "http://nb/ip/7/", "address": "10.0.0.5/24"
+        }))
+        .unwrap();
+        let parent: Prefix = serde_json::from_value(json!({
+            "id": 5, "url": "http://nb/p/5/", "prefix": "10.0.0.0/24",
+            "scope_type": "dcim.region",
+            "scope": {"id": 1, "display": "us-east"}
+        }))
+        .unwrap();
+
+        let view = IpView::build(ip, Some(parent));
+        assert_eq!(view.scope.as_deref(), Some("us-east"));
+        assert_eq!(view.scope_type.as_deref(), Some("region"));
+
+        // The JSON view must expose `scope`/`scope_type` and carry no `site` key.
+        let value = serde_json::to_value(&view).unwrap();
+        assert_eq!(value["scope"], "us-east");
+        assert_eq!(value["scope_type"], "region");
+        assert!(value.get("site").is_none(), "site key must be gone");
+
+        let kv = view.to_key_values().render();
+        assert!(kv.contains("scope: us-east"), "got: {kv}");
+        assert!(kv.contains("scope_type: region"), "got: {kv}");
+        assert!(!kv.contains("site:"), "got: {kv}");
     }
 }

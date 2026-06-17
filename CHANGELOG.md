@@ -7,6 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed (BREAKING)
+- Polymorphic scope (NetBox 4.2+) is now surfaced across the IPAM views. **BREAKING:** the `ip` view's `site` field is renamed to `scope`; prefixes and VLANs now surface non-site scopes (location, region, site-group, …) instead of only the site case, and all three views gain a `scope_type` field (a friendly label: `site`/`location`/`region`/`site-group`, or the raw content type for anything else). `scope` holds the scope object's name for any scope type; `ip` derives both from its most-specific parent prefix. No `site` field remains on the `ip`/`prefix`/`vlan` views — consumers must read `scope`/`scope_type`.
+
 ### Added (v0.1.1 — close the gap)
 - Read-only IPAM allocation: `nbox next-ip <prefix>` (next available address(es), `--count`) and `nbox next-prefix <prefix>` (free child blocks, or the first of `--length`, computed locally with `ipnet`). Both take `--vrf` to scope the prefix. Via the NetBox `available-ips`/`available-prefixes` endpoints.
 - `nbox open <kind>/<ref>` — resolve a device/site/rack/vlan/prefix/ip to its web URL and open it (was a stub).

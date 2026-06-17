@@ -81,6 +81,11 @@ pub struct Prefix {
 }
 
 /// A VLAN (`/api/ipam/vlans/`).
+///
+/// A VLAN's location comes from its `group` (a scoped VLAN group) or, when
+/// assigned directly, a `site`. NetBox versions that surface a polymorphic
+/// `scope` (`scope_type`/`scope_id`/`scope`) on the VLAN itself are honored too;
+/// all three are optional, so the common `site`/`group` shape still deserializes.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Vlan {
     pub id: u64,
@@ -96,6 +101,13 @@ pub struct Vlan {
     pub site: Option<BriefObject>,
     #[serde(default)]
     pub group: Option<BriefObject>,
+
+    #[serde(default)]
+    pub scope_type: Option<String>,
+    #[serde(default)]
+    pub scope_id: Option<u64>,
+    #[serde(default)]
+    pub scope: Option<BriefObject>,
     #[serde(default)]
     pub tenant: Option<BriefObject>,
     #[serde(default)]

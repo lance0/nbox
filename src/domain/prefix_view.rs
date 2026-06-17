@@ -9,6 +9,7 @@ use serde_json::Value;
 use crate::domain::custom;
 use crate::domain::ip_view::assigned_label;
 use crate::netbox::models::ipam::{IpAddress, Prefix};
+use crate::netbox::query::friendly_scope_type;
 use crate::output::plain::KeyValues;
 
 /// An IP address listed under a prefix.
@@ -29,8 +30,13 @@ pub struct PrefixView {
     pub vrf: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vlan: Option<String>,
+    /// Name of the prefix's scope object (site, location, region, …) for any
+    /// scope type — see [`scope_type`](Self::scope_type) for which kind.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope: Option<String>,
+    /// Friendly scope type, e.g. `site`/`location`/`region`/`site-group`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub scope_type: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tenant: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -51,11 +57,8 @@ impl PrefixView {
     /// Build a view from a prefix plus its children and contained IPs.
     pub fn build(p: Prefix, children: Vec<Prefix>, ips: Vec<IpAddress>) -> Self {
         let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
-        let scope = p
-            .scope
-            .as_ref()
-            .filter(|_| p.scope_type.as_deref() == Some("dcim.site"))
-            .map(|b| b.label());
+        let scope = p.scope.as_ref().map(|b| b.label());
+        let scope_type = p.scope_type.as_deref().map(friendly_scope_type);
 
         Self {
             prefix: p.prefix,
@@ -63,6 +66,7 @@ impl PrefixView {
             vrf: p.vrf.map(|b| b.label()),
             vlan: p.vlan.map(|b| b.label()),
             scope,
+            scope_type,
             tenant: p.tenant.map(|b| b.label()),
             role: p.role.map(|b| b.label()),
             children: p.children,
@@ -88,6 +92,7 @@ impl PrefixView {
             .push_opt("vrf", self.vrf.clone())
             .push_opt("vlan", self.vlan.clone())
             .push_opt("scope", self.scope.clone())
+            .push_opt("scope_type", self.scope_type.clone())
             .push_opt("tenant", self.tenant.clone())
             .push_opt("role", self.role.clone())
             .push_opt("children", self.children.map(|c| c.to_string()))
@@ -207,6 +212,7 @@ mod tests {
 
         let view = PrefixView::build(p, children, ips);
         assert_eq!(view.scope.as_deref(), Some("iad1"));
+        assert_eq!(view.scope_type.as_deref(), Some("site"));
         assert_eq!(view.vlan.as_deref(), Some("208 (users)"));
         assert_eq!(view.children, Some(4));
         assert_eq!(view.child_prefixes, vec!["10.44.208.0/26"]);
@@ -217,7 +223,46 @@ mod tests {
 
         let plain = view.to_plain();
         assert!(plain.contains("prefix: 10.44.208.0/24"));
+        assert!(plain.contains("scope: iad1"));
+        assert!(plain.contains("scope_type: site"));
         assert!(plain.contains("Child Prefixes\n  10.44.208.0/26"));
         assert!(plain.contains("IP Addresses\n  10.44.208.1/24  edge01 irb.208"));
+    }
+
+    #[test]
+    fn surfaces_non_site_scopes_with_friendly_type() {
+        for (ct, friendly) in [
+            ("dcim.location", "location"),
+            ("dcim.region", "region"),
+            ("dcim.sitegroup", "site-group"),
+        ] {
+            let p: Prefix = serde_json::from_value(json!({
+                "id": 5, "url": "u", "prefix": "10.0.0.0/24",
+                "scope_type": ct,
+                "scope": {"id": 1, "display": "scope-name"}
+            }))
+            .unwrap();
+            let view = PrefixView::build(p, vec![], vec![]);
+            assert_eq!(view.scope.as_deref(), Some("scope-name"));
+            assert_eq!(view.scope_type.as_deref(), Some(friendly));
+            let plain = view.to_plain();
+            assert!(plain.contains("scope: scope-name"), "got: {plain}");
+            assert!(
+                plain.contains(&format!("scope_type: {friendly}")),
+                "got: {plain}"
+            );
+        }
+    }
+
+    #[test]
+    fn absent_scope_omits_both_fields() {
+        let p: Prefix =
+            serde_json::from_value(json!({"id": 5, "url": "u", "prefix": "10.0.0.0/8"})).unwrap();
+        let view = PrefixView::build(p, vec![], vec![]);
+        assert_eq!(view.scope, None);
+        assert_eq!(view.scope_type, None);
+        let plain = view.to_plain();
+        assert!(!plain.contains("scope:"));
+        assert!(!plain.contains("scope_type:"));
     }
 }

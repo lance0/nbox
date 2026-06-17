@@ -1,0 +1,202 @@
+//! Integration tests: NetBox 4.2+ polymorphic scope surfaced through the shared
+//! view fetch path (`detail::*_view_by_ref`) the CLI/MCP/TUI all use — covering
+//! the wire → model → view → render chain end to end.
+//!
+//! A prefix (and the IP that derives context from it) carries a `scope`
+//! (the scope object's name, for *any* scope type) plus a friendly `scope_type`
+//! (`site`/`location`/`region`/`site-group`). The IP view exposes `scope` /
+//! `scope_type` and no longer has a `site` field.
+
+use nbox::config::ProfileConfig;
+use nbox::domain::detail;
+use nbox::netbox::client::NetBoxClient;
+use serde_json::{Value, json};
+use wiremock::matchers::{method, path, query_param};
+use wiremock::{Mock, MockServer, ResponseTemplate};
+
+fn client(server: &MockServer) -> NetBoxClient {
+    let profile = ProfileConfig {
+        url: server.uri(),
+        ..Default::default()
+    };
+    NetBoxClient::new(&profile, None).unwrap()
+}
+
+fn not_found(noun: &str, value: &str) -> anyhow::Error {
+    anyhow::anyhow!("no {noun} matched \"{value}\"")
+}
+
+/// Mount the children/IPs lookups a prefix view makes (empty here) for `cidr`.
+async fn mount_empty_prefix_sections(server: &MockServer, cidr: &str) {
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .and(query_param("within", cidr))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 0, "next": null, "previous": null, "results": []
+        })))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/ip-addresses/"))
+        .and(query_param("parent", cidr))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 0, "next": null, "previous": null, "results": []
+        })))
+        .mount(server)
+        .await;
+}
+
+/// A prefix scoped to a site/location/region surfaces `scope` (the object name)
+/// and the matching friendly `scope_type`.
+#[tokio::test]
+async fn prefix_surfaces_each_scope_type() {
+    for (scope_type, friendly, name) in [
+        ("dcim.site", "site", "iad1"),
+        ("dcim.location", "location", "row-a"),
+        ("dcim.region", "region", "us-east"),
+    ] {
+        let server = MockServer::start().await;
+        let cidr = "10.44.208.0/24";
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/prefixes/"))
+            .and(query_param("prefix", cidr))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{
+                    "id": 5, "url": "http://nb/api/ipam/prefixes/5/", "prefix": cidr,
+                    "status": {"value": "active", "label": "Active"},
+                    "scope_type": scope_type,
+                    "scope_id": 1,
+                    "scope": {"id": 1, "name": name, "display": name}
+                }]
+            })))
+            .mount(&server)
+            .await;
+        mount_empty_prefix_sections(&server, cidr).await;
+
+        let view = detail::prefix_view_by_ref(&client(&server), cidr, None, &not_found)
+            .await
+            .unwrap();
+
+        assert_eq!(view.scope.as_deref(), Some(name));
+        assert_eq!(view.scope_type.as_deref(), Some(friendly));
+
+        let v: Value = serde_json::to_value(&view).unwrap();
+        assert_eq!(v["scope"], json!(name));
+        assert_eq!(v["scope_type"], json!(friendly));
+
+        let plain = view.to_plain();
+        assert!(plain.contains(&format!("scope: {name}")), "got: {plain}");
+        assert!(
+            plain.contains(&format!("scope_type: {friendly}")),
+            "got: {plain}"
+        );
+    }
+}
+
+/// A VLAN with a non-site polymorphic scope surfaces `scope` + a friendly
+/// `scope_type` and carries no `site` field.
+#[tokio::test]
+async fn vlan_surfaces_non_site_scope() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/vlans/"))
+        .and(query_param("vid", "208"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 3, "url": "http://nb/api/ipam/vlans/3/", "vid": 208, "name": "users",
+                "status": {"value": "active", "label": "Active"},
+                "scope_type": "dcim.region",
+                "scope_id": 9,
+                "scope": {"id": 9, "name": "us-east", "display": "us-east"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .and(query_param("vlan_id", "3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 0, "next": null, "previous": null, "results": []
+        })))
+        .mount(&server)
+        .await;
+
+    let view = detail::vlan_view_by_ref(&client(&server), "208", None, None, &not_found)
+        .await
+        .unwrap();
+
+    assert_eq!(view.scope.as_deref(), Some("us-east"));
+    assert_eq!(view.scope_type.as_deref(), Some("region"));
+
+    let v: Value = serde_json::to_value(&view).unwrap();
+    assert_eq!(v["scope"], json!("us-east"));
+    assert_eq!(v["scope_type"], json!("region"));
+    assert!(
+        v.get("site").is_none(),
+        "vlan view must have no site key: {v}"
+    );
+}
+
+/// An IP whose most-specific parent prefix is region-scoped derives `scope` +
+/// `scope_type` from that prefix, and the IP view exposes no `site` field.
+#[tokio::test]
+async fn ip_derives_non_site_scope_from_parent_prefix() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/ip-addresses/"))
+        .and(query_param("address", "10.0.0.5"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 7, "url": "http://nb/api/ipam/ip-addresses/7/",
+                "address": "10.0.0.5/24",
+                "status": {"value": "active", "label": "Active"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+    // No VRF on the IP → parent lookup is scoped to the global table.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .and(query_param("contains", "10.0.0.5"))
+        .and(query_param("vrf_id", "null"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [
+                {"id": 1, "url": "u", "prefix": "10.0.0.0/16"},
+                {
+                    "id": 2, "url": "u", "prefix": "10.0.0.0/24",
+                    "scope_type": "dcim.location",
+                    "scope_id": 4,
+                    "scope": {"id": 4, "name": "row-a", "display": "row-a"}
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let view = detail::ip_view_by_ref(&client(&server), "10.0.0.5", None, &not_found)
+        .await
+        .unwrap();
+
+    // Context comes from the most-specific (/24) parent prefix.
+    assert_eq!(view.parent_prefix.as_deref(), Some("10.0.0.0/24"));
+    assert_eq!(view.scope.as_deref(), Some("row-a"));
+    assert_eq!(view.scope_type.as_deref(), Some("location"));
+
+    // The renamed field set: `scope`/`scope_type` present, `site` gone.
+    let v: Value = serde_json::to_value(&view).unwrap();
+    assert_eq!(v["scope"], json!("row-a"));
+    assert_eq!(v["scope_type"], json!("location"));
+    assert!(
+        v.get("site").is_none(),
+        "ip view must have no site key: {v}"
+    );
+
+    let plain = view.to_key_values().render();
+    assert!(plain.contains("scope: row-a"), "got: {plain}");
+    assert!(plain.contains("scope_type: location"), "got: {plain}");
+    assert!(!plain.contains("site:"), "no site row expected: {plain}");
+}
