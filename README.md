@@ -258,12 +258,18 @@ These apply to every command:
 | `--envelope` | JSON: wrap as `{ schema_version, data }` |
 | `-p, --profile <name>` | Use a specific profile for this invocation |
 | `--config <path>` | Use an alternate config file |
-| `--log-level <spec>` | `tracing` filter to stderr (`info`, `debug`, `nbox=debug`, …) |
+| `--log-level <spec>` | `tracing` filter (`info`, `debug`, `nbox=debug`, …) |
+| `--log-file <path>` | Write logs to this file (and stderr); stdout stays clean |
 | `--no-tui` | Never fall through to the interactive TUI |
 
 `-o csv` is for tabular/list results (e.g. `search`); a single object is rejected
 (use `--json` or plain). Custom fields appear as `cf.<name>` rows in plain output
 and a `custom_fields` object in JSON.
+
+Logs go to **stderr** by default (so stdout stays clean for piping and `--json`).
+Point `--log-file <path>` (or `log_file` in config) at a file to also capture
+them there. The level resolves `--log-level` → config `log_level` → `NBOX_LOG` →
+`RUST_LOG` → `warn`. nbox never writes logs to stdout.
 
 Exit codes are stable: `0` success, `1` generic error, `2` usage error, `3`
 auth/permission (401/403), `4` not found, `5` ambiguous reference. See

@@ -68,24 +68,117 @@ pub mod update;
 /// The crate version, sourced from `Cargo.toml`.
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 
-/// Initialize logging to stderr (stdout stays clean for piping).
+/// The resolved logging destination + level, computed by [`resolve_logging`].
 ///
-/// Level precedence: the `--log-level` flag, then `NBOX_LOG`, then `RUST_LOG`,
-/// else quiet (`warn`). No-ops if a subscriber is already installed.
-pub fn init_logging(log_level: Option<&str>) {
+/// Keeping the decision in a plain value makes the precedence logic a pure
+/// function that's unit-testable without touching the real environment, files,
+/// or the global `tracing` subscriber.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LoggingChoice {
+    /// Where to write logs, if a file was configured. `None` ⇒ stderr only.
+    pub log_file: Option<PathBuf>,
+    /// The `tracing` filter spec (e.g. `warn`, `info`, `nbox=debug`).
+    pub level: String,
+}
+
+/// Resolve the logging destination and level from the layered sources.
+///
+/// Pure: every input is passed in, nothing is read from the environment or
+/// disk, so the precedence can be exercised in isolation.
+///
+/// - **File**: `--log-file` flag, else config `log_file`, else `None` (stderr).
+/// - **Level**: `--log-level` flag, else config `log_level`, else `NBOX_LOG`,
+///   else `RUST_LOG`, else `warn`.
+#[must_use]
+pub fn resolve_logging(
+    flag_file: Option<&str>,
+    config_file: Option<&str>,
+    flag_level: Option<&str>,
+    config_level: Option<&str>,
+    nbox_log: Option<&str>,
+    rust_log: Option<&str>,
+) -> LoggingChoice {
+    let log_file = flag_file
+        .or(config_file)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(PathBuf::from);
+
+    let level = flag_level
+        .or(config_level)
+        .or(nbox_log)
+        .or(rust_log)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("warn")
+        .to_string();
+
+    LoggingChoice { log_file, level }
+}
+
+/// Initialize logging from a resolved [`LoggingChoice`].
+///
+/// stdout is never used — logs go to the file (if one is set) and/or stderr:
+///
+/// - **No file** (default): stderr only, exactly as before.
+/// - **File set**: the file *and* stderr (mirrors xfr's normal-mode behavior),
+///   so `--log-file` captures a record without hiding warnings from an
+///   interactive run. The file is written via [`tracing_appender::non_blocking`]
+///   on a non-rolling appender (`rolling::never`) so the path is honored exactly
+///   as given.
+///
+/// **The returned [`WorkerGuard`] must be held for the program's lifetime**:
+/// the non-blocking writer flushes on the worker thread, and dropping the guard
+/// flushes + joins it. Drop it early and buffered log lines are lost. The
+/// caller (see `main`) binds it for the duration of [`run`].
+///
+/// No-ops the subscriber install if one is already present (returns `None`).
+#[must_use]
+pub fn init_logging(choice: &LoggingChoice) -> Option<tracing_appender::non_blocking::WorkerGuard> {
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
     use tracing_subscriber::{EnvFilter, fmt};
 
-    let filter = match log_level {
-        Some(level) => EnvFilter::new(level),
-        None => EnvFilter::try_from_env("NBOX_LOG")
-            .or_else(|_| EnvFilter::try_from_default_env())
-            .unwrap_or_else(|_| EnvFilter::new("warn")),
+    let filter = EnvFilter::new(&choice.level);
+
+    let Some(path) = &choice.log_file else {
+        // No file: stderr only, as before.
+        let _ = fmt()
+            .with_env_filter(filter)
+            .with_writer(std::io::stderr)
+            .try_init();
+        return None;
     };
 
-    let _ = fmt()
-        .with_env_filter(filter)
-        .with_writer(std::io::stderr)
+    // Ensure the parent directory exists, then split the path into (dir, file)
+    // for the appender. `rolling::never` writes to exactly `dir/file` — no date
+    // suffix — so the resolved path the user gave is honored verbatim.
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let dir = match path.parent() {
+        Some(p) if !p.as_os_str().is_empty() => p.to_path_buf(),
+        _ => PathBuf::from("."),
+    };
+    let file_name = path
+        .file_name()
+        .map_or_else(|| std::ffi::OsString::from("nbox.log"), ToOwned::to_owned);
+
+    let appender = tracing_appender::rolling::never(dir, file_name);
+    let (non_blocking, guard) = tracing_appender::non_blocking(appender);
+
+    let file_layer = fmt::layer()
+        .with_ansi(false) // a file is not a terminal — no color escapes
+        .with_writer(non_blocking);
+    let stderr_layer = fmt::layer().with_writer(std::io::stderr);
+
+    let _ = tracing_subscriber::registry()
+        .with(filter)
+        .with(file_layer)
+        .with(stderr_layer)
         .try_init();
+
+    Some(guard)
 }
 
 /// Context derived from the global CLI flags, used to connect to NetBox.
@@ -922,10 +1015,106 @@ fn not_found(noun: &str, value: &str) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::{
-        check_raw_method, error, first_subnet_of_length, not_found, parse_object_ref, wants_journal,
+        check_raw_method, error, first_subnet_of_length, init_logging, not_found, parse_object_ref,
+        resolve_logging, wants_journal,
     };
     use crate::domain::detail::resolve_unique;
     use crate::netbox::models::ipam::AvailablePrefix;
+    use std::path::PathBuf;
+
+    // --- logging resolution (pure precedence) ------------------------------
+
+    #[test]
+    fn logging_level_precedence_flag_config_env_default() {
+        // Flag wins over everything.
+        let c = resolve_logging(
+            None,
+            None,
+            Some("flag"),
+            Some("config"),
+            Some("nbox_log"),
+            Some("rust_log"),
+        );
+        assert_eq!(c.level, "flag");
+        // Config wins when no flag.
+        let c = resolve_logging(
+            None,
+            None,
+            None,
+            Some("config"),
+            Some("nbox_log"),
+            Some("rust_log"),
+        );
+        assert_eq!(c.level, "config");
+        // NBOX_LOG wins over RUST_LOG.
+        let c = resolve_logging(None, None, None, None, Some("nbox_log"), Some("rust_log"));
+        assert_eq!(c.level, "nbox_log");
+        // RUST_LOG when it's the only one set.
+        let c = resolve_logging(None, None, None, None, None, Some("rust_log"));
+        assert_eq!(c.level, "rust_log");
+        // Default when nothing is set.
+        let c = resolve_logging(None, None, None, None, None, None);
+        assert_eq!(c.level, "warn");
+        // Blank/whitespace values are ignored, falling through to the default.
+        let c = resolve_logging(Some("  "), None, Some("   "), None, Some(""), None);
+        assert_eq!(c.level, "warn");
+        assert_eq!(c.log_file, None);
+    }
+
+    #[test]
+    fn logging_file_precedence_flag_config_none() {
+        // Flag wins over config.
+        let c = resolve_logging(
+            Some("/tmp/flag.log"),
+            Some("/tmp/config.log"),
+            None,
+            None,
+            None,
+            None,
+        );
+        assert_eq!(c.log_file, Some(PathBuf::from("/tmp/flag.log")));
+        // Config when no flag.
+        let c = resolve_logging(None, Some("/tmp/config.log"), None, None, None, None);
+        assert_eq!(c.log_file, Some(PathBuf::from("/tmp/config.log")));
+        // Neither → none (stderr).
+        let c = resolve_logging(None, None, None, None, None, None);
+        assert_eq!(c.log_file, None);
+    }
+
+    #[test]
+    fn init_logging_writes_a_line_to_the_file() {
+        use std::io::Read;
+
+        // A subscriber may already be installed by another test in this binary;
+        // `try_init` then no-ops and our events go elsewhere. Skip the assertion
+        // in that case rather than emit a flaky failure.
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nbox.log");
+        let choice = super::LoggingChoice {
+            log_file: Some(path.clone()),
+            level: "info".to_string(),
+        };
+        let guard = init_logging(&choice);
+        if guard.is_none() {
+            // Another subscriber owns the process-global; can't assert on output.
+            return;
+        }
+
+        tracing::info!(target: "nbox", "file-logging-test-marker");
+        // Dropping the guard flushes + joins the non-blocking writer thread, so
+        // the line is on disk before we read it (no sleep / no flakiness).
+        drop(guard);
+
+        let mut contents = String::new();
+        std::fs::File::open(&path)
+            .unwrap()
+            .read_to_string(&mut contents)
+            .unwrap();
+        assert!(
+            contents.contains("file-logging-test-marker"),
+            "log file should contain the emitted event, got: {contents:?}"
+        );
+    }
 
     #[test]
     fn wants_journal_is_implied_by_either_flag() {

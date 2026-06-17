@@ -54,8 +54,8 @@ anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-# Reserved for planned file logging (non-blocking writer / rolling log files).
-# Intentionally kept though not yet referenced — do not strip in a dep cleanup.
+# File logging: the non-blocking writer behind `--log-file` / config `log_file`
+# (a `rolling::never` appender + `WorkerGuard`). See `init_logging` in src/lib.rs.
 tracing-appender = "0.2"
 
 # Terminal helpers

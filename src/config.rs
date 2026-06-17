@@ -54,6 +54,18 @@ pub struct Config {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub active_profile: Option<String>,
 
+    /// Path to a log file. When set, logs are written here (and still mirrored
+    /// to stderr); when absent, logs go to stderr only. Overridden by the
+    /// `--log-file` flag. stdout is never used.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_file: Option<String>,
+
+    /// Logging level / `tracing` filter (e.g. `info`, `debug`, `nbox=debug`).
+    /// Overridden by `--log-level`, then `NBOX_LOG`, then `RUST_LOG`; the
+    /// fallback is `warn`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_level: Option<String>,
+
     #[serde(default)]
     pub ui: UiConfig,
 
@@ -153,6 +165,36 @@ pub fn load(path: &Path) -> Result<Config> {
         );
     }
     Ok(cfg)
+}
+
+/// The logging-relevant config fields (`log_file`, `log_level`), read
+/// best-effort so logging can be set up before — and independently of —
+/// the command's own config handling.
+#[derive(Debug, Clone, Default)]
+pub struct LoggingConfig {
+    pub log_file: Option<String>,
+    pub log_level: Option<String>,
+}
+
+/// Read just the logging fields from the config at the resolved path, never
+/// failing: a missing or unparseable config yields the empty default, so we
+/// fall back to flags/env (and ultimately stderr at `warn`). This runs before
+/// the command, which loads + validates the config properly on its own.
+#[must_use]
+pub fn load_logging(explicit: Option<&Path>) -> LoggingConfig {
+    let Ok(path) = resolve_path(explicit) else {
+        return LoggingConfig::default();
+    };
+    let Ok(text) = fs::read_to_string(&path) else {
+        return LoggingConfig::default();
+    };
+    let Ok(cfg) = toml::from_str::<Config>(&text) else {
+        return LoggingConfig::default();
+    };
+    LoggingConfig {
+        log_file: cfg.log_file,
+        log_level: cfg.log_level,
+    }
 }
 
 /// Resolve the API token for `profile`, preferring `NBOX_TOKEN`.

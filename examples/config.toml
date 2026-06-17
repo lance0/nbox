@@ -8,6 +8,10 @@
 config_version = 1
 active_profile = "work"
 
+# Logging (optional). Default: stderr at `warn`. stdout is never used for logs.
+# log_file  = "/var/log/nbox.log"  # also write logs here (and stderr); literal path
+# log_level = "info"               # warn | info | debug | trace | nbox=debug
+
 [ui]
 theme = "default"          # see `nbox` then `t` to cycle; 12 built-in themes
 confirm_writes = true      # reserved for v0.2 writes

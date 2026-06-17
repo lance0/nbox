@@ -11,6 +11,10 @@ inspect the resolved path with `nbox config path` and the effective config with
 config_version = 1
 active_profile = "work"
 
+# Logging (optional). Omit both to log to stderr at `warn` (the default).
+# log_file  = "/var/log/nbox.log"   # also write logs here; stdout stays clean
+# log_level = "info"                # warn | info | debug | trace | nbox=debug
+
 [ui]
 theme = "default"
 confirm_writes = true
@@ -55,3 +59,23 @@ nbox profile show [name]
 
 Pick a profile per-invocation with `--profile <name>`, or point at an alternate
 file with `--config <path>`.
+
+## Logging
+
+Two top-level, optional keys control logging:
+
+| Key | Effect |
+|-----|--------|
+| `log_file` | Path to a log file. When set, logs are written there **and** mirrored to stderr; absent, stderr only. |
+| `log_level` | `tracing` filter — `warn` (default), `info`, `debug`, `trace`, or a per-target spec like `nbox=debug`. |
+
+Precedence, highest first:
+
+- **File**: `--log-file` flag → config `log_file` → none (stderr only).
+- **Level**: `--log-level` flag → config `log_level` → `NBOX_LOG` → `RUST_LOG` → `warn`.
+
+The file is opened directly at the path you give — a literal path (no `~`
+expansion, no date-rolling suffix) — via a non-blocking background writer; the
+parent directory is created if needed.
+**stdout is never used for logs** — it's reserved for command output, so
+`--json` and `nbox serve` stay pipe-safe.

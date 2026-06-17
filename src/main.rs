@@ -25,7 +25,22 @@ async fn main() {
     }
 
     let cli = Cli::parse();
-    nbox::init_logging(cli.log_level.as_deref());
+
+    // Resolve logging (file + level) from flags > config > env > default, then
+    // initialize. The non-blocking file writer returns a WorkerGuard that MUST
+    // outlive every log call: it's bound here (`_log_guard`) so it lives for the
+    // whole of `run` and flushes on the way out — drop it early and buffered
+    // lines are lost. Logs never touch stdout (kept clean for `--json`/`serve`).
+    let log_cfg = nbox::config::load_logging(cli.config.as_deref());
+    let choice = nbox::resolve_logging(
+        cli.log_file.as_deref().and_then(std::path::Path::to_str),
+        log_cfg.log_file.as_deref(),
+        cli.log_level.as_deref(),
+        log_cfg.log_level.as_deref(),
+        std::env::var("NBOX_LOG").ok().as_deref(),
+        std::env::var("RUST_LOG").ok().as_deref(),
+    );
+    let log_guard = nbox::init_logging(&choice);
 
     // Kick off the update check (if enabled) before doing work, then report it
     // after, so a quick command isn't delayed by the network round-trip.
@@ -44,6 +59,10 @@ async fn main() {
     }
 
     if let Err(err) = result {
+        // `std::process::exit` skips destructors, so the WorkerGuard would never
+        // flush the file appender on these paths. Drop it explicitly first to
+        // flush + join the writer before the process is torn down.
+        drop(log_guard);
         // A broken stdout pipe that surfaced as an error (rather than being
         // handled by the SIGPIPE reset above — e.g. on a non-Unix platform)
         // exits quietly with the conventional 141 (128 + SIGPIPE), never
@@ -55,4 +74,7 @@ async fn main() {
         eprintln!("error: {err:#}");
         std::process::exit(nbox::error::NboxError::exit_code_for(&err));
     }
+    // Success path: `main` returning drops `log_guard` here, flushing the file
+    // appender. Bind it so it isn't dropped before `run` completes.
+    drop(log_guard);
 }

@@ -49,6 +49,10 @@ pub struct Cli {
     #[arg(long, global = true)]
     pub log_level: Option<String>,
 
+    /// Write logs to this file instead of (only) stderr. stdout stays clean.
+    #[arg(long, global = true, value_name = "PATH")]
+    pub log_file: Option<PathBuf>,
+
     #[command(subcommand)]
     pub command: Option<Command>,
 }
