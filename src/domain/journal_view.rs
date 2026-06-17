@@ -40,6 +40,7 @@ impl JournalView {
 
     /// Render entries as `created  kind  (author)` headers with indented comments.
     pub fn to_plain(&self) -> String {
+        use std::fmt::Write;
         if self.entries.is_empty() {
             return "no journal entries".to_string();
         }
@@ -50,10 +51,10 @@ impl JournalView {
                 header.push_str(c);
             }
             if let Some(k) = &e.kind {
-                header.push_str(&format!("  {k}"));
+                let _ = write!(header, "  {k}");
             }
             if let Some(a) = &e.author {
-                header.push_str(&format!("  ({a})"));
+                let _ = write!(header, "  ({a})");
             }
             let body: String = e
                 .comments

@@ -151,9 +151,10 @@ impl DeviceDetail {
 
     /// Render the summary plus each non-empty section for plain output.
     pub fn to_plain(&self) -> String {
+        use std::fmt::Write;
         let mut out = self.summary_plain();
         for (_, title, body) in self.sections() {
-            out.push_str(&format!("\n\n{title}\n{body}"));
+            let _ = write!(out, "\n\n{title}\n{body}");
         }
         out
     }
@@ -188,9 +189,10 @@ impl DeviceDetail {
         self.interfaces
             .iter()
             .map(|i| {
+                use std::fmt::Write;
                 let mut row = format!("  {}", i.name);
                 if let Some(t) = &i.type_ {
-                    row.push_str(&format!("  {t}"));
+                    let _ = write!(row, "  {t}");
                 }
                 if i.enabled == Some(false) {
                     row.push_str("  (disabled)");
@@ -234,7 +236,7 @@ impl DeviceDetail {
                 let ports = s
                     .ports
                     .iter()
-                    .map(|p| p.to_string())
+                    .map(std::string::ToString::to_string)
                     .collect::<Vec<_>>()
                     .join(",");
                 match (&s.protocol, ports.is_empty()) {
@@ -253,7 +255,7 @@ fn iface_name(v: &serde_json::Value) -> Option<String> {
     v.get("display")
         .and_then(|x| x.as_str())
         .or_else(|| v.get("name").and_then(|x| x.as_str()))
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 #[cfg(test)]

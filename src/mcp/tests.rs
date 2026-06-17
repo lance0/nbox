@@ -532,7 +532,7 @@ async fn get_circuit_returns_circuit_view() {
                 "id": 3, "url": "http://nb/api/circuits/circuits/3/", "cid": "ACME-1234",
                 "provider": {"id": 1, "display": "ACME"},
                 "status": {"value": "active", "label": "Active"},
-                "commit_rate": 1000000
+                "commit_rate": 1_000_000
             }]
         })))
         .mount(&mock)
@@ -546,7 +546,7 @@ async fn get_circuit_returns_circuit_view() {
     assert_eq!(value["cid"], "ACME-1234");
     assert_eq!(value["provider"], "ACME");
     assert_eq!(value["status"], "active");
-    assert_eq!(value["commit_rate_kbps"], 1000000);
+    assert_eq!(value["commit_rate_kbps"], 1_000_000);
 }
 
 #[tokio::test]

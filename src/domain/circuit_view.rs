@@ -79,7 +79,7 @@ mod tests {
             "provider": {"id": 1, "display": "ACME"},
             "type": {"id": 2, "display": "Internet"},
             "status": {"value": "active", "label": "Active"},
-            "commit_rate": 1000000,
+            "commit_rate": 1_000_000,
             "custom_fields": {}
         }))
         .unwrap();
@@ -87,7 +87,7 @@ mod tests {
         assert_eq!(view.cid, "ACME-1234");
         assert_eq!(view.provider.as_deref(), Some("ACME"));
         assert_eq!(view.type_.as_deref(), Some("Internet"));
-        assert_eq!(view.commit_rate_kbps, Some(1000000));
+        assert_eq!(view.commit_rate_kbps, Some(1_000_000));
 
         let plain = view.to_key_values().render();
         assert!(plain.starts_with("cid: ACME-1234"));

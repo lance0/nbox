@@ -60,8 +60,7 @@ impl NboxError {
     pub fn exit_code_for(err: &anyhow::Error) -> i32 {
         err.chain()
             .find_map(|e| e.downcast_ref::<NboxError>())
-            .map(NboxError::exit_code)
-            .unwrap_or(1)
+            .map_or(1, NboxError::exit_code)
     }
 }
 

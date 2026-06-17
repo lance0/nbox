@@ -48,7 +48,9 @@ impl VlanView {
             (Some(b), Some(t)) => (Some(b.label()), Some(friendly_scope_type(t))),
             (Some(b), None) => (Some(b.label()), None),
             (None, _) => (
-                v.site.as_ref().map(|b| b.label()),
+                v.site
+                    .as_ref()
+                    .map(super::super::netbox::models::common::BriefObject::label),
                 v.site.as_ref().map(|_| "site".to_string()),
             ),
         };

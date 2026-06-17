@@ -51,7 +51,7 @@ mod tests {
             "provider": {"id": 1, "name": "ACME", "slug": "acme"},
             "type": {"id": 2, "name": "Internet", "slug": "internet"},
             "status": {"value": "active", "label": "Active"},
-            "commit_rate": 1000000,
+            "commit_rate": 1_000_000,
             "custom_fields": {}
         }))
         .unwrap();
@@ -59,6 +59,6 @@ mod tests {
         assert_eq!(c.provider.unwrap().label(), "ACME");
         assert_eq!(c.type_.unwrap().label(), "Internet");
         assert_eq!(c.status.unwrap().value, "active");
-        assert_eq!(c.commit_rate, Some(1000000));
+        assert_eq!(c.commit_rate, Some(1_000_000));
     }
 }

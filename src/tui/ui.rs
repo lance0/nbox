@@ -328,7 +328,7 @@ fn render_help(frame: &mut Frame, area: Rect, app: &App) {
     // Build the cheese Help grid from the real keybindings and center it
     // vertically within the bordered inner area.
     let columns = help_bindings();
-    let column_refs: Vec<&[(&str, &str)]> = columns.iter().map(|c| c.as_slice()).collect();
+    let column_refs: Vec<&[(&str, &str)]> = columns.iter().map(std::vec::Vec::as_slice).collect();
     let help = crate::tui::cheese::Help::new(&column_refs);
 
     let h = help.required_height().min(inner.height);

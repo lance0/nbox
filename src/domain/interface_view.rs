@@ -161,7 +161,7 @@ fn cable_label(v: &Value) -> Option<String> {
         .or_else(|| v.get("label"))
         .and_then(|x| x.as_str())
         .filter(|s| !s.is_empty())
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
 }
 
 #[cfg(test)]

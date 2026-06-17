@@ -57,7 +57,10 @@ impl PrefixView {
     /// Build a view from a prefix plus its children and contained IPs.
     pub fn build(p: Prefix, children: Vec<Prefix>, ips: Vec<IpAddress>) -> Self {
         let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
-        let scope = p.scope.as_ref().map(|b| b.label());
+        let scope = p
+            .scope
+            .as_ref()
+            .map(super::super::netbox::models::common::BriefObject::label);
         let scope_type = p.scope_type.as_deref().map(friendly_scope_type);
 
         Self {

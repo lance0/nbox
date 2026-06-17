@@ -3,6 +3,8 @@
 //! Parses the CLI and dispatches into [`nbox::run`]. Command handlers are built
 //! out across Phase 1–3 (see `ROADMAP.md`).
 
+#![warn(clippy::pedantic)]
+
 use clap::Parser;
 use nbox::cli::Cli;
 

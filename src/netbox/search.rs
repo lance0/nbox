@@ -236,7 +236,10 @@ impl NetBoxClient {
                 kind: ObjectKind::Device,
                 id: d.id,
                 score: score_match(q, &d.name),
-                subtitle: d.site.as_ref().map(|s| s.label()),
+                subtitle: d
+                    .site
+                    .as_ref()
+                    .map(super::models::common::BriefObject::label),
                 url: api_to_web_url(&d.url),
                 display: d.name,
             })
@@ -296,7 +299,10 @@ impl NetBoxClient {
                 kind: ObjectKind::Prefix,
                 id: p.id,
                 score: score_match(q, &p.prefix),
-                subtitle: p.scope.as_ref().map(|s| s.label()),
+                subtitle: p
+                    .scope
+                    .as_ref()
+                    .map(super::models::common::BriefObject::label),
                 url: api_to_web_url(&p.url),
                 display: p.prefix,
             })
@@ -318,7 +324,11 @@ impl NetBoxClient {
                     kind: ObjectKind::Vlan,
                     id: v.id,
                     score: score_match(q, &display),
-                    subtitle: v.site.as_ref().or(v.group.as_ref()).map(|b| b.label()),
+                    subtitle: v
+                        .site
+                        .as_ref()
+                        .or(v.group.as_ref())
+                        .map(super::models::common::BriefObject::label),
                     url: api_to_web_url(&v.url),
                     display,
                 }
@@ -338,7 +348,10 @@ impl NetBoxClient {
                 kind: ObjectKind::Circuit,
                 id: c.id,
                 score: score_match(q, &c.cid),
-                subtitle: c.provider.as_ref().map(|p| p.label()),
+                subtitle: c
+                    .provider
+                    .as_ref()
+                    .map(super::models::common::BriefObject::label),
                 url: api_to_web_url(&c.url),
                 display: c.cid,
             })
@@ -357,7 +370,10 @@ impl NetBoxClient {
                 kind: ObjectKind::Aggregate,
                 id: a.id,
                 score: score_match(q, &a.prefix),
-                subtitle: a.rir.as_ref().map(|r| r.label()),
+                subtitle: a
+                    .rir
+                    .as_ref()
+                    .map(super::models::common::BriefObject::label),
                 url: api_to_web_url(&a.url),
                 display: a.prefix,
             })
@@ -386,7 +402,10 @@ impl NetBoxClient {
                     kind: ObjectKind::Asn,
                     id: a.id,
                     score: score_match(q, &a.asn.to_string()),
-                    subtitle: a.rir.as_ref().map(|r| r.label()),
+                    subtitle: a
+                        .rir
+                        .as_ref()
+                        .map(super::models::common::BriefObject::label),
                     url: api_to_web_url(&a.url),
                     display,
                 }
@@ -408,7 +427,11 @@ impl NetBoxClient {
                     kind: ObjectKind::IpRange,
                     id: r.id,
                     score: score_match(q, &display),
-                    subtitle: r.vrf.as_ref().or(r.role.as_ref()).map(|b| b.label()),
+                    subtitle: r
+                        .vrf
+                        .as_ref()
+                        .or(r.role.as_ref())
+                        .map(super::models::common::BriefObject::label),
                     url: api_to_web_url(&r.url),
                     display,
                 }

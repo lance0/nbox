@@ -466,11 +466,11 @@ impl App {
             KeyCode::Char('G') | KeyCode::End if self.scrolls_body() => self.body_scroll_bottom(),
             KeyCode::PageDown if self.scrolls_body() => {
                 let page = self.body_page();
-                self.body_scroll_down(page)
+                self.body_scroll_down(page);
             }
             KeyCode::PageUp if self.scrolls_body() => {
                 let page = self.body_page();
-                self.body_scroll_up(page)
+                self.body_scroll_up(page);
             }
             KeyCode::Char('j') | KeyCode::Down => self.select_next(),
             KeyCode::Char('k') | KeyCode::Up => self.select_prev(),
@@ -748,8 +748,7 @@ impl App {
             Some(d) if self.detail_tab > 0 => d
                 .tabs
                 .get(self.detail_tab - 1)
-                .map(|t| t.body.as_str())
-                .unwrap_or(d.body.as_str()),
+                .map_or(d.body.as_str(), |t| t.body.as_str()),
             Some(d) => d.body.as_str(),
             None => "loading…",
         }
@@ -894,12 +893,13 @@ impl App {
                 subtitle,
                 url,
             }) => {
+                use std::fmt::Write;
                 let mut s = format!("{kind}: {display}\n");
                 if let Some(sub) = subtitle {
-                    s.push_str(&format!("{sub}\n"));
+                    let _ = writeln!(s, "{sub}");
                 }
                 if let Some(url) = url {
-                    s.push_str(&format!("\n{url}\n"));
+                    let _ = writeln!(s, "\n{url}");
                 }
                 s.push_str("\nLoading details…");
                 s

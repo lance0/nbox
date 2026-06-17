@@ -3,6 +3,38 @@
 //! Library crate root. See `DESIGN.md` and `ROADMAP.md` for the architecture
 //! and phasing. The binary parses a [`cli::Cli`] and dispatches into [`run`].
 
+#![warn(clippy::pedantic)]
+// Curated pedantic allow-list. Pedantic is a project gate (every change is
+// linted against it); these are the lints judged to be pure noise or stylistic
+// churn for this codebase, so they're silenced crate-wide rather than chased.
+// Everything else pedantic flags is fixed. Keep this list tight — prefer fixing.
+#![allow(
+    clippy::missing_errors_doc,
+    clippy::missing_panics_doc,
+    clippy::module_name_repetitions,
+    clippy::must_use_candidate,
+    clippy::module_inception,
+    clippy::needless_pass_by_value,
+    clippy::redundant_else,
+    clippy::too_many_lines,
+    clippy::used_underscore_binding,
+    // Backtick nags on proper nouns (NetBox, JSON-RPC, IPAM, …) in doc comments.
+    clippy::doc_markdown,
+    // Benign u16/usize/f64 math in the TUI (scroll offsets, terminal coordinates,
+    // a percent bar): the casts are intentional and bounded.
+    clippy::cast_possible_truncation,
+    clippy::cast_sign_loss,
+    clippy::cast_precision_loss,
+    // Stylistic: `if let … else` vs a two-arm `match`, and merging identical arms.
+    // Mixing the two styles inside one `match` hurts readability more than it helps.
+    clippy::single_match_else,
+    clippy::match_same_arms,
+    clippy::items_after_statements,
+    // The CLI flags struct legitimately carries many bool options; collapsing them
+    // would be an API change, not a cleanup.
+    clippy::struct_excessive_bools
+)]
+
 use std::path::PathBuf;
 
 use anyhow::{Context, Result};

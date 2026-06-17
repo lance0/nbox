@@ -267,13 +267,13 @@ pub fn run_config(
         ConfigCommand::Path => {
             let report = serde_json::json!({ "path": path.display().to_string() });
             crate::output::emit(format, json_opts, &report, || {
-                println!("{}", path.display())
+                println!("{}", path.display());
             })
         }
         ConfigCommand::Show => {
             let cfg = load(&path)?;
             crate::output::emit(format, json_opts, &cfg, || {
-                print!("{}", toml::to_string_pretty(&cfg).unwrap_or_default())
+                print!("{}", toml::to_string_pretty(&cfg).unwrap_or_default());
             })
         }
     }
@@ -307,8 +307,7 @@ pub fn run_profile(
             let exists = doc
                 .get("profiles")
                 .and_then(|p| p.as_table())
-                .map(|t| t.contains_key(&name))
-                .unwrap_or(false);
+                .is_some_and(|t| t.contains_key(&name));
             if !exists {
                 bail!("no profile named '{name}'");
             }
@@ -341,7 +340,7 @@ pub fn run_profile(
                 .get(&name)
                 .with_context(|| format!("no profile named '{name}'"))?;
             crate::output::emit(format, json_opts, profile, || {
-                print!("{}", toml::to_string_pretty(profile).unwrap_or_default())
+                print!("{}", toml::to_string_pretty(profile).unwrap_or_default());
             })
         }
     }

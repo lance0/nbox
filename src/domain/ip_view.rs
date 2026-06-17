@@ -50,7 +50,10 @@ impl IpView {
 
         let (parent_prefix, vlan, scope, scope_type) = match parent {
             Some(p) => {
-                let scope = p.scope.as_ref().map(|b| b.label());
+                let scope = p
+                    .scope
+                    .as_ref()
+                    .map(super::super::netbox::models::common::BriefObject::label);
                 let scope_type = p.scope_type.as_deref().map(friendly_scope_type);
                 (Some(p.prefix), p.vlan.map(|b| b.label()), scope, scope_type)
             }

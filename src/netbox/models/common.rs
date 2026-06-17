@@ -43,7 +43,7 @@ impl BriefObject {
             || self
                 .display
                 .as_deref()
-                .map(|d| d.to_lowercase())
+                .map(str::to_lowercase)
                 .is_some_and(|d| d == q || d.contains(&q))
     }
 }
