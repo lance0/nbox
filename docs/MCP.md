@@ -273,7 +273,7 @@ All tools are annotated read-only.
 | Tool | Purpose |
 | ---- | ------- |
 | `nbox_status` | Connection target plus NetBox/Django/Python versions. Call first to confirm reachability. |
-| `nbox_search` | Free-text search across devices, sites, IPs, prefixes, VLANs, circuits, aggregates, ASNs, and IP ranges. Optional `limit`, `status`, `site`, `tenant`, `role`, `tag` filters. Use it to find an object's exact reference. |
+| `nbox_search` | Free-text search across devices, sites, IPs, prefixes, VLANs, circuits, aggregates, ASNs, IP ranges, tenants, contacts, providers, virtual machines, and clusters. Optional `limit`, `status`, `site`, `tenant`, `role`, `tag` filters. Use it to find an object's exact reference. |
 | `nbox_get` | Fetch one object by `kind` + `ref`. An ambiguous `ref` returns a candidate list; pass `vrf` (ip/prefix) or `site`/`group` (vlan) to disambiguate. |
 | `nbox_get_interface` | One interface on a device: its config, assigned addresses, and cable-path trace. |
 | `nbox_next_ip` | Next available address(es) within a prefix. `count`, `vrf`. Nothing is reserved. |
@@ -283,9 +283,10 @@ All tools are annotated read-only.
 
 `nbox_get` and `nbox_journal` take a `kind` and a `ref`. `kind` is one of
 `device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `circuit`, `aggregate`,
-`asn`, `ip_range` — both tools accept the full set. `ref` is the natural
-reference for that kind: a name/slug/ID for named objects, a CIDR for prefix and
-aggregate, an address for ip, a VID or name for vlan, the AS number for asn.
+`asn`, `ip_range`, `tenant`, `contact`, `provider`, `vm`, `cluster` — both tools
+accept the full set. `ref` is the natural reference for that kind: a name/slug/ID
+for named objects, a CIDR for prefix and aggregate, an address for ip, a VID or
+name for vlan, the AS number for asn.
 
 ## Resources
 
@@ -298,7 +299,7 @@ nbox://{kind}/{ref}
 
 `kind` is the same set as `nbox_get` (`device`, `ip`, `prefix`, `vlan`, `site`,
 `rack`, `circuit`, `aggregate`, `asn`, `ip_range`, `tenant`, `contact`,
-`provider`); `ref` is the same natural reference. Reading a resource returns the
+`provider`, `vm`, `cluster`); `ref` is the same natural reference. Reading a resource returns the
 object as JSON — the exact view model `nbox_get` returns. Examples:
 `nbox://device/edge01`, `nbox://ip/10.0.0.1`, `nbox://site/iad1`.
 

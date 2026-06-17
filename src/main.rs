@@ -50,7 +50,9 @@ async fn main() {
         (nbox::update::spawn_check(), json)
     };
 
-    let result = nbox::run(cli).await;
+    // The command dispatch in `run` is a large match over every subcommand;
+    // box the future to keep it off the stack (clippy::large_futures).
+    let result = Box::pin(nbox::run(cli)).await;
 
     #[cfg(feature = "updates")]
     {

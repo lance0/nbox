@@ -15,6 +15,7 @@ use crate::netbox::models::ipam::{
     VlanGroup, Vrf,
 };
 use crate::netbox::models::tenancy::{Contact, Tenant};
+use crate::netbox::models::virtualization::{Cluster, VirtualMachine};
 use crate::netbox::pagination::Page;
 
 /// `limit` sent on the `available-prefixes` GET. Without an explicit `limit`
@@ -620,6 +621,62 @@ impl NetBoxClient {
             .list(Endpoint::Providers, vec![("name__ic", value.to_string())])
             .await?;
         ambiguous_or_first("provider", value, contains.results, |p| p.name.clone())
+    }
+
+    /// Resolve a virtual machine by numeric ID, then exact name, then
+    /// name-contains. VMs have no slug, so the order mirrors
+    /// [`device_by_ref`](Self::device_by_ref): id → `name__ie` → `name__ic`
+    /// (ambiguous → exit 5). The VM serializer carries a (potentially large)
+    /// `config_context`, excluded by default — so the id fast-path opts out
+    /// explicitly, matching `device_by_ref`.
+    pub async fn vm_by_ref(&self, value: &str) -> Result<Option<VirtualMachine>> {
+        if let Ok(id) = value.parse::<u64>() {
+            return self
+                .get_optional(
+                    &format!("/api/virtualization/virtual-machines/{id}/"),
+                    &[("exclude", "config_context".to_string())],
+                )
+                .await;
+        }
+        let exact: Page<VirtualMachine> = self
+            .list(
+                Endpoint::VirtualMachines,
+                vec![("name__ie", value.to_string())],
+            )
+            .await?;
+        if let Some(vm) = exact.results.into_iter().next() {
+            return Ok(Some(vm));
+        }
+        let contains: Page<VirtualMachine> = self
+            .list(
+                Endpoint::VirtualMachines,
+                vec![("name__ic", value.to_string())],
+            )
+            .await?;
+        ambiguous_or_first("virtual machine", value, contains.results, |v| {
+            v.name.clone()
+        })
+    }
+
+    /// Resolve a cluster by numeric ID, then exact name, then name-contains.
+    /// Clusters have no slug, so the order is id → `name__ie` → `name__ic`
+    /// (ambiguous → exit 5).
+    pub async fn cluster_by_ref(&self, value: &str) -> Result<Option<Cluster>> {
+        if let Ok(id) = value.parse::<u64>() {
+            return self
+                .get_optional(&format!("/api/virtualization/clusters/{id}/"), &[])
+                .await;
+        }
+        let exact: Page<Cluster> = self
+            .list(Endpoint::Clusters, vec![("name__ie", value.to_string())])
+            .await?;
+        if let Some(c) = exact.results.into_iter().next() {
+            return Ok(Some(c));
+        }
+        let contains: Page<Cluster> = self
+            .list(Endpoint::Clusters, vec![("name__ic", value.to_string())])
+            .await?;
+        ambiguous_or_first("cluster", value, contains.results, |c| c.name.clone())
     }
 }
 

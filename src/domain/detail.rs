@@ -16,6 +16,7 @@ use anyhow::{Context, Result};
 use crate::domain::aggregate_view::AggregateView;
 use crate::domain::asn_view::AsnView;
 use crate::domain::circuit_view::CircuitView;
+use crate::domain::cluster_view::ClusterView;
 use crate::domain::contact_view::ContactView;
 use crate::domain::device_detail::DeviceDetail;
 use crate::domain::interface_view::InterfaceView;
@@ -28,6 +29,7 @@ use crate::domain::rack_view::RackView;
 use crate::domain::site_view::SiteView;
 use crate::domain::tenant_view::TenantView;
 use crate::domain::vlan_view::VlanView;
+use crate::domain::vm_view::VmView;
 use crate::error::NboxError;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::models::circuits::{Circuit, Provider};
@@ -35,6 +37,7 @@ use crate::netbox::models::common::BriefObject;
 use crate::netbox::models::dcim::{Device, Site};
 use crate::netbox::models::ipam::{Aggregate, Asn, IpAddress, IpRange, Prefix, Vlan, VlanGroup};
 use crate::netbox::models::tenancy::{Contact, Tenant};
+use crate::netbox::models::virtualization::{Cluster, VirtualMachine};
 use crate::netbox::query;
 use crate::netbox::search::ObjectKind;
 
@@ -391,6 +394,32 @@ pub async fn provider_view_by_ref(
     Ok(ProviderView::from_model(provider))
 }
 
+/// `vm <name|id>`: resolve a virtual machine and build its view. Shared by CLI/MCP.
+pub async fn vm_view_by_ref(
+    client: &NetBoxClient,
+    value: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<VmView> {
+    let vm = client
+        .vm_by_ref(value)
+        .await?
+        .ok_or_else(|| not_found("virtual machine", value))?;
+    Ok(VmView::from_model(vm))
+}
+
+/// `cluster <name|id>`: resolve a cluster and build its view. Shared by CLI/MCP.
+pub async fn cluster_view_by_ref(
+    client: &NetBoxClient,
+    value: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<ClusterView> {
+    let cluster = client
+        .cluster_by_ref(value)
+        .await?
+        .ok_or_else(|| not_found("cluster", value))?;
+    Ok(ClusterView::from_model(cluster))
+}
+
 /// A switchable section on a detail screen (e.g. a device's interfaces).
 #[derive(Debug, Clone)]
 pub struct DetailTab {
@@ -553,6 +582,23 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             let v = ProviderView::from_model(p);
             (format!("provider {}", v.name), v.to_key_values().render())
         }
+        ObjectKind::Vm => {
+            let vm: VirtualMachine = client
+                .get(
+                    &format!("/api/virtualization/virtual-machines/{id}/"),
+                    &[("exclude", "config_context".to_string())],
+                )
+                .await?;
+            let v = VmView::from_model(vm);
+            (format!("vm {}", v.name), v.to_key_values().render())
+        }
+        ObjectKind::Cluster => {
+            let c: Cluster = client
+                .get(&format!("/api/virtualization/clusters/{id}/"), &[])
+                .await?;
+            let v = ClusterView::from_model(c);
+            (format!("cluster {}", v.name), v.to_key_values().render())
+        }
     };
     Ok(DetailView::new(kind, id, title, body).with_tabs(tabs))
 }
@@ -708,6 +754,28 @@ pub async fn load_detail_by_ref(
             (
                 id,
                 format!("provider {}", v.name),
+                v.to_key_values().render(),
+            )
+        }
+        ObjectKind::Vm => {
+            let vm = client
+                .vm_by_ref(value)
+                .await?
+                .with_context(|| format!("no virtual machine matched \"{value}\""))?;
+            let id = vm.id;
+            let v = VmView::from_model(vm);
+            (id, format!("vm {}", v.name), v.to_key_values().render())
+        }
+        ObjectKind::Cluster => {
+            let c = client
+                .cluster_by_ref(value)
+                .await?
+                .with_context(|| format!("no cluster matched \"{value}\""))?;
+            let id = c.id;
+            let v = ClusterView::from_model(c);
+            (
+                id,
+                format!("cluster {}", v.name),
                 v.to_key_values().render(),
             )
         }

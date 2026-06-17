@@ -302,6 +302,18 @@ pub enum Command {
         value: String,
     },
 
+    /// Show a virtual machine by name or numeric ID.
+    Vm {
+        /// VM name or numeric ID.
+        value: String,
+    },
+
+    /// Show a cluster by name or numeric ID.
+    Cluster {
+        /// Cluster name or numeric ID.
+        value: String,
+    },
+
     /// Show a VLAN by VID or name.
     Vlan {
         /// VLAN VID or name.
@@ -827,6 +839,20 @@ mod tests {
         assert!(matches!(
             contact.command,
             Some(Command::Contact { value }) if value == "Jane Doe"
+        ));
+    }
+
+    #[test]
+    fn parses_vm_and_cluster_lookups() {
+        let vm = Cli::try_parse_from(["nbox", "vm", "web-01"]).unwrap();
+        assert!(matches!(
+            vm.command,
+            Some(Command::Vm { value }) if value == "web-01"
+        ));
+        let cluster = Cli::try_parse_from(["nbox", "cluster", "prod"]).unwrap();
+        assert!(matches!(
+            cluster.command,
+            Some(Command::Cluster { value }) if value == "prod"
         ));
     }
 

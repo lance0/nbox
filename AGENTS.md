@@ -47,6 +47,8 @@ nbox asn <number>
 nbox ip-range <start|id>
 nbox tenant <slug|name|id>
 nbox contact <name|id>
+nbox vm <name|id>
+nbox cluster <name|id>
 nbox search <query> [--limit N] [--status S] [--site SLUG] [--region SLUG] [--site-group SLUG] [--location SLUG] [--tenant SLUG] [--role SLUG] [--tag SLUG] [--vrf <id|rd|name>] [--cols a,b,c] [--partial]
 nbox tags
 nbox journal <kind> <ref>
@@ -73,8 +75,8 @@ stderr. Every tool is annotated read-only.
 | Tool | Purpose |
 | ---- | ------- |
 | `nbox_status` | Connection + NetBox/Django/Python versions (call first to confirm reachability). |
-| `nbox_search` | Search devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP ranges/tenants/contacts/providers; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag` (one scope filter at a time), `vrf` (id\|rd\|name; filters IP/prefix results only). Find a reference before `nbox_get`. |
-| `nbox_get` | One object: `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider) + `ref`; `vrf`/`site`/`group` disambiguate (an ambiguous ref returns the candidates). |
+| `nbox_search` | Search devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP ranges/tenants/contacts/providers/VMs/clusters; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag` (one scope filter at a time), `vrf` (id\|rd\|name; filters IP/prefix results only). Find a reference before `nbox_get`. |
+| `nbox_get` | One object: `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster) + `ref`; `vrf`/`site`/`group` disambiguate (an ambiguous ref returns the candidates). |
 | `nbox_get_interface` | One interface on a device: config, addresses, cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix (nothing reserved); `count`, `vrf`. |
 | `nbox_next_prefix` | Available child prefix(es) in a prefix; `length` for a block of a size, else all free blocks; `vrf`. |

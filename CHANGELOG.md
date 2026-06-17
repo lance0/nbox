@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Virtualization lookups: `nbox vm <name|id>` and `nbox cluster <name|id>`,
+  read-only and additive. VM surfaces its status, role/cluster/device/platform
+  (brief), vcpus, memory, disk, primary IPv4/IPv6, tenant, site, description,
+  tags, and custom fields; cluster surfaces its type/group (brief), status,
+  tenant, scope (the polymorphic `scope`/`scope_type` — site/region/…), non-zero
+  device and VM counts, description, tags, and custom fields. Both render plain
+  and `--json`. Neither carries a slug, so they resolve id → `name__ie` →
+  `name__ic`; an ambiguous reference exits `5` with the candidates. Search now
+  fans out to virtual machines and clusters (both honor `q=`/`--tag` and `--site`;
+  id-based scope filters skip them), and the `nbox_get` MCP tool, the
+  `nbox://{kind}/{ref}` resource template, `nbox open`, and `nbox journal` all
+  gain `vm` and `cluster` kinds, routed through the same shared view layer as the
+  CLI.
 - MCP resources: the `nbox serve` server now advertises a `resources` capability
   and a single resource template, `nbox://{kind}/{ref}` (e.g.
   `nbox://device/edge01`, `nbox://ip/10.0.0.1`), so hosts that browse/attach

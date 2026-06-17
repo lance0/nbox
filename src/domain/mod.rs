@@ -8,6 +8,7 @@
 pub mod aggregate_view;
 pub mod asn_view;
 pub mod circuit_view;
+pub mod cluster_view;
 pub mod contact_view;
 pub mod custom;
 pub mod detail;
@@ -24,6 +25,7 @@ pub mod site_view;
 pub mod tag_view;
 pub mod tenant_view;
 pub mod vlan_view;
+pub mod vm_view;
 
 use serde::Serialize;
 

@@ -751,3 +751,193 @@ async fn provider_contains_with_multiple_matches_is_ambiguous() {
         "got: {msg}"
     );
 }
+
+#[tokio::test]
+async fn vm_by_name_uses_name_ie_filter() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/virtualization/virtual-machines/"))
+        .and(query_param("name__ie", "web-01"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 5, "url": "http://nb/api/virtualization/virtual-machines/5/",
+                "name": "web-01",
+                "status": {"value": "active", "label": "Active"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let vm = client(&server).vm_by_ref("web-01").await.unwrap().unwrap();
+    assert_eq!(vm.id, 5);
+    assert_eq!(vm.name, "web-01");
+}
+
+#[tokio::test]
+async fn vm_by_id_hits_detail_endpoint() {
+    let server = MockServer::start().await;
+    // The id fast-path excludes config_context; matching on path alone is enough.
+    Mock::given(method("GET"))
+        .and(path("/api/virtualization/virtual-machines/5/"))
+        .and(query_param("exclude", "config_context"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 5, "url": "http://nb/api/virtualization/virtual-machines/5/",
+            "name": "web-01"
+        })))
+        .mount(&server)
+        .await;
+
+    let vm = client(&server).vm_by_ref("5").await.unwrap().unwrap();
+    assert_eq!(vm.id, 5);
+    assert_eq!(vm.name, "web-01");
+}
+
+#[tokio::test]
+async fn vm_by_name_falls_back_to_name_ic() {
+    let server = MockServer::start().await;
+    // VMs have no slug: exact (name__ie) misses, contains resolves the match.
+    mount_empty_page(
+        &server,
+        "/api/virtualization/virtual-machines/",
+        "name__ie",
+        "web",
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/api/virtualization/virtual-machines/"))
+        .and(query_param("name__ic", "web"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 5, "url": "u", "name": "web-01"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let vm = client(&server).vm_by_ref("web").await.unwrap().unwrap();
+    assert_eq!(vm.id, 5);
+}
+
+#[tokio::test]
+async fn vm_contains_with_multiple_matches_is_ambiguous() {
+    let server = MockServer::start().await;
+    mount_empty_page(
+        &server,
+        "/api/virtualization/virtual-machines/",
+        "name__ie",
+        "web",
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/api/virtualization/virtual-machines/"))
+        .and(query_param("name__ic", "web"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [
+                {"id": 1, "url": "u", "name": "web-01"},
+                {"id": 2, "url": "u", "name": "web-02"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let err = client(&server).vm_by_ref("web").await.unwrap_err();
+    assert_eq!(nbox::error::NboxError::exit_code_for(&err), 5);
+    let msg = format!("{err:#}");
+    assert!(msg.contains("ambiguous"), "got: {msg}");
+    assert!(
+        msg.contains("web-01") && msg.contains("web-02"),
+        "got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn cluster_by_name_uses_name_ie_filter() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/virtualization/clusters/"))
+        .and(query_param("name__ie", "prod"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 3, "url": "http://nb/api/virtualization/clusters/3/",
+                "name": "prod",
+                "type": {"id": 1, "display": "VMware"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let cluster = client(&server)
+        .cluster_by_ref("prod")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(cluster.id, 3);
+    assert_eq!(cluster.name, "prod");
+}
+
+#[tokio::test]
+async fn cluster_by_id_hits_detail_endpoint() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/virtualization/clusters/3/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 3, "url": "http://nb/api/virtualization/clusters/3/", "name": "prod"
+        })))
+        .mount(&server)
+        .await;
+
+    let cluster = client(&server).cluster_by_ref("3").await.unwrap().unwrap();
+    assert_eq!(cluster.id, 3);
+    assert_eq!(cluster.name, "prod");
+}
+
+#[tokio::test]
+async fn cluster_by_name_falls_back_to_name_ic() {
+    let server = MockServer::start().await;
+    mount_empty_page(&server, "/api/virtualization/clusters/", "name__ie", "prod").await;
+    Mock::given(method("GET"))
+        .and(path("/api/virtualization/clusters/"))
+        .and(query_param("name__ic", "prod"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 3, "url": "u", "name": "prod-east"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let cluster = client(&server)
+        .cluster_by_ref("prod")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(cluster.id, 3);
+}
+
+#[tokio::test]
+async fn cluster_contains_with_multiple_matches_is_ambiguous() {
+    let server = MockServer::start().await;
+    mount_empty_page(&server, "/api/virtualization/clusters/", "name__ie", "prod").await;
+    Mock::given(method("GET"))
+        .and(path("/api/virtualization/clusters/"))
+        .and(query_param("name__ic", "prod"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [
+                {"id": 1, "url": "u", "name": "prod-east"},
+                {"id": 2, "url": "u", "name": "prod-west"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let err = client(&server).cluster_by_ref("prod").await.unwrap_err();
+    assert_eq!(nbox::error::NboxError::exit_code_for(&err), 5);
+    let msg = format!("{err:#}");
+    assert!(msg.contains("ambiguous"), "got: {msg}");
+    assert!(
+        msg.contains("prod-east") && msg.contains("prod-west"),
+        "got: {msg}"
+    );
+}

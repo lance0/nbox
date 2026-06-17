@@ -6,7 +6,7 @@ nbox is a read-only NetBox client (v0.1) — a CLI and a TUI over the same core.
 
 | Command | What |
 | ------- | ---- |
-| `nbox search <q>` | Parallel search across devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers. Filters: `--status/--site/--region/--site-group/--location/--tenant/--role/--tag/--vrf`, `--limit`, `--cols`, `--partial`. |
+| `nbox search <q>` | Parallel search across devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers/VMs/clusters. Filters: `--status/--site/--region/--site-group/--location/--tenant/--role/--tag/--vrf`, `--limit`, `--cols`, `--partial`. |
 | `nbox device <name\|slug\|id> [--journal]` | Device + interfaces, IPs, cables, VLANs, services. |
 | `nbox interface <device> <iface>` | One interface: type, MTU, MAC, mode, VLANs, cable, **cable path** (trace), addresses. |
 | `nbox ip <addr> [--vrf] [--journal]` | IP + most-specific parent prefix (VRF-scoped) and its VLAN plus the prefix's `scope`/`scope_type` (site, location, region, …). |
@@ -18,10 +18,12 @@ nbox is a read-only NetBox client (v0.1) — a CLI and a TUI over the same core.
 | `nbox tenant <slug\|name\|id>` | Tenant: group, description, relation counts, tags, custom fields. |
 | `nbox contact <name\|id>` | Contact: title, phone, email, address, link, group, tags, custom fields. |
 | `nbox provider <slug\|name\|id>` | Provider: ASNs, accounts, description, circuit count, tags, custom fields. |
+| `nbox vm <name\|id>` | Virtual machine: status, role, cluster, device, platform, vcpus, memory, disk, primary IPs, tenant, site, description, tags, custom fields. |
+| `nbox cluster <name\|id>` | Cluster: type, group, status, tenant, scope (site/region/…), device + VM counts, description, tags, custom fields. |
 | `nbox tags` | List tags. |
-| `nbox journal <kind> <ref>` | Recent journal entries for an object. Kinds: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider. `--journal` on a detail lookup folds the most recent entries inline (default 5); `--journal-limit <N>` overrides the cap and implies `--journal`. (`tenant`/`contact`/`provider` have no inline `--journal` flag — use `nbox journal`.) |
+| `nbox journal <kind> <ref>` | Recent journal entries for an object. Kinds: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster. `--journal` on a detail lookup folds the most recent entries inline (default 5); `--journal-limit <N>` overrides the cap and implies `--journal`. (`tenant`/`contact`/`provider`/`vm`/`cluster` have no inline `--journal` flag — use `nbox journal`.) |
 | `nbox status` | Connection + NetBox/Django/Python versions. |
-| `nbox open <kind>/<ref>` | Open an object in the browser. Kinds: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, and `interface/<device>/<name>` (the interface name may contain slashes, e.g. `xe-0/0/1`). |
+| `nbox open <kind>/<ref>` | Open an object in the browser. Kinds: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, and `interface/<device>/<name>` (the interface name may contain slashes, e.g. `xe-0/0/1`). |
 | `nbox raw GET <path>` | Raw read-only API request (escape hatch). |
 
 Duplicate references across scopes (an address/CIDR in several VRFs, a VID at
@@ -75,8 +77,8 @@ are annotated read-only.
 | Tool | What |
 | ---- | ---- |
 | `nbox_status` | Connection + NetBox/Django/Python versions. |
-| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers; `query`, `limit`, `status`, `site`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; IP/prefix only). |
-| `nbox_get` | One object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider) + `ref`; `vrf`/`site`/`group` disambiguate. |
+| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers/VMs/clusters; `query`, `limit`, `status`, `site`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; IP/prefix only). |
+| `nbox_get` | One object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster) + `ref`; `vrf`/`site`/`group` disambiguate. |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix. |
 | `nbox_next_prefix` | Next available child prefix(es) of a given length. |

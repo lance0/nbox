@@ -16,6 +16,7 @@ use crate::netbox::models::circuits::{Circuit, Provider};
 use crate::netbox::models::dcim::{Device, Site};
 use crate::netbox::models::ipam::{Aggregate, Asn, IpAddress, IpRange, Prefix, Vlan};
 use crate::netbox::models::tenancy::{Contact, Tenant};
+use crate::netbox::models::virtualization::{Cluster, VirtualMachine};
 use crate::netbox::pagination::Page;
 use crate::util::format::api_to_web_url;
 
@@ -35,6 +36,8 @@ pub enum ObjectKind {
     Tenant,
     Contact,
     Provider,
+    Vm,
+    Cluster,
 }
 
 impl ObjectKind {
@@ -53,6 +56,8 @@ impl ObjectKind {
             ObjectKind::Tenant => "tenant",
             ObjectKind::Contact => "contact",
             ObjectKind::Provider => "provider",
+            ObjectKind::Vm => "vm",
+            ObjectKind::Cluster => "cluster",
         }
     }
 }
@@ -226,8 +231,8 @@ fn endpoint_params(
 
 impl NetBoxClient {
     /// Search across devices, sites, IPs, prefixes, VLANs, circuits,
-    /// aggregates, ASNs, IP ranges, tenants, contacts, and providers in
-    /// parallel.
+    /// aggregates, ASNs, IP ranges, tenants, contacts, providers, virtual
+    /// machines, and clusters in parallel.
     ///
     /// Returns ranked results plus a list of endpoints that failed. If every
     /// endpoint fails and nothing matched, returns the underlying `Err` (so a
@@ -268,6 +273,8 @@ impl NetBoxClient {
             tenants,
             contacts,
             providers,
+            vms,
+            clusters,
         ) = tokio::join!(
             self.search_devices(&q, f, scope.as_ref()),
             self.search_sites(&q, f, scope.as_ref()),
@@ -281,6 +288,8 @@ impl NetBoxClient {
             self.search_tenants(&q, f, scope.as_ref()),
             self.search_contacts(&q, f, scope.as_ref()),
             self.search_providers(&q, f, scope.as_ref()),
+            self.search_vms(&q, f, scope.as_ref()),
+            self.search_clusters(&q, f, scope.as_ref()),
         );
 
         let mut merged = Vec::new();
@@ -299,6 +308,8 @@ impl NetBoxClient {
             ("tenants", tenants),
             ("contacts", contacts),
             ("providers", providers),
+            ("vms", vms),
+            ("clusters", clusters),
         ];
         for (name, branch) in branches {
             match branch {
@@ -852,6 +863,75 @@ impl NetBoxClient {
                     url: api_to_web_url(&p.url),
                     display: p.name,
                 }
+            })
+            .collect())
+    }
+
+    async fn search_vms(
+        &self,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+    ) -> Result<Vec<SearchResult>> {
+        // VMs honor `--site` via the plain `site` allowlist (slug accepted), but
+        // carry no clean region/site-group/location filter here — skip them for an
+        // id-based scope rather than return an unfiltered set.
+        if skip_for_id_scope(scope) {
+            return Ok(Vec::new());
+        }
+        let Some(params) = endpoint_params(q, f, &["status", "site", "tenant", "role", "tag"])
+        else {
+            return Ok(Vec::new());
+        };
+        let page: Page<VirtualMachine> = self.list(Endpoint::VirtualMachines, params).await?;
+        Ok(page
+            .results
+            .into_iter()
+            .map(|vm| SearchResult {
+                kind: ObjectKind::Vm,
+                id: vm.id,
+                score: score_match(q, &vm.name),
+                subtitle: vm
+                    .cluster
+                    .as_ref()
+                    .or(vm.site.as_ref())
+                    .map(super::models::common::BriefObject::label),
+                url: api_to_web_url(&vm.url),
+                display: vm.name,
+            })
+            .collect())
+    }
+
+    async fn search_clusters(
+        &self,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+    ) -> Result<Vec<SearchResult>> {
+        // Clusters honor `--site` directly (allowlist) but have no clean
+        // region/site-group/location filter — skip them for an id-based scope.
+        if skip_for_id_scope(scope) {
+            return Ok(Vec::new());
+        }
+        // Clusters accept `status`/`site`/`tenant`/`tag` (no `role`).
+        let Some(params) = endpoint_params(q, f, &["status", "site", "tenant", "tag"]) else {
+            return Ok(Vec::new());
+        };
+        let page: Page<Cluster> = self.list(Endpoint::Clusters, params).await?;
+        Ok(page
+            .results
+            .into_iter()
+            .map(|c| SearchResult {
+                kind: ObjectKind::Cluster,
+                id: c.id,
+                score: score_match(q, &c.name),
+                subtitle: c
+                    .type_
+                    .as_ref()
+                    .or(c.scope.as_ref())
+                    .map(super::models::common::BriefObject::label),
+                url: api_to_web_url(&c.url),
+                display: c.name,
             })
             .collect())
     }

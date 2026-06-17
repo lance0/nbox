@@ -57,12 +57,14 @@ pub enum GetKind {
     Tenant,
     Contact,
     Provider,
+    Vm,
+    Cluster,
 }
 
 impl GetKind {
     /// Every kind, in the order the docs and `nbox://{kind}/{ref}` template list
     /// them — the same set `nbox_get` accepts.
-    const ALL: [GetKind; 13] = [
+    const ALL: [GetKind; 15] = [
         GetKind::Device,
         GetKind::Ip,
         GetKind::Prefix,
@@ -76,6 +78,8 @@ impl GetKind {
         GetKind::Tenant,
         GetKind::Contact,
         GetKind::Provider,
+        GetKind::Vm,
+        GetKind::Cluster,
     ];
 
     /// The `snake_case` slug used in `nbox://{kind}/{ref}` URIs and the `kind`
@@ -95,6 +99,8 @@ impl GetKind {
             GetKind::Tenant => "tenant",
             GetKind::Contact => "contact",
             GetKind::Provider => "provider",
+            GetKind::Vm => "vm",
+            GetKind::Cluster => "cluster",
         }
     }
 
@@ -228,7 +234,8 @@ pub struct StatusReport {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct SearchReport {
     /// Ranked search hits across devices, sites, IPs, prefixes, VLANs,
-    /// circuits, aggregates, ASNs, IP ranges, tenants, contacts, and providers.
+    /// circuits, aggregates, ASNs, IP ranges, tenants, contacts, providers,
+    /// virtual machines, and clusters.
     pub results: Vec<SearchResult>,
     /// Per-endpoint failures (partial result); empty when every endpoint succeeded.
     pub errors: Vec<String>,
@@ -330,10 +337,10 @@ fn resource_templates() -> ListResourceTemplatesResult {
         .with_title("NetBox object")
         .with_description(
             "Read one NetBox object as JSON. `kind` is one of device, ip, prefix, vlan, \
-             site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider; \
-             `ref` is its natural reference (name/slug/ID; CIDR for prefix/aggregate; \
-             address for ip; VID or name for vlan; AS number for asn). Percent-encode a \
-             `ref` that contains '/'. Same view as the nbox_get tool.",
+             site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, \
+             vm, cluster; `ref` is its natural reference (name/slug/ID; CIDR for \
+             prefix/aggregate; address for ip; VID or name for vlan; AS number for asn). \
+             Percent-encode a `ref` that contains '/'. Same view as the nbox_get tool.",
         )
         .with_mime_type("application/json")
         .no_annotation();
@@ -394,7 +401,7 @@ impl NboxMcp {
     /// aggregates, ASNs, and IP ranges.
     #[tool(
         name = "nbox_search",
-        description = "Search across devices, sites, IP addresses, prefixes, VLANs, circuits, aggregates, ASNs, IP ranges, tenants, contacts, and providers by free text. Returns ranked hits with kind, display name, and URL. Use this to find an object's exact reference before nbox_get. Optional filters narrow by status/site/tenant/role/tag; vrf (id|rd|name) narrows IP and prefix results.",
+        description = "Search across devices, sites, IP addresses, prefixes, VLANs, circuits, aggregates, ASNs, IP ranges, tenants, contacts, providers, virtual machines, and clusters by free text. Returns ranked hits with kind, display name, and URL. Use this to find an object's exact reference before nbox_get. Optional filters narrow by status/site/tenant/role/tag; vrf (id|rd|name) narrows IP and prefix results.",
         annotations(read_only_hint = true)
     )]
     async fn nbox_search(
@@ -435,7 +442,7 @@ impl NboxMcp {
     // single concrete type (a oneOf over ~10 view types is out of scope).
     #[tool(
         name = "nbox_get",
-        description = "Look up a single object and its context. `kind` is one of: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider. `ref` is the natural reference for that kind (name/slug/ID; CIDR for prefix/aggregate; address for ip; VID or name for vlan; AS number for asn; slug/name/ID for tenant; name/ID for contact; slug/name/ID for provider). On an ambiguous reference the error lists the candidates: pass `vrf` for an ip/prefix in several VRFs, or `site`/`group` for a VLAN VID present at several sites.",
+        description = "Look up a single object and its context. `kind` is one of: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster. `ref` is the natural reference for that kind (name/slug/ID; CIDR for prefix/aggregate; address for ip; VID or name for vlan; AS number for asn; slug/name/ID for tenant; name/ID for contact; slug/name/ID for provider; name/ID for vm and cluster). On an ambiguous reference the error lists the candidates: pass `vrf` for an ip/prefix in several VRFs, or `site`/`group` for a VLAN VID present at several sites.",
         output_schema = output_schema(),
         annotations(read_only_hint = true)
     )]
@@ -528,7 +535,7 @@ impl NboxMcp {
     /// Recent journal entries for an object.
     #[tool(
         name = "nbox_journal",
-        description = "Return recent journal entries (operator notes) for an object, newest first. `kind` and `ref` follow nbox_get; supported kinds are device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider.",
+        description = "Return recent journal entries (operator notes) for an object, newest first. `kind` and `ref` follow nbox_get; supported kinds are device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster.",
         annotations(read_only_hint = true)
     )]
     async fn nbox_journal(
@@ -626,6 +633,10 @@ impl NboxMcp {
             GetKind::Provider => {
                 serde_json::to_value(detail::provider_view_by_ref(c, r, &not_found).await?)?
             }
+            GetKind::Vm => serde_json::to_value(detail::vm_view_by_ref(c, r, &not_found).await?)?,
+            GetKind::Cluster => {
+                serde_json::to_value(detail::cluster_view_by_ref(c, r, &not_found).await?)?
+            }
         };
         Ok(Json(value))
     }
@@ -691,6 +702,8 @@ impl NboxMcp {
             GetKind::Tenant => "tenant",
             GetKind::Contact => "contact",
             GetKind::Provider => "provider",
+            GetKind::Vm => "vm",
+            GetKind::Cluster => "cluster",
         };
         crate::resolve_content_type_id(&self.client, cli_kind, value).await
     }

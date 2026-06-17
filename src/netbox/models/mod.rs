@@ -11,3 +11,4 @@ pub mod dcim;
 pub mod extras;
 pub mod ipam;
 pub mod tenancy;
+pub mod virtualization;

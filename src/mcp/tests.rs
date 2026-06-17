@@ -163,6 +163,8 @@ async fn search_returns_results_and_errors() {
         "/api/tenancy/tenants/",
         "/api/tenancy/contacts/",
         "/api/circuits/providers/",
+        "/api/virtualization/virtual-machines/",
+        "/api/virtualization/clusters/",
     ] {
         Mock::given(method("GET"))
             .and(path(p))
@@ -247,6 +249,8 @@ async fn search_reports_partial_endpoint_errors() {
         "/api/tenancy/tenants/",
         "/api/tenancy/contacts/",
         "/api/circuits/providers/",
+        "/api/virtualization/virtual-machines/",
+        "/api/virtualization/clusters/",
     ] {
         mount_empty(&mock, p).await;
     }
@@ -744,6 +748,89 @@ async fn get_provider_returns_provider_view() {
     assert_eq!(value["circuit_count"], 7);
     assert_eq!(value["tags"][0], "transit");
     assert_eq!(value["custom_fields"]["noc_email"], "noc@acme.example");
+}
+
+#[tokio::test]
+async fn get_vm_returns_vm_view() {
+    let mock = MockServer::start().await;
+    // vm_by_ref has no slug; it tries `name__ie` first.
+    Mock::given(method("GET"))
+        .and(path("/api/virtualization/virtual-machines/"))
+        .and(query_param("name__ie", "web-01"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 5, "url": "http://nb/api/virtualization/virtual-machines/5/",
+                "name": "web-01",
+                "status": {"value": "active", "label": "Active"},
+                "cluster": {"id": 3, "display": "prod"},
+                "platform": {"id": 4, "display": "Ubuntu 22.04"},
+                "primary_ip4": {"id": 11, "display": "10.0.0.5/24"},
+                "vcpus": 4.0, "memory": 8192, "disk": 100,
+                "tags": [{"id": 1, "name": "prod", "slug": "prod"}],
+                "custom_fields": {"owner": "platform"}
+            }]
+        })))
+        .mount(&mock)
+        .await;
+
+    let Json(value) = server_for(&mock)
+        .nbox_get(Parameters(get_args(GetKind::Vm, "web-01")))
+        .await
+        .expect("vm lookup");
+
+    assert_eq!(value["name"], "web-01");
+    assert_eq!(value["status"], "active");
+    assert_eq!(value["cluster"], "prod");
+    assert_eq!(value["platform"], "Ubuntu 22.04");
+    assert_eq!(value["primary_ip4"], "10.0.0.5/24");
+    assert_eq!(value["vcpus"], 4.0);
+    assert_eq!(value["memory"], 8192);
+    assert_eq!(value["tags"][0], "prod");
+    assert_eq!(value["custom_fields"]["owner"], "platform");
+}
+
+#[tokio::test]
+async fn get_cluster_returns_cluster_view() {
+    let mock = MockServer::start().await;
+    // cluster_by_ref has no slug; it tries `name__ie` first.
+    Mock::given(method("GET"))
+        .and(path("/api/virtualization/clusters/"))
+        .and(query_param("name__ie", "prod"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 3, "url": "http://nb/api/virtualization/clusters/3/",
+                "name": "prod",
+                "type": {"id": 1, "display": "VMware"},
+                "group": {"id": 2, "display": "us-east"},
+                "status": {"value": "active", "label": "Active"},
+                "scope_type": "dcim.site",
+                "scope": {"id": 1, "display": "iad1"},
+                "device_count": 4, "virtualmachine_count": 0,
+                "tags": [{"id": 1, "name": "prod", "slug": "prod"}],
+                "custom_fields": {"sla": "gold"}
+            }]
+        })))
+        .mount(&mock)
+        .await;
+
+    let Json(value) = server_for(&mock)
+        .nbox_get(Parameters(get_args(GetKind::Cluster, "prod")))
+        .await
+        .expect("cluster lookup");
+
+    assert_eq!(value["name"], "prod");
+    assert_eq!(value["type"], "VMware");
+    assert_eq!(value["group"], "us-east");
+    assert_eq!(value["status"], "active");
+    assert_eq!(value["scope"], "iad1");
+    assert_eq!(value["scope_type"], "site");
+    assert_eq!(value["device_count"], 4);
+    // Zero counts are dropped.
+    assert!(value.get("virtualmachine_count").is_none());
+    assert_eq!(value["tags"][0], "prod");
+    assert_eq!(value["custom_fields"]["sla"], "gold");
 }
 
 #[tokio::test]
