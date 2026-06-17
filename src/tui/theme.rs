@@ -30,6 +30,12 @@ pub enum Severity {
 pub struct Theme {
     name: Cow<'static, str>,
 
+    /// When set, the theme renders monochrome: every color field is
+    /// [`Color::Reset`] and the style accessors return unstyled output. Driven by
+    /// `NO_COLOR` at TUI startup (see [`Theme::no_color`]). Kept on the theme so
+    /// `Theme` stays the single source of truth for color decisions.
+    no_color: bool,
+
     // UI chrome
     pub border: Color,
     pub border_focused: Color,
@@ -62,6 +68,7 @@ impl Theme {
     pub fn default_theme() -> Self {
         Self {
             name: Cow::Borrowed("default"),
+            no_color: false,
 
             border: Color::Cyan,
             border_focused: Color::Cyan,
@@ -85,6 +92,7 @@ impl Theme {
     pub fn kawaii() -> Self {
         Self {
             name: Cow::Borrowed("kawaii"),
+            no_color: false,
 
             border: Color::Rgb(255, 182, 214),
             border_focused: Color::Rgb(255, 182, 214),
@@ -108,6 +116,7 @@ impl Theme {
     pub fn cyber() -> Self {
         Self {
             name: Cow::Borrowed("cyber"),
+            no_color: false,
 
             border: Color::Rgb(0, 255, 255),
             border_focused: Color::Rgb(0, 255, 255),
@@ -131,6 +140,7 @@ impl Theme {
     pub fn dracula() -> Self {
         Self {
             name: Cow::Borrowed("dracula"),
+            no_color: false,
 
             border: Color::Rgb(189, 147, 249),
             border_focused: Color::Rgb(189, 147, 249),
@@ -154,6 +164,7 @@ impl Theme {
     pub fn monochrome() -> Self {
         Self {
             name: Cow::Borrowed("monochrome"),
+            no_color: false,
 
             border: Color::Rgb(200, 200, 200),
             border_focused: Color::Rgb(200, 200, 200),
@@ -177,6 +188,7 @@ impl Theme {
     pub fn matrix() -> Self {
         Self {
             name: Cow::Borrowed("matrix"),
+            no_color: false,
 
             border: Color::Rgb(0, 255, 0),
             border_focused: Color::Rgb(0, 255, 0),
@@ -200,6 +212,7 @@ impl Theme {
     pub fn nord() -> Self {
         Self {
             name: Cow::Borrowed("nord"),
+            no_color: false,
 
             border: Color::Rgb(136, 192, 208),
             border_focused: Color::Rgb(136, 192, 208),
@@ -223,6 +236,7 @@ impl Theme {
     pub fn gruvbox() -> Self {
         Self {
             name: Cow::Borrowed("gruvbox"),
+            no_color: false,
 
             border: Color::Rgb(254, 128, 25),
             border_focused: Color::Rgb(254, 128, 25),
@@ -246,6 +260,7 @@ impl Theme {
     pub fn catppuccin() -> Self {
         Self {
             name: Cow::Borrowed("catppuccin"),
+            no_color: false,
 
             border: Color::Rgb(203, 166, 247),
             border_focused: Color::Rgb(203, 166, 247),
@@ -269,6 +284,7 @@ impl Theme {
     pub fn tokyo_night() -> Self {
         Self {
             name: Cow::Borrowed("tokyo_night"),
+            no_color: false,
 
             border: Color::Rgb(187, 154, 247),
             border_focused: Color::Rgb(187, 154, 247),
@@ -292,6 +308,7 @@ impl Theme {
     pub fn solarized() -> Self {
         Self {
             name: Cow::Borrowed("solarized"),
+            no_color: false,
 
             border: Color::Rgb(42, 161, 152),
             border_focused: Color::Rgb(42, 161, 152),
@@ -309,6 +326,46 @@ impl Theme {
             graph_primary: Color::Rgb(133, 153, 0),
             graph_secondary: Color::Rgb(42, 161, 152),
         }
+    }
+
+    /// A monochrome theme that honors `NO_COLOR`: every color field is
+    /// [`Color::Reset`] (the terminal's own default fg/bg, no styling) and the
+    /// style accessors ([`Theme::message_style`], [`Theme::status_style`]) return
+    /// unstyled output. Selected at TUI startup when `NO_COLOR` is set, so the
+    /// whole UI renders without color while remaining fully usable (selection is
+    /// still marked by the `>` cursor, not a background highlight).
+    ///
+    /// This is distinct from the named [`Theme::monochrome`] theme, which is a
+    /// grayscale *RGB* palette (still color); `no_color` emits no color at all.
+    pub fn no_color() -> Self {
+        Self {
+            name: Cow::Borrowed("no_color"),
+            no_color: true,
+
+            border: Color::Reset,
+            border_focused: Color::Reset,
+            text: Color::Reset,
+            text_dim: Color::Reset,
+            highlight_bg: Color::Reset,
+
+            success: Color::Reset,
+            warning: Color::Reset,
+            error: Color::Reset,
+
+            accent: Color::Reset,
+            header: Color::Reset,
+
+            graph_primary: Color::Reset,
+            graph_secondary: Color::Reset,
+        }
+    }
+
+    /// Whether this theme is the monochrome `NO_COLOR` mode (see
+    /// [`Theme::no_color`]). The render path can use this to skip even non-color
+    /// styling (bold/reverse) if it wants a truly bare output; today the color
+    /// fields being [`Color::Reset`] already suffice.
+    pub fn is_no_color(&self) -> bool {
+        self.no_color
     }
 
     /// Get a theme by name (case-insensitive, with aliases). Unknown → default.
@@ -362,6 +419,9 @@ impl Theme {
     /// theme's success/warning/error color, or neutral (dim) text for `Info`.
     /// The single place the severity→color mapping lives (pure, testable).
     pub fn message_style(&self, severity: Severity) -> Style {
+        if self.no_color {
+            return Style::default();
+        }
         let color = match severity {
             Severity::Info => self.text_dim,
             Severity::Success => self.success,
@@ -376,6 +436,9 @@ impl Theme {
     /// stay neutral (the theme's normal text). Case-insensitive. The status
     /// TEXT is never changed — only its color. Pure and testable.
     pub fn status_style(&self, status: &str) -> Style {
+        if self.no_color {
+            return Style::default();
+        }
         let color = match status.trim().to_ascii_lowercase().as_str() {
             // Healthy / in-service.
             "active" | "connected" | "reserved" => self.success,
@@ -469,5 +532,63 @@ mod tests {
             t.status_style("  Offline ").fg,
             t.status_style("offline").fg
         );
+    }
+
+    #[test]
+    fn no_color_theme_is_flagged_and_all_fields_reset() {
+        let t = Theme::no_color();
+        assert!(t.is_no_color());
+        assert_eq!(t.name(), "no_color");
+        // Every themed color field is Reset (no color emitted at all).
+        for color in [
+            t.border,
+            t.border_focused,
+            t.text,
+            t.text_dim,
+            t.highlight_bg,
+            t.success,
+            t.warning,
+            t.error,
+            t.accent,
+            t.header,
+            t.graph_primary,
+            t.graph_secondary,
+        ] {
+            assert_eq!(color, Color::Reset);
+        }
+    }
+
+    #[test]
+    fn no_color_theme_message_style_is_unstyled_for_every_severity() {
+        let t = Theme::no_color();
+        for sev in [
+            Severity::Info,
+            Severity::Success,
+            Severity::Warning,
+            Severity::Error,
+        ] {
+            // No foreground color set: a bare default style, regardless of severity.
+            assert_eq!(t.message_style(sev), Style::default());
+            assert_eq!(t.message_style(sev).fg, None);
+        }
+    }
+
+    #[test]
+    fn no_color_theme_status_style_is_unstyled() {
+        let t = Theme::no_color();
+        // Statuses that would otherwise color (active→green, offline→red) stay bare.
+        assert_eq!(t.status_style("active"), Style::default());
+        assert_eq!(t.status_style("offline"), Style::default());
+        assert_eq!(t.status_style("whatever").fg, None);
+    }
+
+    #[test]
+    fn ordinary_themes_are_not_no_color() {
+        // The named `monochrome` theme is grayscale RGB — still color, not no_color.
+        assert!(!Theme::default_theme().is_no_color());
+        assert!(!Theme::monochrome().is_no_color());
+        for name in Theme::list() {
+            assert!(!Theme::by_name(name).is_no_color());
+        }
     }
 }

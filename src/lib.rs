@@ -349,7 +349,7 @@ async fn run_tui(ctx: &Ctx) -> Result<()> {
     // fast.)
     let status = client.verify_compatible().await?;
 
-    let app = tui::state::App::new(
+    let mut app = tui::state::App::new(
         client,
         &theme_name,
         name,
@@ -357,6 +357,13 @@ async fn run_tui(ctx: &Ctx) -> Result<()> {
         status.netbox_version,
         Some(path),
     );
+    // Honor NO_COLOR: render the TUI monochrome regardless of the configured
+    // theme. The TUI is always a TTY when interactive, so the color decision here
+    // keys on NO_COLOR (truecolor vs ANSI is moot when no color is emitted). See
+    // `tui::term` for the full capability resolver used by other surfaces.
+    if tui::term::no_color() {
+        app.set_no_color();
+    }
     tui::app::run(app, refresh_secs).await
 }
 

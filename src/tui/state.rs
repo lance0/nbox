@@ -267,6 +267,18 @@ impl App {
         }
     }
 
+    /// Switch the app into the monochrome `NO_COLOR` mode: the theme renders with
+    /// no color at all (see [`Theme::no_color`]). Wired at TUI startup when
+    /// `NO_COLOR` is set in the environment. `initial_theme` is pinned to the
+    /// no-color sentinel too, so the exit-time theme-persistence guard
+    /// (`theme.name() != initial_theme`) stays a no-op and we never write
+    /// `"no_color"` back into the user's config.
+    pub fn set_no_color(&mut self) {
+        self.theme = Theme::no_color();
+        self.theme_index = 0;
+        self.initial_theme = self.theme.name().to_string();
+    }
+
     /// Apply an event, returning any commands to dispatch. The commands handed
     /// back are accounted into the in-flight counter (each fetch bumps it) so the
     /// footer spinner runs until the matching result event lands.
@@ -1714,6 +1726,19 @@ mod tests {
         let before = a.theme_index;
         a.handle_event(press(KeyCode::Char('t')));
         assert_ne!(a.theme_index, before);
+    }
+
+    #[test]
+    fn set_no_color_switches_to_monochrome_theme_and_pins_initial() {
+        let mut a = app();
+        assert!(!a.theme.is_no_color());
+        a.set_no_color();
+        assert!(a.theme.is_no_color());
+        assert_eq!(a.theme.name(), "no_color");
+        // initial_theme is pinned to the same sentinel so the exit-time persist
+        // guard (theme.name() != initial_theme) stays a no-op: NO_COLOR must not
+        // overwrite the user's configured theme.
+        assert_eq!(a.initial_theme, a.theme.name());
     }
 
     #[test]
