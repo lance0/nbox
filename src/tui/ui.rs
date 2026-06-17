@@ -396,21 +396,35 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     let theme = &app.theme;
-    let line = if !app.status.is_empty() {
+    let mut spans: Vec<Span> = Vec::new();
+    // While a request is in flight, lead the status line with the loading
+    // spinner glyph (styled via the cheese palette). When idle the footer is
+    // exactly as before — no spinner cell.
+    if app.loading() {
+        spans.push(Span::raw(" "));
+        spans.push(app.spinner.span(theme));
+    }
+    if !app.status.is_empty() {
         // A live status message is colored by its severity: errors red, partial
         // results yellow, confirmations green, ordinary chatter dim.
-        Line::from(Span::styled(
+        spans.push(Span::styled(
             format!(" {} ", app.status),
             theme.message_style(app.status_severity),
-        ))
+        ));
+    } else if app.loading() {
+        // Loading with no specific status: a neutral hint beside the spinner.
+        spans.push(Span::styled(
+            " loading… ",
+            Style::default().fg(theme.text_dim),
+        ));
     } else {
-        Line::from(Span::styled(
+        spans.push(Span::styled(
             " / search   Tab pane   Enter open   o browser   y copy   b back   t theme   ? help   q quit ",
             Style::default().fg(theme.text_dim),
-        ))
-    };
+        ));
+    }
     frame.render_widget(
-        Paragraph::new(line).style(Style::default().fg(theme.text)),
+        Paragraph::new(Line::from(spans)).style(Style::default().fg(theme.text)),
         area,
     );
 }

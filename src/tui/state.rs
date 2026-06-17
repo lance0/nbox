@@ -12,7 +12,7 @@ use ratatui::widgets::TableState;
 use crate::domain::detail::DetailView;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::search::{ObjectKind, SearchOutcome, SearchResult};
-use crate::tui::cheese::TextInput;
+use crate::tui::cheese::{Spinner, TextInput};
 use crate::tui::palette::{self, PaletteCommand};
 use crate::tui::theme::{Severity, Theme};
 
@@ -101,6 +101,23 @@ pub enum AppCommand {
     Copy(String),
 }
 
+impl AppCommand {
+    /// True when this command kicks off a network fetch whose result returns as
+    /// an `AppEvent` (Search/LoadDetail/LoadPreview/LoadByRef). These bump the
+    /// in-flight counter so the footer spinner runs until the matching result
+    /// lands. `OpenBrowser`/`Copy` are fire-and-forget side effects (their async
+    /// `Status` push isn't a tracked fetch), so they don't count as loading.
+    fn is_fetch(&self) -> bool {
+        matches!(
+            self,
+            AppCommand::Search(_)
+                | AppCommand::LoadDetail { .. }
+                | AppCommand::LoadPreview { .. }
+                | AppCommand::LoadByRef { .. }
+        )
+    }
+}
+
 /// The whole TUI application state.
 pub struct App {
     pub client: NetBoxClient,
@@ -185,6 +202,18 @@ pub struct App {
     /// the pure scroll handler can clamp at the bottom. 0 until the first render.
     pub preview_viewport: u16,
 
+    /// Count of fetching async commands currently in flight (Search / LoadDetail
+    /// / LoadPreview / LoadByRef / refresh). Bumped when such a command is
+    /// dispatched, decremented when its matching result event arrives; clamped at
+    /// 0 so a stray/duplicate result can't drive it negative. The footer shows
+    /// the spinner iff this is non-zero (see [`App::loading`]), so concurrent
+    /// fetches all have to resolve before the UI reads as idle.
+    pub pending: u32,
+    /// The footer loading spinner. Advances one frame per tick *only while*
+    /// [`App::loading`] (so it's still at rest), and resets to frame 0 when the
+    /// last request settles. Confined behind the cheese adapter.
+    pub spinner: Spinner,
+
     pub should_quit: bool,
 }
 
@@ -232,18 +261,42 @@ impl App {
             preview_dirty: false,
             preview_scroll: 0,
             preview_viewport: 0,
+            pending: 0,
+            spinner: Spinner::new(),
             should_quit: false,
         }
     }
 
-    /// Apply an event, returning any commands to dispatch.
+    /// Apply an event, returning any commands to dispatch. The commands handed
+    /// back are accounted into the in-flight counter (each fetch bumps it) so the
+    /// footer spinner runs until the matching result event lands.
     pub fn handle_event(&mut self, event: AppEvent) -> Vec<AppCommand> {
+        let commands = self.dispatch_event(event);
+        self.track_dispatched(&commands);
+        commands
+    }
+
+    /// The event→commands transition itself. Result events that settle an
+    /// in-flight fetch decrement the counter here; the commands they (don't)
+    /// return are then accounted by [`Self::handle_event`].
+    fn dispatch_event(&mut self, event: AppEvent) -> Vec<AppCommand> {
         match event {
             AppEvent::Key(key) => self.handle_key(key),
             AppEvent::Resize(_, _) => Vec::new(),
             AppEvent::Tick => self.on_tick(),
-            AppEvent::PreviewTick => self.on_preview_tick(),
+            AppEvent::PreviewTick => {
+                // Reuse the always-on preview tick to drive the spinner: advance
+                // a frame only while something is in flight, so it's still at
+                // rest (no busy-spin) when idle. The preview debounce flush is
+                // independent and runs regardless.
+                if self.loading() {
+                    self.spinner.tick();
+                }
+                self.on_preview_tick()
+            }
             AppEvent::SearchComplete(result) => {
+                // A search result settles its in-flight fetch (clean or error).
+                self.end_request();
                 match result {
                     Ok(outcome) => {
                         if outcome.errors.is_empty() {
@@ -283,6 +336,8 @@ impl App {
                 Vec::new()
             }
             AppEvent::DetailLoaded(result) => {
+                // The full-detail load (from Enter / a palette lookup) settled.
+                self.end_request();
                 match result {
                     Ok(view) => {
                         self.record_recent(view.kind, view.id, view.title.clone());
@@ -297,6 +352,10 @@ impl App {
                 Vec::new()
             }
             AppEvent::PreviewLoaded { kind, id, result } => {
+                // The preview load settled — count it down even if its body is
+                // dropped as stale below (the request itself is no longer in
+                // flight, so the spinner must not hang on a moved cursor).
+                self.end_request();
                 // Stale-response suppression: only adopt this load if it still
                 // matches the highlighted result. A response for a selection the
                 // user has already scrolled past is dropped.
@@ -331,6 +390,38 @@ impl App {
             Mode::Normal => self.handle_normal_key(key),
             Mode::Search => self.handle_search_key(key),
             Mode::Command => self.handle_command_key(key),
+        }
+    }
+
+    /// True when at least one fetching request is in flight, so the footer should
+    /// show the loading spinner. Pure: just reads the [`Self::pending`] counter.
+    pub fn loading(&self) -> bool {
+        self.pending > 0
+    }
+
+    /// Mark one more fetching request as dispatched.
+    fn begin_request(&mut self) {
+        self.pending = self.pending.saturating_add(1);
+    }
+
+    /// Mark one in-flight fetching request as settled, clamping at 0 so a stray
+    /// or duplicate result event can't drive the counter negative. When the last
+    /// request settles the spinner is reset so the next one starts clean.
+    fn end_request(&mut self) {
+        self.pending = self.pending.saturating_sub(1);
+        if self.pending == 0 {
+            self.spinner.reset();
+        }
+    }
+
+    /// Account for the fetching commands a handler is about to dispatch: each one
+    /// bumps [`Self::pending`] so the spinner stays up until its result lands.
+    /// Side-effect-free commands (open/copy) don't fetch and don't count.
+    fn track_dispatched(&mut self, commands: &[AppCommand]) {
+        for command in commands {
+            if command.is_fetch() {
+                self.begin_request();
+            }
         }
     }
 
@@ -1150,6 +1241,162 @@ mod tests {
         assert_eq!(a.status_severity, Severity::Success);
         a.handle_event(AppEvent::Status("copy failed: x".into()));
         assert_eq!(a.status_severity, Severity::Error);
+    }
+
+    // --- Loading spinner / in-flight counter --------------------------------
+
+    #[test]
+    fn dispatched_search_sets_loading_and_result_clears_it() {
+        let mut a = app();
+        assert!(!a.loading(), "idle at rest");
+        // Submitting a search dispatches a fetch → loading.
+        a.handle_event(press(KeyCode::Char('/')));
+        for c in "edge".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(matches!(cmds.as_slice(), [AppCommand::Search(_)]));
+        assert!(a.loading(), "a dispatched search is in flight");
+        assert_eq!(a.pending, 1);
+        // The matching result clears it.
+        set_results(&mut a, results_n(2));
+        assert!(!a.loading(), "the result settles the fetch");
+        assert_eq!(a.pending, 0);
+    }
+
+    #[test]
+    fn enter_load_detail_sets_loading_until_detail_arrives() {
+        let mut a = app();
+        set_results(&mut a, vec![result(1, "edge01")]);
+        assert!(!a.loading());
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(matches!(cmds.as_slice(), [AppCommand::LoadDetail { .. }]));
+        assert!(a.loading());
+        a.handle_event(AppEvent::DetailLoaded(Ok(preview_view(1, "body"))));
+        assert!(!a.loading());
+    }
+
+    #[test]
+    fn preview_load_sets_loading_until_preview_arrives() {
+        let mut a = app();
+        set_results(&mut a, results_n(3));
+        // The settle of SearchComplete left us idle…
+        assert!(!a.loading());
+        // …the debounce flush issues a preview fetch → loading.
+        let cmds = preview_tick(&mut a);
+        assert!(matches!(cmds.as_slice(), [AppCommand::LoadPreview { .. }]));
+        assert!(a.loading());
+        a.handle_event(AppEvent::PreviewLoaded {
+            kind: ObjectKind::Device,
+            id: 1,
+            result: Ok(preview_view(1, "body")),
+        });
+        assert!(!a.loading());
+    }
+
+    #[test]
+    fn stale_preview_response_still_clears_loading() {
+        // A preview response that's dropped as stale (cursor moved on) must still
+        // count the request down — otherwise the spinner would hang forever.
+        let mut a = app();
+        set_results(&mut a, results_n(3));
+        let _ = preview_tick(&mut a); // LoadPreview for id 1
+        assert!(a.loading());
+        // A response for a *different* selection is dropped as stale…
+        a.handle_event(AppEvent::PreviewLoaded {
+            kind: ObjectKind::Device,
+            id: 2,
+            result: Ok(preview_view(2, "stale")),
+        });
+        // …but the in-flight request is still accounted as settled.
+        assert!(!a.loading());
+        assert!(a.preview.is_none(), "stale body not adopted");
+    }
+
+    #[test]
+    fn pending_counter_never_goes_negative() {
+        // A result event with nothing in flight must not underflow the counter.
+        let mut a = app();
+        assert_eq!(a.pending, 0);
+        a.handle_event(AppEvent::DetailLoaded(Err(anyhow::anyhow!("404"))));
+        assert_eq!(a.pending, 0, "clamped at zero, no underflow");
+        assert!(!a.loading());
+    }
+
+    #[test]
+    fn concurrent_fetches_require_all_to_resolve_before_idle() {
+        // A refresh search and a preview load are both in flight; idle is only
+        // reached once *both* have resolved (the counter, not a bool, tracks it).
+        let mut a = app();
+        set_results(&mut a, results_n(3)); // settles to idle
+        a.last_query = Some("edge".into());
+        // A refresh tick dispatches a Search (counts as one).
+        let refresh = a.handle_event(AppEvent::Tick);
+        assert!(matches!(refresh.as_slice(), [AppCommand::Search(_)]));
+        // The debounce flush dispatches a preview load (counts as a second).
+        let preview = preview_tick(&mut a);
+        assert!(matches!(
+            preview.as_slice(),
+            [AppCommand::LoadPreview { .. }]
+        ));
+        assert_eq!(a.pending, 2);
+        assert!(a.loading());
+        // The preview resolves first — still loading (search outstanding).
+        a.handle_event(AppEvent::PreviewLoaded {
+            kind: ObjectKind::Device,
+            id: 1,
+            result: Ok(preview_view(1, "body")),
+        });
+        assert_eq!(a.pending, 1);
+        assert!(a.loading(), "still loading: the search is outstanding");
+        // The search resolves — now idle.
+        set_results(&mut a, results_n(3));
+        assert_eq!(a.pending, 0);
+        assert!(!a.loading());
+    }
+
+    #[test]
+    fn spinner_advances_only_while_loading_and_stops_when_idle() {
+        let mut a = app();
+        // Idle: a preview tick must not advance the spinner (no busy-spin).
+        let resting = a.spinner.frame().to_string();
+        a.handle_event(AppEvent::PreviewTick);
+        assert_eq!(a.spinner.frame(), resting, "idle spinner is still");
+
+        // Put a fetch in flight, then ticks animate the spinner.
+        set_results(&mut a, results_n(3));
+        let _ = preview_tick(&mut a); // dispatch a LoadPreview → loading
+        assert!(a.loading());
+        let before = a.spinner.frame().to_string();
+        a.handle_event(AppEvent::PreviewTick);
+        assert_ne!(
+            a.spinner.frame(),
+            before,
+            "loading spinner advances on tick"
+        );
+
+        // Resolve it: the spinner resets and stops advancing again.
+        a.handle_event(AppEvent::PreviewLoaded {
+            kind: ObjectKind::Device,
+            id: 1,
+            result: Ok(preview_view(1, "body")),
+        });
+        assert!(!a.loading());
+        let idle = a.spinner.frame().to_string();
+        a.handle_event(AppEvent::PreviewTick);
+        assert_eq!(a.spinner.frame(), idle, "idle again: spinner holds still");
+    }
+
+    #[test]
+    fn open_and_copy_are_not_tracked_as_loading() {
+        // Fire-and-forget side effects (open/copy) don't count as in-flight
+        // fetches, so they never raise the spinner.
+        let mut a = app();
+        set_results(&mut a, vec![result(1, "edge01")]);
+        let _ = a.handle_event(press(KeyCode::Char('o')));
+        assert!(!a.loading(), "OpenBrowser is not a tracked fetch");
+        let _ = a.handle_event(press(KeyCode::Char('y')));
+        assert!(!a.loading(), "Copy is not a tracked fetch");
     }
 
     #[test]

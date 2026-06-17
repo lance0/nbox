@@ -12,7 +12,10 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
+use ratatui::style::Style;
+use ratatui::text::Span;
 use ratatui_cheese::input::{Input, InputState};
+use ratatui_cheese::spinner::{SpinnerState, SpinnerType};
 use ratatui_cheese::theme::Palette;
 
 use crate::tui::theme::Theme;
@@ -38,6 +41,66 @@ pub fn cheese_palette(theme: &Theme) -> Palette {
         on_highlight: theme.text,
         error: theme.error,
         success: theme.success,
+    }
+}
+
+/// A loading spinner — nbox's thin newtype around cheese's `SpinnerState`.
+///
+/// The footer shows it next to the status message only while a request is in
+/// flight (see `App::loading`); it stops advancing — and isn't drawn — when
+/// idle, so there's no busy-spin at rest. [`tick`](Spinner::tick) is a pure
+/// frame advance (no I/O, no wall-clock read), so the loading→glyph cycle can be
+/// driven and unit-tested through the pure `handle_event` seam. Styling comes
+/// from [`cheese_palette`] so [`Theme`] stays the source of truth.
+pub struct Spinner {
+    state: SpinnerState,
+}
+
+impl Spinner {
+    /// A fresh spinner at frame 0, using the braille mini-dot preset (a compact
+    /// single-cell glyph that reads well inline in the status line).
+    pub fn new() -> Self {
+        Self {
+            state: SpinnerState::new(SpinnerType::MiniDot),
+        }
+    }
+
+    /// Advance exactly one frame. PURE: no wall-clock read — we feed cheese the
+    /// preset's own frame interval so each call steps the animation by a single
+    /// glyph, deterministically. Call this on a tick *only while loading* so the
+    /// spinner is still when nothing is in flight.
+    pub fn tick(&mut self) {
+        let interval = self.state.interval();
+        self.state.tick(interval);
+    }
+
+    /// Reset to the first frame. Called when loading ends so the next request
+    /// starts the animation from a clean glyph rather than mid-cycle.
+    pub fn reset(&mut self) {
+        self.state = SpinnerState::new(SpinnerType::MiniDot);
+    }
+
+    /// The current frame's glyph (e.g. `⠋`). Used to measure/inspect the spinner
+    /// without pulling a cheese type out of this module.
+    pub fn frame(&self) -> &str {
+        self.state.frame_str()
+    }
+
+    /// The current glyph as a styled ratatui [`Span`], colored via
+    /// [`cheese_palette`] (`primary`/accent role) so the footer can render it
+    /// inline without ever naming a cheese type. [`Theme`] is the color source.
+    pub fn span(&self, theme: &Theme) -> Span<'static> {
+        let palette = cheese_palette(theme);
+        Span::styled(
+            self.frame().to_string(),
+            Style::default().fg(palette.primary),
+        )
+    }
+}
+
+impl Default for Spinner {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -338,6 +401,52 @@ mod tests {
         type_str(&mut input, "def");
         input.reset();
         assert_eq!(input.value(), "");
+    }
+
+    #[test]
+    fn spinner_tick_advances_one_frame_and_cycles() {
+        let mut s = Spinner::new();
+        let first = s.frame().to_string();
+        s.tick();
+        let second = s.frame().to_string();
+        // One tick steps the animation by exactly one glyph.
+        assert_ne!(first, second, "tick must advance the frame");
+        // Walking the full preset cycles back to the first glyph.
+        let total = ratatui_cheese::spinner::SpinnerType::MiniDot.frames().len();
+        let mut seen = vec![first.clone(), second];
+        for _ in 2..total {
+            s.tick();
+            seen.push(s.frame().to_string());
+        }
+        s.tick(); // one more wraps around
+        assert_eq!(s.frame(), first, "the glyph sequence wraps");
+        // The frames within a cycle are not all identical (it actually animates).
+        assert!(seen.iter().any(|g| *g != first));
+    }
+
+    #[test]
+    fn spinner_reset_returns_to_first_frame() {
+        let mut s = Spinner::new();
+        let first = s.frame().to_string();
+        s.tick();
+        s.tick();
+        assert_ne!(s.frame(), first);
+        s.reset();
+        assert_eq!(s.frame(), first, "reset returns to frame 0");
+    }
+
+    #[test]
+    fn spinner_span_uses_the_theme_accent_and_current_glyph() {
+        let theme = Theme::default_theme();
+        let mut s = Spinner::new();
+        let span = s.span(&theme);
+        // The glyph matches the current frame and it's colored by the palette's
+        // primary (accent) role, keeping Theme the source of truth.
+        assert_eq!(span.content, s.frame());
+        assert_eq!(span.style.fg, Some(cheese_palette(&theme).primary));
+        // After a tick the span tracks the new glyph.
+        s.tick();
+        assert_eq!(s.span(&theme).content, s.frame());
     }
 
     #[test]
