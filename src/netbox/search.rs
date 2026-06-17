@@ -138,6 +138,21 @@ fn non_empty(s: Option<String>) -> Option<String> {
     s.filter(|x| !x.is_empty())
 }
 
+/// The location label for a VLAN search result's subtitle, following the same
+/// `scope → site → group` precedence as the detail view (`VlanView::build` and
+/// `query::vlan_scope_label`). The polymorphic `scope` wins (NetBox 4.2+),
+/// falling back to a directly assigned `site`, then the VLAN `group`. Returns
+/// just the scope object's label (not the disambiguation form), so the search
+/// subtitle and the detail view's location stay consistent.
+fn vlan_subtitle(v: &Vlan) -> Option<String> {
+    use super::models::common::BriefObject;
+    v.scope
+        .as_ref()
+        .or(v.site.as_ref())
+        .or(v.group.as_ref())
+        .map(BriefObject::label)
+}
+
 /// Build the `q=` query plus any applicable filters for an endpoint, or `None`
 /// to skip the endpoint (an active filter it can't satisfy).
 fn endpoint_params(
@@ -363,11 +378,11 @@ impl NetBoxClient {
                     kind: ObjectKind::Vlan,
                     id: v.id,
                     score: score_match(q, &display),
-                    subtitle: v
-                        .site
-                        .as_ref()
-                        .or(v.group.as_ref())
-                        .map(super::models::common::BriefObject::label),
+                    // Match the detail view's precedence (`VlanView::build` /
+                    // `vlan_scope_label`): the polymorphic `scope` wins, then a
+                    // directly assigned `site`, then the VLAN `group`. Keeps the
+                    // search subtitle and the detail view's location agreeing.
+                    subtitle: vlan_subtitle(&v),
                     url: api_to_web_url(&v.url),
                     display,
                 }
@@ -523,6 +538,44 @@ mod tests {
         let f = SearchFilters::default();
         let p = endpoint_params("edge", &f, &["status"]).unwrap();
         assert_eq!(p, vec![("q", "edge".to_string())]);
+    }
+
+    #[test]
+    fn vlan_subtitle_prefers_scope_then_site_then_group() {
+        use serde_json::json;
+
+        // Polymorphic scope present → the subtitle is the scope object's label,
+        // even when a site/group are also set (scope wins).
+        let scoped: Vlan = serde_json::from_value(json!({
+            "id": 1, "url": "u", "vid": 10, "name": "a",
+            "scope_type": "dcim.region", "scope": {"id": 1, "display": "us-east"},
+            "site": {"id": 2, "display": "iad1"},
+            "group": {"id": 3, "display": "campus"}
+        }))
+        .unwrap();
+        assert_eq!(vlan_subtitle(&scoped).as_deref(), Some("us-east"));
+
+        // No scope → fall back to the directly assigned site.
+        let sited: Vlan = serde_json::from_value(json!({
+            "id": 2, "url": "u", "vid": 11, "name": "b",
+            "site": {"id": 1, "display": "iad1"},
+            "group": {"id": 2, "display": "campus"}
+        }))
+        .unwrap();
+        assert_eq!(vlan_subtitle(&sited).as_deref(), Some("iad1"));
+
+        // No scope, no site → fall back to the VLAN group.
+        let grouped: Vlan = serde_json::from_value(json!({
+            "id": 3, "url": "u", "vid": 12, "name": "c",
+            "group": {"id": 1, "display": "campus"}
+        }))
+        .unwrap();
+        assert_eq!(vlan_subtitle(&grouped).as_deref(), Some("campus"));
+
+        // None of the three → no subtitle.
+        let bare: Vlan =
+            serde_json::from_value(json!({"id": 4, "url": "u", "vid": 13, "name": "d"})).unwrap();
+        assert_eq!(vlan_subtitle(&bare), None);
     }
 
     #[test]
