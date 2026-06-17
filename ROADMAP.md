@@ -84,7 +84,7 @@ Done / carried:
 - ☑ Recent objects (TUI: capped/deduped, most-recent-first; shown on Home when there are no results; Enter reopens)
 
 Release & distribution (v0.1 release gate):
-- ☑ Release pipeline: hand-written `.github/workflows/release.yml` on tag `v*` — matrix build (Linux x86_64/aarch64, macOS Intel/ARM, Windows) → archives + `.sha256` to the GitHub Release (plain workflow over cargo-dist to avoid a mid-CI install)
+- ☑ Release pipeline: hand-written `.github/workflows/release.yml` on tag `v*` — five jobs (audit → matrix build [Linux x86_64/aarch64 musl + aarch64 gnu, macOS Intel/ARM, Windows] → completions/man → docker/GHCR → release) attaching archives + a combined `SHA256SUMS` to the GitHub Release (hand-rolled, not cargo-dist, to avoid a mid-CI install)
 - ☑ Install script (`scripts/install.sh`: detect OS/arch, download latest release asset, `cargo install` fallback)
 - ☑ Homebrew tap formula template (`packaging/homebrew/nbox.rb`; needs a tap repo + real URLs/sha256 at release time)
 - ☑ Publish to crates.io — `nbox` 0.1.0 published (name camped; next release 0.1.1+)
@@ -133,7 +133,7 @@ v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implemen
 - ☑ TUI device tabs: `i` interfaces · `p` IPs · `c` cables · `v` VLANs. `nbox device` also shows the full set.
 - ☑ Read-only `nbox next-ip <prefix>` / `next-prefix <prefix>` via `available-ips` / `available-prefixes` (with `--vrf` scoping; `next-prefix --length` finds the first free block of a size). Allocate lands with writes (v0.2).
 - ☑ Typed errors (`src/error.rs`) — 401→auth, 403→perms, ambiguous name→list matches; stable exit codes (3 auth, 4 not-found, 5 ambiguous).
-- ☐ CI against a real NetBox — netbox-docker (pin 4.x ≥ 4.2), seeded fixture + legacy v1 token, run the binary against the live API. Catches serializer drift wiremock can't.
+- ☑ CI against a real NetBox — netbox-docker (pin 4.x ≥ 4.2), seeded fixture + legacy v1 token, run the binary against the live API. Catches serializer drift wiremock can't. (`netbox-integration.yml`.)
 - ☑ Read-only `nbox raw GET <path>` escape hatch; write verbs rejected until v0.2+.
 - ☑ `config_version` field + forward-compat (a newer version warns but still loads), before v0.2 touches the schema.
 - ☑ `clap_mangen` man page via `nbox man` (`nbox man > nbox.1`).
@@ -192,12 +192,13 @@ v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implemen
 
 Ported from ttl/xfr where they paid off. Already have: release workflow, `install.sh`, Homebrew template, completions, MSRV, keep-a-changelog. Themes and the update-notifier are already in.
 
-- ☐ `cargo-audit` CI (`audit.yml`) — on Cargo.toml/lock + daily cron.
+- ☑ `cargo-audit` CI — runs as the `audit` job at the head of `release.yml` (gates every release; advisory DB checked on tag push).
 - ☑ Pre-commit hooks (`.pre-commit-config.yaml`) — fmt/clippy on commit, test on push; prek with a Python fallback.
-- ☐ musl Linux targets in the release matrix (static binaries). gnu only today.
-- ◐ `Dockerfile.release` added (wraps a prebuilt musl binary); multi-arch GHCR publish lands with the release CI.
-- ☐ Ship completions as a release artifact, not just the subcommand.
-- ☐ MSRV CI job pinning `rust-version` (1.88).
+- ☑ musl Linux targets in the release matrix (static `x86_64`/`aarch64` binaries; gnu `aarch64` also kept).
+- ☑ `Dockerfile.release` (wraps the prebuilt musl binaries); multi-arch (amd64/arm64) GHCR publish runs as the `docker` job in `release.yml`.
+- ☑ Ship completions + man page as a release artifact (`nbox-completions.tar.gz`), not just the subcommand.
+- ☑ MSRV CI job pinning `rust-version` (1.95 — the `cache` feature's `libsqlite3-sys` needs `cfg_select!`; `ci.yml` `msrv` job runs `cargo check --all-features --locked` on 1.95.0).
+- ☑ CI against a real NetBox — `netbox-integration.yml` boots netbox-docker 4.2.x with a seeded fixture and runs the `#[ignore]` integration tests against the live API.
 - ☑ `dependabot.yml` — grouped Cargo + GitHub Actions.
 - ☑ `CONTRIBUTING.md`.
 - ☑ `docs/` tree — `ARCHITECTURE.md`, `CONFIG.md`, `FEATURES.md` (linked from README).
