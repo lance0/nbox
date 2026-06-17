@@ -667,7 +667,12 @@ async fn run_journal(ctx: &Ctx, kind: &str, value: &str, limit: usize) -> Result
 
 /// Resolve a `<kind> <ref>` to the object's dotted content type and numeric ID,
 /// reusing the existing per-kind resolvers.
-async fn resolve_content_type_id(
+///
+/// This is the single source of truth for the journal-able kind set: both the
+/// CLI `nbox journal`/`--journal` path and the MCP `nbox_journal` tool resolve
+/// through here, so the two can't drift apart. Callers pass the CLI spelling of
+/// the kind (e.g. `ip-range`); the MCP tool maps its underscore enum first.
+pub(crate) async fn resolve_content_type_id(
     client: &NetBoxClient,
     kind: &str,
     value: &str,

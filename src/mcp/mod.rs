@@ -379,7 +379,7 @@ impl NboxMcp {
     /// Recent journal entries for an object.
     #[tool(
         name = "nbox_journal",
-        description = "Return recent journal entries (operator notes) for an object, newest first. `kind` and `ref` follow nbox_get; supported kinds are device, ip, prefix, vlan, site, rack, circuit.",
+        description = "Return recent journal entries (operator notes) for an object, newest first. `kind` and `ref` follow nbox_get; supported kinds are device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range.",
         annotations(read_only_hint = true)
     )]
     async fn nbox_journal(
@@ -482,39 +482,29 @@ impl NboxMcp {
     }
 
     /// Resolve a `<kind> <ref>` to the object's dotted content type and ID, for
-    /// the journal lookup. Only the kinds NetBox journals support are accepted.
+    /// the journal lookup. Delegates to the CLI's [`crate::resolve_content_type_id`]
+    /// — the single source of truth for the journal-able kind set — so MCP and
+    /// CLI can't drift. The only translation is mapping the MCP `GetKind` enum
+    /// (snake_case, e.g. `ip_range`) to the CLI kind spelling (`ip-range`); the
+    /// CLI resolver itself parses the asn ref to a `u32`.
     async fn resolve_content_type_id(
         &self,
         kind: GetKind,
         value: &str,
     ) -> anyhow::Result<(&'static str, u64)> {
-        let c = &self.client;
-        let resolved = match kind {
-            GetKind::Device => c.device_by_ref(value).await?.map(|d| ("dcim.device", d.id)),
-            GetKind::Ip => c
-                .ip_candidates(value)
-                .await?
-                .into_iter()
-                .next()
-                .map(|i| ("ipam.ipaddress", i.id)),
-            GetKind::Prefix => c
-                .prefix_by_cidr(value)
-                .await?
-                .map(|p| ("ipam.prefix", p.id)),
-            GetKind::Vlan => c.vlan_by_ref(value).await?.map(|v| ("ipam.vlan", v.id)),
-            GetKind::Site => c.site_by_ref(value).await?.map(|s| ("dcim.site", s.id)),
-            GetKind::Rack => c.rack_by_ref(value).await?.map(|r| ("dcim.rack", r.id)),
-            GetKind::Circuit => c
-                .circuit_by_ref(value)
-                .await?
-                .map(|c| ("circuits.circuit", c.id)),
-            GetKind::Aggregate | GetKind::Asn | GetKind::IpRange => {
-                anyhow::bail!(
-                    "journal is not supported for that kind (use: device, ip, prefix, vlan, site, rack, circuit)"
-                )
-            }
+        let cli_kind = match kind {
+            GetKind::Device => "device",
+            GetKind::Ip => "ip",
+            GetKind::Prefix => "prefix",
+            GetKind::Vlan => "vlan",
+            GetKind::Site => "site",
+            GetKind::Rack => "rack",
+            GetKind::Circuit => "circuit",
+            GetKind::Aggregate => "aggregate",
+            GetKind::Asn => "asn",
+            GetKind::IpRange => "ip-range",
         };
-        resolved.ok_or_else(|| not_found("object", value))
+        crate::resolve_content_type_id(&self.client, cli_kind, value).await
     }
 }
 

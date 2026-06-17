@@ -81,7 +81,7 @@ All tools are annotated read-only.
 
 `nbox_get` and `nbox_journal` take a `kind` and a `ref`. `kind` is one of
 `device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `circuit`, `aggregate`,
-`asn`, `ip_range` (journal supports the first seven). `ref` is the natural
+`asn`, `ip_range` — both tools accept the full set. `ref` is the natural
 reference for that kind: a name/slug/ID for named objects, a CIDR for prefix and
 aggregate, an address for ip, a VID or name for vlan, the AS number for asn.
 

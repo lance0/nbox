@@ -812,27 +812,137 @@ async fn journal_returns_entries_for_device() {
 }
 
 #[tokio::test]
-async fn journal_for_unsupported_kind_is_internal_error() {
+async fn journal_returns_entries_for_aggregate() {
     let mock = MockServer::start().await;
-    // No endpoints are hit: the kind is rejected before any lookup.
-    let err: ErrorData = match server_for(&mock)
+    // resolve_content_type_id(Aggregate) → aggregate_by_ref (filtered by prefix).
+    mount_one(
+        &mock,
+        "/api/ipam/aggregates/",
+        json!({"id": 7, "url": "u", "prefix": "10.0.0.0/8"}),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/api/extras/journal-entries/"))
+        .and(query_param("assigned_object_type", "ipam.aggregate"))
+        .and(query_param("assigned_object_id", "7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 11, "created": "2024-03-04",
+                "kind": {"value": "info", "label": "Info"}, "comments": "registered with RIR"
+            }]
+        })))
+        .mount(&mock)
+        .await;
+
+    let Json(view) = server_for(&mock)
         .nbox_journal(Parameters(JournalArgs {
             kind: GetKind::Aggregate,
             reference: "10.0.0.0/8".to_string(),
             limit: None,
         }))
         .await
-    {
-        Ok(_) => panic!("journal on aggregate should error"),
-        Err(e) => e,
-    };
+        .expect("journal");
 
-    // Not caller-fixable via params → internal_error, naming the supported kinds.
-    assert_eq!(err.code, ErrorCode::INTERNAL_ERROR);
+    let value = serde_json::to_value(&view).expect("serialize view");
+    let entries = value["entries"].as_array().expect("entries array");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["comments"], "registered with RIR");
+}
+
+#[tokio::test]
+async fn journal_returns_entries_for_asn() {
+    let mock = MockServer::start().await;
+    // resolve_content_type_id(Asn) → asn_by_ref (the ref is parsed to a u32).
+    mount_one(
+        &mock,
+        "/api/ipam/asns/",
+        json!({"id": 9, "url": "u", "asn": 64512}),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/api/extras/journal-entries/"))
+        .and(query_param("assigned_object_type", "ipam.asn"))
+        .and(query_param("assigned_object_id", "9"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 12, "created": "2024-03-05",
+                "kind": {"value": "info", "label": "Info"}, "comments": "assigned to tenant"
+            }]
+        })))
+        .mount(&mock)
+        .await;
+
+    let Json(view) = server_for(&mock)
+        .nbox_journal(Parameters(JournalArgs {
+            kind: GetKind::Asn,
+            reference: "64512".to_string(),
+            limit: None,
+        }))
+        .await
+        .expect("journal");
+
+    let value = serde_json::to_value(&view).expect("serialize view");
+    let entries = value["entries"].as_array().expect("entries array");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["comments"], "assigned to tenant");
+}
+
+#[tokio::test]
+async fn journal_returns_entries_for_ip_range() {
+    let mock = MockServer::start().await;
+    // resolve_content_type_id(IpRange) → ip_range_by_ref (filtered by start_address).
+    mount_one(
+        &mock,
+        "/api/ipam/ip-ranges/",
+        json!({"id": 4, "url": "u", "start_address": "10.0.0.1/24", "end_address": "10.0.0.50/24"}),
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/api/extras/journal-entries/"))
+        .and(query_param("assigned_object_type", "ipam.iprange"))
+        .and(query_param("assigned_object_id", "4"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 13, "created": "2024-03-06",
+                "kind": {"value": "info", "label": "Info"}, "comments": "DHCP pool"
+            }]
+        })))
+        .mount(&mock)
+        .await;
+
+    let Json(view) = server_for(&mock)
+        .nbox_journal(Parameters(JournalArgs {
+            kind: GetKind::IpRange,
+            reference: "10.0.0.1".to_string(),
+            limit: None,
+        }))
+        .await
+        .expect("journal");
+
+    let value = serde_json::to_value(&view).expect("serialize view");
+    let entries = value["entries"].as_array().expect("entries array");
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0]["comments"], "DHCP pool");
+}
+
+#[tokio::test]
+async fn journal_for_unknown_kind_errors() {
+    // Every modeled MCP `GetKind` is now journal-able (CLI parity), so the
+    // not-supported path can only be reached with a genuinely-unknown kind
+    // string. Exercise the shared source-of-truth resolver directly to prove it
+    // still rejects an unmodeled kind rather than silently resolving it.
+    let mock = MockServer::start().await;
+    let client = server_for(&mock).client;
+    let err = crate::resolve_content_type_id(&client, "teapot", "anything")
+        .await
+        .expect_err("unknown kind should error");
+    let msg = format!("{err:#}");
     assert!(
-        err.message.contains("not supported"),
-        "got: {}",
-        err.message
+        msg.contains("unknown object kind") && msg.contains("teapot"),
+        "got: {msg}"
     );
 }
 
