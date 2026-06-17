@@ -651,3 +651,103 @@ async fn contact_contains_with_multiple_matches_is_ambiguous() {
         "got: {msg}"
     );
 }
+
+#[tokio::test]
+async fn provider_by_slug_uses_slug_filter() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/circuits/providers/"))
+        .and(query_param("slug", "acme-telecom"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 4, "url": "http://nb/api/circuits/providers/4/",
+                "name": "ACME Telecom", "slug": "acme-telecom"
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = client(&server)
+        .provider_by_ref("acme-telecom")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(provider.id, 4);
+    assert_eq!(provider.slug, "acme-telecom");
+}
+
+#[tokio::test]
+async fn provider_by_id_hits_detail_endpoint() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/circuits/providers/9/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 9, "url": "http://nb/api/circuits/providers/9/",
+            "name": "Upstream", "slug": "upstream"
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = client(&server).provider_by_ref("9").await.unwrap().unwrap();
+    assert_eq!(provider.id, 9);
+    assert_eq!(provider.name, "Upstream");
+}
+
+#[tokio::test]
+async fn provider_by_name_falls_back_to_name_ie_then_ic() {
+    let server = MockServer::start().await;
+    // slug + name__ie miss; name__ic resolves the single match.
+    mount_empty_page(&server, "/api/circuits/providers/", "slug", "acme telecom").await;
+    mount_empty_page(
+        &server,
+        "/api/circuits/providers/",
+        "name__ie",
+        "acme telecom",
+    )
+    .await;
+    Mock::given(method("GET"))
+        .and(path("/api/circuits/providers/"))
+        .and(query_param("name__ic", "acme telecom"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 4, "url": "u", "name": "ACME Telecom", "slug": "acme-telecom"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let provider = client(&server)
+        .provider_by_ref("acme telecom")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(provider.id, 4);
+}
+
+#[tokio::test]
+async fn provider_contains_with_multiple_matches_is_ambiguous() {
+    let server = MockServer::start().await;
+    mount_empty_page(&server, "/api/circuits/providers/", "slug", "acme").await;
+    mount_empty_page(&server, "/api/circuits/providers/", "name__ie", "acme").await;
+    Mock::given(method("GET"))
+        .and(path("/api/circuits/providers/"))
+        .and(query_param("name__ic", "acme"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [
+                {"id": 1, "url": "u", "name": "ACME East", "slug": "acme-east"},
+                {"id": 2, "url": "u", "name": "ACME West", "slug": "acme-west"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let err = client(&server).provider_by_ref("acme").await.unwrap_err();
+    assert_eq!(nbox::error::NboxError::exit_code_for(&err), 5);
+    let msg = format!("{err:#}");
+    assert!(msg.contains("ambiguous"), "got: {msg}");
+    assert!(
+        msg.contains("ACME East") && msg.contains("ACME West"),
+        "got: {msg}"
+    );
+}

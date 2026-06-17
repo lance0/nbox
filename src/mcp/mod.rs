@@ -51,6 +51,7 @@ pub enum GetKind {
     IpRange,
     Tenant,
     Contact,
+    Provider,
 }
 
 /// Arguments for `nbox_search`.
@@ -177,7 +178,7 @@ pub struct StatusReport {
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct SearchReport {
     /// Ranked search hits across devices, sites, IPs, prefixes, VLANs,
-    /// circuits, aggregates, ASNs, IP ranges, tenants, and contacts.
+    /// circuits, aggregates, ASNs, IP ranges, tenants, contacts, and providers.
     pub results: Vec<SearchResult>,
     /// Per-endpoint failures (partial result); empty when every endpoint succeeded.
     pub errors: Vec<String>,
@@ -264,7 +265,7 @@ impl NboxMcp {
     /// aggregates, ASNs, and IP ranges.
     #[tool(
         name = "nbox_search",
-        description = "Search across devices, sites, IP addresses, prefixes, VLANs, circuits, aggregates, ASNs, IP ranges, tenants, and contacts by free text. Returns ranked hits with kind, display name, and URL. Use this to find an object's exact reference before nbox_get. Optional filters narrow by status/site/tenant/role/tag; vrf (id|rd|name) narrows IP and prefix results.",
+        description = "Search across devices, sites, IP addresses, prefixes, VLANs, circuits, aggregates, ASNs, IP ranges, tenants, contacts, and providers by free text. Returns ranked hits with kind, display name, and URL. Use this to find an object's exact reference before nbox_get. Optional filters narrow by status/site/tenant/role/tag; vrf (id|rd|name) narrows IP and prefix results.",
         annotations(read_only_hint = true)
     )]
     async fn nbox_search(
@@ -305,7 +306,7 @@ impl NboxMcp {
     // single concrete type (a oneOf over ~10 view types is out of scope).
     #[tool(
         name = "nbox_get",
-        description = "Look up a single object and its context. `kind` is one of: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact. `ref` is the natural reference for that kind (name/slug/ID; CIDR for prefix/aggregate; address for ip; VID or name for vlan; AS number for asn; slug/name/ID for tenant; name/ID for contact). On an ambiguous reference the error lists the candidates: pass `vrf` for an ip/prefix in several VRFs, or `site`/`group` for a VLAN VID present at several sites.",
+        description = "Look up a single object and its context. `kind` is one of: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider. `ref` is the natural reference for that kind (name/slug/ID; CIDR for prefix/aggregate; address for ip; VID or name for vlan; AS number for asn; slug/name/ID for tenant; name/ID for contact; slug/name/ID for provider). On an ambiguous reference the error lists the candidates: pass `vrf` for an ip/prefix in several VRFs, or `site`/`group` for a VLAN VID present at several sites.",
         output_schema = output_schema(),
         annotations(read_only_hint = true)
     )]
@@ -398,7 +399,7 @@ impl NboxMcp {
     /// Recent journal entries for an object.
     #[tool(
         name = "nbox_journal",
-        description = "Return recent journal entries (operator notes) for an object, newest first. `kind` and `ref` follow nbox_get; supported kinds are device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact.",
+        description = "Return recent journal entries (operator notes) for an object, newest first. `kind` and `ref` follow nbox_get; supported kinds are device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider.",
         annotations(read_only_hint = true)
     )]
     async fn nbox_journal(
@@ -493,6 +494,9 @@ impl NboxMcp {
             GetKind::Contact => {
                 serde_json::to_value(detail::contact_view_by_ref(c, r, &not_found).await?)?
             }
+            GetKind::Provider => {
+                serde_json::to_value(detail::provider_view_by_ref(c, r, &not_found).await?)?
+            }
         };
         Ok(Json(value))
     }
@@ -530,6 +534,7 @@ impl NboxMcp {
             GetKind::IpRange => "ip-range",
             GetKind::Tenant => "tenant",
             GetKind::Contact => "contact",
+            GetKind::Provider => "provider",
         };
         crate::resolve_content_type_id(&self.client, cli_kind, value).await
     }

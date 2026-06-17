@@ -142,7 +142,7 @@ async fn get_missing_device_is_invalid_params() {
 async fn search_returns_results_and_errors() {
     let mock = MockServer::start().await;
     // search fans out across devices, sites, ips, prefixes, vlans, circuits,
-    // aggregates, asns, ip-ranges, tenants, contacts (q=…).
+    // aggregates, asns, ip-ranges, tenants, contacts, providers (q=…).
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -162,6 +162,7 @@ async fn search_returns_results_and_errors() {
         "/api/ipam/ip-ranges/",
         "/api/tenancy/tenants/",
         "/api/tenancy/contacts/",
+        "/api/circuits/providers/",
     ] {
         Mock::given(method("GET"))
             .and(path(p))
@@ -245,6 +246,7 @@ async fn search_reports_partial_endpoint_errors() {
         "/api/ipam/ip-ranges/",
         "/api/tenancy/tenants/",
         "/api/tenancy/contacts/",
+        "/api/circuits/providers/",
     ] {
         mount_empty(&mock, p).await;
     }
@@ -699,6 +701,49 @@ async fn get_contact_returns_contact_view() {
     assert!(value.get("address").is_none());
     assert_eq!(value["tags"][0], "oncall");
     assert_eq!(value["custom_fields"]["pager"], "555-9000");
+}
+
+#[tokio::test]
+async fn get_provider_returns_provider_view() {
+    let mock = MockServer::start().await;
+    // provider_by_ref tries slug first.
+    Mock::given(method("GET"))
+        .and(path("/api/circuits/providers/"))
+        .and(query_param("slug", "acme-telecom"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 4, "url": "http://nb/api/circuits/providers/4/",
+                "name": "ACME Telecom", "slug": "acme-telecom",
+                "asns": [
+                    {"id": 5, "url": "u", "asn": 64512},
+                    {"id": 6, "url": "u", "asn": 64513}
+                ],
+                "accounts": [
+                    {"id": 3, "display": "ACME-001", "name": "primary", "account": "ACME-001"}
+                ],
+                "description": "upstream transit",
+                "circuit_count": 7,
+                "tags": [{"id": 1, "name": "transit", "slug": "transit"}],
+                "custom_fields": {"noc_email": "noc@acme.example"}
+            }]
+        })))
+        .mount(&mock)
+        .await;
+
+    let Json(value) = server_for(&mock)
+        .nbox_get(Parameters(get_args(GetKind::Provider, "acme-telecom")))
+        .await
+        .expect("provider lookup");
+
+    assert_eq!(value["name"], "ACME Telecom");
+    assert_eq!(value["slug"], "acme-telecom");
+    assert_eq!(value["asns"][0], 64512);
+    assert_eq!(value["asns"][1], 64513);
+    assert_eq!(value["accounts"][0], "ACME-001");
+    assert_eq!(value["circuit_count"], 7);
+    assert_eq!(value["tags"][0], "transit");
+    assert_eq!(value["custom_fields"]["noc_email"], "noc@acme.example");
 }
 
 #[tokio::test]

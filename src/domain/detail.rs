@@ -23,13 +23,14 @@ use crate::domain::ip_range_view::IpRangeView;
 use crate::domain::ip_view::{IpView, most_specific};
 use crate::domain::journal_view::{JournalEntryRow, JournalView};
 use crate::domain::prefix_view::PrefixView;
+use crate::domain::provider_view::ProviderView;
 use crate::domain::rack_view::RackView;
 use crate::domain::site_view::SiteView;
 use crate::domain::tenant_view::TenantView;
 use crate::domain::vlan_view::VlanView;
 use crate::error::NboxError;
 use crate::netbox::client::NetBoxClient;
-use crate::netbox::models::circuits::Circuit;
+use crate::netbox::models::circuits::{Circuit, Provider};
 use crate::netbox::models::common::BriefObject;
 use crate::netbox::models::dcim::{Device, Site};
 use crate::netbox::models::ipam::{Aggregate, Asn, IpAddress, IpRange, Prefix, Vlan, VlanGroup};
@@ -377,6 +378,19 @@ pub async fn contact_view_by_ref(
     Ok(ContactView::from_model(contact))
 }
 
+/// `provider <slug|id>`: resolve a provider and build its view. Shared by CLI/MCP.
+pub async fn provider_view_by_ref(
+    client: &NetBoxClient,
+    value: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<ProviderView> {
+    let provider = client
+        .provider_by_ref(value)
+        .await?
+        .ok_or_else(|| not_found("provider", value))?;
+    Ok(ProviderView::from_model(provider))
+}
+
 /// A switchable section on a detail screen (e.g. a device's interfaces).
 #[derive(Debug, Clone)]
 pub struct DetailTab {
@@ -532,6 +546,13 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             let v = ContactView::from_model(c);
             (format!("contact {}", v.name), v.to_key_values().render())
         }
+        ObjectKind::Provider => {
+            let p: Provider = client
+                .get(&format!("/api/circuits/providers/{id}/"), &[])
+                .await?;
+            let v = ProviderView::from_model(p);
+            (format!("provider {}", v.name), v.to_key_values().render())
+        }
     };
     Ok(DetailView::new(kind, id, title, body).with_tabs(tabs))
 }
@@ -674,6 +695,19 @@ pub async fn load_detail_by_ref(
             (
                 id,
                 format!("contact {}", v.name),
+                v.to_key_values().render(),
+            )
+        }
+        ObjectKind::Provider => {
+            let p = client
+                .provider_by_ref(value)
+                .await?
+                .with_context(|| format!("no provider matched \"{value}\""))?;
+            let id = p.id;
+            let v = ProviderView::from_model(p);
+            (
+                id,
+                format!("provider {}", v.name),
                 v.to_key_values().render(),
             )
         }

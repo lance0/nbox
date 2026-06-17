@@ -12,7 +12,7 @@ use serde::Serialize;
 
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
-use crate::netbox::models::circuits::Circuit;
+use crate::netbox::models::circuits::{Circuit, Provider};
 use crate::netbox::models::dcim::{Device, Site};
 use crate::netbox::models::ipam::{Aggregate, Asn, IpAddress, IpRange, Prefix, Vlan};
 use crate::netbox::models::tenancy::{Contact, Tenant};
@@ -34,6 +34,7 @@ pub enum ObjectKind {
     IpRange,
     Tenant,
     Contact,
+    Provider,
 }
 
 impl ObjectKind {
@@ -51,6 +52,7 @@ impl ObjectKind {
             ObjectKind::IpRange => "ip-range",
             ObjectKind::Tenant => "tenant",
             ObjectKind::Contact => "contact",
+            ObjectKind::Provider => "provider",
         }
     }
 }
@@ -224,7 +226,8 @@ fn endpoint_params(
 
 impl NetBoxClient {
     /// Search across devices, sites, IPs, prefixes, VLANs, circuits,
-    /// aggregates, ASNs, IP ranges, tenants, and contacts in parallel.
+    /// aggregates, ASNs, IP ranges, tenants, contacts, and providers in
+    /// parallel.
     ///
     /// Returns ranked results plus a list of endpoints that failed. If every
     /// endpoint fails and nothing matched, returns the underlying `Err` (so a
@@ -264,6 +267,7 @@ impl NetBoxClient {
             ip_ranges,
             tenants,
             contacts,
+            providers,
         ) = tokio::join!(
             self.search_devices(&q, f, scope.as_ref()),
             self.search_sites(&q, f, scope.as_ref()),
@@ -276,6 +280,7 @@ impl NetBoxClient {
             self.search_ip_ranges(&q, f, scope.as_ref()),
             self.search_tenants(&q, f, scope.as_ref()),
             self.search_contacts(&q, f, scope.as_ref()),
+            self.search_providers(&q, f, scope.as_ref()),
         );
 
         let mut merged = Vec::new();
@@ -293,6 +298,7 @@ impl NetBoxClient {
             ("ip-ranges", ip_ranges),
             ("tenants", tenants),
             ("contacts", contacts),
+            ("providers", providers),
         ];
         for (name, branch) in branches {
             match branch {
@@ -808,6 +814,44 @@ impl NetBoxClient {
                     .or_else(|| non_empty(c.email)),
                 url: api_to_web_url(&c.url),
                 display: c.name,
+            })
+            .collect())
+    }
+
+    async fn search_providers(
+        &self,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+    ) -> Result<Vec<SearchResult>> {
+        // Providers carry no region/site-group/location scope filter — skip them
+        // for an id-based scope rather than return an unfiltered set.
+        if skip_for_id_scope(scope) {
+            return Ok(Vec::new());
+        }
+        // Providers accept only `q` + `tag` (no status/site/tenant/role).
+        let Some(params) = endpoint_params(q, f, &["tag"]) else {
+            return Ok(Vec::new());
+        };
+        let page: Page<Provider> = self.list(Endpoint::Providers, params).await?;
+        Ok(page
+            .results
+            .into_iter()
+            .map(|p| {
+                // Prefer the first AS number as a subtitle, falling back to slug.
+                let subtitle = p
+                    .asns
+                    .first()
+                    .map(|a| format!("AS{}", a.asn))
+                    .or_else(|| non_empty(Some(p.slug.clone())));
+                SearchResult {
+                    kind: ObjectKind::Provider,
+                    id: p.id,
+                    score: score_match(q, &p.name),
+                    subtitle,
+                    url: api_to_web_url(&p.url),
+                    display: p.name,
+                }
             })
             .collect())
     }

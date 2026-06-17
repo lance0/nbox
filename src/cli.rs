@@ -242,6 +242,12 @@ pub enum Command {
         journal_limit: Option<usize>,
     },
 
+    /// Show a provider by slug, name, or numeric ID.
+    Provider {
+        /// Provider slug, name, or numeric ID.
+        value: String,
+    },
+
     /// Show an aggregate by CIDR or numeric ID.
     Aggregate {
         /// Aggregate prefix (CIDR) or numeric ID.
@@ -684,6 +690,15 @@ mod tests {
         assert!(matches!(
             contact.command,
             Some(Command::Contact { value }) if value == "Jane Doe"
+        ));
+    }
+
+    #[test]
+    fn parses_provider_lookup() {
+        let provider = Cli::try_parse_from(["nbox", "provider", "acme-telecom"]).unwrap();
+        assert!(matches!(
+            provider.command,
+            Some(Command::Provider { value }) if value == "acme-telecom"
         ));
     }
 

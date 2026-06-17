@@ -7,7 +7,7 @@ use anyhow::Result;
 use crate::error::NboxError;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
-use crate::netbox::models::circuits::Circuit;
+use crate::netbox::models::circuits::{Circuit, Provider};
 use crate::netbox::models::dcim::{Device, Interface, Location, Rack, Region, Site, SiteGroup};
 use crate::netbox::models::extras::{JournalEntry, TagInfo};
 use crate::netbox::models::ipam::{
@@ -592,6 +592,34 @@ impl NetBoxClient {
             .list(Endpoint::Contacts, vec![("name__ic", value.to_string())])
             .await?;
         ambiguous_or_first("contact", value, contains.results, |c| c.name.clone())
+    }
+
+    /// Resolve a provider by numeric ID, then slug, then exact name, then
+    /// name-contains. Providers carry a slug, so the order mirrors
+    /// [`tenant_by_ref`](Self::tenant_by_ref): id → slug → `name__ie` →
+    /// `name__ic` (ambiguous → exit 5).
+    pub async fn provider_by_ref(&self, value: &str) -> Result<Option<Provider>> {
+        if let Ok(id) = value.parse::<u64>() {
+            return self
+                .get_optional(&format!("/api/circuits/providers/{id}/"), &[])
+                .await;
+        }
+        let by_slug: Page<Provider> = self
+            .list(Endpoint::Providers, vec![("slug", value.to_string())])
+            .await?;
+        if let Some(p) = by_slug.results.into_iter().next() {
+            return Ok(Some(p));
+        }
+        let exact: Page<Provider> = self
+            .list(Endpoint::Providers, vec![("name__ie", value.to_string())])
+            .await?;
+        if let Some(p) = exact.results.into_iter().next() {
+            return Ok(Some(p));
+        }
+        let contains: Page<Provider> = self
+            .list(Endpoint::Providers, vec![("name__ic", value.to_string())])
+            .await?;
+        ambiguous_or_first("provider", value, contains.results, |p| p.name.clone())
     }
 }
 

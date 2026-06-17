@@ -18,6 +18,7 @@ pub mod ip_range_view;
 pub mod ip_view;
 pub mod journal_view;
 pub mod prefix_view;
+pub mod provider_view;
 pub mod rack_view;
 pub mod site_view;
 pub mod tag_view;

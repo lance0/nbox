@@ -41,6 +41,7 @@ nbox interface <device> <interface>
 nbox site <name|slug>
 nbox rack <name|id>
 nbox circuit <cid|id>
+nbox provider <slug|name|id>
 nbox aggregate <cidr|id>
 nbox asn <number>
 nbox ip-range <start|id>
@@ -72,8 +73,8 @@ stderr. Every tool is annotated read-only.
 | Tool | Purpose |
 | ---- | ------- |
 | `nbox_status` | Connection + NetBox/Django/Python versions (call first to confirm reachability). |
-| `nbox_search` | Search devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP ranges/tenants/contacts; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag` (one scope filter at a time), `vrf` (id\|rd\|name; filters IP/prefix results only). Find a reference before `nbox_get`. |
-| `nbox_get` | One object: `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact) + `ref`; `vrf`/`site`/`group` disambiguate (an ambiguous ref returns the candidates). |
+| `nbox_search` | Search devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP ranges/tenants/contacts/providers; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag` (one scope filter at a time), `vrf` (id\|rd\|name; filters IP/prefix results only). Find a reference before `nbox_get`. |
+| `nbox_get` | One object: `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider) + `ref`; `vrf`/`site`/`group` disambiguate (an ambiguous ref returns the candidates). |
 | `nbox_get_interface` | One interface on a device: config, addresses, cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix (nothing reserved); `count`, `vrf`. |
 | `nbox_next_prefix` | Available child prefix(es) in a prefix; `length` for a block of a size, else all free blocks; `vrf`. |

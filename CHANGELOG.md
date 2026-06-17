@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Provider lookup: `nbox provider <slug|name|id>`, read-only and additive,
+  rounding out the circuits ecosystem alongside `nbox circuit`. Surfaces the
+  provider's ASNs (brief list), accounts, description, non-zero `circuit_count`,
+  tags, and custom fields; renders plain and `--json`. Resolves id → slug →
+  `name__ie` → `name__ic`; an ambiguous reference exits `5` with the candidates.
+  Search now fans out to providers (honors `q=` and `--tag`; id-based scope
+  filters skip it), and the `nbox_get` MCP tool gains `kind=provider`, routed
+  through the same shared view layer as the CLI. `nbox open provider/<ref>` and
+  `nbox journal provider <ref>` work too.
 - Tenancy lookups: `nbox tenant <slug|name|id>` and `nbox contact <name|id>`,
   read-only and additive. Tenant surfaces its group (brief), description,
   non-zero relation counts (devices, prefixes, sites, …), tags, and custom

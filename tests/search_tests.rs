@@ -61,6 +61,7 @@ async fn search_merges_ranks_and_dedups_across_endpoints() {
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
     mount_empty(&server, "/api/tenancy/tenants/").await;
     mount_empty(&server, "/api/tenancy/contacts/").await;
+    mount_empty(&server, "/api/circuits/providers/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -108,6 +109,7 @@ async fn search_truncates_to_limit() {
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
     mount_empty(&server, "/api/tenancy/tenants/").await;
     mount_empty(&server, "/api/tenancy/contacts/").await;
+    mount_empty(&server, "/api/circuits/providers/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -147,6 +149,7 @@ async fn search_reports_partial_endpoint_failures() {
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
     mount_empty(&server, "/api/tenancy/tenants/").await;
     mount_empty(&server, "/api/tenancy/contacts/").await;
+    mount_empty(&server, "/api/circuits/providers/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -221,6 +224,7 @@ async fn search_surfaces_circuits_aggregates_asns_and_ip_ranges() {
     mount_empty(&server, "/api/ipam/vlans/").await;
     mount_empty(&server, "/api/tenancy/tenants/").await;
     mount_empty(&server, "/api/tenancy/contacts/").await;
+    mount_empty(&server, "/api/circuits/providers/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -292,6 +296,7 @@ async fn search_surfaces_tenants_and_contacts() {
     mount_empty(&server, "/api/ipam/aggregates/").await;
     mount_empty(&server, "/api/ipam/asns/").await;
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty(&server, "/api/circuits/providers/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -326,6 +331,55 @@ async fn search_surfaces_tenants_and_contacts() {
 }
 
 #[tokio::test]
+async fn search_surfaces_providers() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/circuits/providers/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 1, "url": "http://nb/api/circuits/providers/1/",
+                "name": "ACME Telecom", "slug": "acme-telecom",
+                "asns": [{"id": 5, "url": "u", "asn": 64512}]
+            }]
+        })))
+        .mount(&server)
+        .await;
+    mount_empty(&server, "/api/dcim/devices/").await;
+    mount_empty(&server, "/api/dcim/sites/").await;
+    mount_empty(&server, "/api/ipam/ip-addresses/").await;
+    mount_empty(&server, "/api/ipam/prefixes/").await;
+    mount_empty(&server, "/api/ipam/vlans/").await;
+    mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/ipam/aggregates/").await;
+    mount_empty(&server, "/api/ipam/asns/").await;
+    mount_empty(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty(&server, "/api/tenancy/tenants/").await;
+    mount_empty(&server, "/api/tenancy/contacts/").await;
+
+    let outcome = client(&server)
+        .search(SearchRequest {
+            query: "acme".into(),
+            limit: 25,
+            filters: SearchFilters::default(),
+        })
+        .await
+        .unwrap();
+    assert!(outcome.errors.is_empty(), "errors: {:?}", outcome.errors);
+
+    let provider = outcome
+        .results
+        .iter()
+        .find(|r| r.kind == ObjectKind::Provider)
+        .unwrap();
+    assert_eq!(provider.display, "ACME Telecom");
+    // Subtitle prefers the first AS number.
+    assert_eq!(provider.subtitle.as_deref(), Some("AS64512"));
+    assert_eq!(provider.url, "http://nb/circuits/providers/1/");
+}
+
+#[tokio::test]
 async fn search_matches_asn_by_number() {
     let server = MockServer::start().await;
     // A numeric query is routed to the `asn=` filter (not the text `q`), so the
@@ -349,6 +403,7 @@ async fn search_matches_asn_by_number() {
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
     mount_empty(&server, "/api/tenancy/tenants/").await;
     mount_empty(&server, "/api/tenancy/contacts/").await;
+    mount_empty(&server, "/api/circuits/providers/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -787,6 +842,7 @@ async fn search_with_vrf_filters_ip_and_prefix_by_vrf_id() {
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
     mount_empty(&server, "/api/tenancy/tenants/").await;
     mount_empty(&server, "/api/tenancy/contacts/").await;
+    mount_empty(&server, "/api/circuits/providers/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -858,6 +914,7 @@ async fn search_with_vrf_resolved_by_id_filters_prefixes() {
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
     mount_empty(&server, "/api/tenancy/tenants/").await;
     mount_empty(&server, "/api/tenancy/contacts/").await;
+    mount_empty(&server, "/api/circuits/providers/").await;
 
     let results = client(&server)
         .search(SearchRequest {
