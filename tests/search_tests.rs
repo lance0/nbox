@@ -451,3 +451,231 @@ async fn search_skips_non_site_endpoints_unchanged_with_active_site() {
         outcome.errors
     );
 }
+
+/// Shared helper: a scope flag resolves its ref to an id and the prefix request
+/// carries `scope_type=<content_type>` + `scope_id`. `endpoint`/`content_type`
+/// vary per scope kind; `filters` selects which flag is set.
+async fn assert_scope_filters_prefixes(endpoint: &str, content_type: &str, filters: SearchFilters) {
+    let server = MockServer::start().await;
+
+    // Scope resolution: `*_by_ref` looks the slug up first; return id 7.
+    Mock::given(method("GET"))
+        .and(path(endpoint))
+        .and(query_param("slug", "scope-ref"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 7, "url": "http://nb/api/.../7/", "name": "Scope Ref", "slug": "scope-ref"
+            }]
+        })))
+        .mount(&server)
+        .await;
+    // Catch-all for the scope endpoint so other lookups don't 404.
+    mount_empty(&server, endpoint).await;
+
+    // The prefix endpoint must carry the translated scope params, and a matching
+    // prefix comes back (proving it's queried, not skipped).
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .and(query_param("scope_type", content_type))
+        .and(query_param("scope_id", "7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 11, "url": "http://nb/api/ipam/prefixes/11/", "prefix": "10.2.0.0/24",
+                "scope_type": content_type, "scope": {"id": 7, "display": "Scope Ref"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    // Devices honor region/site-group/location via id-based filters; give them an
+    // empty page so the fan-out doesn't 404. Other endpoints are skipped.
+    mount_empty(&server, "/api/dcim/devices/").await;
+
+    let results = client(&server)
+        .search(SearchRequest {
+            query: "10.2".into(),
+            limit: 25,
+            filters,
+        })
+        .await
+        .unwrap()
+        .results;
+
+    let prefix = results
+        .iter()
+        .find(|r| r.kind == ObjectKind::Prefix)
+        .expect("scope-filtered prefix surfaced");
+    assert_eq!(prefix.display, "10.2.0.0/24");
+}
+
+#[tokio::test]
+async fn search_with_region_scopes_prefixes_by_scope_type_and_id() {
+    assert_scope_filters_prefixes(
+        "/api/dcim/regions/",
+        "dcim.region",
+        SearchFilters {
+            region: Some("scope-ref".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn search_with_site_group_scopes_prefixes_by_scope_type_and_id() {
+    assert_scope_filters_prefixes(
+        "/api/dcim/site-groups/",
+        "dcim.sitegroup",
+        SearchFilters {
+            site_group: Some("scope-ref".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn search_with_location_scopes_prefixes_by_scope_type_and_id() {
+    assert_scope_filters_prefixes(
+        "/api/dcim/locations/",
+        "dcim.location",
+        SearchFilters {
+            location: Some("scope-ref".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+}
+
+/// Shared helper: an unknown scope ref must fail with a typed not-found (exit 4),
+/// not a silent-empty result — resolution happens before the fan-out.
+async fn assert_unknown_scope_is_not_found(endpoint: &str, noun: &str, filters: SearchFilters) {
+    let server = MockServer::start().await;
+    // Every lookup (`slug`, `name__ie`, `name__ic`) comes back empty.
+    mount_empty(&server, endpoint).await;
+
+    let err = client(&server)
+        .search(SearchRequest {
+            query: "10.2".into(),
+            limit: 25,
+            filters,
+        })
+        .await
+        .expect_err("unknown scope ref should error, not return empty");
+
+    assert_eq!(nbox::error::NboxError::exit_code_for(&err), 4);
+    assert!(
+        format!("{err:#}").contains(&format!("no {noun} matched \"nope\"")),
+        "got: {err:#}"
+    );
+}
+
+#[tokio::test]
+async fn search_with_unknown_region_errors_not_found() {
+    assert_unknown_scope_is_not_found(
+        "/api/dcim/regions/",
+        "region",
+        SearchFilters {
+            region: Some("nope".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn search_with_unknown_site_group_errors_not_found() {
+    assert_unknown_scope_is_not_found(
+        "/api/dcim/site-groups/",
+        "site group",
+        SearchFilters {
+            site_group: Some("nope".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn search_with_unknown_location_errors_not_found() {
+    assert_unknown_scope_is_not_found(
+        "/api/dcim/locations/",
+        "location",
+        SearchFilters {
+            location: Some("nope".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn search_with_two_scope_filters_is_a_usage_error() {
+    // NetBox prefix scope is a single type+id, so combining scope flags is a
+    // usage error (exit 2) — surfaced before any endpoint is hit. No mocks
+    // mounted: a request to any endpoint would 404 and prove the early bail-out
+    // didn't run.
+    let server = MockServer::start().await;
+
+    let err = client(&server)
+        .search(SearchRequest {
+            query: "10.2".into(),
+            limit: 25,
+            filters: SearchFilters {
+                site: Some("iad1".into()),
+                region: Some("us-east".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .expect_err("two scope filters should be a usage error");
+
+    assert_eq!(nbox::error::NboxError::exit_code_for(&err), 2);
+    assert!(
+        format!("{err:#}").contains("mutually exclusive"),
+        "got: {err:#}"
+    );
+}
+
+#[tokio::test]
+async fn search_region_scope_skips_non_prefix_non_device_endpoints() {
+    // An id-based scope (region) has no clean filter on IPs/sites/circuits/…, so
+    // those endpoints are skipped (never hit). Only the region lookup, the prefix
+    // endpoint, and the device endpoint are mounted; an unexpected request to a
+    // skipped endpoint would 404 and surface as a partial failure.
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/regions/"))
+        .and(query_param("slug", "us-east"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 3, "url": "http://nb/api/dcim/regions/3/", "name": "US East", "slug": "us-east"
+            }]
+        })))
+        .mount(&server)
+        .await;
+    mount_empty(&server, "/api/ipam/prefixes/").await; // scope-filtered
+    mount_empty(&server, "/api/dcim/devices/").await; // region_id-filtered
+
+    let outcome = client(&server)
+        .search(SearchRequest {
+            query: "x".into(),
+            limit: 25,
+            filters: SearchFilters {
+                region: Some("us-east".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        outcome.errors.is_empty(),
+        "no endpoint should have been hit that can't honor --region; errors: {:?}",
+        outcome.errors
+    );
+}

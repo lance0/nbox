@@ -45,7 +45,7 @@ See [Installation](#installation) below for setup instructions.
 - **Agent-ready** — `nbox serve` is a read-only MCP server: the same lookups exposed as eight tools over stdio, returning the exact JSON view models the CLI does, so AI agents (Claude Code, Claude Desktop, …) query NetBox safely. See [docs/MCP.md](docs/MCP.md).
 - **Normalized search** — one `search` query runs in parallel across devices, sites, IPs, prefixes, VLANs, circuits, aggregates, ASNs, and IP ranges and returns ranked, deduped hits.
 - **IPAM-aware** — IP → most-specific parent prefix → VLAN → scope resolution, prefix utilization and children, `next-ip` / `next-prefix` for available addresses and free blocks (computed locally with `ipnet`).
-- **Polymorphic scope** — `--site` on `search` resolves the site once and filters prefixes by NetBox 4.2's `scope_type=dcim.site` + `scope_id`; views expose `scope`/`scope_type` (site, location, region, site-group, …).
+- **Polymorphic scope** — `--site`/`--region`/`--site-group`/`--location` on `search` resolve the reference once and filter prefixes by NetBox 4.2's `scope_type` + `scope_id` (exact scope, one flag at a time); views expose `scope`/`scope_type` (site, location, region, site-group, …).
 - **Interactive TUI** — list/preview split, scrolling, command palette, recents, twelve themes (including a light theme), `NO_COLOR` honored.
 - **Scriptable** — `-o plain|json|csv`, `--fields`, `--raw`, versioned `--envelope`, and stable exit codes; stdout stays clean for piping, logs go to stderr (see [AGENTS.md](AGENTS.md)).
 - **Open and copy** — open any object in the browser or copy a field straight from results.
@@ -213,9 +213,10 @@ A man page is available too: `nbox man > nbox.1`.
 ```bash
 nbox                              # launch the TUI
 nbox status                       # connection + NetBox/Django/Python versions
-nbox search <query> [--limit N] [--status/--site/--tenant/--role/--tag <v>] [--cols a,b,c] [--partial]
-                                  # --site resolves the site once and filters prefixes by site scope
-                                  # (scope_type=dcim.site + scope_id); an unknown site errors (exit 4)
+nbox search <query> [--limit N] [--status/--site/--region/--site-group/--location/--tenant/--role/--tag <v>] [--cols a,b,c] [--partial]
+                                  # --site/--region/--site-group/--location resolve the ref once and filter
+                                  # prefixes by that scope (scope_type=dcim.<kind> + scope_id), exact match.
+                                  # At most one scope flag (else exit 2); an unknown ref errors (exit 4)
 nbox device <name-or-id> [--journal] [--journal-limit N]
 nbox ip <address> [--vrf <name>] [--journal]    # --vrf disambiguates duplicates across VRFs
 nbox prefix <cidr> [--vrf <name>] [--journal]   # includes utilization + children when present

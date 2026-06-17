@@ -115,6 +115,44 @@ pub struct Site {
     pub custom_fields: serde_json::Value,
 }
 
+/// A region (`/api/dcim/regions/`). Minimal: just enough to resolve a ref to an
+/// id for prefix scope filtering. Kept permissive — only `id`/`name`/`slug` are
+/// relied on; everything else NetBox sends is ignored.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Region {
+    pub id: u64,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub display: Option<String>,
+    pub name: String,
+    pub slug: String,
+}
+
+/// A site group (`/api/dcim/site-groups/`). Minimal, permissive — see [`Region`].
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct SiteGroup {
+    pub id: u64,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub display: Option<String>,
+    pub name: String,
+    pub slug: String,
+}
+
+/// A location (`/api/dcim/locations/`). Minimal, permissive — see [`Region`].
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct Location {
+    pub id: u64,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub display: Option<String>,
+    pub name: String,
+    pub slug: String,
+}
+
 /// A rack (`/api/dcim/racks/`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct Rack {
@@ -173,6 +211,30 @@ mod tests {
         assert_eq!(d.site.unwrap().label(), "iad1");
         assert_eq!(d.primary_ip4.unwrap().label(), "10.44.12.9/32");
         assert!(d.rack.is_none());
+    }
+
+    #[test]
+    fn scope_models_parse_minimally() {
+        // Only id/name/slug are relied on; url/display are optional. A real NetBox
+        // payload carries far more fields — they're ignored, not rejected.
+        let region: Region = serde_json::from_value(json!({
+            "id": 3, "url": "http://nb/api/dcim/regions/3/",
+            "display": "US East", "name": "US East", "slug": "us-east",
+            "parent": null, "description": "extra ignored field"
+        }))
+        .unwrap();
+        assert_eq!(region.id, 3);
+        assert_eq!(region.slug, "us-east");
+
+        let group: SiteGroup =
+            serde_json::from_value(json!({"id": 4, "name": "Campus", "slug": "campus"})).unwrap();
+        assert_eq!(group.id, 4);
+        assert_eq!(group.slug, "campus");
+
+        let loc: Location =
+            serde_json::from_value(json!({"id": 5, "name": "Row A", "slug": "row-a"})).unwrap();
+        assert_eq!(loc.id, 5);
+        assert_eq!(loc.name, "Row A");
     }
 
     #[test]

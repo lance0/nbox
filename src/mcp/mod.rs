@@ -60,8 +60,18 @@ pub struct SearchArgs {
     pub limit: Option<usize>,
     /// Filter by status, e.g. `active`.
     pub status: Option<String>,
-    /// Filter by site slug.
+    /// Filter by site (slug, name, or id). Prefixes are matched on site scope.
+    /// Mutually exclusive with region/site_group/location.
     pub site: Option<String>,
+    /// Filter by region (slug, name, or id). Prefixes are matched on region
+    /// scope. Mutually exclusive with site/site_group/location.
+    pub region: Option<String>,
+    /// Filter by site group (slug, name, or id). Prefixes are matched on
+    /// site-group scope. Mutually exclusive with site/region/location.
+    pub site_group: Option<String>,
+    /// Filter by location (slug, name, or id). Prefixes are matched on location
+    /// scope. Mutually exclusive with site/region/site_group.
+    pub location: Option<String>,
     /// Filter by tenant slug.
     pub tenant: Option<String>,
     /// Filter by role slug.
@@ -264,6 +274,9 @@ impl NboxMcp {
                 filters: SearchFilters {
                     status: args.status,
                     site: args.site,
+                    region: args.region,
+                    site_group: args.site_group,
+                    location: args.location,
                     tenant: args.tenant,
                     role: args.role,
                     tag: args.tag,

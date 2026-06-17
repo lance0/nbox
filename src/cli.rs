@@ -72,9 +72,25 @@ pub enum Command {
         #[arg(long)]
         status: Option<String>,
 
-        /// Filter by site slug.
+        /// Filter by site (slug, name, or id). Prefixes are matched on site
+        /// scope. Mutually exclusive with --region/--site-group/--location.
         #[arg(long)]
         site: Option<String>,
+
+        /// Filter by region (slug, name, or id). Prefixes are matched on region
+        /// scope. Mutually exclusive with --site/--site-group/--location.
+        #[arg(long)]
+        region: Option<String>,
+
+        /// Filter by site group (slug, name, or id). Prefixes are matched on
+        /// site-group scope. Mutually exclusive with --site/--region/--location.
+        #[arg(long = "site-group")]
+        site_group: Option<String>,
+
+        /// Filter by location (slug, name, or id). Prefixes are matched on
+        /// location scope. Mutually exclusive with --site/--region/--site-group.
+        #[arg(long)]
+        location: Option<String>,
 
         /// Filter by tenant slug.
         #[arg(long)]
@@ -434,6 +450,31 @@ mod tests {
         let cli = Cli::try_parse_from(["nbox", "--json", "device", "edge01"]).unwrap();
         assert!(cli.json);
         assert!(matches!(cli.command, Some(Command::Device { value, .. }) if value == "edge01"));
+    }
+
+    #[test]
+    fn search_parses_scope_filters() {
+        let cli = Cli::try_parse_from([
+            "nbox",
+            "search",
+            "10.0",
+            "--region",
+            "us-east",
+            "--site-group",
+            "campus",
+            "--location",
+            "row-a",
+        ])
+        .unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Search {
+                region: Some(r),
+                site_group: Some(g),
+                location: Some(l),
+                ..
+            }) if r == "us-east" && g == "campus" && l == "row-a"
+        ));
     }
 
     #[test]

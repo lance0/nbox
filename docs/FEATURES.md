@@ -6,7 +6,7 @@ nbox is a read-only NetBox client (v0.1) — a CLI and a TUI over the same core.
 
 | Command | What |
 | ------- | ---- |
-| `nbox search <q>` | Parallel search across devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP-ranges. Filters: `--status/--site/--tenant/--role/--tag`, `--limit`, `--cols`, `--partial`. |
+| `nbox search <q>` | Parallel search across devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP-ranges. Filters: `--status/--site/--region/--site-group/--location/--tenant/--role/--tag`, `--limit`, `--cols`, `--partial`. |
 | `nbox device <name\|slug\|id> [--journal]` | Device + interfaces, IPs, cables, VLANs, services. |
 | `nbox interface <device> <iface>` | One interface: type, MTU, MAC, mode, VLANs, cable, **cable path** (trace), addresses. |
 | `nbox ip <addr> [--vrf] [--journal]` | IP + most-specific parent prefix (VRF-scoped) and its VLAN plus the prefix's `scope`/`scope_type` (site, location, region, …). |
@@ -24,13 +24,19 @@ nbox is a read-only NetBox client (v0.1) — a CLI and a TUI over the same core.
 Duplicate references across scopes (an address/CIDR in several VRFs, a VID at
 several sites) exit `5` and list the candidates; scope with `--vrf`/`--site`/`--group`.
 
-`search --site <ref>` resolves the site once (by slug, name, or id) and filters
-prefixes by site scope — NetBox 4.2 replaced the prefix `site` field with the
-polymorphic `scope`, so prefixes are matched on `scope_type=dcim.site` +
-`scope_id`, not the dead `?site=` filter. An unknown site is a not-found error
-(exit `4`), not a silent empty result. Other endpoints (devices, VLANs, …) take
-the site reference directly; endpoints that can't filter by site are skipped.
-Only the site scope is filtered today; region/site-group/location are not yet.
+`search --site/--region/--site-group/--location <ref>` resolves the reference
+once (by slug, name, or id) and filters prefixes by that scope — NetBox 4.2
+replaced the prefix `site` field with the polymorphic `scope`, so prefixes are
+matched on `scope_type=dcim.site`/`dcim.region`/`dcim.sitegroup`/`dcim.location`
++ `scope_id`, not the dead `?site=` filter. The match is **exact**: each flag
+filters by its own scope only (no hierarchy/descendant expansion — `--region`
+does not pull in prefixes scoped to sites inside that region). At most **one**
+scope flag may be set (the prefix `scope` is a single type+id); passing more than
+one is a usage error (exit `2`). An unknown reference is a not-found error (exit
+`4`), not a silent empty result. Non-prefix endpoints: devices honor `--site`
+(slug) and the id-based scopes via `region_id`/`site_group_id`/`location_id`;
+VLANs honor `--site` directly; endpoints that can't filter by a given scope are
+skipped rather than sent a dead param.
 
 ## Output
 

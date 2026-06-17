@@ -8,7 +8,7 @@ use crate::error::NboxError;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
 use crate::netbox::models::circuits::Circuit;
-use crate::netbox::models::dcim::{Device, Interface, Rack, Site};
+use crate::netbox::models::dcim::{Device, Interface, Location, Rack, Region, Site, SiteGroup};
 use crate::netbox::models::extras::{JournalEntry, TagInfo};
 use crate::netbox::models::ipam::{
     Aggregate, Asn, AvailableIp, AvailablePrefix, IpAddress, IpRange, Prefix, Service, Vlan,
@@ -337,6 +337,72 @@ impl NetBoxClient {
         ambiguous_or_first("site", value, contains.results, |s| s.name.clone())
     }
 
+    /// Resolve a region by slug, then exact name, then name-contains. Mirrors
+    /// [`site_by_ref`](Self::site_by_ref); used to translate `--region` into a
+    /// numeric id for prefix `scope_type=dcim.region` filtering.
+    pub async fn region_by_ref(&self, value: &str) -> Result<Option<Region>> {
+        let by_slug: Page<Region> = self
+            .list(Endpoint::Regions, vec![("slug", value.to_string())])
+            .await?;
+        if let Some(r) = by_slug.results.into_iter().next() {
+            return Ok(Some(r));
+        }
+        let exact: Page<Region> = self
+            .list(Endpoint::Regions, vec![("name__ie", value.to_string())])
+            .await?;
+        if let Some(r) = exact.results.into_iter().next() {
+            return Ok(Some(r));
+        }
+        let contains: Page<Region> = self
+            .list(Endpoint::Regions, vec![("name__ic", value.to_string())])
+            .await?;
+        ambiguous_or_first("region", value, contains.results, |r| r.name.clone())
+    }
+
+    /// Resolve a site group by slug, then exact name, then name-contains. Mirrors
+    /// [`site_by_ref`](Self::site_by_ref); used to translate `--site-group` into a
+    /// numeric id for prefix `scope_type=dcim.sitegroup` filtering.
+    pub async fn site_group_by_ref(&self, value: &str) -> Result<Option<SiteGroup>> {
+        let by_slug: Page<SiteGroup> = self
+            .list(Endpoint::SiteGroups, vec![("slug", value.to_string())])
+            .await?;
+        if let Some(g) = by_slug.results.into_iter().next() {
+            return Ok(Some(g));
+        }
+        let exact: Page<SiteGroup> = self
+            .list(Endpoint::SiteGroups, vec![("name__ie", value.to_string())])
+            .await?;
+        if let Some(g) = exact.results.into_iter().next() {
+            return Ok(Some(g));
+        }
+        let contains: Page<SiteGroup> = self
+            .list(Endpoint::SiteGroups, vec![("name__ic", value.to_string())])
+            .await?;
+        ambiguous_or_first("site group", value, contains.results, |g| g.name.clone())
+    }
+
+    /// Resolve a location by slug, then exact name, then name-contains. Mirrors
+    /// [`site_by_ref`](Self::site_by_ref); used to translate `--location` into a
+    /// numeric id for prefix `scope_type=dcim.location` filtering.
+    pub async fn location_by_ref(&self, value: &str) -> Result<Option<Location>> {
+        let by_slug: Page<Location> = self
+            .list(Endpoint::Locations, vec![("slug", value.to_string())])
+            .await?;
+        if let Some(l) = by_slug.results.into_iter().next() {
+            return Ok(Some(l));
+        }
+        let exact: Page<Location> = self
+            .list(Endpoint::Locations, vec![("name__ie", value.to_string())])
+            .await?;
+        if let Some(l) = exact.results.into_iter().next() {
+            return Ok(Some(l));
+        }
+        let contains: Page<Location> = self
+            .list(Endpoint::Locations, vec![("name__ic", value.to_string())])
+            .await?;
+        ambiguous_or_first("location", value, contains.results, |l| l.name.clone())
+    }
+
     /// Resolve an IP range by numeric ID, or by its start address.
     pub async fn ip_range_by_ref(&self, value: &str) -> Result<Option<IpRange>> {
         if let Ok(id) = value.parse::<u64>() {
@@ -482,6 +548,46 @@ mod tests {
         // (beyond 50) is parsed back, including a block past the default cap.
         assert_eq!(free.len(), 60);
         assert_eq!(free[55].prefix, "10.0.55.0/24");
+    }
+
+    #[tokio::test]
+    async fn region_by_ref_resolves_by_slug() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/regions/"))
+            .and(query_param("slug", "us-east"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{"id": 3, "name": "US East", "slug": "us-east"}]
+            })))
+            .mount(&server)
+            .await;
+
+        let region = client_for(&server)
+            .region_by_ref("us-east")
+            .await
+            .expect("region lookup")
+            .expect("region present");
+        assert_eq!(region.id, 3);
+    }
+
+    #[tokio::test]
+    async fn site_group_by_ref_falls_back_to_name_then_returns_none() {
+        let server = MockServer::start().await;
+        // Slug + name__ie + name__ic all empty → unresolved (None, not an error).
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/site-groups/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 0, "next": null, "previous": null, "results": []
+            })))
+            .mount(&server)
+            .await;
+
+        let resolved = client_for(&server)
+            .site_group_by_ref("nope")
+            .await
+            .expect("site-group lookup");
+        assert!(resolved.is_none());
     }
 
     #[test]
