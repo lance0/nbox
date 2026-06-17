@@ -7,7 +7,7 @@
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::widgets::ListState;
+use ratatui::widgets::TableState;
 
 use crate::domain::detail::DetailView;
 use crate::netbox::client::NetBoxClient;
@@ -131,12 +131,14 @@ pub struct App {
     /// Indices into `results` in display order (fuzzy-filtered while searching).
     pub view: Vec<usize>,
     /// Index of the cursor into the active home list (results or recents). The
-    /// pure movement keys (j/k/g/G/PgUp/PgDn) own this; `list_state` is synced
+    /// pure movement keys (j/k/g/G/PgUp/PgDn) own this; `table_state` is synced
     /// from it at render time so ratatui scrolls the offset to keep it visible.
     pub selected: usize,
-    /// Stateful-list selection/offset, driven by `selected` each frame so the
-    /// selected row is always on screen no matter how tall the list gets.
-    pub list_state: ListState,
+    /// Stateful-table selection/offset, driven by `selected` each frame so the
+    /// selected row is always on screen no matter how tall the table gets.
+    /// `TableState` keeps the selected row visible exactly like `ListState` did,
+    /// so the selection-stays-visible / page-jump viewport behaviour is unchanged.
+    pub table_state: TableState,
     /// Last-known results-list inner height (visible rows), stashed during render
     /// so the pure PgUp/PgDn handler can page by one screenful. Mirrors the
     /// detail/preview live-viewport pattern. 0 until the first render, where the
@@ -211,7 +213,7 @@ impl App {
             results: Vec::new(),
             view: Vec::new(),
             selected: 0,
-            list_state: ListState::default(),
+            table_state: TableState::default(),
             list_viewport: 0,
             pending_reselect: None,
             recent: Vec::new(),
@@ -958,18 +960,31 @@ impl App {
         self.list_viewport = height;
     }
 
-    /// Sync the stateful-list selection from the pure `selected` index so the
-    /// render path scrolls the offset to keep the cursor visible. Empty lists
+    /// Sync the stateful-table selection from the pure `selected` index so the
+    /// render path scrolls the offset to keep the cursor visible. Empty tables
     /// select nothing (no panic); otherwise the index is clamped into range.
-    pub fn sync_list_state(&mut self) {
+    /// `TableState` drives row visibility identically to the old `ListState`.
+    pub fn sync_table_state(&mut self) {
         let len = self.home_len();
         if len == 0 {
-            self.list_state.select(None);
+            self.table_state.select(None);
         } else {
             self.selected = self.selected.min(len - 1);
-            self.list_state.select(Some(self.selected));
+            self.table_state.select(Some(self.selected));
         }
     }
+}
+
+/// The three aligned column cells for a search-result row: its kind, its display
+/// label, and its site (taken from the result's `subtitle`, since the search
+/// result carries no separate site field — the subtitle holds the site/scope).
+/// Pure so the render path's row-building can be unit-tested without a terminal.
+pub fn result_row_cells(result: &SearchResult) -> [String; 3] {
+    [
+        result.kind.as_str().to_string(),
+        result.display.clone(),
+        result.subtitle.clone().unwrap_or_default(),
+    ]
 }
 
 /// A borrowed, lightweight view of the highlighted home row used to render the
@@ -1049,6 +1064,36 @@ mod tests {
             display: display.into(),
             ..result(id, display)
         }
+    }
+
+    #[test]
+    fn result_row_cells_maps_kind_display_and_site() {
+        // The aligned table's three columns come from the result: kind, display,
+        // and site — where "site" is the subtitle (the search result has no
+        // dedicated site field; the subtitle carries the site/scope).
+        let r = SearchResult {
+            subtitle: Some("iad1".into()),
+            ..result(1, "edge01")
+        };
+        assert_eq!(
+            result_row_cells(&r),
+            [
+                "device".to_string(),
+                "edge01".to_string(),
+                "iad1".to_string()
+            ]
+        );
+    }
+
+    #[test]
+    fn result_row_cells_site_is_blank_without_subtitle() {
+        // No subtitle → the SITE cell is empty (not "None"); the column still
+        // aligns because the empty string keeps its place in the row.
+        let r = result(2, "core02"); // subtitle is None
+        assert_eq!(
+            result_row_cells(&r),
+            ["device".to_string(), "core02".to_string(), String::new()]
+        );
     }
 
     fn press(code: KeyCode) -> AppEvent {
@@ -1500,12 +1545,12 @@ mod tests {
         a.handle_event(press(KeyCode::PageDown));
         a.handle_event(press(KeyCode::PageUp));
         assert_eq!(a.selected, 0);
-        a.sync_list_state();
-        assert_eq!(a.list_state.selected(), None);
+        a.sync_table_state();
+        assert_eq!(a.table_state.selected(), None);
     }
 
     #[test]
-    fn selection_past_viewport_stays_valid_and_syncs_list_state() {
+    fn selection_past_viewport_stays_valid_and_syncs_table_state() {
         // Walk the cursor well past any plausible viewport height; the index
         // must stay in range and the stateful selection must track it so
         // ratatui scrolls the offset to keep the row visible.
@@ -1515,8 +1560,8 @@ mod tests {
             a.handle_event(press(KeyCode::Down));
         }
         assert_eq!(a.selected, 40);
-        a.sync_list_state();
-        assert_eq!(a.list_state.selected(), Some(40));
+        a.sync_table_state();
+        assert_eq!(a.table_state.selected(), Some(40));
         // And the selected row resolves to a real result.
         assert_eq!(a.selected_result().map(|r| r.id), Some(41));
     }
@@ -1536,8 +1581,8 @@ mod tests {
             a.handle_event(press(key));
         }
         assert_eq!(a.selected, 0);
-        a.sync_list_state();
-        assert_eq!(a.list_state.selected(), None);
+        a.sync_table_state();
+        assert_eq!(a.table_state.selected(), None);
     }
 
     #[test]
@@ -1548,8 +1593,8 @@ mod tests {
         a.handle_event(press(KeyCode::Char('G')));
         a.handle_event(press(KeyCode::PageDown));
         assert_eq!(a.selected, 0);
-        a.sync_list_state();
-        assert_eq!(a.list_state.selected(), Some(0));
+        a.sync_table_state();
+        assert_eq!(a.table_state.selected(), Some(0));
     }
 
     #[test]
@@ -1561,9 +1606,9 @@ mod tests {
         a.selected = 8;
         set_results(&mut a, results_n(3)); // SearchComplete resets selected to 0…
         a.selected = 9; // …but simulate a stale index anyway.
-        a.sync_list_state();
+        a.sync_table_state();
         assert_eq!(a.selected, 2);
-        assert_eq!(a.list_state.selected(), Some(2));
+        assert_eq!(a.table_state.selected(), Some(2));
     }
 
     /// Load a tab-less detail whose body is `n` lines, then stash a viewport so

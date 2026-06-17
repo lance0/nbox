@@ -4,10 +4,16 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, List, ListItem, Paragraph};
+use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
 
-use crate::tui::state::{App, Focus, Mode, Screen};
+use crate::tui::state::{App, Focus, Mode, Screen, result_row_cells};
 use crate::tui::theme::Theme;
+
+/// Column widths for the results table. KIND is fixed-width so the kind tags line
+/// up; DISPLAY flexes to fill the middle; SITE gets a fixed tail column. These
+/// give ratatui the [`Constraint`]s it needs to align the cells into columns.
+const KIND_COL: u16 = 8;
+const SITE_COL: u16 = 14;
 
 /// Render the whole UI for the current frame.
 pub fn render(frame: &mut Frame, app: &mut App) {
@@ -71,8 +77,8 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
     // PgUp/PgDn handler pages by the live viewport, like the detail/preview panes.
     app.sync_list_viewport(area.height.saturating_sub(2));
     // Keep the stateful selection/offset in step with the cursor so the
-    // selected row is always on screen and the list scrolls under it.
-    app.sync_list_state();
+    // selected row is always on screen and the table scrolls under it.
+    app.sync_table_state();
     let theme = &app.theme;
     let border = pane_border(theme, app.focus == Focus::List);
 
@@ -82,20 +88,14 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
             .borders(Borders::ALL)
             .title(" Results ")
             .border_style(border);
-        let items: Vec<ListItem> = app
+        let rows: Vec<Row> = app
             .view
             .iter()
             .filter_map(|&idx| app.results.get(idx))
-            .map(|r| {
-                let text = match &r.subtitle {
-                    Some(s) => format!("{:<7} {}  ({s})", r.kind.as_str(), r.display),
-                    None => format!("{:<7} {}", r.kind.as_str(), r.display),
-                };
-                ListItem::new(text)
-            })
+            .map(|r| result_row(r, theme))
             .collect();
-        let list = results_list(items, block, theme);
-        frame.render_stateful_widget(list, area, &mut app.list_state);
+        let table = results_table(rows, block, theme);
+        frame.render_stateful_widget(table, area, &mut app.table_state);
         return;
     }
 
@@ -104,13 +104,20 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
             .borders(Borders::ALL)
             .title(" Recent ")
             .border_style(border);
-        let items: Vec<ListItem> = app
+        // Recents carry only a kind and a title; the SITE column is empty.
+        let rows: Vec<Row> = app
             .recent
             .iter()
-            .map(|item| ListItem::new(item.title.clone()))
+            .map(|item| {
+                Row::new([
+                    Cell::from(item.kind.as_str()),
+                    Cell::from(item.title.clone()),
+                    Cell::from(""),
+                ])
+            })
             .collect();
-        let list = results_list(items, block, theme);
-        frame.render_stateful_widget(list, area, &mut app.list_state);
+        let table = results_table(rows, block, theme);
+        frame.render_stateful_widget(table, area, &mut app.table_state);
         return;
     }
 
@@ -152,48 +159,131 @@ fn render_home_preview(frame: &mut Frame, area: Rect, app: &mut App) {
     );
 }
 
-/// Turn a plain-text detail/preview body into colored lines. Lines are passed
-/// through untouched except for `status:`/`enabled:` `key: value` rows, whose
-/// VALUE is colored by the theme's status palette (active→green, offline→red,
-/// planned→yellow, …). The text itself is never altered — only its color.
+/// The widest a key/value label is allowed to grow before alignment stops
+/// padding to it — so one freakishly long label can't push every value off the
+/// pane. Beyond this, over-long labels keep their own width and their value
+/// simply follows after a single space.
+const LABEL_CAP: usize = 16;
+
+/// Turn a plain-text detail/preview body into colored, column-aligned lines.
+///
+/// `key: value` rows have their labels padded to a uniform column (the width of
+/// the widest label in this body, capped at [`LABEL_CAP`]) so the values line up
+/// — the "Status        ● active" look. The padding is the only thing added; the
+/// label and value text are untouched. Lines that aren't `key: value` (blank
+/// lines, headers, tab tables) pass straight through. `status:`/`enabled:` rows
+/// keep T4's value coloring (active→green, offline→red, …); the alignment never
+/// changes a value's color, only the whitespace before it.
 fn body_lines<'a>(body: &'a str, theme: &Theme) -> Vec<Line<'a>> {
-    body.lines().map(|l| status_line(l, theme)).collect()
+    let width = label_width(body);
+    body.lines().map(|l| kv_line(l, width, theme)).collect()
 }
 
-/// Color one body line. A `status: <value>` (or `enabled: true/false`) line gets
-/// its value styled via [`Theme::status_style`]; everything else stays plain.
-fn status_line<'a>(line: &'a str, theme: &Theme) -> Line<'a> {
-    if let Some(rest) = line.strip_prefix("status: ") {
-        return Line::from(vec![
-            Span::raw("status: "),
-            Span::styled(rest, theme.status_style(rest)),
-        ]);
-    }
-    if let Some(rest) = line.strip_prefix("enabled: ") {
-        // Map the enabled flag onto a healthy/down status so ✓/true reads green
-        // and ✗/false reads red, reusing the same palette.
-        let proxy = match rest.trim() {
+/// Split a body line into its `(label, value)` halves on the FIRST `": "`. Only
+/// the first separator counts, so a value that itself contains `: ` (a URL, an
+/// IPv6 address) stays intact. `None` for lines that aren't a `key: value` row.
+fn split_kv(line: &str) -> Option<(&str, &str)> {
+    line.split_once(": ")
+}
+
+/// The label column width to align this body's `key: value` rows to: the widest
+/// label present, clamped to [`LABEL_CAP`]. Pure so it can be tested directly.
+fn label_width(body: &str) -> usize {
+    body.lines()
+        .filter_map(split_kv)
+        .map(|(label, _)| label.chars().count())
+        .max()
+        .unwrap_or(0)
+        .min(LABEL_CAP)
+}
+
+/// Render one body line with its label padded to `width` so values align into a
+/// column. Non-`key: value` lines pass through unchanged. `status`/`enabled`
+/// values keep their status-palette color (T4); every other value is plain text.
+fn kv_line<'a>(line: &'a str, width: usize, theme: &Theme) -> Line<'a> {
+    let Some((label, value)) = split_kv(line) else {
+        return Line::from(line.to_string());
+    };
+    // Pad the "label:" so the values start at a common column. Labels longer than
+    // the cap keep their natural width (pad saturates to 0), trailing a value
+    // after a single space rather than blowing the column open.
+    let pad = width.saturating_sub(label.chars().count());
+    let label_cell = format!("{label}:{:pad$} ", "", pad = pad);
+
+    let value_style = match label {
+        "status" => theme.status_style(value),
+        // Map the enabled flag onto a healthy/down status so true reads green and
+        // false reads red, reusing the same palette.
+        "enabled" => theme.status_style(match value.trim() {
             "true" => "active",
             "false" => "offline",
             other => other,
-        };
-        return Line::from(vec![
-            Span::raw("enabled: "),
-            Span::styled(rest, theme.status_style(proxy)),
-        ]);
-    }
-    Line::from(line.to_string())
+        }),
+        _ => Style::default(),
+    };
+    Line::from(vec![
+        Span::raw(label_cell),
+        Span::styled(value.to_string(), value_style),
+    ])
 }
 
-/// A stateful list with the project's selection marker/highlight. ratatui draws
-/// the `highlight_symbol`/`highlight_style` on the row matching `ListState`'s
-/// selection and scrolls the offset to keep it visible.
-fn results_list<'a>(items: Vec<ListItem<'a>>, block: Block<'a>, theme: &Theme) -> List<'a> {
-    List::new(items)
+/// The styled (text, style) pairs for a result row's three cells, in column
+/// order: KIND / DISPLAY / SITE. The kind tag is dimmed to recede behind the
+/// display label; the SITE cell is colored via [`Theme::status_style`] when its
+/// value reads like a status (so a status surfaced through the subtitle keeps
+/// T4's palette) and stays neutral text otherwise; the display is plain. Pure
+/// (no widgets), so the cell text + color decisions are unit-testable.
+fn result_row_styled(
+    result: &crate::netbox::search::SearchResult,
+    theme: &Theme,
+) -> [(String, Style); 3] {
+    let [kind, display, site] = result_row_cells(result);
+    let site_style = theme.status_style(&site);
+    [
+        (kind, Style::default().fg(theme.text_dim)),
+        (display, Style::default()),
+        (site, site_style),
+    ]
+}
+
+/// One aligned results row built from the pure [`result_row_styled`] cells.
+fn result_row<'a>(result: &crate::netbox::search::SearchResult, theme: &Theme) -> Row<'a> {
+    let cells = result_row_styled(result, theme);
+    Row::new(cells.map(|(text, style)| Cell::from(text).style(style)))
+}
+
+/// The column header row (`KIND  DISPLAY  SITE`), dim + bold so it reads as a
+/// label band above the aligned cells.
+fn results_header<'a>(theme: &Theme) -> Row<'a> {
+    Row::new([
+        Cell::from("KIND"),
+        Cell::from("DISPLAY"),
+        Cell::from("SITE"),
+    ])
+    .style(
+        Style::default()
+            .fg(theme.text_dim)
+            .add_modifier(Modifier::BOLD),
+    )
+}
+
+/// A stateful table with the project's selection marker/highlight and a dim/bold
+/// header row. ratatui aligns the cells into columns from the [`Constraint`]s and
+/// draws the `highlight_symbol`/`row_highlight_style` on the row matching
+/// `TableState`'s selection, scrolling the offset to keep it visible — exactly
+/// the selection-stays-visible behaviour the old `List`/`ListState` had.
+fn results_table<'a>(rows: Vec<Row<'a>>, block: Block<'a>, theme: &Theme) -> Table<'a> {
+    let widths = [
+        Constraint::Length(KIND_COL),
+        Constraint::Min(1),
+        Constraint::Length(SITE_COL),
+    ];
+    Table::new(rows, widths)
+        .header(results_header(theme))
         .block(block)
         .style(Style::default().fg(theme.text))
         .highlight_symbol("> ")
-        .highlight_style(Style::default().fg(theme.text).bg(theme.highlight_bg))
+        .row_highlight_style(Style::default().fg(theme.text).bg(theme.highlight_bg))
 }
 
 fn render_help(frame: &mut Frame, area: Rect, app: &App) {
@@ -323,49 +413,109 @@ mod tests {
         line.spans.last().and_then(|s| s.style.fg)
     }
 
+    /// The text of the line's last span (the value half of a `key: value` row).
+    fn value_text(line: &Line) -> String {
+        line.spans
+            .last()
+            .map(|s| s.content.to_string())
+            .unwrap_or_default()
+    }
+
     #[test]
-    fn status_line_colors_the_value_by_status_palette() {
+    fn kv_line_colors_the_value_by_status_palette() {
         let theme = Theme::default_theme();
-        // active → success; offline → error; planned → warning.
+        // active → success; offline → error; planned → warning. Width 0 = no
+        // padding; coloring is independent of alignment.
         assert_eq!(
-            last_fg(&status_line("status: active", &theme)),
+            last_fg(&kv_line("status: active", 0, &theme)),
             Some(theme.success)
         );
         assert_eq!(
-            last_fg(&status_line("status: offline", &theme)),
+            last_fg(&kv_line("status: offline", 0, &theme)),
             Some(theme.error)
         );
         assert_eq!(
-            last_fg(&status_line("status: planned", &theme)),
+            last_fg(&kv_line("status: planned", 0, &theme)),
             Some(theme.warning)
         );
         // Unknown status stays neutral text.
         assert_eq!(
-            last_fg(&status_line("status: whatever", &theme)),
+            last_fg(&kv_line("status: whatever", 0, &theme)),
             Some(theme.text)
         );
     }
 
     #[test]
-    fn status_line_colors_enabled_flag() {
+    fn kv_line_colors_enabled_flag() {
         let theme = Theme::default_theme();
         assert_eq!(
-            last_fg(&status_line("enabled: true", &theme)),
+            last_fg(&kv_line("enabled: true", 0, &theme)),
             Some(theme.success)
         );
         assert_eq!(
-            last_fg(&status_line("enabled: false", &theme)),
+            last_fg(&kv_line("enabled: false", 0, &theme)),
             Some(theme.error)
         );
     }
 
     #[test]
-    fn status_line_leaves_other_lines_plain() {
+    fn kv_line_leaves_non_status_values_uncolored() {
         let theme = Theme::default_theme();
-        // A non-status line is a single unstyled span.
-        let line = status_line("name: edge01", &theme);
-        assert_eq!(line.spans.len(), 1);
+        // A non-status key/value row colors its value with the default style (no
+        // explicit fg) — the value text is never altered, only the column it
+        // starts at. The label cell is the leading span; the value is the last.
+        let line = kv_line("name: edge01", 0, &theme);
+        assert_eq!(line.spans.len(), 2);
         assert_eq!(last_fg(&line), None);
+        assert_eq!(value_text(&line), "edge01");
+    }
+
+    #[test]
+    fn kv_line_passes_through_non_kv_lines() {
+        let theme = Theme::default_theme();
+        // A line with no `": "` separator is emitted verbatim as one span.
+        let line = kv_line("--- interfaces ---", 8, &theme);
+        assert_eq!(line.spans.len(), 1);
+        assert_eq!(value_text(&line), "--- interfaces ---");
+    }
+
+    #[test]
+    fn kv_line_splits_on_first_separator_keeping_value_intact() {
+        let theme = Theme::default_theme();
+        // A value containing its own `: ` (an IPv6 with a space-delimited note)
+        // is split only on the first separator, so the value survives whole.
+        let line = kv_line("primary_ip6: 2001:db8:: gateway", 0, &theme);
+        assert_eq!(value_text(&line), "2001:db8:: gateway");
+    }
+
+    #[test]
+    fn label_width_is_max_label_capped() {
+        // The column aligns to the widest label present…
+        let body = "name: a\nstatus: b\nplatform: c"; // labels 4 / 6 / 8
+        assert_eq!(label_width(body), 8);
+        // …but never past the cap, however long a stray label gets.
+        let long = "x".repeat(40);
+        let body = format!("{long}: v\nname: a");
+        assert_eq!(label_width(&body), LABEL_CAP);
+        // A body with no key/value rows needs no column.
+        assert_eq!(label_width("just a header line"), 0);
+    }
+
+    #[test]
+    fn body_lines_pads_labels_into_a_uniform_column() {
+        let theme = Theme::default_theme();
+        // "name" (4) and "platform" (8) pad to the same label-cell width so both
+        // values start at the same column. Cell = "label:" + pad + one space.
+        let lines = body_lines("name: edge01\nplatform: linux", &theme);
+        let name_cell = lines[0].spans[0].content.to_string();
+        let plat_cell = lines[1].spans[0].content.to_string();
+        assert_eq!(name_cell.chars().count(), plat_cell.chars().count());
+        // The longest label sets the column: "platform:" + a trailing space.
+        assert_eq!(plat_cell, "platform: ");
+        assert_eq!(name_cell, "name:     ");
+        // Values are intact and start at the aligned column.
+        assert_eq!(value_text(&lines[0]), "edge01");
+        assert_eq!(value_text(&lines[1]), "linux");
     }
 
     #[test]
@@ -373,5 +523,52 @@ mod tests {
         let theme = Theme::default_theme();
         let body = "name: edge01\nstatus: active\nsite: iad1";
         assert_eq!(body_lines(body, &theme).len(), 3);
+    }
+
+    #[test]
+    fn result_row_styled_builds_kind_display_site_cells() {
+        use crate::netbox::search::{ObjectKind, SearchResult};
+        let theme = Theme::default_theme();
+        let r = SearchResult {
+            kind: ObjectKind::Device,
+            id: 1,
+            display: "edge01".into(),
+            subtitle: Some("iad1".into()),
+            url: "http://nb/dcim/devices/1/".into(),
+            score: 100,
+        };
+        // Three aligned cells, in column order: KIND / DISPLAY / SITE.
+        let cells = result_row_styled(&r, &theme);
+        assert_eq!(cells[0].0, "device");
+        assert_eq!(cells[1].0, "edge01");
+        assert_eq!(cells[2].0, "iad1");
+        // The kind cell recedes (dim); the display uses the table's base text.
+        assert_eq!(cells[0].1.fg, Some(theme.text_dim));
+        assert_eq!(cells[1].1.fg, None);
+    }
+
+    #[test]
+    fn result_row_styled_colors_a_status_like_site() {
+        use crate::netbox::search::{ObjectKind, SearchResult};
+        let theme = Theme::default_theme();
+        // When the SITE cell (from the subtitle) reads like a status, it picks up
+        // T4's palette; an ordinary site name stays neutral text.
+        let active = SearchResult {
+            kind: ObjectKind::Device,
+            id: 1,
+            display: "x".into(),
+            subtitle: Some("active".into()),
+            url: "u".into(),
+            score: 1,
+        };
+        assert_eq!(
+            result_row_styled(&active, &theme)[2].1.fg,
+            Some(theme.success)
+        );
+        let plain = SearchResult {
+            subtitle: Some("iad1".into()),
+            ..active
+        };
+        assert_eq!(result_row_styled(&plain, &theme)[2].1.fg, Some(theme.text));
     }
 }
