@@ -26,10 +26,11 @@ several sites) exit `5` and list the candidates; scope with `--vrf`/`--site`/`--
 
 ## Output
 
-Every data command takes `-o plain|json|csv` (`--json` is shorthand). JSON adds
+Every data command takes `-o plain|json` (`--json` is shorthand). JSON adds
 `--fields a,b,c`, `--raw` (compact), and `--envelope` (`{schema_version, data}`).
-stdout stays clean for piping; logs/errors go to stderr. See [AGENTS.md](../AGENTS.md)
-for the machine-readable surface and exit codes.
+`-o csv` is for tabular/list results (e.g. `search`); single objects are rejected
+(use `--json` or plain). stdout stays clean for piping; logs/errors go to stderr.
+See [AGENTS.md](../AGENTS.md) for the machine-readable surface and exit codes.
 
 ## TUI
 

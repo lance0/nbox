@@ -95,7 +95,7 @@ Feature wins (small, on-identity):
 - ☑ Prefix utilization in `nbox prefix` output (NetBox `utilization` %, with a small bar; permissive — shown only when present)
 - ☑ Custom fields in detail output (`cf.<name>` rows + JSON, non-null, across device/ip/prefix/vlan/site/rack)
 - ☑ Structured filter flags on `search`: `--status`/`--site`/`--tenant`/`--role` (per-endpoint allowlist; unsupported→endpoint skipped). `--vrf` deferred (needs name→RD/id resolution; with filter validation in v0.2)
-- ☑ CSV output: global `-o/--output plain|json|csv` (`--json` is a shortcut); generic (arrays→table, objects→field,value)
+- ☑ CSV output: global `-o/--output plain|json|csv` (`--json` is a shortcut); tabular-only (arrays→table; single objects rejected, use `--json`)
 - ☑ Column selection `--cols a,b,c` for `search` CSV output
 - ☑ Auto-refresh tick in the TUI (`[ui].refresh_secs`, default off; re-runs the last query, preserving the cursor by id)
 - ☑ Client-side filter validation — structurally avoided: exposed filters are typed + per-endpoint allowlisted, so nbox never sends unknown params (netbox#6489). Value-level validation → v0.3 OPTIONS/schema discovery.

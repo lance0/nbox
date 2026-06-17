@@ -64,11 +64,13 @@ ambiguous (exit 5) rather than guessed.
 
 ---
 
-### CSV of nested objects is best-effort
+### CSV is tabular-only
 
-**Issue:** `-o csv` renders arrays as a table and single objects as `field,value`.
-Deeply nested objects (e.g. a device with its interfaces/IPs) flatten loosely.
+**Issue:** `-o csv` renders arrays (lists) as a table. A single object is
+rejected with a usage error (exit 2) rather than a `field,value` fallback —
+there's no good flat CSV shape for one nested record.
 
-**Impact:** CSV is most useful for `search` and flat detail views.
+**Impact:** CSV is for list results like `search`; single detail objects can't
+be CSV.
 
-**Mitigation:** Use `--json` for nested data.
+**Mitigation:** Use `--json` (or plain) for single objects and nested data.

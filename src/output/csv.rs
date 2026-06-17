@@ -1,28 +1,40 @@
 //! CSV output (RFC 4180-ish), derived generically from serialized values.
 //!
-//! - An array of objects renders as a table (one row per element). Columns are
-//!   the requested `cols`, or the union of keys in first-seen order.
-//! - A single object renders as two columns: `field,value`.
-//! - Scalars/complex values are stringified (objects/arrays as compact JSON).
+//! CSV is tabular-only: an array of objects renders as a table (one row per
+//! element). Columns are the requested `cols`, or the union of keys in
+//! first-seen order. A single object is rejected — JSON is the canonical shape
+//! for structured single objects — see [`to_csv`].
+//!
+//! Scalars/complex cell values are stringified (nested objects/arrays as
+//! compact JSON).
 
 use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
 
+use crate::error::NboxError;
+
+/// The error message shown when `-o csv` is asked for a single object.
+const CSV_NOT_TABULAR: &str = "CSV output is only supported for tabular results (arrays). For single objects, use --json or plain text.";
+
 /// Serialize `value` and print it as CSV to stdout.
 pub fn print<T: Serialize>(value: &T) -> Result<()> {
     let value = serde_json::to_value(value)?;
-    print!("{}", to_csv(&value, None));
+    print!("{}", to_csv(&value, None)?);
     Ok(())
 }
 
 /// Render a JSON value as CSV. `cols` (when given) selects/orders columns for
 /// the array-of-objects case.
-pub fn to_csv(value: &Value, cols: Option<&[String]>) -> String {
+///
+/// CSV is tabular-only: a single [`Value::Object`] is rejected with a usage
+/// error ([`NboxError::Usage`], exit code 2) rather than emitting a `field,value`
+/// fallback. Arrays and bare scalars are rendered.
+pub fn to_csv(value: &Value, cols: Option<&[String]>) -> Result<String> {
     match value {
-        Value::Array(items) => array_csv(items, cols),
-        Value::Object(_) => object_csv(value),
-        other => format!("{}\n", escape(&cell(other))),
+        Value::Array(items) => Ok(array_csv(items, cols)),
+        Value::Object(_) => Err(NboxError::Usage(CSV_NOT_TABULAR.to_string()).into()),
+        other => Ok(format!("{}\n", escape(&cell(other)))),
     }
 }
 
@@ -39,17 +51,6 @@ fn array_csv(items: &[Value], cols: Option<&[String]>) -> String {
             .iter()
             .map(|c| item.get(c).map(cell).unwrap_or_default());
         out.push_str(&row_owned(values));
-    }
-    out
-}
-
-fn object_csv(value: &Value) -> String {
-    let mut out = String::new();
-    out.push_str(&row(["field", "value"].into_iter()));
-    if let Some(map) = value.as_object() {
-        for (k, v) in map {
-            out.push_str(&row_owned([k.clone(), cell(v)].into_iter()));
-        }
     }
     out
 }
@@ -110,7 +111,7 @@ mod tests {
             {"kind": "device", "name": "edge01"},
             {"kind": "site", "name": "iad1"}
         ]);
-        let csv = to_csv(&v, None);
+        let csv = to_csv(&v, None).unwrap();
         assert_eq!(csv, "kind,name\ndevice,edge01\nsite,iad1\n");
     }
 
@@ -118,15 +119,9 @@ mod tests {
     fn cols_select_and_order_columns() {
         let v = json!([{"kind": "device", "id": 1, "name": "edge01"}]);
         let cols = vec!["name".to_string(), "kind".to_string()];
-        assert_eq!(to_csv(&v, Some(&cols)), "name,kind\nedge01,device\n");
-    }
-
-    #[test]
-    fn object_becomes_field_value() {
-        let v = json!({"name": "edge01", "status": "active"});
         assert_eq!(
-            to_csv(&v, None),
-            "field,value\nname,edge01\nstatus,active\n"
+            to_csv(&v, Some(&cols)).unwrap(),
+            "name,kind\nedge01,device\n"
         );
     }
 
@@ -138,35 +133,26 @@ mod tests {
     }
 
     #[test]
-    fn single_object_with_nested_values_stays_graceful() {
-        // `-o csv` on a single detail object (e.g. `nbox site`) falls back to the
-        // `field,value` shape. Nested objects/arrays are compacted into a cell
-        // rather than panicking — see the CSV "design fork" note in the audit:
-        // a richer per-detail CSV column shape is deliberately not invented here.
+    fn single_object_is_rejected_as_non_tabular() {
+        // CSV is tabular-only. `-o csv` on a single detail object (e.g. `nbox
+        // site`) is rejected with a usage error (exit 2) instead of the old
+        // `field,value` fallback; JSON stays the canonical single-object shape.
         let v = json!({
             "name": "iad1",
             "status": "active",
             "custom_fields": {"owner": "neteng"},
             "tags": ["edge", "prod"]
         });
-        let csv = to_csv(&v, None);
-        assert!(csv.starts_with("field,value\n"), "header present: {csv}");
-        assert!(csv.contains("name,iad1\n"), "scalar row: {csv}");
-        // Nested object/array cells are JSON-compacted (and quoted for commas).
-        assert!(
-            csv.contains("custom_fields,\"{\"\"owner\"\":\"\"neteng\"\"}\""),
-            "nested object compacted: {csv}"
-        );
-        assert!(
-            csv.contains("tags,\"[\"\"edge\"\",\"\"prod\"\"]\""),
-            "nested array compacted: {csv}"
-        );
+        let err = to_csv(&v, None).unwrap_err();
+        assert_eq!(format!("{err:#}"), CSV_NOT_TABULAR);
+        // The error carries the stable usage exit code (2).
+        assert_eq!(NboxError::exit_code_for(&err), 2);
     }
 
     #[test]
     fn scalar_value_does_not_panic() {
         // A bare scalar payload (degenerate, but possible) stringifies cleanly.
-        assert_eq!(to_csv(&json!("edge01"), None), "edge01\n");
-        assert_eq!(to_csv(&json!(42), None), "42\n");
+        assert_eq!(to_csv(&json!("edge01"), None).unwrap(), "edge01\n");
+        assert_eq!(to_csv(&json!(42), None).unwrap(), "42\n");
     }
 }

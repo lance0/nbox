@@ -397,7 +397,7 @@ async fn run_search(
                     .collect()
             });
             let value = serde_json::to_value(&results)?;
-            print!("{}", output::csv::to_csv(&value, columns.as_deref()));
+            print!("{}", output::csv::to_csv(&value, columns.as_deref())?);
         }
         Format::Plain => {
             if results.is_empty() {

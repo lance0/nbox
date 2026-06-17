@@ -32,6 +32,11 @@ pub enum NboxError {
         matches: String,
     },
 
+    /// The user asked for an unsupported flag/data combination (e.g. `-o csv`
+    /// on a single object). Carries a friendly, actionable message.
+    #[error("{0}")]
+    Usage(String),
+
     /// Any other non-success API response.
     #[error("NetBox API request failed: HTTP {status}: {body}")]
     Api { status: u16, body: String },
@@ -39,9 +44,10 @@ pub enum NboxError {
 
 impl NboxError {
     /// The process exit code for this error. Stable contract:
-    /// `3` auth/permission, `4` not found, `5` ambiguous, `1` other.
+    /// `2` usage, `3` auth/permission, `4` not found, `5` ambiguous, `1` other.
     pub fn exit_code(&self) -> i32 {
         match self {
+            NboxError::Usage(_) => 2,
             NboxError::Authentication | NboxError::PermissionDenied => 3,
             NboxError::NotFound(_) => 4,
             NboxError::Ambiguous { .. } => 5,
@@ -80,6 +86,7 @@ mod tests {
 
     #[test]
     fn exit_codes_are_stable() {
+        assert_eq!(NboxError::Usage("x".into()).exit_code(), 2);
         assert_eq!(NboxError::Authentication.exit_code(), 3);
         assert_eq!(NboxError::PermissionDenied.exit_code(), 3);
         assert_eq!(NboxError::NotFound("x".into()).exit_code(), 4);
@@ -114,7 +121,8 @@ mod tests {
         // The chain-walking path (`exit_code_for`) must recover the stable code
         // for each variant even when buried under a `.context(...)` layer — this
         // is the real path `main` takes, since handlers wrap errors with context.
-        let cases: [(NboxError, i32); 5] = [
+        let cases: [(NboxError, i32); 6] = [
+            (NboxError::Usage("bad combo".into()), 2),
             (NboxError::Authentication, 3),
             (NboxError::PermissionDenied, 3),
             (NboxError::NotFound("nope".into()), 4),

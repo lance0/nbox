@@ -157,7 +157,7 @@ These apply to every command:
 
 | Flag                       | Effect                                                          |
 | -------------------------- | -------------------------------------------------------------- |
-| `-o, --output <fmt>`       | `plain` (default), `json`, or `csv`                            |
+| `-o, --output <fmt>`       | `plain` (default), `json`, or `csv` (tabular/list results only) |
 | `--json`                   | Shortcut for `-o json`                                         |
 | `--fields a,b,c`           | JSON: keep only these top-level fields                         |
 | `--raw`                    | JSON: compact (single line) instead of pretty                 |

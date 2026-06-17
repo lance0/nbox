@@ -10,7 +10,7 @@ subcommand) is for humans; agents should always pass a subcommand.
 - `--raw` — compact JSON (one line; pairs with `--json`).
 - `--envelope` — wrap as `{ "schema_version": 1, "data": <payload> }` for stable parsing.
 - `--fields a,b,c` — keep only those top-level fields (per element for arrays).
-- `-o csv` — CSV (arrays → table, single objects → `field,value`).
+- `-o csv` — CSV for tabular/list results (e.g. `search`); arrays render as a table. Single objects are rejected (exit 2) — use `--json` or plain.
 
 stdout carries only the requested data; logs/diagnostics/errors go to stderr.
 
