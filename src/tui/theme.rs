@@ -1,7 +1,7 @@
 //! Color theme definitions for the TUI.
 //!
-//! Provides 11 built-in themes: default, kawaii, cyber, dracula, monochrome,
-//! matrix, nord, gruvbox, catppuccin, tokyo_night, solarized. The active theme
+//! Provides 12 built-in themes: default, kawaii, cyber, dracula, monochrome,
+//! matrix, nord, gruvbox, catppuccin, tokyo_night, solarized, light. The active theme
 //! comes from `[ui].theme` in the config and is cycled with `t` in the TUI
 //! (Phase 3). Ported from the xfr/ttl theme system.
 
@@ -328,6 +328,36 @@ impl Theme {
         }
     }
 
+    /// Solarized Light theme — the only light-background theme. Dark ink on a
+    /// paper background: foreground/border colors are dark enough to read on a
+    /// light terminal bg, the selection highlight is a light tan (`base2`) that
+    /// keeps the dark text legible, and `border_focused` is a strong blue so the
+    /// focused pane stands out. The success/warning/error and accent colors are
+    /// Solarized's own green/amber/red, all of which read well on white — unlike
+    /// the dark themes' bright accents, which wash out on a light terminal.
+    pub fn light() -> Self {
+        Self {
+            name: Cow::Borrowed("light"),
+            no_color: false,
+
+            border: Color::Rgb(147, 161, 161),
+            border_focused: Color::Rgb(38, 139, 210),
+            text: Color::Rgb(101, 123, 131),
+            text_dim: Color::Rgb(147, 161, 161),
+            highlight_bg: Color::Rgb(238, 232, 213),
+
+            success: Color::Rgb(133, 153, 0),
+            warning: Color::Rgb(181, 137, 0),
+            error: Color::Rgb(220, 50, 47),
+
+            accent: Color::Rgb(181, 137, 0),
+            header: Color::Rgb(38, 139, 210),
+
+            graph_primary: Color::Rgb(133, 153, 0),
+            graph_secondary: Color::Rgb(42, 161, 152),
+        }
+    }
+
     /// A monochrome theme that honors `NO_COLOR`: every color field is
     /// [`Color::Reset`] (the terminal's own default fg/bg, no styling) and the
     /// style accessors ([`Theme::message_style`], [`Theme::status_style`]) return
@@ -381,6 +411,7 @@ impl Theme {
             "catppuccin" | "mocha" => Self::catppuccin(),
             "tokyo_night" | "tokyo" | "tokyonight" => Self::tokyo_night(),
             "solarized" => Self::solarized(),
+            "light" | "day" => Self::light(),
             _ => Self::default_theme(),
         }
     }
@@ -404,6 +435,7 @@ impl Theme {
             "catppuccin",
             "tokyo_night",
             "solarized",
+            "light",
         ]
     }
 
@@ -580,6 +612,46 @@ mod tests {
         assert_eq!(t.status_style("active"), Style::default());
         assert_eq!(t.status_style("offline"), Style::default());
         assert_eq!(t.status_style("whatever").fg, None);
+    }
+
+    #[test]
+    fn by_name_light_and_alias() {
+        assert_eq!(Theme::by_name("light").name(), "light");
+        // The `day` alias resolves to the same light theme.
+        assert_eq!(Theme::by_name("day").name(), "light");
+        assert_eq!(Theme::by_name("DAY").name(), "light");
+    }
+
+    #[test]
+    fn light_is_listed_and_cycled() {
+        assert!(Theme::list().contains(&"light"));
+        // Present in the cycle list means `t` (which iterates list()) reaches it.
+        assert_eq!(
+            Theme::by_name(Theme::list()[Theme::index_of("light")]).name(),
+            "light"
+        );
+    }
+
+    #[test]
+    fn light_is_a_real_color_theme_not_no_color() {
+        let t = Theme::light();
+        assert!(!t.is_no_color());
+        // It is a genuine light-background palette: its selection highlight is a
+        // light tint, distinct from the default (dark) theme's DarkGray highlight,
+        // and its dark ink text differs from the default theme's white text.
+        let dflt = Theme::default_theme();
+        assert_ne!(t.highlight_bg, dflt.highlight_bg);
+        assert_ne!(t.text, dflt.text);
+        // Sanity: the highlight background is a light color (high RGB), so dark
+        // foreground text stays legible against it.
+        if let Color::Rgb(r, g, b) = t.highlight_bg {
+            assert!(
+                r > 180 && g > 180 && b > 180,
+                "light highlight_bg should be light"
+            );
+        } else {
+            panic!("light theme highlight_bg should be an explicit RGB color");
+        }
     }
 
     #[test]

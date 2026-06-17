@@ -9,7 +9,7 @@ config_version = 1
 active_profile = "work"
 
 [ui]
-theme = "default"          # see `nbox` then `t` to cycle; 11 built-in themes
+theme = "default"          # see `nbox` then `t` to cycle; 12 built-in themes
 confirm_writes = true      # reserved for v0.2 writes
 # refresh_secs = 30        # TUI auto-refresh interval (omit/0 = off)
 
