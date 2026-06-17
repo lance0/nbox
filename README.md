@@ -218,6 +218,8 @@ The tools are all annotated read-only:
 | `nbox_journal` | Recent journal entries for an object. |
 | `nbox_list_tags` | List tags. |
 
+Full setup: [docs/MCP.md](docs/MCP.md).
+
 HTTP transport, OAuth, a raw escape-hatch tool, and MCP resources/prompts come later.
 
 ---
