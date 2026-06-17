@@ -67,6 +67,9 @@ fn pane_border(theme: &Theme, focused: bool) -> Style {
 }
 
 fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
+    // Stash the inner height (visible rows inside the borders) so the pure
+    // PgUp/PgDn handler pages by the live viewport, like the detail/preview panes.
+    app.sync_list_viewport(area.height.saturating_sub(2));
     // Keep the stateful selection/offset in step with the cursor so the
     // selected row is always on screen and the list scrolls under it.
     app.sync_list_state();

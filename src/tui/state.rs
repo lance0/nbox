@@ -71,10 +71,11 @@ pub struct RecentItem {
 /// Most-recent-first cap for the recents list.
 const RECENT_CAP: usize = 20;
 
-/// Rows the cursor jumps on PgUp/PgDn. A fixed step (rather than the live
-/// viewport height) keeps the movement logic pure and testable; ratatui still
-/// scrolls so the landed-on row stays visible.
-const PAGE_JUMP: usize = 10;
+/// Pre-render fallback for the results-list PgUp/PgDn step, used before the first
+/// render has stashed a live viewport height (see [`App::list_page`]). Once a
+/// frame has been drawn the list pages by ~one screenful instead, matching the
+/// detail/preview panes.
+const PAGE_JUMP_FALLBACK: usize = 10;
 
 /// Side-effecting work the loop should spawn off the render thread.
 #[derive(Debug, Clone)]
@@ -136,6 +137,11 @@ pub struct App {
     /// Stateful-list selection/offset, driven by `selected` each frame so the
     /// selected row is always on screen no matter how tall the list gets.
     pub list_state: ListState,
+    /// Last-known results-list inner height (visible rows), stashed during render
+    /// so the pure PgUp/PgDn handler can page by one screenful. Mirrors the
+    /// detail/preview live-viewport pattern. 0 until the first render, where the
+    /// pre-render fallback ([`PAGE_JUMP_FALLBACK`]) applies instead.
+    pub list_viewport: u16,
     /// On the next `SearchComplete`, try to re-select this (kind, id) — used to
     /// keep the cursor stable across an auto-refresh.
     pub pending_reselect: Option<(ObjectKind, u64)>,
@@ -206,6 +212,7 @@ impl App {
             view: Vec::new(),
             selected: 0,
             list_state: ListState::default(),
+            list_viewport: 0,
             pending_reselect: None,
             recent: Vec::new(),
             detail: None,
@@ -915,9 +922,21 @@ impl App {
         }
     }
 
+    /// Rows the results-list cursor jumps on PgUp/PgDn: one screenful of the live
+    /// list viewport, minus a row of overlap so the reader keeps their place.
+    /// Before the first render (viewport still 0) the pre-render fallback applies;
+    /// always at least one row.
+    fn list_page(&self) -> usize {
+        if self.list_viewport == 0 {
+            PAGE_JUMP_FALLBACK
+        } else {
+            (self.list_viewport as usize).saturating_sub(1).max(1)
+        }
+    }
+
     fn select_page_down(&mut self) {
         let last = self.home_len().saturating_sub(1);
-        let next = (self.selected + PAGE_JUMP).min(last);
+        let next = (self.selected + self.list_page()).min(last);
         if next != self.selected {
             self.selected = next;
             self.mark_preview_dirty();
@@ -925,11 +944,18 @@ impl App {
     }
 
     fn select_page_up(&mut self) {
-        let next = self.selected.saturating_sub(PAGE_JUMP);
+        let next = self.selected.saturating_sub(self.list_page());
         if next != self.selected {
             self.selected = next;
             self.mark_preview_dirty();
         }
+    }
+
+    /// Stash the results-list pane's inner height (visible rows) so the pure
+    /// PgUp/PgDn handler can page by one screenful. Called from the render path
+    /// each frame. Mirrors [`Self::sync_detail_viewport`]/[`Self::sync_preview_viewport`].
+    pub fn sync_list_viewport(&mut self, height: u16) {
+        self.list_viewport = height;
     }
 
     /// Sync the stateful-list selection from the pure `selected` index so the
@@ -1378,15 +1404,22 @@ mod tests {
 
     #[test]
     fn page_down_and_up_jump_and_clamp() {
+        // Updated for the viewport-aware page jump: with a stashed list viewport
+        // of 21 the step is one screenful minus a row of overlap = 20 (was the
+        // old fixed PAGE_JUMP of 10). The jump/clamp behaviour is otherwise
+        // unchanged — this test now exercises the live-viewport math, not a
+        // hard-coded constant.
         let mut a = app();
         set_results(&mut a, results_n(50));
+        a.sync_list_viewport(21); // page = 21 - 1 = 20
+        let page = 20;
         a.handle_event(press(KeyCode::PageDown));
-        assert_eq!(a.selected, PAGE_JUMP);
+        assert_eq!(a.selected, page); // 0 → 20
         a.handle_event(press(KeyCode::PageDown));
-        assert_eq!(a.selected, PAGE_JUMP * 2);
-        // PgUp steps back by a page.
+        assert_eq!(a.selected, page * 2); // 20 → 40 (still room before the last row)
+        // PgUp steps back by a page (40 → 20).
         a.handle_event(press(KeyCode::PageUp));
-        assert_eq!(a.selected, PAGE_JUMP);
+        assert_eq!(a.selected, page);
         // PgUp clamps at the top without underflow.
         a.handle_event(press(KeyCode::PageUp));
         a.handle_event(press(KeyCode::PageUp));
@@ -1396,6 +1429,79 @@ mod tests {
             a.handle_event(press(KeyCode::PageDown));
         }
         assert_eq!(a.selected, 49);
+    }
+
+    #[test]
+    fn page_jump_uses_live_list_viewport() {
+        // A tall viewport pages by ~one screenful (viewport - 1 of overlap).
+        let mut a = app();
+        set_results(&mut a, results_n(100));
+        a.sync_list_viewport(20); // page = 19
+        a.handle_event(press(KeyCode::PageDown));
+        assert_eq!(a.selected, 19);
+        a.handle_event(press(KeyCode::PageUp));
+        assert_eq!(a.selected, 0);
+
+        // A short viewport pages by a correspondingly smaller step.
+        let mut b = app();
+        set_results(&mut b, results_n(100));
+        b.sync_list_viewport(5); // page = 4
+        b.handle_event(press(KeyCode::PageDown));
+        assert_eq!(b.selected, 4);
+        b.handle_event(press(KeyCode::PageUp));
+        assert_eq!(b.selected, 0);
+    }
+
+    #[test]
+    fn page_jump_falls_back_before_first_render() {
+        // Before any render the viewport is 0, so the pre-render fallback applies.
+        let mut a = app();
+        set_results(&mut a, results_n(50));
+        assert_eq!(a.list_viewport, 0);
+        a.handle_event(press(KeyCode::PageDown));
+        assert_eq!(a.selected, PAGE_JUMP_FALLBACK);
+        a.handle_event(press(KeyCode::PageUp));
+        assert_eq!(a.selected, 0);
+    }
+
+    #[test]
+    fn page_jump_minimum_one_row_on_tiny_viewport() {
+        // A 1-row viewport still advances at least one row (never stalls).
+        let mut a = app();
+        set_results(&mut a, results_n(10));
+        a.sync_list_viewport(1); // page = max(0, 1) = 1
+        a.handle_event(press(KeyCode::PageDown));
+        assert_eq!(a.selected, 1);
+        a.handle_event(press(KeyCode::PageUp));
+        assert_eq!(a.selected, 0);
+    }
+
+    #[test]
+    fn page_jump_clamps_at_both_ends_with_viewport() {
+        let mut a = app();
+        set_results(&mut a, results_n(50));
+        a.sync_list_viewport(11); // page = 10
+        // PgDn clamps at the last row no matter how many pages we ask for.
+        for _ in 0..20 {
+            a.handle_event(press(KeyCode::PageDown));
+        }
+        assert_eq!(a.selected, 49);
+        // PgUp clamps at the top.
+        for _ in 0..20 {
+            a.handle_event(press(KeyCode::PageUp));
+        }
+        assert_eq!(a.selected, 0);
+    }
+
+    #[test]
+    fn page_jump_empty_list_is_a_noop() {
+        let mut a = app();
+        a.sync_list_viewport(20);
+        a.handle_event(press(KeyCode::PageDown));
+        a.handle_event(press(KeyCode::PageUp));
+        assert_eq!(a.selected, 0);
+        a.sync_list_state();
+        assert_eq!(a.list_state.selected(), None);
     }
 
     #[test]
