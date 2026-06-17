@@ -75,6 +75,14 @@ update-informer = { version = "1", default-features = false, features = ["github
 # MCP server (`nbox serve`) — read-only tools over stdio
 rmcp = { version = "1.7", default-features = false, features = ["server", "macros", "transport-io"] }
 
+# Optional loopback HTTP transport for `nbox serve --http` (behind the `http`
+# feature). Pulls in the rmcp Streamable HTTP server plus an axum router to mount
+# it on; `tokio-util` supplies the CancellationToken for graceful shutdown. Kept
+# out of `default` so `cargo install nbox` stays lean — stdio is the default.
+axum = { version = "0.8", optional = true }
+tower = { version = "0.5", optional = true }
+tokio-util = { version = "0.7", optional = true }
+
 # Unix syscalls — used in `main` to reset the SIGPIPE disposition to SIG_DFL so a
 # closed stdout pipe (e.g. `nbox … | head`) terminates the process normally
 # instead of panicking. Already in the tree transitively; declared here so the
@@ -89,6 +97,9 @@ default = ["clipboard"]
 clipboard = ["dep:arboard"]
 cache = ["dep:rusqlite"]
 updates = ["dep:update-informer"]
+# Opt-in loopback HTTP transport for `nbox serve --http` (rung 2 of the MCP
+# transport ladder, DESIGN §24). Not in `default`: stdio stays zero-config.
+http = ["dep:axum", "dep:tower", "dep:tokio-util", "rmcp/transport-streamable-http-server"]
 
 [dev-dependencies]
 tokio-test = "0.4"

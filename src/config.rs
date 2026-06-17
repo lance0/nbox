@@ -69,8 +69,28 @@ pub struct Config {
     #[serde(default)]
     pub ui: UiConfig,
 
+    /// MCP server (`nbox serve`) settings. Absent ⇒ all defaults (stdio).
+    #[serde(default)]
+    pub serve: ServeConfig,
+
     #[serde(default)]
     pub profiles: BTreeMap<String, ProfileConfig>,
+}
+
+/// `nbox serve` (MCP server) settings. The CLI flags (`--http`, `--http-token`)
+/// take precedence over these; everything is optional and absent ⇒ stdio.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ServeConfig {
+    /// Loopback address to serve HTTP on, e.g. `127.0.0.1:8080`. Absent ⇒ stdio.
+    /// Overridden by `--http`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http: Option<String>,
+
+    /// Static bearer token required on the HTTP `/mcp` endpoint. Overridden by
+    /// `--http-token` / `NBOX_SERVE_TOKEN`. Prefer the env var over storing a
+    /// secret in the config file.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub http_token: Option<String>,
 }
 
 /// UI / TUI preferences.
@@ -417,6 +437,29 @@ page_size = 250
         assert_eq!(work.auth_scheme, Some(AuthScheme::Bearer));
         assert_eq!(work.page_size, Some(250));
         assert_eq!(work.verify_tls, None);
+    }
+
+    #[test]
+    fn serve_section_is_optional_and_parses() {
+        // Absent `[serve]` ⇒ defaults (no HTTP, no token) — stdio.
+        let bare: Config = toml::from_str(SAMPLE).unwrap();
+        assert_eq!(bare.serve.http, None);
+        assert_eq!(bare.serve.http_token, None);
+
+        // A present `[serve]` populates the fields.
+        let with: Config = toml::from_str(
+            "active_profile = \"work\"\n\
+             \n\
+             [serve]\n\
+             http = \"127.0.0.1:8080\"\n\
+             http_token = \"local-secret\"\n\
+             \n\
+             [profiles.work]\n\
+             url = \"https://netbox.example.com\"\n",
+        )
+        .unwrap();
+        assert_eq!(with.serve.http.as_deref(), Some("127.0.0.1:8080"));
+        assert_eq!(with.serve.http_token.as_deref(), Some("local-secret"));
     }
 
     #[test]

@@ -78,7 +78,10 @@ stderr. Every tool is annotated read-only.
 | `nbox_journal` | Recent journal entries for an object (`kind`/`ref` as `nbox_get`). |
 | `nbox_list_tags` | List tags (name, slug, color, usage count) — valid `tag` values for `nbox_search`. |
 
-HTTP transport, OAuth, a raw escape-hatch tool, and MCP resources/prompts are later.
+An opt-in loopback HTTP transport is available behind the `http` build feature
+(`nbox serve --http 127.0.0.1:8080`, optional `--http-token`): same tools at `/mcp`,
+loopback only, with `Origin`/`Host` validation. Network-reachable binding + OAuth,
+a raw escape-hatch tool, and MCP resources/prompts are later. See `docs/MCP.md`.
 
 ## Configuration
 

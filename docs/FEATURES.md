@@ -72,7 +72,11 @@ are annotated read-only.
 | `nbox_journal` | Recent journal entries for an object. |
 | `nbox_list_tags` | List tags. |
 
-HTTP transport, OAuth, a raw escape-hatch tool, and MCP resources/prompts are later.
+An opt-in loopback HTTP transport is available behind the `http` build feature
+(`nbox serve --http 127.0.0.1:8080`, optional static bearer): same tools, mounted
+at `/mcp`, loopback only with `Origin`/`Host` validation. See [docs/MCP.md](MCP.md).
+Network-reachable binding + OAuth/OIDC, a raw escape-hatch tool, and MCP
+resources/prompts are later.
 
 ## Robustness
 

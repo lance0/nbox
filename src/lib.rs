@@ -391,11 +391,69 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
         // stdout is reserved for the JSON-RPC stream — connect() and the
         // server itself print nothing, and logging already goes to stderr.
-        Some(Command::Serve) => {
-            let client = connect(&ctx)?;
-            mcp::serve(client).await
-        }
+        Some(Command::Serve { http, http_token }) => run_serve(&ctx, http, http_token).await,
     }
+}
+
+/// `nbox serve` — run the read-only MCP server.
+///
+/// Stdio is the zero-config default. `--http <ADDR>` (or `[serve].http` in the
+/// config) switches to the opt-in loopback HTTP transport, which requires the
+/// `http` build feature. Flags take precedence over the config file.
+async fn run_serve(ctx: &Ctx, http: Option<String>, http_token: Option<String>) -> Result<()> {
+    // Resolve the HTTP address + bearer from flags first, then the config's
+    // `[serve]` section. A missing/unreadable config is fine here — stdio needs
+    // none of it, and `connect()` reports a missing config on its own.
+    let serve_cfg = load_serve_config(ctx);
+    let http = http.or(serve_cfg.http);
+    let http_token = http_token.or(serve_cfg.http_token);
+
+    let client = connect(ctx)?;
+    match http {
+        None => mcp::serve(client).await,
+        Some(addr) => serve_http_or_explain(client, &addr, http_token).await,
+    }
+}
+
+/// Read just the `[serve]` section, best-effort: a missing or unparseable config
+/// yields the default (no HTTP, no token), so flags alone can still drive `serve`.
+fn load_serve_config(ctx: &Ctx) -> config::ServeConfig {
+    let Ok(path) = (match &ctx.config_path {
+        Some(p) => Ok(p.clone()),
+        None => config::default_path(),
+    }) else {
+        return config::ServeConfig::default();
+    };
+    config::load(&path).map(|c| c.serve).unwrap_or_default()
+}
+
+/// Dispatch to the HTTP transport when the `http` feature is built in; otherwise
+/// fail with a clear usage error rather than silently falling back to stdio.
+#[cfg(feature = "http")]
+async fn serve_http_or_explain(
+    client: NetBoxClient,
+    addr: &str,
+    token: Option<String>,
+) -> Result<()> {
+    mcp::serve_http(client, addr, token).await
+}
+
+// Mirrors the `http`-feature variant's async signature so the `run_serve` call
+// site is feature-agnostic; it has nothing to await, hence the allow.
+#[cfg(not(feature = "http"))]
+#[allow(clippy::unused_async)]
+async fn serve_http_or_explain(
+    _client: NetBoxClient,
+    _addr: &str,
+    _token: Option<String>,
+) -> Result<()> {
+    Err(error::NboxError::Usage(
+        "`nbox serve --http` requires the `http` build feature, which this binary \
+         was built without. Reinstall with `--features http`, or omit `--http` to \
+         serve over stdio."
+            .to_string(),
+    )
+    .into())
 }
 
 /// Build a NetBox client from the active (or requested) profile.

@@ -549,5 +549,12 @@ pub async fn serve(client: NetBoxClient) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Opt-in loopback HTTP transport (`nbox serve --http`), behind the `http`
+/// feature. The same [`NboxMcp`] backs it; see [`http::serve_http`].
+#[cfg(feature = "http")]
+pub mod http;
+#[cfg(feature = "http")]
+pub use http::serve_http;
+
 #[cfg(test)]
 mod tests;

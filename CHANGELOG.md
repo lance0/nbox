@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `nbox serve --http <ADDR>` — opt-in loopback HTTP transport for the MCP server,
+  behind the non-default `http` build feature. The same eight read-only tools and
+  handler the stdio path serves are mounted at `/mcp` over rmcp's Streamable HTTP
+  server (`LocalSessionManager`); stdio stays the zero-config default and is
+  unchanged. Loopback only: a non-loopback `<ADDR>` is a usage error (exit `2`) —
+  binding a routable interface needs the OIDC auth mode coming later. The `Origin`
+  header is validated on every request (non-loopback → 403, DNS-rebinding
+  defense), `MCP-Protocol-Version: 2025-11-25` is advertised, and an optional
+  static bearer (`--http-token`, or `NBOX_SERVE_TOKEN`, or `[serve].http_token`)
+  guards `/mcp` (constant-time compare; missing/wrong → 401). The token is never
+  logged; stdout stays clean (the protocol travels over the HTTP body, logs go to
+  stderr). Configurable via a new `[serve]` section (`http`, `http_token`); flags
+  win over the config. Built without the feature, `--http` errors cleanly.
 - `nbox vlan` now surfaces the VLAN group's scope. A VLAN group is itself
   polymorphically scoped (the VLAN is not), so when a VLAN belongs to a scoped
   group the view gains `group_scope` (the group's scope object name) and

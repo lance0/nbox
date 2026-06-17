@@ -370,10 +370,29 @@ pub enum Command {
     /// Generate a man page (roff) for nbox, e.g. `nbox man > nbox.1`.
     Man,
 
-    /// Run the read-only MCP server over stdio (for AI agents / MCP clients).
+    /// Run the read-only MCP server (for AI agents / MCP clients).
     ///
-    /// Exposes nbox's lookups as MCP tools, speaking JSON-RPC on stdout.
-    Serve,
+    /// Defaults to the stdio transport: an MCP host launches `nbox serve` as a
+    /// subprocess and speaks JSON-RPC over its stdin/stdout. Passing `--http`
+    /// switches to a loopback HTTP transport instead (requires the `http`
+    /// build feature).
+    Serve {
+        /// Serve over HTTP on this loopback address instead of stdio, e.g.
+        /// `127.0.0.1:8080`. Only loopback addresses are accepted; binding a
+        /// routable interface needs the OIDC auth mode (a later release).
+        #[arg(long, value_name = "ADDR")]
+        http: Option<String>,
+
+        /// Require `Authorization: Bearer <TOKEN>` on the HTTP `/mcp` endpoint.
+        /// Only meaningful with `--http`. Also read from `NBOX_SERVE_TOKEN`.
+        #[arg(
+            long,
+            value_name = "TOKEN",
+            env = "NBOX_SERVE_TOKEN",
+            hide_env_values = true
+        )]
+        http_token: Option<String>,
+    },
 }
 
 /// `nbox config` subcommands.
@@ -507,6 +526,34 @@ mod tests {
         assert!(matches!(
             site.command,
             Some(Command::Site { journal: true, .. })
+        ));
+    }
+
+    #[test]
+    fn serve_defaults_to_stdio_and_parses_http_flags() {
+        // Bare `serve` → stdio (no http address, no token).
+        let stdio = Cli::try_parse_from(["nbox", "serve"]).unwrap();
+        assert!(matches!(
+            stdio.command,
+            Some(Command::Serve {
+                http: None,
+                http_token: None
+            })
+        ));
+        // `--http` (and the optional `--http-token`) parse onto the variant.
+        let http = Cli::try_parse_from([
+            "nbox",
+            "serve",
+            "--http",
+            "127.0.0.1:8080",
+            "--http-token",
+            "abc123",
+        ])
+        .unwrap();
+        assert!(matches!(
+            http.command,
+            Some(Command::Serve { http: Some(a), http_token: Some(t) })
+                if a == "127.0.0.1:8080" && t == "abc123"
         ));
     }
 

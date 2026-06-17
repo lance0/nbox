@@ -64,6 +64,50 @@ profile/config flags to `args` if needed, e.g. `["serve", "--profile", "work"]`.
 The exact file and the menu used to edit it differ per host — consult that
 host's MCP documentation; the object shape above is what they consume.
 
+## HTTP transport (loopback)
+
+Stdio is the default. For local clients that want HTTP framing instead, build
+nbox with the `http` feature and serve over a loopback address:
+
+```bash
+cargo install nbox --features http   # not in the default build
+nbox serve --http 127.0.0.1:8080
+```
+
+The same eight tools are mounted at `/mcp` (Streamable HTTP). It binds **only**
+loopback: a non-loopback address (e.g. `0.0.0.0:8080`) is a usage error —
+exposing nbox on a routable interface needs the OIDC auth mode coming in a later
+release, and there is no bypass flag. The trust boundary is the loopback
+interface; the same profile/token resolution and `-p`/`--config` flags apply.
+
+Security on the HTTP path:
+
+- The `Origin` header is validated on every request — a non-loopback origin is
+  rejected with `403` (DNS-rebinding defense). The `Host` header is validated
+  against the loopback allow-list too.
+- `MCP-Protocol-Version: 2025-11-25` is advertised on every response.
+- stdout stays clean (the protocol travels over the HTTP body); all logs go to
+  stderr/file, exactly as in stdio mode.
+
+Optional static bearer for the loopback endpoint — set a token and every request
+to `/mcp` must carry `Authorization: Bearer <token>` (constant-time compared;
+missing or wrong is `401`). It is never logged. Without one, loopback is the only
+boundary.
+
+```bash
+# Flag, env var, or config — the flag wins, then the env var, then config.
+nbox serve --http 127.0.0.1:8080 --http-token "$(openssl rand -hex 16)"
+NBOX_SERVE_TOKEN=… nbox serve --http 127.0.0.1:8080
+```
+
+Or in the config file (prefer the env var over storing a secret here):
+
+```toml
+[serve]
+http = "127.0.0.1:8080"
+http_token = "…"   # optional
+```
+
 ## Tools
 
 All tools are annotated read-only.
