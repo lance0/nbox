@@ -1,8 +1,10 @@
 //! Paginated NetBox list responses.
 //!
 //! NetBox list endpoints return `count`, `next`, `previous`, and `results`.
-//! Clients page through with `limit`/`offset` (default page size 50; default
-//! maximum 1000).
+//! Clients page through with `limit`/`offset`. NetBox's own default page size is
+//! 50, but nbox always sends an explicit `limit` (default 100), and the server
+//! caps `limit` at 1000 — so an over-large `page_size` is clamped client-side
+//! (see `NetBoxClient`) to keep the `offset` windows aligned.
 
 use serde::Deserialize;
 

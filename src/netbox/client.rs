@@ -17,6 +17,14 @@ use crate::netbox::auth::AuthScheme;
 use crate::netbox::endpoints::Endpoint;
 use crate::netbox::pagination::Page;
 
+/// NetBox's default list page size when no `limit` is sent.
+const DEFAULT_PAGE_SIZE: usize = 100;
+
+/// NetBox caps `limit` at `MAX_PAGE_SIZE` server-side; sending more is silently
+/// reduced to this, so we clamp at construction to keep `limit`/`offset` windows
+/// aligned (see `list_all`).
+const MAX_PAGE_SIZE: usize = 1000;
+
 /// An HTTP client bound to a single NetBox instance/profile.
 #[derive(Clone)]
 pub struct NetBoxClient {
@@ -49,14 +57,29 @@ impl NetBoxClient {
         let base_url =
             Url::parse(&url).with_context(|| format!("invalid NetBox URL: {}", profile.url))?;
 
+        // Clamp the page size into NetBox's valid window. A profile value of `0`
+        // means "return ALL" to NetBox (no `limit` cap), which breaks our
+        // offset-windowed paging, so it falls back to the default. Anything else
+        // is clamped to `1..=MAX_PAGE_SIZE`: values above the server cap would be
+        // silently reduced server-side, desyncing our `offset` from the page size.
+        let page_size = match profile.page_size {
+            None | Some(0) => DEFAULT_PAGE_SIZE,
+            Some(n) => n.clamp(1, MAX_PAGE_SIZE),
+        };
+
         Ok(Self {
             base_url,
             token,
             auth_scheme: profile.auth_scheme.unwrap_or_default(),
             http,
-            page_size: profile.page_size.unwrap_or(100),
+            page_size,
             exclude_config_context: profile.exclude_config_context.unwrap_or(true),
         })
+    }
+
+    /// The effective page size sent as `limit` (clamped into `1..=MAX_PAGE_SIZE`).
+    pub fn page_size(&self) -> usize {
+        self.page_size
     }
 
     /// The configured NetBox base URL.
@@ -196,7 +219,12 @@ impl NetBoxClient {
             if got == 0 || out.len() >= page.count || out.len() >= max {
                 break;
             }
-            offset += got;
+            // NetBox `limit`/`offset` are absolute row windows: page N starts at
+            // `offset = N * limit`. Advance by the requested page size, not by the
+            // rows actually returned — a page can come back short (the server caps
+            // `limit` at MAX_PAGE_SIZE, or a serializer drops rows post-count), and
+            // `offset += got` would then land mid-window and skip rows.
+            offset += self.page_size;
         }
 
         out.truncate(max);

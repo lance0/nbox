@@ -234,6 +234,112 @@ async fn list_all_handles_cap_on_exact_page_boundary() {
 }
 
 #[tokio::test]
+async fn list_all_advances_by_page_size_when_page_returns_short() {
+    // B1 regression: the requested page size is 4, but every page comes back with
+    // only 3 rows (e.g. the server capped `limit`, or a serializer dropped a row
+    // post-count). NetBox `offset` windows are absolute (page N = offset N*limit),
+    // so paging must advance by the requested size — not by the rows returned.
+    //
+    // Total 9 rows across windows [0,4), [4,8), [8,12). At page size 4, each
+    // window holds ids {1,2,3}, {5,6,7}, {9}: rows at offsets 3 and 7 are absent
+    // (the simulated short page). The fix collects exactly the rows present, once.
+    //
+    // On the old `offset += got`, offsets would walk 0, 3, 6, … missing the
+    // mounted windows (4, 8) → the request 404s with no matching mock and the
+    // call errors, failing this test. On `offset += page_size` it walks 0, 4, 8.
+    let server = MockServer::start().await;
+
+    // Which absolute ids exist (the "short page" drops one id per 4-wide window).
+    let present = [1u64, 2, 3, 5, 6, 7, 9];
+    let count = present.len();
+
+    for offset in [0usize, 4, 8] {
+        let ids: Vec<_> = present
+            .iter()
+            .filter(|&&id| {
+                let id = id as usize;
+                id > offset && id <= offset + 4
+            })
+            .map(|&id| json!({ "id": id }))
+            .collect();
+        let next = if offset + 4 < 12 {
+            json!(format!("?offset={}", offset + 4))
+        } else {
+            json!(null)
+        };
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/sites/"))
+            .and(query_param("offset", offset.to_string()))
+            .and(query_param("limit", "4"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": count,
+                "next": next,
+                "previous": null,
+                "results": ids,
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+    }
+
+    let profile = ProfileConfig {
+        url: server.uri(),
+        page_size: Some(4),
+        ..Default::default()
+    };
+    let client = NetBoxClient::new(&profile, None).unwrap();
+
+    let all: Vec<Item> = client.list_all(Endpoint::Sites, vec![], 100).await.unwrap();
+    // Every present row, exactly once, in order — no skips, no duplicates.
+    assert_eq!(
+        all.iter().map(|i| i.id).collect::<Vec<_>>(),
+        vec![1, 2, 3, 5, 6, 7, 9]
+    );
+}
+
+#[tokio::test]
+async fn page_size_is_clamped_to_server_window() {
+    // R1: a profile page size above the server cap is clamped to 1000, and `0`
+    // ("return ALL" to NetBox) falls back to the default 100. Assert both the
+    // stored size and the `limit` actually sent on the wire.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/sites/"))
+        .and(query_param("limit", "1000"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 0, "next": null, "previous": null, "results": []
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let huge = ProfileConfig {
+        url: server.uri(),
+        page_size: Some(5000),
+        ..Default::default()
+    };
+    let client = NetBoxClient::new(&huge, None).unwrap();
+    assert_eq!(client.page_size(), 1000);
+    // The outgoing `limit` is the clamped value (matched by the mock above).
+    let _: Vec<Item> = client.list_all(Endpoint::Sites, vec![], 100).await.unwrap();
+
+    // `page_size = 0` means "all" to NetBox; we fall back to the default 100.
+    let zero = ProfileConfig {
+        url: server.uri(),
+        page_size: Some(0),
+        ..Default::default()
+    };
+    assert_eq!(NetBoxClient::new(&zero, None).unwrap().page_size(), 100);
+
+    // Unset also defaults to 100.
+    let unset = ProfileConfig {
+        url: server.uri(),
+        ..Default::default()
+    };
+    assert_eq!(NetBoxClient::new(&unset, None).unwrap().page_size(), 100);
+}
+
+#[tokio::test]
 async fn list_all_returns_empty_for_zero_results() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
