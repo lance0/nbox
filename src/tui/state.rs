@@ -20,7 +20,6 @@ use crate::tui::theme::{Severity, Theme};
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Screen {
     Home,
-    Help,
     Detail,
 }
 
@@ -131,6 +130,11 @@ pub struct App {
 
     pub mode: Mode,
     pub screen: Screen,
+    /// Whether the help overlay is open. Orthogonal to `screen`: help floats over
+    /// the live Home/Detail view as a centered modal (see `tui::ui::render_help`),
+    /// so opening or closing it never disturbs the underlying screen or history.
+    /// `?`/`F1` toggle it; while open, any key (or `Esc`) closes it.
+    pub help_open: bool,
     /// Which home pane has focus: the results list or the preview. Movement keys
     /// route to it. `Tab`/`Shift+Tab` toggle it; only meaningful on Home.
     pub focus: Focus,
@@ -238,6 +242,7 @@ impl App {
             netbox_version,
             mode: Mode::Normal,
             screen: Screen::Home,
+            help_open: false,
             focus: Focus::List,
             history: Vec::new(),
             status: String::new(),
@@ -439,6 +444,20 @@ impl App {
 
     fn handle_normal_key(&mut self, key: KeyEvent) -> Vec<AppCommand> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        // The help overlay is a modal: while it's open ANY key closes it and is
+        // consumed here, so it never also acts on the underlying screen (ttl's
+        // "press any key to close"). Ctrl+C still quits, mirroring the rest of
+        // the app's hard-exit. Closing leaves `screen`/history untouched.
+        if self.help_open {
+            if let KeyCode::Char('c') = key.code
+                && ctrl
+            {
+                self.should_quit = true;
+            } else {
+                self.help_open = false;
+            }
+            return Vec::new();
+        }
         match key.code {
             KeyCode::Char('c') if ctrl => self.should_quit = true,
             KeyCode::Char('q') => {
@@ -448,13 +467,7 @@ impl App {
                     self.go_back();
                 }
             }
-            KeyCode::Char('?') | KeyCode::F(1) => {
-                if self.screen == Screen::Help {
-                    self.go_back();
-                } else {
-                    self.navigate_to(Screen::Help);
-                }
-            }
+            KeyCode::Char('?') | KeyCode::F(1) => self.help_open = true,
             KeyCode::Esc | KeyCode::Char('b') => self.go_back(),
             KeyCode::Char('/') => {
                 self.mode = Mode::Search;
@@ -737,7 +750,6 @@ impl App {
                     Vec::new()
                 }
             },
-            Screen::Help => Vec::new(),
         }
     }
 
@@ -1459,13 +1471,51 @@ mod tests {
     }
 
     #[test]
-    fn help_toggles_and_q_closes_it_without_quitting() {
+    fn help_toggles_open_and_any_key_closes_it_without_quitting() {
+        // Help is an overlay flag, not a screen: ?/F1 open it without changing the
+        // underlying screen or pushing history; while open, any key closes it and
+        // q (consumed by the modal) does NOT quit the app.
         let mut a = app();
+        assert!(!a.help_open);
         a.handle_event(press(KeyCode::Char('?')));
-        assert_eq!(a.screen, Screen::Help);
+        assert!(a.help_open);
+        assert_eq!(a.screen, Screen::Home, "help doesn't change the screen");
+        assert!(a.history.is_empty(), "help doesn't push history");
+        // q while help is open closes the modal, not the app.
         a.handle_event(press(KeyCode::Char('q')));
-        assert_eq!(a.screen, Screen::Home);
+        assert!(!a.help_open);
         assert!(!a.should_quit);
+        assert_eq!(a.screen, Screen::Home);
+
+        // F1 toggles it open too, and ?/F1 again (a fresh handler call) re-toggles
+        // by way of any-key-close.
+        a.handle_event(press(KeyCode::F(1)));
+        assert!(a.help_open);
+        a.handle_event(press(KeyCode::F(1)));
+        assert!(!a.help_open, "any key (incl. F1) closes the open modal");
+
+        // Esc also closes it.
+        a.handle_event(press(KeyCode::Char('?')));
+        assert!(a.help_open);
+        a.handle_event(press(KeyCode::Esc));
+        assert!(!a.help_open);
+    }
+
+    #[test]
+    fn open_help_consumes_the_key_without_acting_on_underlying_screen() {
+        // With help open, an arbitrary key (here `j`, normally a selection move on
+        // Home) only closes the modal — it must NOT also move the selection or
+        // disturb the underlying screen.
+        let mut a = app();
+        set_results(&mut a, results_n(3));
+        assert_eq!(a.selected, 0);
+        a.handle_event(press(KeyCode::Char('?')));
+        assert!(a.help_open);
+        let cmds = a.handle_event(press(KeyCode::Char('j')));
+        assert!(cmds.is_empty(), "an any-key-close issues no command");
+        assert!(!a.help_open, "the key closed the modal");
+        assert_eq!(a.selected, 0, "the key did not move the selection");
+        assert_eq!(a.screen, Screen::Home);
     }
 
     #[test]

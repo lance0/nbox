@@ -1,9 +1,11 @@
 //! Adapter layer over the `ratatui-cheese` widget crate.
 //!
 //! All `ratatui_cheese::*` types are confined to this module. The rest of nbox
-//! talks to the thin wrappers here ([`TextInput`]) and never names a cheese type
-//! directly — so cheese stays out of `AppCommand`, the domain views, and any
-//! NetBox-facing state. The TUI may hold a [`TextInput`]; that's the only seam.
+//! talks to the thin wrappers here ([`TextInput`], [`Spinner`]) and never names a
+//! cheese type directly — so cheese stays out of `AppCommand`, the domain views,
+//! and any NetBox-facing state. The TUI may hold a [`TextInput`]/[`Spinner`];
+//! those are the only seams. (The help overlay is hand-rolled in `tui::ui`, not
+//! a cheese widget.)
 //!
 //! [`Theme`](crate::tui::theme::Theme) remains the single source of truth for
 //! colors. [`cheese_palette`] maps nbox's `Theme` onto cheese's `Palette`; we
@@ -14,7 +16,6 @@ use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::Span;
-use ratatui_cheese::help::{Binding, Help as CheeseHelp, HelpStyles};
 use ratatui_cheese::input::{Input, InputState};
 use ratatui_cheese::spinner::{SpinnerState, SpinnerType};
 use ratatui_cheese::theme::Palette;
@@ -272,55 +273,6 @@ impl TextInput {
     }
 }
 
-/// The full help overlay — nbox's thin newtype around cheese's `Help` widget in
-/// multi-column (`show_all`) mode.
-///
-/// The caller hands it nbox's keybindings as a list of columns, each a list of
-/// `(key, description)` pairs (see [`Help::new`]); this maps them onto cheese's
-/// `Binding`/`binding_groups` and renders the expanded grid. Styling comes from
-/// [`cheese_palette`] so [`Theme`] stays the source of truth, and no cheese type
-/// escapes this module — the caller only ever passes `&str` pairs.
-pub struct Help {
-    inner: CheeseHelp,
-}
-
-impl Help {
-    /// Build the overlay from nbox's keybindings, grouped into columns. Each
-    /// column is a slice of `(key, description)` pairs; columns lay out side by
-    /// side in the expanded grid. Always full (multi-column) mode — this is the
-    /// `?`/`F1` overlay, not the single-line footer hint.
-    pub fn new(columns: &[&[(&str, &str)]]) -> Self {
-        let groups: Vec<Vec<Binding>> = columns
-            .iter()
-            .map(|col| {
-                col.iter()
-                    .map(|(key, desc)| Binding::new(*key, *desc))
-                    .collect()
-            })
-            .collect();
-        let inner = CheeseHelp::default().show_all(true).binding_groups(groups);
-        Self { inner }
-    }
-
-    /// Rows the grid needs to render: the height of the tallest column. The
-    /// render path uses this to vertically center the overlay within its block.
-    pub fn required_height(&self) -> u16 {
-        self.inner.required_height()
-    }
-
-    /// Render the help grid into `area`, styled via [`cheese_palette`] so
-    /// [`Theme`] stays the color source of truth. Drawn as a borderless widget;
-    /// the caller owns any surrounding `Block`/title and the inner-area layout.
-    pub fn render(&self, frame: &mut Frame, area: Rect, theme: &Theme) {
-        let palette = cheese_palette(theme);
-        let styled = self
-            .inner
-            .clone()
-            .styles(HelpStyles::from_palette(&palette));
-        frame.render_widget(styled, area);
-    }
-}
-
 /// Display width of a single char (wide CJK glyphs count as 2), matching the
 /// width cheese uses to lay out the cursor. Control chars count as 0.
 fn char_width(ch: char) -> usize {
@@ -497,24 +449,6 @@ mod tests {
         // After a tick the span tracks the new glyph.
         s.tick();
         assert_eq!(s.span(&theme).content, s.frame());
-    }
-
-    #[test]
-    fn help_required_height_is_the_tallest_column() {
-        // Two columns of 3 and 2 bindings → the grid needs 3 rows (the taller).
-        let cols: &[&[(&str, &str)]] = &[
-            &[("/", "search"), (":", "palette"), ("q", "quit")],
-            &[("?", "help"), ("Tab", "pane")],
-        ];
-        let help = Help::new(cols);
-        assert_eq!(help.required_height(), 3);
-    }
-
-    #[test]
-    fn help_required_height_zero_when_empty() {
-        // No columns → nothing to draw, no height claimed.
-        let help = Help::new(&[]);
-        assert_eq!(help.required_height(), 0);
     }
 
     #[test]

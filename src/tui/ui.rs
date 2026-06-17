@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table};
 
 use crate::tui::state::{App, Focus, Mode, Screen, result_row_cells};
 use crate::tui::theme::Theme;
@@ -45,11 +45,18 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     match app.screen {
         Screen::Home => render_home(frame, areas[1], app),
-        Screen::Help => render_help(frame, areas[1], app),
         Screen::Detail => render_detail(frame, areas[1], app),
     }
 
     render_footer(frame, areas[2], app);
+
+    // The help overlay floats over the whole frame, on top of the live screen —
+    // it's a modal, not its own page (mirrors ttl/xfr). Drawn last so it sits
+    // above everything; `Clear` only wipes the popup rect, leaving the rest of
+    // the UI visible behind/around it.
+    if app.help_open {
+        render_help(frame, frame.area(), &app.theme);
+    }
 }
 
 fn render_home(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -287,10 +294,10 @@ fn results_table<'a>(rows: Vec<Row<'a>>, block: Block<'a>, theme: &Theme) -> Tab
 }
 
 /// The keybindings shown in the `?`/`F1` help overlay, grouped into the columns
-/// the cheese `Help` grid lays out side by side. Pure data, kept TRUTHFUL to
+/// the modal stacks as blank-line-separated groups. Pure data, kept TRUTHFUL to
 /// what the key handlers actually bind (see `state::App::handle_normal_key`) —
 /// no aspirational bindings. Split out so the content is unit-testable without a
-/// terminal; the render path feeds it straight to [`cheese::Help::new`].
+/// terminal; the render path feeds it straight to [`help_lines`].
 pub fn help_bindings() -> Vec<Vec<(&'static str, &'static str)>> {
     vec![
         // Navigation / search.
@@ -317,25 +324,102 @@ pub fn help_bindings() -> Vec<Vec<(&'static str, &'static str)>> {
     ]
 }
 
-fn render_help(frame: &mut Frame, area: Rect, app: &App) {
-    let theme = &app.theme;
+/// The dim footer line that closes the help modal, matching ttl's wording.
+const HELP_CLOSE_HINT: &str = "  Press any key to close";
+
+/// Build the help modal's body lines from the grouped keybindings: each row is
+/// the key padded to a uniform accent-colored column, then its description in
+/// normal text; groups are separated by a blank line. A leading blank line and
+/// the dim "press any key to close" footer bracket the list — the same compact,
+/// centered look ttl uses. `key_col` is the padded width of the key column (the
+/// widest key + a little breathing room; see [`help_key_col_width`]).
+///
+/// Pure (no widgets, no terminal): it returns the styled [`Line`]s the modal
+/// paints, so the content/layout can be unit-tested directly.
+fn help_lines<'a>(
+    groups: &'a [Vec<(&'a str, &'a str)>],
+    key_col: usize,
+    theme: &Theme,
+) -> Vec<Line<'a>> {
+    let mut lines: Vec<Line> = vec![Line::from("")];
+    for (gi, group) in groups.iter().enumerate() {
+        if gi > 0 {
+            lines.push(Line::from(""));
+        }
+        for (key, desc) in group {
+            // "  <key>   " in the accent color, then the description in plain text
+            // — ttl's `"  q       "` shortcut + `Quit` shape.
+            let key_cell = format!("  {key:<key_col$}  ");
+            lines.push(Line::from(vec![
+                Span::styled(key_cell, Style::default().fg(theme.accent)),
+                Span::styled((*desc).to_string(), Style::default().fg(theme.text)),
+            ]));
+        }
+    }
+    lines.push(Line::from(""));
+    lines.push(Line::from(Span::styled(
+        HELP_CLOSE_HINT,
+        Style::default().fg(theme.text_dim),
+    )));
+    lines
+}
+
+/// The key column's padded width: the widest key string across every group, so
+/// the descriptions line up into a single column. Pure so it's testable.
+fn help_key_col_width(groups: &[Vec<(&str, &str)>]) -> usize {
+    groups
+        .iter()
+        .flatten()
+        .map(|(key, _)| key.chars().count())
+        .max()
+        .unwrap_or(0)
+}
+
+/// The full inner content width the modal needs: the widest rendered body line
+/// ("  " + key column + "  " + description, and the close-hint footer). Pure.
+fn help_content_width(groups: &[Vec<(&str, &str)>], key_col: usize) -> usize {
+    let widest_row = groups
+        .iter()
+        .flatten()
+        .map(|(_, desc)| 2 + key_col + 2 + desc.chars().count())
+        .max()
+        .unwrap_or(0);
+    widest_row.max(HELP_CLOSE_HINT.chars().count())
+}
+
+/// Render the centered help modal over the full frame `area`, ttl/xfr style: a
+/// content-sized popup `Rect` centered in `area`, `Clear`ed so it floats over the
+/// live UI, a bordered [`Block`] titled `" Help — nbox <version> "`, and the
+/// [`help_lines`] body. Sizing is clamped to the available area so it never
+/// overruns a small terminal.
+fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
+    let groups = help_bindings();
+    let key_col = help_key_col_width(&groups);
+    let lines = help_lines(&groups, key_col, theme);
+
+    // Content-sized popup: inner content width/height + borders, clamped to the
+    // frame. Width = widest line + a column of side padding; height = the line
+    // count + the top/bottom border rows.
+    let content_w = help_content_width(&groups, key_col) as u16;
+    let popup_w = (content_w + 4).min(area.width);
+    let popup_h = (lines.len() as u16 + 2).min(area.height);
+    let popup_x = area.x + area.width.saturating_sub(popup_w) / 2;
+    let popup_y = area.y + area.height.saturating_sub(popup_h) / 2;
+    let popup = Rect::new(popup_x, popup_y, popup_w, popup_h);
+
+    // Wipe just the popup rect so the modal floats over the dimmed live screen.
+    frame.render_widget(Clear, popup);
+
     let block = Block::default()
         .borders(Borders::ALL)
-        .title(" Help ")
-        .border_style(Style::default().fg(theme.border));
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    // Build the cheese Help grid from the real keybindings and center it
-    // vertically within the bordered inner area.
-    let columns = help_bindings();
-    let column_refs: Vec<&[(&str, &str)]> = columns.iter().map(std::vec::Vec::as_slice).collect();
-    let help = crate::tui::cheese::Help::new(&column_refs);
-
-    let h = help.required_height().min(inner.height);
-    let top = inner.y + inner.height.saturating_sub(h) / 2;
-    let grid = Rect::new(inner.x, top, inner.width, h);
-    help.render(frame, grid, theme);
+        .title(format!(" Help — nbox {} ", crate::VERSION))
+        .border_style(Style::default().fg(theme.border_focused));
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .style(Style::default().fg(theme.text)),
+        popup,
+    );
 }
 
 fn render_detail(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -607,6 +691,87 @@ mod tests {
         assert!(has("b / Esc"), "b/Esc back");
         assert!(has("? / F1"), "?/F1 toggle help");
         assert!(has("q"), "q quit");
+    }
+
+    #[test]
+    fn help_key_col_width_is_the_widest_key() {
+        // The key column pads to the widest key across every group so the
+        // descriptions line up. With these two groups "Tab / S-Tab" (11) wins.
+        let groups = vec![
+            vec![("/", "search"), ("Tab / S-Tab", "switch pane")],
+            vec![("q", "quit")],
+        ];
+        assert_eq!(help_key_col_width(&groups), 11);
+        // No bindings → no column.
+        assert_eq!(help_key_col_width(&[]), 0);
+    }
+
+    #[test]
+    fn help_lines_groups_keys_and_descriptions_with_a_close_footer() {
+        let theme = Theme::default_theme();
+        let groups = vec![
+            vec![("/", "search"), (":", "command palette")],
+            vec![("q", "quit")],
+        ];
+        let key_col = help_key_col_width(&groups);
+        let lines = help_lines(&groups, key_col, &theme);
+
+        // Bracketed by a leading blank line and a dim "press any key to close".
+        let first = lines.first().unwrap();
+        assert!(
+            first.spans.iter().all(|s| s.content.is_empty()),
+            "leading line is blank"
+        );
+        let footer = lines.last().unwrap();
+        assert_eq!(footer.spans[0].content, HELP_CLOSE_HINT);
+        assert_eq!(footer.spans[0].style.fg, Some(theme.text_dim));
+
+        // A binding row is a key cell (accent) + description (normal text). Find
+        // the "/ search" row and check both halves and their colors.
+        let row = lines
+            .iter()
+            .find(|l| l.spans.first().is_some_and(|s| s.content.contains('/')))
+            .expect("the / row is present");
+        assert_eq!(row.spans.len(), 2);
+        assert!(row.spans[0].content.contains('/'));
+        assert_eq!(row.spans[0].style.fg, Some(theme.accent));
+        assert_eq!(row.spans[1].content, "search");
+        assert_eq!(row.spans[1].style.fg, Some(theme.text));
+
+        // The two groups are separated by a blank line: there is at least one
+        // empty interior line between the first and last binding rows.
+        let interior_blank = lines[1..lines.len() - 2]
+            .iter()
+            .any(|l| l.spans.iter().all(|s| s.content.is_empty()));
+        assert!(interior_blank, "groups are separated by a blank line");
+
+        // Every real binding from the data is represented as a row.
+        let total_bindings: usize = groups.iter().map(Vec::len).sum();
+        let binding_rows = lines.iter().filter(|l| l.spans.len() == 2).count();
+        assert_eq!(binding_rows, total_bindings);
+    }
+
+    #[test]
+    fn help_content_width_covers_widest_row_and_the_close_hint() {
+        let theme = Theme::default_theme();
+        // A group whose only row is narrower than the close hint: the width is
+        // floored by the hint so the footer never gets clipped.
+        let narrow = vec![vec![("q", "x")]];
+        let key_col = help_key_col_width(&narrow);
+        assert_eq!(
+            help_content_width(&narrow, key_col),
+            HELP_CLOSE_HINT.chars().count()
+        );
+        // A row wider than the hint drives the width instead.
+        let wide = vec![vec![("Enter", "open a really quite long description here")]];
+        let kc = help_key_col_width(&wide);
+        let expected = 2 + kc + 2 + "open a really quite long description here".chars().count();
+        assert_eq!(help_content_width(&wide, kc), expected);
+        // Sanity: the real bindings produce a sensible (non-zero) modal width.
+        let real = help_bindings();
+        let rc = help_key_col_width(&real);
+        assert!(help_content_width(&real, rc) > 0);
+        let _ = theme; // keep the helper signature symmetric with the others
     }
 
     #[test]
