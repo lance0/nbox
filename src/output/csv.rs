@@ -136,4 +136,37 @@ mod tests {
         assert_eq!(escape("say \"hi\""), "\"say \"\"hi\"\"\"");
         assert_eq!(escape("plain"), "plain");
     }
+
+    #[test]
+    fn single_object_with_nested_values_stays_graceful() {
+        // `-o csv` on a single detail object (e.g. `nbox site`) falls back to the
+        // `field,value` shape. Nested objects/arrays are compacted into a cell
+        // rather than panicking — see the CSV "design fork" note in the audit:
+        // a richer per-detail CSV column shape is deliberately not invented here.
+        let v = json!({
+            "name": "iad1",
+            "status": "active",
+            "custom_fields": {"owner": "neteng"},
+            "tags": ["edge", "prod"]
+        });
+        let csv = to_csv(&v, None);
+        assert!(csv.starts_with("field,value\n"), "header present: {csv}");
+        assert!(csv.contains("name,iad1\n"), "scalar row: {csv}");
+        // Nested object/array cells are JSON-compacted (and quoted for commas).
+        assert!(
+            csv.contains("custom_fields,\"{\"\"owner\"\":\"\"neteng\"\"}\""),
+            "nested object compacted: {csv}"
+        );
+        assert!(
+            csv.contains("tags,\"[\"\"edge\"\",\"\"prod\"\"]\""),
+            "nested array compacted: {csv}"
+        );
+    }
+
+    #[test]
+    fn scalar_value_does_not_panic() {
+        // A bare scalar payload (degenerate, but possible) stringifies cleanly.
+        assert_eq!(to_csv(&json!("edge01"), None), "edge01\n");
+        assert_eq!(to_csv(&json!(42), None), "42\n");
+    }
 }

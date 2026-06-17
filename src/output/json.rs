@@ -29,8 +29,9 @@ pub fn print<T: Serialize>(value: &T) -> Result<()> {
     Ok(())
 }
 
-/// Print `value` as JSON, applying field selection, envelope, and raw options.
-pub fn print_with<T: Serialize>(value: &T, opts: &JsonOptions) -> Result<()> {
+/// Render `value` as a JSON string, applying field selection, envelope, and raw
+/// options. The single shaping path behind `print_with` (and directly testable).
+pub fn render_with<T: Serialize>(value: &T, opts: &JsonOptions) -> Result<String> {
     let mut v = serde_json::to_value(value)?;
     if let Some(fields) = &opts.fields {
         v = select_fields(v, fields);
@@ -43,7 +44,12 @@ pub fn print_with<T: Serialize>(value: &T, opts: &JsonOptions) -> Result<()> {
     } else {
         serde_json::to_string_pretty(&v)?
     };
-    println!("{rendered}");
+    Ok(rendered)
+}
+
+/// Print `value` as JSON, applying field selection, envelope, and raw options.
+pub fn print_with<T: Serialize>(value: &T, opts: &JsonOptions) -> Result<()> {
+    println!("{}", render_with(value, opts)?);
     Ok(())
 }
 
@@ -90,5 +96,70 @@ mod tests {
         let wrapped = serde_json::json!({ "schema_version": SCHEMA_VERSION, "data": v });
         assert_eq!(wrapped["schema_version"], json!(SCHEMA_VERSION));
         assert_eq!(wrapped["data"]["name"], json!("edge01"));
+    }
+
+    #[test]
+    fn render_with_default_is_pretty_unchanged() {
+        let v = json!({"name": "edge01", "id": 1});
+        let out = render_with(&v, &JsonOptions::default()).unwrap();
+        assert!(out.contains('\n'), "pretty output has newlines");
+        // No shaping applied: both keys survive.
+        let back: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(back, v);
+    }
+
+    #[test]
+    fn render_with_fields_keeps_only_requested_top_level_keys() {
+        let v = json!({"name": "edge01", "id": 1, "site": "iad1"});
+        let opts = JsonOptions {
+            fields: Some(vec!["name".into(), "site".into()]),
+            ..Default::default()
+        };
+        let back: Value = serde_json::from_str(&render_with(&v, &opts).unwrap()).unwrap();
+        assert_eq!(back, json!({"name": "edge01", "site": "iad1"}));
+    }
+
+    #[test]
+    fn render_with_raw_is_single_line_compact() {
+        let v = json!({"name": "edge01", "id": 1});
+        let opts = JsonOptions {
+            raw: true,
+            ..Default::default()
+        };
+        let out = render_with(&v, &opts).unwrap();
+        assert!(!out.contains('\n'), "raw output is single-line: {out:?}");
+        assert!(!out.contains(": "), "raw output is compact: {out:?}");
+        let back: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(back, v);
+    }
+
+    #[test]
+    fn render_with_envelope_wraps_payload() {
+        let v = json!({"name": "edge01"});
+        let opts = JsonOptions {
+            envelope: true,
+            ..Default::default()
+        };
+        let back: Value = serde_json::from_str(&render_with(&v, &opts).unwrap()).unwrap();
+        assert_eq!(back["schema_version"], json!(SCHEMA_VERSION));
+        assert_eq!(back["data"], v);
+    }
+
+    #[test]
+    fn render_with_composes_fields_envelope_and_raw() {
+        // --fields name --envelope --raw together: field-select happens *before*
+        // the envelope wrap (so `data` is the trimmed object), and the whole
+        // thing is emitted compact on one line.
+        let v = json!({"name": "edge01", "id": 1, "site": "iad1"});
+        let opts = JsonOptions {
+            fields: Some(vec!["name".into()]),
+            raw: true,
+            envelope: true,
+        };
+        let out = render_with(&v, &opts).unwrap();
+        assert!(!out.contains('\n'), "composed raw output is single-line");
+        let back: Value = serde_json::from_str(&out).unwrap();
+        assert_eq!(back["schema_version"], json!(SCHEMA_VERSION));
+        assert_eq!(back["data"], json!({"name": "edge01"}));
     }
 }
