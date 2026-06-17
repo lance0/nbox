@@ -224,6 +224,11 @@ fn serve_handshake_lists_all_tools_with_clean_stdout() {
         result["capabilities"].get("tools").is_some(),
         "initialize result missing capabilities.tools: {init}"
     );
+    // capabilities.resources must be advertised (the server enables resources).
+    assert!(
+        result["capabilities"].get("resources").is_some(),
+        "initialize result missing capabilities.resources: {init}"
+    );
     // The negotiated protocol version is echoed back.
     assert_eq!(result["protocolVersion"], PROTOCOL_VERSION);
 
@@ -261,6 +266,41 @@ fn serve_handshake_lists_all_tools_with_clean_stdout() {
     want.sort();
 
     assert_eq!(got, want, "tools/list returned an unexpected tool set");
+
+    // 4) resources/templates/list (id 3): the server advertises the single
+    //    `nbox://{kind}/{ref}` template. This proves the resource ServerHandler
+    //    methods are wired through the real protocol, not just the inner helper.
+    server.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "resources/templates/list",
+        "params": {}
+    }));
+
+    let templates = server.read_response(3);
+    let list = templates["result"]["resourceTemplates"]
+        .as_array()
+        .unwrap_or_else(|| panic!("templates list had no result.resourceTemplates: {templates}"));
+    assert_eq!(list.len(), 1, "expected exactly one resource template");
+    assert_eq!(list[0]["uriTemplate"], "nbox://{kind}/{ref}");
+
+    // 5) resources/list (id 4): no static resources (the template covers
+    //    everything), so an empty list — but the method must succeed, not 404.
+    server.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 4,
+        "method": "resources/list",
+        "params": {}
+    }));
+
+    let resources = server.read_response(4);
+    let empty = resources["result"]["resources"]
+        .as_array()
+        .unwrap_or_else(|| panic!("resources/list had no result.resources: {resources}"));
+    assert!(
+        empty.is_empty(),
+        "expected no static resources: {resources}"
+    );
 
     // Close stdin and make sure the process exits (killed as a backstop).
     server.shutdown();

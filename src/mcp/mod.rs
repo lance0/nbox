@@ -13,9 +13,14 @@ use std::sync::Arc;
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rmcp::model::{JsonObject, ProtocolVersion, ServerCapabilities, ServerInfo};
+use rmcp::model::{
+    AnnotateAble, JsonObject, ListResourceTemplatesResult, ListResourcesResult,
+    PaginatedRequestParams, ProtocolVersion, RawResourceTemplate, ReadResourceRequestParams,
+    ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo,
+};
+use rmcp::service::RequestContext;
 use rmcp::{
-    ErrorData, ServerHandler, ServiceExt, schemars, tool, tool_handler, tool_router,
+    ErrorData, RoleServer, ServerHandler, ServiceExt, schemars, tool, tool_handler, tool_router,
     transport::stdio,
 };
 use serde::{Deserialize, Serialize};
@@ -52,6 +57,51 @@ pub enum GetKind {
     Tenant,
     Contact,
     Provider,
+}
+
+impl GetKind {
+    /// Every kind, in the order the docs and `nbox://{kind}/{ref}` template list
+    /// them — the same set `nbox_get` accepts.
+    const ALL: [GetKind; 13] = [
+        GetKind::Device,
+        GetKind::Ip,
+        GetKind::Prefix,
+        GetKind::Vlan,
+        GetKind::Site,
+        GetKind::Rack,
+        GetKind::Circuit,
+        GetKind::Aggregate,
+        GetKind::Asn,
+        GetKind::IpRange,
+        GetKind::Tenant,
+        GetKind::Contact,
+        GetKind::Provider,
+    ];
+
+    /// The `snake_case` slug used in `nbox://{kind}/{ref}` URIs and the `kind`
+    /// argument — matches the `#[serde(rename_all = "snake_case")]` spelling.
+    fn as_str(self) -> &'static str {
+        match self {
+            GetKind::Device => "device",
+            GetKind::Ip => "ip",
+            GetKind::Prefix => "prefix",
+            GetKind::Vlan => "vlan",
+            GetKind::Site => "site",
+            GetKind::Rack => "rack",
+            GetKind::Circuit => "circuit",
+            GetKind::Aggregate => "aggregate",
+            GetKind::Asn => "asn",
+            GetKind::IpRange => "ip_range",
+            GetKind::Tenant => "tenant",
+            GetKind::Contact => "contact",
+            GetKind::Provider => "provider",
+        }
+    }
+
+    /// Parse a URI kind slug back to a `GetKind`. Inverse of [`Self::as_str`].
+    fn from_str(s: &str) -> Option<GetKind> {
+        GetKind::ALL.into_iter().find(|k| k.as_str() == s)
+    }
 }
 
 /// Arguments for `nbox_search`.
@@ -232,6 +282,85 @@ fn not_found(noun: &str, value: &str) -> anyhow::Error {
         "no {noun} matched \"{value}\"\n\nTry: nbox_search with query \"{value}\""
     ))
     .into()
+}
+
+/// The URI scheme for nbox resources: `nbox://{kind}/{ref}`.
+const RESOURCE_SCHEME: &str = "nbox://";
+
+/// Parse an `nbox://{kind}/{ref}` URI into a [`GetKind`] and its reference.
+///
+/// `kind` is the `snake_case` slug (see [`GetKind::as_str`]); `ref` is the rest
+/// of the path, percent-decoded so a `ref` containing `/` (e.g. a CIDR like
+/// `10.0.0.0/24`) round-trips. Returns `invalid_params` for a malformed URI or
+/// an unknown kind, mirroring how `nbox_get` reports a caller-fixable mistake.
+fn parse_resource_uri(uri: &str) -> Result<(GetKind, String), ErrorData> {
+    let bad = |msg: String| ErrorData::invalid_params(msg, None);
+    let rest = uri.strip_prefix(RESOURCE_SCHEME).ok_or_else(|| {
+        bad(format!(
+            "resource URI must start with \"{RESOURCE_SCHEME}\": {uri}"
+        ))
+    })?;
+    let (kind_str, reference) = rest.split_once('/').ok_or_else(|| {
+        bad(format!(
+            "resource URI must be \"{RESOURCE_SCHEME}{{kind}}/{{ref}}\": {uri}"
+        ))
+    })?;
+    let kind = GetKind::from_str(kind_str).ok_or_else(|| {
+        bad(format!(
+            "unknown resource kind \"{kind_str}\": expected one of {}",
+            GetKind::ALL
+                .iter()
+                .map(|k| k.as_str())
+                .collect::<Vec<_>>()
+                .join(", ")
+        ))
+    })?;
+    let reference = percent_decode(reference);
+    if reference.is_empty() {
+        return Err(bad(format!("resource URI has an empty ref: {uri}")));
+    }
+    Ok((kind, reference))
+}
+
+/// The advertised resource templates: a single `nbox://{kind}/{ref}` template
+/// covering every [`GetKind`]. A template, not a static list — enumerating every
+/// NetBox object would mean walking the whole instance.
+fn resource_templates() -> ListResourceTemplatesResult {
+    let template = RawResourceTemplate::new("nbox://{kind}/{ref}", "NetBox object")
+        .with_title("NetBox object")
+        .with_description(
+            "Read one NetBox object as JSON. `kind` is one of device, ip, prefix, vlan, \
+             site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider; \
+             `ref` is its natural reference (name/slug/ID; CIDR for prefix/aggregate; \
+             address for ip; VID or name for vlan; AS number for asn). Percent-encode a \
+             `ref` that contains '/'. Same view as the nbox_get tool.",
+        )
+        .with_mime_type("application/json")
+        .no_annotation();
+    ListResourceTemplatesResult::with_all_items(vec![template])
+}
+
+/// Percent-decode a URI path segment. Tiny and dependency-free: only `%XX`
+/// escapes are handled (enough for refs that carry `/`, spaces, or `#`); any
+/// malformed escape is left verbatim.
+fn percent_decode(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(hi), Some(lo)) = (hi, lo) {
+                out.push((hi * 16 + lo) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(bytes[i]);
+        i += 1;
+    }
+    String::from_utf8_lossy(&out).into_owned()
 }
 
 #[tool_router]
@@ -501,6 +630,33 @@ impl NboxMcp {
         Ok(Json(value))
     }
 
+    /// Read an `nbox://{kind}/{ref}` resource: parse the URI, resolve through
+    /// the same shared view layer as `nbox_get`, and return the object's JSON
+    /// view as a single text content. Disambiguators (`vrf`/`site`/`group`) have
+    /// no place in a flat URI, so an ambiguous `ref` surfaces its candidate list
+    /// as an `invalid_params` error — the caller can then use `nbox_get`.
+    async fn read_resource_impl(&self, uri: &str) -> Result<ReadResourceResult, ErrorData> {
+        let (kind, reference) = parse_resource_uri(uri)?;
+        let Json(value) = self
+            .get_impl(GetArgs {
+                kind,
+                reference,
+                vrf: None,
+                site: None,
+                group: None,
+            })
+            .await
+            .map_err(to_mcp_error)?;
+        // Pretty-print so a host that renders the resource shows readable JSON;
+        // the bytes are the same view model the tool returns.
+        let text = serde_json::to_string_pretty(&value).map_err(|e| {
+            ErrorData::internal_error(format!("serialize resource view: {e}"), None)
+        })?;
+        Ok(ReadResourceResult::new(vec![
+            ResourceContents::text(text, uri).with_mime_type("application/json"),
+        ]))
+    }
+
     /// Resolve a CIDR to a single prefix, scoped by an optional VRF reference.
     async fn resolve_prefix(
         &self,
@@ -548,14 +704,49 @@ impl ServerHandler for NboxMcp {
         // override the fields we care about.
         let mut info = ServerInfo::default();
         info.protocol_version = ProtocolVersion::LATEST;
-        info.capabilities = ServerCapabilities::builder().enable_tools().build();
+        info.capabilities = ServerCapabilities::builder()
+            .enable_tools()
+            .enable_resources()
+            .build();
         info.instructions = Some(
             "Read-only NetBox lookups: search, devices, IPs, prefixes, VLANs, sites, racks, \
              circuits, journals, tags. Use nbox_search to find an object's reference, then \
-             nbox_get to fetch it. Nothing is ever written."
+             nbox_get to fetch it. Objects are also exposed as nbox://{kind}/{ref} resources \
+             (same view as nbox_get). Nothing is ever written."
                 .into(),
         );
         info
+    }
+
+    // Resources mirror the read path: a single `nbox://{kind}/{ref}` template
+    // routes through the same view layer as `nbox_get`, so hosts that browse or
+    // attach resources get object context without a separate tool call. There is
+    // no static list to enumerate (that would mean walking all of NetBox), so
+    // `list_resources` stays empty and the template carries the shape. These
+    // sit alongside the tool methods the `#[tool_handler]` macro generates — the
+    // macro only emits tool/get_info methods, so there is no conflict.
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, ErrorData> {
+        Ok(ListResourcesResult::default())
+    }
+
+    async fn list_resource_templates(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourceTemplatesResult, ErrorData> {
+        Ok(resource_templates())
+    }
+
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, ErrorData> {
+        self.read_resource_impl(&request.uri).await
     }
 }
 

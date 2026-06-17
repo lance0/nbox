@@ -5,14 +5,14 @@
 
 use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
-use rmcp::model::ErrorCode;
+use rmcp::model::{ErrorCode, ResourceContents};
 use serde_json::json;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{
     GetArgs, GetKind, InterfaceArgs, JournalArgs, ListTagsArgs, NboxMcp, NextIpArgs,
-    NextPrefixArgs, SearchArgs,
+    NextPrefixArgs, SearchArgs, parse_resource_uri, percent_decode, resource_templates,
 };
 use crate::config::ProfileConfig;
 use crate::netbox::client::NetBoxClient;
@@ -1264,4 +1264,178 @@ async fn get_ambiguous_ip_is_invalid_params_with_candidates() {
         "got: {}",
         err.message
     );
+}
+
+// ---- MCP resources (nbox://{kind}/{ref}) ------------------------------------
+
+/// Extract the single text content from a `read_resource_impl` result, asserting
+/// the URI and JSON mime type round-trip.
+fn one_text(result: &super::ReadResourceResult, expect_uri: &str) -> serde_json::Value {
+    assert_eq!(result.contents.len(), 1, "exactly one content");
+    match &result.contents[0] {
+        ResourceContents::TextResourceContents {
+            uri,
+            mime_type,
+            text,
+            ..
+        } => {
+            assert_eq!(uri, expect_uri);
+            assert_eq!(mime_type.as_deref(), Some("application/json"));
+            serde_json::from_str(text).expect("content is JSON")
+        }
+        ResourceContents::BlobResourceContents { .. } => panic!("expected text content"),
+    }
+}
+
+#[test]
+fn percent_decode_handles_escapes_and_passthrough() {
+    assert_eq!(percent_decode("10.0.0.0%2F24"), "10.0.0.0/24");
+    assert_eq!(percent_decode("edge01"), "edge01");
+    assert_eq!(percent_decode("a%20b"), "a b");
+    // A malformed escape is left verbatim rather than dropped.
+    assert_eq!(percent_decode("100%"), "100%");
+    assert_eq!(percent_decode("%zz"), "%zz");
+}
+
+#[test]
+fn parse_resource_uri_round_trips_kind_and_ref() {
+    let (kind, reference) = parse_resource_uri("nbox://device/edge01").expect("parse");
+    assert!(matches!(kind, GetKind::Device));
+    assert_eq!(reference, "edge01");
+
+    // ip_range's underscore slug parses (distinct from the CLI's `ip-range`).
+    let (kind, reference) = parse_resource_uri("nbox://ip_range/10.0.0.1").expect("parse");
+    assert!(matches!(kind, GetKind::IpRange));
+    assert_eq!(reference, "10.0.0.1");
+
+    // A CIDR ref is percent-encoded so the embedded slash survives the split.
+    let (kind, reference) = parse_resource_uri("nbox://prefix/10.44.208.0%2F24").expect("parse");
+    assert!(matches!(kind, GetKind::Prefix));
+    assert_eq!(reference, "10.44.208.0/24");
+}
+
+#[test]
+fn parse_resource_uri_rejects_bad_scheme_kind_and_empty_ref() {
+    for uri in ["file:///etc/passwd", "device/edge01", "nbox:/device/edge01"] {
+        let err = parse_resource_uri(uri).expect_err("bad scheme");
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    }
+
+    let err = parse_resource_uri("nbox://gadget/edge01").expect_err("unknown kind");
+    assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    assert!(err.message.contains("gadget"), "got: {}", err.message);
+    assert!(err.message.contains("device"), "lists valid kinds");
+
+    let err = parse_resource_uri("nbox://device/").expect_err("empty ref");
+    assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+
+    // No '/' after the kind at all → malformed.
+    let err = parse_resource_uri("nbox://device").expect_err("no ref segment");
+    assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+}
+
+#[test]
+fn resource_templates_advertises_the_uri_template() {
+    let result = resource_templates();
+    assert_eq!(result.resource_templates.len(), 1);
+    let t = &result.resource_templates[0];
+    assert_eq!(t.uri_template, "nbox://{kind}/{ref}");
+    assert_eq!(t.mime_type.as_deref(), Some("application/json"));
+    // The description enumerates the kinds so a host knows what's addressable.
+    let desc = t.description.as_deref().expect("description");
+    assert!(desc.contains("device") && desc.contains("ip_range"));
+}
+
+#[tokio::test]
+async fn read_resource_returns_site_view() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/sites/"))
+        .and(query_param("slug", "iad1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 1, "url": "u", "name": "IAD1", "slug": "iad1",
+                "status": {"value": "active", "label": "Active"}
+            }]
+        })))
+        .mount(&mock)
+        .await;
+
+    let result = server_for(&mock)
+        .read_resource_impl("nbox://site/iad1")
+        .await
+        .expect("read site resource");
+    let value = one_text(&result, "nbox://site/iad1");
+    assert_eq!(value["name"], "IAD1");
+    assert_eq!(value["slug"], "iad1");
+}
+
+#[tokio::test]
+async fn read_resource_returns_prefix_view_for_encoded_cidr() {
+    let mock = MockServer::start().await;
+    // prefix_candidates: exact CIDR match (the slash arrives percent-decoded).
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .and(query_param("prefix", "10.44.208.0/24"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 5, "url": "http://nb/api/ipam/prefixes/5/",
+                "prefix": "10.44.208.0/24",
+                "status": {"value": "active", "label": "Active"}
+            }]
+        })))
+        .mount(&mock)
+        .await;
+    // prefix detail fans out to children (`within`) and member IPs (`parent`),
+    // both empty here.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .and(query_param("within", "10.44.208.0/24"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/ip-addresses/"))
+        .and(query_param("parent", "10.44.208.0/24"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
+        .mount(&mock)
+        .await;
+
+    let result = server_for(&mock)
+        .read_resource_impl("nbox://prefix/10.44.208.0%2F24")
+        .await
+        .expect("read prefix resource");
+    let value = one_text(&result, "nbox://prefix/10.44.208.0%2F24");
+    assert_eq!(value["prefix"], "10.44.208.0/24");
+}
+
+#[tokio::test]
+async fn read_resource_unknown_kind_is_invalid_params() {
+    let mock = MockServer::start().await;
+    let err = server_for(&mock)
+        .read_resource_impl("nbox://gadget/edge01")
+        .await
+        .expect_err("unknown kind errors");
+    assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    assert!(err.message.contains("gadget"), "got: {}", err.message);
+}
+
+#[tokio::test]
+async fn read_resource_missing_object_is_invalid_params() {
+    let mock = MockServer::start().await;
+    // Every device lookup comes back empty → not found → invalid_params.
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
+        .mount(&mock)
+        .await;
+
+    let err = server_for(&mock)
+        .read_resource_impl("nbox://device/nope")
+        .await
+        .expect_err("missing object errors");
+    assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+    assert!(err.message.contains("nope"), "got: {}", err.message);
 }

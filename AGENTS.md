@@ -81,6 +81,13 @@ stderr. Every tool is annotated read-only.
 | `nbox_journal` | Recent journal entries for an object (`kind`/`ref` as `nbox_get`). |
 | `nbox_list_tags` | List tags (name, slug, color, usage count) — valid `tag` values for `nbox_search`. |
 
+The same objects are also exposed as MCP **resources** via one template,
+`nbox://{kind}/{ref}` (e.g. `nbox://device/edge01`, `nbox://ip/10.0.0.1`), for
+hosts that browse/attach resources instead of calling tools. Reading one returns
+the same JSON view as `nbox_get`, routed through the same view layer; `kind`/`ref`
+follow `nbox_get` (percent-encode a `ref` with `/`, e.g. a CIDR). It's a template,
+not a static list, so `resources/list` is empty.
+
 An HTTP transport ships in the default build (behind the `http` cargo feature,
 which is on by default; `--no-default-features` for stdio-only):
 `nbox serve --http 127.0.0.1:8080`, optional `--http-token` — same tools at
@@ -98,7 +105,7 @@ the limit → `429`+`Retry-After`; `0`/absent = off). This is **read-only Patter
 the last hop to NetBox still uses the one local profile token, so the audit log is
 accountability, not per-user RBAC — trusted single-team read-only only. Per-user
 NetBox identity bridging (the Pattern 2 vault, v2), a raw escape-hatch tool, and
-MCP resources/prompts are later. See `docs/MCP.md`.
+MCP prompts are later. See `docs/MCP.md`.
 
 ## Configuration
 

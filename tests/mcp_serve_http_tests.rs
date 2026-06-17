@@ -241,6 +241,10 @@ async fn handshake(client: &reqwest::Client, url: &str, bearer: Option<&str>) ->
         result["capabilities"].get("tools").is_some(),
         "initialize result missing capabilities.tools: {result}"
     );
+    assert!(
+        result["capabilities"].get("resources").is_some(),
+        "initialize result missing capabilities.resources: {result}"
+    );
     assert_eq!(result["protocolVersion"], PROTOCOL_VERSION);
 
     // notifications/initialized (a notification → 202 Accepted, no body of note).

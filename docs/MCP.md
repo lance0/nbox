@@ -287,6 +287,31 @@ All tools are annotated read-only.
 reference for that kind: a name/slug/ID for named objects, a CIDR for prefix and
 aggregate, an address for ip, a VID or name for vlan, the AS number for asn.
 
+## Resources
+
+The same objects are also exposed as MCP **resources**, for hosts that browse or
+attach resources rather than call tools. There is one resource template:
+
+```
+nbox://{kind}/{ref}
+```
+
+`kind` is the same set as `nbox_get` (`device`, `ip`, `prefix`, `vlan`, `site`,
+`rack`, `circuit`, `aggregate`, `asn`, `ip_range`, `tenant`, `contact`,
+`provider`); `ref` is the same natural reference. Reading a resource returns the
+object as JSON — the exact view model `nbox_get` returns. Examples:
+`nbox://device/edge01`, `nbox://ip/10.0.0.1`, `nbox://site/iad1`.
+
+Percent-encode a `ref` that contains `/` — a CIDR is `nbox://prefix/10.0.0.0%2F24`.
+
+It's a *template*, not a static list: `resources/list` is empty (enumerating
+every NetBox object would mean walking the whole instance), and the template
+carries the addressable shape. An unknown `kind`, a malformed URI, or a `ref`
+that resolves to nothing returns an `invalid_params` error — the same
+caller-fixable mapping `nbox_get` uses (an ambiguous `ref` can't be
+disambiguated through a flat URI, so use `nbox_get` with `vrf`/`site`/`group` for
+those).
+
 ## Security and behavior
 
 - **Use a read-only NetBox token.** The server exposes no write path, but a

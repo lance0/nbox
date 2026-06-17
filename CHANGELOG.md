@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- MCP resources: the `nbox serve` server now advertises a `resources` capability
+  and a single resource template, `nbox://{kind}/{ref}` (e.g.
+  `nbox://device/edge01`, `nbox://ip/10.0.0.1`), so hosts that browse/attach
+  resources — not just call tools — can pull object context. Reading one routes
+  through the same shared view layer as the `nbox_get` tool and returns the
+  object's JSON view as the resource contents; `kind`/`ref` follow `nbox_get`
+  (the full device/ip/prefix/vlan/site/rack/circuit/aggregate/asn/ip_range/
+  tenant/contact/provider set), with a `ref` containing `/` percent-encoded
+  (e.g. `nbox://prefix/10.0.0.0%2F24`). It's a template, not a static list, so
+  `resources/list` is empty (enumerating every NetBox object would mean walking
+  the whole instance). Unknown kind, malformed URI, or an unresolved/ambiguous
+  `ref` returns an `invalid_params` error, mirroring `nbox_get`. Works on both
+  the stdio and HTTP transports. Read-only and strictly additive — the eight
+  tools are unchanged.
 - Provider lookup: `nbox provider <slug|name|id>`, read-only and additive,
   rounding out the circuits ecosystem alongside `nbox circuit`. Surfaces the
   provider's ASNs (brief list), accounts, description, non-zero `circuit_count`,
