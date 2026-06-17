@@ -14,7 +14,6 @@ categories = ["command-line-utilities", "network-programming"]
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }
-tokio-util = "0.7"
 futures = "0.3"
 
 # HTTP
@@ -55,6 +54,8 @@ anyhow = "1"
 thiserror = "2"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+# Reserved for planned file logging (non-blocking writer / rolling log files).
+# Intentionally kept though not yet referenced — do not strip in a dep cleanup.
 tracing-appender = "0.2"
 
 # Terminal helpers
@@ -71,9 +72,6 @@ ipnet = "2"
 # direct use is explicit and version-controlled.
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
-
-# Time
-chrono = { version = "0.4", features = ["serde"] }
 
 # Caching, later
 rusqlite = { version = "0.40", features = ["bundled"], optional = true }
