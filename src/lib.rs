@@ -10,23 +10,11 @@ use clap::CommandFactory;
 use ipnet::IpNet;
 
 use crate::cli::{Cli, Command};
-use crate::domain::aggregate_view::AggregateView;
-use crate::domain::asn_view::AsnView;
-use crate::domain::circuit_view::CircuitView;
-use crate::domain::device_detail::DeviceDetail;
-use crate::domain::interface_view::InterfaceView;
-use crate::domain::ip_range_view::IpRangeView;
-use crate::domain::ip_view::{IpView, most_specific};
+use crate::domain::detail;
 use crate::domain::journal_view::JournalView;
-use crate::domain::prefix_view::PrefixView;
-use crate::domain::rack_view::RackView;
-use crate::domain::site_view::SiteView;
 use crate::domain::tag_view::TagsView;
-use crate::domain::vlan_view::VlanView;
 use crate::netbox::client::NetBoxClient;
-use crate::netbox::models::common::BriefObject;
 use crate::netbox::models::ipam::{AvailablePrefix, Prefix};
-use crate::netbox::query;
 use crate::netbox::search::{SearchFilters, SearchRequest};
 use crate::output::Format;
 use crate::output::plain::KeyValues;
@@ -332,77 +320,34 @@ async fn run_search(
 
 /// `nbox device <value>` — look up a device with its interfaces, IPs, cables, VLANs.
 async fn run_device(ctx: &Ctx, value: &str) -> Result<()> {
-    const CAP: usize = 200;
     let client = connect(ctx)?;
-    let device = client
-        .device_by_ref(value)
-        .await?
-        .ok_or_else(|| not_found("device", value))?;
-
-    let id = device.id;
-    let (interfaces, ips, services) = tokio::try_join!(
-        client.device_interfaces(id, CAP),
-        client.device_ips(id, CAP),
-        client.device_services(id, CAP),
-    )?;
-
-    let view = DeviceDetail::build(device, interfaces, ips, services);
+    let view = detail::device_detail_by_ref(&client, value, &not_found).await?;
     emit(ctx, &view, || println!("{}", view.to_plain()))
 }
 
 /// `nbox interface <device> <interface>` — show one interface and its addresses.
 async fn run_interface(ctx: &Ctx, device: &str, interface: &str) -> Result<()> {
-    const CAP: usize = 200;
     let client = connect(ctx)?;
-    let dev = client
-        .device_by_ref(device)
-        .await?
-        .ok_or_else(|| not_found("device", device))?;
-    let iface = client
-        .device_interface(dev.id, interface)
-        .await?
-        .ok_or_else(|| not_found("interface", interface))?;
-    let (ips, trace) = tokio::try_join!(
-        client.interface_ips(iface.id, CAP),
-        client.interface_trace(iface.id),
-    )?;
-
-    let view = InterfaceView::build(iface, ips, trace);
+    let view = detail::interface_view_by_ref(&client, device, interface, &not_found).await?;
     emit(ctx, &view, || println!("{}", view.to_plain()))
 }
 
 /// `nbox ip <address>` — resolve an IP (scoped by `--vrf`) and its parent prefix.
 async fn run_ip(ctx: &Ctx, address: &str, vrf: Option<&str>) -> Result<()> {
     let client = connect(ctx)?;
-    let mut candidates = client.ip_candidates(address).await?;
-    retain_scope(&mut candidates, vrf, |ip| ip.vrf.as_ref());
-    let ip = resolve_unique("IP address", address, candidates, query::ip_scope_label)?;
-
-    let host = address.split('/').next().unwrap_or(address);
-    let vrf_id = ip.vrf.as_ref().map(|v| v.id);
-    let parent = most_specific(client.prefixes_containing(host, vrf_id).await?);
-
-    let view = IpView::build(ip, parent);
+    let view = detail::ip_view_by_ref(&client, address, vrf, &not_found).await?;
     emit(ctx, &view, || view.to_key_values().print())
 }
 
 /// Resolve a CIDR to a single prefix, scoped by `--vrf`. Ambiguous → exit 5.
 async fn resolve_prefix(client: &NetBoxClient, cidr: &str, vrf: Option<&str>) -> Result<Prefix> {
-    let mut candidates = client.prefix_candidates(cidr).await?;
-    retain_scope(&mut candidates, vrf, |p| p.vrf.as_ref());
-    resolve_unique("prefix", cidr, candidates, query::prefix_scope_label)
+    detail::resolve_prefix(client, cidr, vrf, &not_found).await
 }
 
 /// `nbox prefix <cidr>` — show a prefix (scoped by `--vrf`) with children and IPs.
 async fn run_prefix(ctx: &Ctx, cidr: &str, vrf: Option<&str>) -> Result<()> {
-    const SECTION_CAP: usize = 50;
     let client = connect(ctx)?;
-    let prefix = resolve_prefix(&client, cidr, vrf).await?;
-
-    let children = client.prefix_children(cidr, SECTION_CAP).await?;
-    let ips = client.prefix_ips(cidr, SECTION_CAP).await?;
-
-    let view = PrefixView::build(prefix, children, ips);
+    let view = detail::prefix_view_by_ref(&client, cidr, vrf, &not_found).await?;
     emit(ctx, &view, || println!("{}", view.to_plain()))
 }
 
@@ -474,56 +419,28 @@ pub(crate) fn first_subnet_of_length(free: &[AvailablePrefix], len: u8) -> Optio
 /// A VID present at several sites/groups is scoped by `--site` / `--group`.
 async fn run_vlan(ctx: &Ctx, value: &str, site: Option<&str>, group: Option<&str>) -> Result<()> {
     let client = connect(ctx)?;
-    let vlan = if let Ok(vid) = value.parse::<u16>() {
-        let mut candidates = client.vlan_candidates_by_vid(vid).await?;
-        retain_scope(&mut candidates, site, |v| v.site.as_ref());
-        retain_scope(&mut candidates, group, |v| v.group.as_ref());
-        resolve_unique("VLAN", value, candidates, query::vlan_scope_label)?
-    } else {
-        client
-            .vlan_by_ref(value)
-            .await?
-            .ok_or_else(|| not_found("VLAN", value))?
-    };
-    let prefixes = client.vlan_prefixes(vlan.id, 50).await?;
-
-    let view = VlanView::build(vlan, prefixes);
+    let view = detail::vlan_view_by_ref(&client, value, site, group, &not_found).await?;
     emit(ctx, &view, || println!("{}", view.to_plain()))
 }
 
 /// `nbox circuit <cid|id>` — show a circuit.
 async fn run_circuit(ctx: &Ctx, value: &str) -> Result<()> {
     let client = connect(ctx)?;
-    let circuit = client
-        .circuit_by_ref(value)
-        .await?
-        .ok_or_else(|| not_found("circuit", value))?;
-
-    let view = CircuitView::from_model(circuit);
+    let view = detail::circuit_view_by_ref(&client, value, &not_found).await?;
     emit(ctx, &view, || view.to_key_values().print())
 }
 
 /// `nbox ip-range <start|id>` — show an IP range.
 async fn run_ip_range(ctx: &Ctx, value: &str) -> Result<()> {
     let client = connect(ctx)?;
-    let range = client
-        .ip_range_by_ref(value)
-        .await?
-        .ok_or_else(|| not_found("IP range", value))?;
-
-    let view = IpRangeView::from_model(range);
+    let view = detail::ip_range_view_by_ref(&client, value, &not_found).await?;
     emit(ctx, &view, || view.to_key_values().print())
 }
 
 /// `nbox aggregate <cidr|id>` — show an aggregate.
 async fn run_aggregate(ctx: &Ctx, value: &str) -> Result<()> {
     let client = connect(ctx)?;
-    let aggregate = client
-        .aggregate_by_ref(value)
-        .await?
-        .ok_or_else(|| not_found("aggregate", value))?;
-
-    let view = AggregateView::from_model(aggregate);
+    let view = detail::aggregate_view_by_ref(&client, value, &not_found).await?;
     emit(ctx, &view, || view.to_key_values().print())
 }
 
@@ -531,36 +448,21 @@ async fn run_aggregate(ctx: &Ctx, value: &str) -> Result<()> {
 async fn run_asn(ctx: &Ctx, asn: u32) -> Result<()> {
     let client = connect(ctx)?;
     let value = asn.to_string();
-    let asn = client
-        .asn_by_ref(asn)
-        .await?
-        .ok_or_else(|| not_found("ASN", &value))?;
-
-    let view = AsnView::from_model(asn);
+    let view = detail::asn_view_by_ref(&client, asn, &value, &not_found).await?;
     emit(ctx, &view, || view.to_key_values().print())
 }
 
 /// `nbox site <name|slug>` — show a site.
 async fn run_site(ctx: &Ctx, value: &str) -> Result<()> {
     let client = connect(ctx)?;
-    let site = client
-        .site_by_ref(value)
-        .await?
-        .ok_or_else(|| not_found("site", value))?;
-
-    let view = SiteView::from_model(site);
+    let view = detail::site_view_by_ref(&client, value, &not_found).await?;
     emit(ctx, &view, || view.to_key_values().print())
 }
 
 /// `nbox rack <name|id>` — show a rack.
 async fn run_rack(ctx: &Ctx, value: &str) -> Result<()> {
     let client = connect(ctx)?;
-    let rack = client
-        .rack_by_ref(value)
-        .await?
-        .ok_or_else(|| not_found("rack", value))?;
-
-    let view = RackView::from_model(rack);
+    let view = detail::rack_view_by_ref(&client, value, &not_found).await?;
     emit(ctx, &view, || view.to_key_values().print())
 }
 
@@ -708,46 +610,6 @@ fn check_raw_method(method: &str) -> Result<()> {
     }
 }
 
-/// Drop candidates whose scope object doesn't match a user-supplied reference
-/// (e.g. `--vrf`). A no-op when `query` is `None`.
-fn retain_scope<T>(
-    items: &mut Vec<T>,
-    query: Option<&str>,
-    scope: impl Fn(&T) -> Option<&BriefObject>,
-) {
-    if let Some(q) = query {
-        items.retain(|it| scope(it).is_some_and(|b| b.matches(q)));
-    }
-}
-
-/// Resolve a candidate set to exactly one object: not found (exit 4) when empty,
-/// ambiguous (exit 5) when more than one, listing the candidates via `label`.
-fn resolve_unique<T>(
-    noun: &str,
-    value: &str,
-    mut candidates: Vec<T>,
-    label: impl Fn(&T) -> String,
-) -> Result<T> {
-    match candidates.len() {
-        0 => Err(not_found(noun, value)),
-        1 => Ok(candidates.pop().unwrap()),
-        _ => {
-            let matches = candidates
-                .iter()
-                .take(8)
-                .map(&label)
-                .collect::<Vec<_>>()
-                .join(", ");
-            Err(error::NboxError::Ambiguous {
-                noun: noun.to_string(),
-                value: value.to_string(),
-                matches,
-            }
-            .into())
-        }
-    }
-}
-
 /// A friendly "not found" error with an actionable suggestion (DESIGN §17).
 /// Typed as [`error::NboxError::NotFound`] so it carries a stable exit code.
 fn not_found(noun: &str, value: &str) -> anyhow::Error {
@@ -759,10 +621,8 @@ fn not_found(noun: &str, value: &str) -> anyhow::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        check_raw_method, error, first_subnet_of_length, not_found, parse_object_ref,
-        resolve_unique,
-    };
+    use super::{check_raw_method, error, first_subnet_of_length, not_found, parse_object_ref};
+    use crate::domain::detail::resolve_unique;
     use crate::netbox::models::ipam::AvailablePrefix;
 
     #[test]
@@ -795,10 +655,18 @@ mod tests {
     fn resolve_unique_distinguishes_none_one_many() {
         let label = |s: &String| s.clone();
 
-        let one = resolve_unique("device", "edge01", vec!["edge01".to_string()], label).unwrap();
+        let one = resolve_unique(
+            "device",
+            "edge01",
+            vec!["edge01".to_string()],
+            label,
+            &not_found,
+        )
+        .unwrap();
         assert_eq!(one, "edge01");
 
-        let none = resolve_unique("device", "edge99", Vec::<String>::new(), label).unwrap_err();
+        let none = resolve_unique("device", "edge99", Vec::<String>::new(), label, &not_found)
+            .unwrap_err();
         assert_eq!(error::NboxError::exit_code_for(&none), 4); // not found
 
         let many = resolve_unique(
@@ -806,6 +674,7 @@ mod tests {
             "edge",
             vec!["edge01".to_string(), "edge02".to_string()],
             label,
+            &not_found,
         )
         .unwrap_err();
         assert_eq!(error::NboxError::exit_code_for(&many), 5); // ambiguous

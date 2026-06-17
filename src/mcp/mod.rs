@@ -20,29 +20,13 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 
-use crate::domain::aggregate_view::AggregateView;
-use crate::domain::asn_view::AsnView;
-use crate::domain::circuit_view::CircuitView;
-use crate::domain::device_detail::DeviceDetail;
+use crate::domain::detail;
 use crate::domain::interface_view::InterfaceView;
-use crate::domain::ip_range_view::IpRangeView;
-use crate::domain::ip_view::{IpView, most_specific};
 use crate::domain::journal_view::JournalView;
-use crate::domain::prefix_view::PrefixView;
-use crate::domain::rack_view::RackView;
-use crate::domain::site_view::SiteView;
 use crate::domain::tag_view::TagsView;
-use crate::domain::vlan_view::VlanView;
 use crate::error::NboxError;
 use crate::netbox::client::NetBoxClient;
-use crate::netbox::models::common::BriefObject;
-use crate::netbox::query;
 use crate::netbox::search::{SearchFilters, SearchRequest, SearchResult};
-
-/// How many child/IP rows to pull into a section view. Mirrors the CLI caps.
-const SECTION_CAP: usize = 50;
-/// How many interfaces/IPs/services to pull for a device. Mirrors the CLI cap.
-const DEVICE_CAP: usize = 200;
 
 /// The read-only NetBox MCP server.
 #[derive(Clone)]
@@ -234,46 +218,6 @@ fn not_found(noun: &str, value: &str) -> anyhow::Error {
     .into()
 }
 
-/// Drop candidates whose scope object doesn't match a supplied reference
-/// (e.g. `vrf`/`site`/`group`). A no-op when `query` is `None`.
-fn retain_scope<T>(
-    items: &mut Vec<T>,
-    query: Option<&str>,
-    scope: impl Fn(&T) -> Option<&BriefObject>,
-) {
-    if let Some(q) = query {
-        items.retain(|it| scope(it).is_some_and(|b| b.matches(q)));
-    }
-}
-
-/// Resolve a candidate set to exactly one object: not found when empty,
-/// ambiguous (with the candidate list) when more than one.
-fn resolve_unique<T>(
-    noun: &str,
-    value: &str,
-    mut candidates: Vec<T>,
-    label: impl Fn(&T) -> String,
-) -> anyhow::Result<T> {
-    match candidates.len() {
-        0 => Err(not_found(noun, value)),
-        1 => Ok(candidates.pop().unwrap()),
-        _ => {
-            let matches = candidates
-                .iter()
-                .take(8)
-                .map(&label)
-                .collect::<Vec<_>>()
-                .join(", ");
-            Err(NboxError::Ambiguous {
-                noun: noun.to_string(),
-                value: value.to_string(),
-                matches,
-            }
-            .into())
-        }
-    }
-}
-
 #[tool_router]
 impl NboxMcp {
     /// Build a server bound to a NetBox client.
@@ -363,25 +307,11 @@ impl NboxMcp {
         &self,
         Parameters(args): Parameters<InterfaceArgs>,
     ) -> Result<Json<InterfaceView>, ErrorData> {
-        let dev = self
-            .client
-            .device_by_ref(&args.device)
-            .await
-            .map_err(to_mcp_error)?
-            .ok_or_else(|| to_mcp_error(not_found("device", &args.device)))?;
-        let iface = self
-            .client
-            .device_interface(dev.id, &args.interface)
-            .await
-            .map_err(to_mcp_error)?
-            .ok_or_else(|| to_mcp_error(not_found("interface", &args.interface)))?;
-        let (ips, trace) = tokio::try_join!(
-            self.client.interface_ips(iface.id, DEVICE_CAP),
-            self.client.interface_trace(iface.id),
-        )
-        .map_err(to_mcp_error)?;
-
-        Ok(Json(InterfaceView::build(iface, ips, trace)))
+        let view =
+            detail::interface_view_by_ref(&self.client, &args.device, &args.interface, &not_found)
+                .await
+                .map_err(to_mcp_error)?;
+        Ok(Json(view))
     }
 
     /// The next available IP address(es) within a prefix.
@@ -489,99 +419,54 @@ impl NboxMcp {
 }
 
 impl NboxMcp {
-    /// Dispatch `nbox_get` to the matching resolver + view builder. Returns the
-    /// JSON view, or a typed error (not-found/ambiguous map to invalid_params at
-    /// the tool boundary).
+    /// Dispatch `nbox_get` to the matching shared resolver + view builder.
+    /// Returns the JSON view, or a typed error (not-found/ambiguous map to
+    /// invalid_params at the tool boundary). The fetch + view-build path is the
+    /// same one the CLI handlers use (see [`crate::domain::detail`]); `not_found`
+    /// supplies the MCP-flavored "use nbox_search" message.
     async fn get_impl(&self, args: GetArgs) -> anyhow::Result<Json<serde_json::Value>> {
         let c = &self.client;
         let r = args.reference.as_str();
         let value = match args.kind {
             GetKind::Device => {
-                let device = c
-                    .device_by_ref(r)
-                    .await?
-                    .ok_or_else(|| not_found("device", r))?;
-                let id = device.id;
-                let (interfaces, ips, services) = tokio::try_join!(
-                    c.device_interfaces(id, DEVICE_CAP),
-                    c.device_ips(id, DEVICE_CAP),
-                    c.device_services(id, DEVICE_CAP),
-                )?;
-                serde_json::to_value(DeviceDetail::build(device, interfaces, ips, services))?
+                serde_json::to_value(detail::device_detail_by_ref(c, r, &not_found).await?)?
             }
-            GetKind::Ip => {
-                let mut candidates = c.ip_candidates(r).await?;
-                retain_scope(&mut candidates, args.vrf.as_deref(), |ip| ip.vrf.as_ref());
-                let ip = resolve_unique("IP address", r, candidates, query::ip_scope_label)?;
-                let host = r.split('/').next().unwrap_or(r);
-                let vrf_id = ip.vrf.as_ref().map(|v| v.id);
-                let parent = most_specific(c.prefixes_containing(host, vrf_id).await?);
-                serde_json::to_value(IpView::build(ip, parent))?
-            }
-            GetKind::Prefix => {
-                let prefix = self.resolve_prefix(r, args.vrf.as_deref()).await?;
-                let children = c.prefix_children(r, SECTION_CAP).await?;
-                let ips = c.prefix_ips(r, SECTION_CAP).await?;
-                serde_json::to_value(PrefixView::build(prefix, children, ips))?
-            }
-            GetKind::Vlan => {
-                let vlan = if let Ok(vid) = r.parse::<u16>() {
-                    let mut candidates = c.vlan_candidates_by_vid(vid).await?;
-                    retain_scope(&mut candidates, args.site.as_deref(), |v| v.site.as_ref());
-                    retain_scope(&mut candidates, args.group.as_deref(), |v| v.group.as_ref());
-                    resolve_unique("VLAN", r, candidates, query::vlan_scope_label)?
-                } else {
-                    c.vlan_by_ref(r)
-                        .await?
-                        .ok_or_else(|| not_found("VLAN", r))?
-                };
-                let prefixes = c.vlan_prefixes(vlan.id, SECTION_CAP).await?;
-                serde_json::to_value(VlanView::build(vlan, prefixes))?
-            }
+            GetKind::Ip => serde_json::to_value(
+                detail::ip_view_by_ref(c, r, args.vrf.as_deref(), &not_found).await?,
+            )?,
+            GetKind::Prefix => serde_json::to_value(
+                detail::prefix_view_by_ref(c, r, args.vrf.as_deref(), &not_found).await?,
+            )?,
+            GetKind::Vlan => serde_json::to_value(
+                detail::vlan_view_by_ref(
+                    c,
+                    r,
+                    args.site.as_deref(),
+                    args.group.as_deref(),
+                    &not_found,
+                )
+                .await?,
+            )?,
             GetKind::Site => {
-                let site = c
-                    .site_by_ref(r)
-                    .await?
-                    .ok_or_else(|| not_found("site", r))?;
-                serde_json::to_value(SiteView::from_model(site))?
+                serde_json::to_value(detail::site_view_by_ref(c, r, &not_found).await?)?
             }
             GetKind::Rack => {
-                let rack = c
-                    .rack_by_ref(r)
-                    .await?
-                    .ok_or_else(|| not_found("rack", r))?;
-                serde_json::to_value(RackView::from_model(rack))?
+                serde_json::to_value(detail::rack_view_by_ref(c, r, &not_found).await?)?
             }
             GetKind::Circuit => {
-                let circuit = c
-                    .circuit_by_ref(r)
-                    .await?
-                    .ok_or_else(|| not_found("circuit", r))?;
-                serde_json::to_value(CircuitView::from_model(circuit))?
+                serde_json::to_value(detail::circuit_view_by_ref(c, r, &not_found).await?)?
             }
             GetKind::Aggregate => {
-                let aggregate = c
-                    .aggregate_by_ref(r)
-                    .await?
-                    .ok_or_else(|| not_found("aggregate", r))?;
-                serde_json::to_value(AggregateView::from_model(aggregate))?
+                serde_json::to_value(detail::aggregate_view_by_ref(c, r, &not_found).await?)?
             }
             GetKind::Asn => {
                 let asn_num: u32 = r.parse().map_err(|_| {
                     NboxError::NotFound(format!("\"{r}\" is not a valid AS number"))
                 })?;
-                let asn = c
-                    .asn_by_ref(asn_num)
-                    .await?
-                    .ok_or_else(|| not_found("ASN", r))?;
-                serde_json::to_value(AsnView::from_model(asn))?
+                serde_json::to_value(detail::asn_view_by_ref(c, asn_num, r, &not_found).await?)?
             }
             GetKind::IpRange => {
-                let range = c
-                    .ip_range_by_ref(r)
-                    .await?
-                    .ok_or_else(|| not_found("IP range", r))?;
-                serde_json::to_value(IpRangeView::from_model(range))?
+                serde_json::to_value(detail::ip_range_view_by_ref(c, r, &not_found).await?)?
             }
         };
         Ok(Json(value))
@@ -593,9 +478,7 @@ impl NboxMcp {
         cidr: &str,
         vrf: Option<&str>,
     ) -> anyhow::Result<crate::netbox::models::ipam::Prefix> {
-        let mut candidates = self.client.prefix_candidates(cidr).await?;
-        retain_scope(&mut candidates, vrf, |p| p.vrf.as_ref());
-        resolve_unique("prefix", cidr, candidates, query::prefix_scope_label)
+        detail::resolve_prefix(&self.client, cidr, vrf, &not_found).await
     }
 
     /// Resolve a `<kind> <ref>` to the object's dotted content type and ID, for
