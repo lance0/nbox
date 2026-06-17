@@ -35,3 +35,21 @@ jobs:
 
       - name: Test
         run: cargo test --all-features --verbose
+
+  msrv:
+    name: MSRV (1.95)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Floor is set by the `cache` feature: rusqlite 0.40 -> libsqlite3-sys
+      # 0.38, whose build script uses `cfg_select!` (stable since Rust 1.95).
+      # Keep this in sync with `rust-version` in Cargo.toml.
+      - name: Install MSRV toolchain
+        uses: dtolnay/rust-toolchain@1.95.0
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Check (all features, locked)
+        run: cargo check --all-features --locked

@@ -6,7 +6,7 @@ Thanks for your interest in contributing to nbox!
 
 ### Prerequisites
 
-- Rust 1.88+ (edition 2024)
+- Rust 1.95+ (edition 2024)
 - A NetBox 4.2+ instance to test against (a token with read access)
 
 ### Building

@@ -54,7 +54,7 @@ See [docs/FEATURES.md](docs/FEATURES.md) for the full command reference and [doc
 ## Installation
 
 ```bash
-# From crates.io (requires Rust 1.88+)
+# From crates.io (requires Rust 1.95+)
 cargo install nbox
 
 # Or grab a prebuilt binary (Linux/macOS) — downloads the latest release,
