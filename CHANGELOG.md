@@ -20,12 +20,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added (v0.2/v0.3 read coverage, in progress)
 - `nbox serve` — read-only MCP server over stdio (`rmcp` 1.7), exposing the CLI's lookups as eight read-only-annotated tools: `nbox_status`, `nbox_search`, `nbox_get`, `nbox_get_interface`, `nbox_next_ip`, `nbox_next_prefix`, `nbox_journal`, `nbox_list_tags`. An MCP host launches it as a subprocess and speaks JSON-RPC over stdin/stdout; the tools return the same JSON view models as the CLI. URL/token come from the active profile (same `-p`/`--config` flags); JSON-RPC on stdout, logs on stderr. HTTP transport, OAuth, a raw escape-hatch tool, and MCP resources/prompts are later.
+- Precise per-tool output schemas for the MCP server. The seven type-stable tools (`nbox_status`, `nbox_search`, `nbox_get_interface`, `nbox_next_ip`, `nbox_next_prefix`, `nbox_journal`, `nbox_list_tags`) now return their concrete view types so `rmcp` derives a real `outputSchema` from `schemars`, instead of the permissive `{"type":"object"}`. `nbox_get` keeps the permissive schema (its shape is polymorphic by kind). Serialized JSON is unchanged.
 - `nbox circuit <cid|id>` — look up a circuit by CID (exact, then contains) or numeric ID, rendering provider, type, status, tenant, commit rate, and custom fields (plain or `--json`). Ambiguous CID prefixes exit 5.
 - `nbox aggregate <cidr|id>` — look up an aggregate by CIDR or numeric ID (RIR, tenant, date added, custom fields).
 - `nbox asn <asn>` — look up an ASN by number (RIR, tenant, custom fields).
 - Services on the device detail — `nbox device` now includes a services section (name, protocol, ports), and the TUI device screen gains an `s` tab ("what's listening").
 - `nbox ip-range <start|id>` — look up an IP range by start address or numeric ID (start/end, size, status, VRF, tenant, role, custom fields).
-- `nbox journal <kind> <ref>` — list recent journal entries (created, kind, author, comments) for a device/ip/prefix/vlan/site/rack/circuit, newest first.
+- `nbox journal <kind> <ref>` — list recent journal entries (created, kind, author, comments) for a device/ip/prefix/vlan/site/rack/circuit/aggregate/asn/ip-range, newest first.
+- `--journal` on the detail commands (device/ip/prefix/vlan/site/rack/circuit/aggregate/asn/ip-range) folds an object's most recent journal entries into its lookup — a top-level `journal` array (`--json`) or a Journal section (plain). Without the flag, output is byte-identical to before.
+- `nbox search` now also covers circuits, aggregates, ASNs, and IP ranges (same `q=` quick-search + supported filters as the other endpoints); ASNs additionally match a purely numeric query against the `asn` field.
 - `nbox tags` lists tags (slug, name, count); `nbox search --tag <slug>` filters by tag on the endpoints that support it (skipping those that don't, like the other structured filters).
 - `nbox interface` now shows a Cable Path section, tracing the cabled path (`/interfaces/{id}/trace/`) hop by hop (`near --[cable]-- far`).
 
