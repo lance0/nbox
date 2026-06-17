@@ -164,11 +164,30 @@ impl NetBoxClient {
         let q = req.query.trim().to_string();
         let f = &req.filters;
 
+        // Resolve `--site` to a numeric id once, up front. Prefixes can't honor a
+        // site slug/name (NetBox 4.2 replaced the prefix `site` FK with the
+        // polymorphic `scope`, so `?site=` is a dead filter there); they need
+        // `scope_type=dcim.site` + `scope_id=<id>` instead. An unknown site is a
+        // hard not-found error so the search fails loudly rather than quietly
+        // returning nothing. This is intentionally site-scope-only — region /
+        // site-group / location scope filtering is a deferred follow-up.
+        let site_id = match &f.site {
+            Some(site) => {
+                let resolved = self.site_by_ref(site).await?.ok_or_else(|| {
+                    crate::error::NboxError::NotFound(format!(
+                        "no site matched \"{site}\"\n\nTry:\n  nbox search {site}"
+                    ))
+                })?;
+                Some(resolved.id)
+            }
+            None => None,
+        };
+
         let (devices, sites, ips, prefixes, vlans, circuits, aggregates, asns, ip_ranges) = tokio::join!(
             self.search_devices(&q, f),
             self.search_sites(&q, f),
             self.search_ips(&q, f),
-            self.search_prefixes(&q, f),
+            self.search_prefixes(&q, f, site_id),
             self.search_vlans(&q, f),
             self.search_circuits(&q, f),
             self.search_aggregates(&q, f),
@@ -284,13 +303,33 @@ impl NetBoxClient {
             .collect())
     }
 
-    async fn search_prefixes(&self, q: &str, f: &SearchFilters) -> Result<Vec<SearchResult>> {
-        // `site` is intentionally omitted: prefix site-filtering is ambiguous
-        // under the 4.2+ polymorphic scope, so we skip prefixes when `--site`
-        // is set rather than risk an ignored filter.
-        let Some(params) = endpoint_params(q, f, &["status", "tenant", "role", "tag"]) else {
+    async fn search_prefixes(
+        &self,
+        q: &str,
+        f: &SearchFilters,
+        site_id: Option<u64>,
+    ) -> Result<Vec<SearchResult>> {
+        // `site` is handled out-of-band, not through the allowlist: NetBox 4.2
+        // dropped the prefix `site` FK for the polymorphic `scope`, so a plain
+        // `?site=<slug>` is a dead filter. The caller resolves `--site` to an id
+        // up front; we translate it to `scope_type=dcim.site` + `scope_id=<id>`,
+        // which the 4.2+ API honors. So `site` is cleared from the filters before
+        // the allowlist check (otherwise `params_for` would skip the endpoint for
+        // it) and re-expressed as scope params below.
+        // (Site-scope only — region/site-group/location scope are deferred.)
+        let without_site = SearchFilters {
+            site: None,
+            ..f.clone()
+        };
+        let Some(mut params) =
+            endpoint_params(q, &without_site, &["status", "tenant", "role", "tag"])
+        else {
             return Ok(Vec::new());
         };
+        if let Some(id) = site_id {
+            params.push(("scope_type", "dcim.site".to_string()));
+            params.push(("scope_id", id.to_string()));
+        }
         let page: Page<Prefix> = self.list(Endpoint::Prefixes, params).await?;
         Ok(page
             .results

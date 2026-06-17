@@ -24,6 +24,14 @@ nbox is a read-only NetBox client (v0.1) — a CLI and a TUI over the same core.
 Duplicate references across scopes (an address/CIDR in several VRFs, a VID at
 several sites) exit `5` and list the candidates; scope with `--vrf`/`--site`/`--group`.
 
+`search --site <ref>` resolves the site once (by slug, name, or id) and filters
+prefixes by site scope — NetBox 4.2 replaced the prefix `site` field with the
+polymorphic `scope`, so prefixes are matched on `scope_type=dcim.site` +
+`scope_id`, not the dead `?site=` filter. An unknown site is a not-found error
+(exit `4`), not a silent empty result. Other endpoints (devices, VLANs, …) take
+the site reference directly; endpoints that can't filter by site are skipped.
+Only the site scope is filtered today; region/site-group/location are not yet.
+
 ## Output
 
 Every data command takes `-o plain|json` (`--json` is shorthand). JSON adds

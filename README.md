@@ -125,6 +125,8 @@ nbox auto-detects v2 tokens (`Bearer nbt_<key>.<token>`) vs legacy v1 tokens (`T
 nbox                              # launch TUI
 nbox status                       # connection + NetBox/Django/Python versions
 nbox search <query> [--limit N] [--status/--site/--tenant/--role/--tag <v>] [--cols a,b,c] [--partial]
+                                  # --site resolves the site once and filters prefixes by site scope
+                                  # (scope_type=dcim.site + scope_id); an unknown site errors (exit 4)
 nbox tags                         # list tags (slug, name, count)
 nbox device <name-or-id> [--journal] [--journal-limit N]
 nbox ip <address> [--vrf <name>] [--journal]  # --vrf disambiguates duplicates across VRFs
