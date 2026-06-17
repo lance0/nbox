@@ -126,7 +126,7 @@ nbox                              # launch TUI
 nbox status                       # connection + NetBox/Django/Python versions
 nbox search <query> [--limit N] [--status/--site/--tenant/--role/--tag <v>] [--cols a,b,c] [--partial]
 nbox tags                         # list tags (slug, name, count)
-nbox device <name-or-id> [--journal]
+nbox device <name-or-id> [--journal] [--journal-limit N]
 nbox ip <address> [--vrf <name>] [--journal]  # --vrf disambiguates duplicates across VRFs
 nbox prefix <cidr> [--vrf <name>] [--journal] # includes utilization + children when present
 nbox next-ip <cidr> [--count N] [--vrf <name>]      # next available address(es)
@@ -140,7 +140,8 @@ nbox ip-range <start-or-id> [--journal]
 nbox vlan <vid-or-name> [--site <s>] [--group <g>] [--journal]
 nbox interface <device> <interface>
 nbox journal <kind> <ref>         # recent journal entries for an object
-                                  # --journal folds recent entries into a detail lookup
+                                  # --journal folds recent entries into a detail lookup (cap 5)
+                                  # --journal-limit N overrides the cap (implies --journal)
 nbox open <kind>/<ref>            # device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range
 nbox raw GET <api-path>           # raw read-only API request (escape hatch)
 nbox serve                        # read-only MCP server over stdio (for AI agents)

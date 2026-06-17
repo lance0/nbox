@@ -16,7 +16,7 @@ nbox is a read-only NetBox client (v0.1) — a CLI and a TUI over the same core.
 | `nbox vlan <vid\|name> [--site] [--group] [--journal]` | VLAN + referencing prefixes. |
 | `nbox site` / `rack` / `circuit` / `aggregate` / `asn` / `ip-range` `[--journal]` | Object lookups. |
 | `nbox tags` | List tags. |
-| `nbox journal <kind> <ref>` | Recent journal entries for an object. `--journal` on a detail lookup (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range) folds the most recent entries inline. |
+| `nbox journal <kind> <ref>` | Recent journal entries for an object. `--journal` on a detail lookup (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range) folds the most recent entries inline (default 5); `--journal-limit <N>` overrides the cap and implies `--journal`. |
 | `nbox status` | Connection + NetBox/Django/Python versions. |
 | `nbox open <kind>/<ref>` | Open an object in the browser. Kinds: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range. |
 | `nbox raw GET <path>` | Raw read-only API request (escape hatch). |

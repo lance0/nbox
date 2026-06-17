@@ -106,7 +106,9 @@ async fn device_with_journal_carries_entries_and_leaves_object_unchanged() {
     assert!(bare.get("journal").is_none(), "bare view has no journal");
 
     // With `--journal`: fetch the rows and wrap.
-    let entries = detail::journal_rows(&cli, "dcim.device", 7).await.unwrap();
+    let entries = detail::journal_rows(&cli, "dcim.device", 7, detail::JOURNAL_INLINE_MAX)
+        .await
+        .unwrap();
     assert_eq!(entries.len(), 2);
     let wrapped = WithJournal::new(view, entries);
     let v: Value = serde_json::to_value(&wrapped).unwrap();
@@ -167,7 +169,9 @@ async fn site_with_journal_carries_entries_and_leaves_object_unchanged() {
     let bare: Value = serde_json::to_value(&view).unwrap();
     assert!(bare.get("journal").is_none(), "bare view has no journal");
 
-    let entries = detail::journal_rows(&cli, "dcim.site", 1).await.unwrap();
+    let entries = detail::journal_rows(&cli, "dcim.site", 1, detail::JOURNAL_INLINE_MAX)
+        .await
+        .unwrap();
     assert_eq!(entries.len(), 1);
     let wrapped = WithJournal::new(view, entries);
     let v: Value = serde_json::to_value(&wrapped).unwrap();
@@ -226,7 +230,7 @@ async fn aggregate_with_journal_carries_entries_and_leaves_object_unchanged() {
     let bare: Value = serde_json::to_value(&view).unwrap();
     assert!(bare.get("journal").is_none(), "bare view has no journal");
 
-    let entries = detail::journal_rows(&cli, "ipam.aggregate", 3)
+    let entries = detail::journal_rows(&cli, "ipam.aggregate", 3, detail::JOURNAL_INLINE_MAX)
         .await
         .unwrap();
     assert_eq!(entries.len(), 1);
@@ -282,7 +286,9 @@ async fn asn_with_journal_carries_entries_and_leaves_object_unchanged() {
     let bare: Value = serde_json::to_value(&view).unwrap();
     assert!(bare.get("journal").is_none(), "bare view has no journal");
 
-    let entries = detail::journal_rows(&cli, "ipam.asn", 9).await.unwrap();
+    let entries = detail::journal_rows(&cli, "ipam.asn", 9, detail::JOURNAL_INLINE_MAX)
+        .await
+        .unwrap();
     assert_eq!(entries.len(), 1);
     let wrapped = WithJournal::new(view, entries);
     let v: Value = serde_json::to_value(&wrapped).unwrap();
@@ -340,7 +346,9 @@ async fn ip_range_with_journal_carries_entries_and_leaves_object_unchanged() {
     let bare: Value = serde_json::to_value(&view).unwrap();
     assert!(bare.get("journal").is_none(), "bare view has no journal");
 
-    let entries = detail::journal_rows(&cli, "ipam.iprange", 4).await.unwrap();
+    let entries = detail::journal_rows(&cli, "ipam.iprange", 4, detail::JOURNAL_INLINE_MAX)
+        .await
+        .unwrap();
     assert_eq!(entries.len(), 1);
     let wrapped = WithJournal::new(view, entries);
     let v: Value = serde_json::to_value(&wrapped).unwrap();
@@ -382,8 +390,172 @@ async fn journal_rows_caps_at_inline_max() {
     )
     .await;
 
-    let rows = detail::journal_rows(&client(&server), "dcim.device", 7)
+    let rows = detail::journal_rows(
+        &client(&server),
+        "dcim.device",
+        7,
+        detail::JOURNAL_INLINE_MAX,
+    )
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), detail::JOURNAL_INLINE_MAX);
+}
+
+#[tokio::test]
+async fn journal_rows_caps_at_explicit_limit() {
+    let server = MockServer::start().await;
+    // `--journal-limit 2` overrides the inline cap: the endpoint returns more
+    // than the cap, and `journal_rows` must keep only the newest 2.
+    const LIMIT: usize = 2;
+    let results: Vec<Value> = (0..(LIMIT + 4))
+        .map(|i| {
+            json!({
+                "id": i, "created": format!("2024-04-{:02}", i + 1),
+                "kind": {"value": "info", "label": "Info"},
+                "comments": format!("entry {i}")
+            })
+        })
+        .collect();
+    mock_journal(
+        &server,
+        "dcim.device",
+        7,
+        json!({
+            "count": results.len(), "next": null, "previous": null,
+            "results": results
+        }),
+    )
+    .await;
+
+    let rows = detail::journal_rows(&client(&server), "dcim.device", 7, LIMIT)
         .await
         .unwrap();
-    assert_eq!(rows.len(), detail::JOURNAL_INLINE_MAX);
+    assert_eq!(rows.len(), LIMIT);
+}
+
+/// `--journal-limit N` parses into `Some(N)` on a detail command, while the
+/// `--journal` bool defaults off — i.e. the limit alone is enough.
+#[test]
+fn journal_limit_parses_and_implies_journal_without_journal_flag() {
+    use clap::Parser;
+    use nbox::cli::{Cli, Command};
+
+    // Limit alone, no `--journal`: bool stays false but the limit is captured.
+    let cli = Cli::try_parse_from(["nbox", "device", "edge01", "--journal-limit", "3"]).unwrap();
+    match cli.command {
+        Some(Command::Device {
+            journal,
+            journal_limit,
+            ..
+        }) => {
+            assert!(
+                !journal,
+                "--journal stays off when only --journal-limit is given"
+            );
+            assert_eq!(journal_limit, Some(3));
+            // The handler's implies-journal rule: either flag turns output on.
+            assert!(journal || journal_limit.is_some());
+        }
+        other => panic!("expected Device, got {other:?}"),
+    }
+
+    // Absent on the bare command (unchanged default behavior).
+    let bare = Cli::try_parse_from(["nbox", "device", "edge01"]).unwrap();
+    assert!(matches!(
+        bare.command,
+        Some(Command::Device {
+            journal: false,
+            journal_limit: None,
+            ..
+        })
+    ));
+}
+
+/// `--journal-limit` is wired on every detail command that has `--journal`.
+#[test]
+fn journal_limit_wired_on_all_detail_commands() {
+    use clap::Parser;
+    use nbox::cli::{Cli, Command};
+
+    macro_rules! assert_limit {
+        ($args:expr, $pat:pat) => {{
+            let cli = Cli::try_parse_from($args).unwrap();
+            assert!(
+                matches!(cli.command, Some($pat)),
+                "limit not wired: {:?}",
+                $args
+            );
+        }};
+    }
+
+    assert_limit!(
+        ["nbox", "device", "edge01", "--journal-limit", "1"],
+        Command::Device {
+            journal_limit: Some(1),
+            ..
+        }
+    );
+    assert_limit!(
+        ["nbox", "ip", "10.0.0.1", "--journal-limit", "1"],
+        Command::Ip {
+            journal_limit: Some(1),
+            ..
+        }
+    );
+    assert_limit!(
+        ["nbox", "prefix", "10.0.0.0/24", "--journal-limit", "1"],
+        Command::Prefix {
+            journal_limit: Some(1),
+            ..
+        }
+    );
+    assert_limit!(
+        ["nbox", "vlan", "100", "--journal-limit", "1"],
+        Command::Vlan {
+            journal_limit: Some(1),
+            ..
+        }
+    );
+    assert_limit!(
+        ["nbox", "site", "iad1", "--journal-limit", "1"],
+        Command::Site {
+            journal_limit: Some(1),
+            ..
+        }
+    );
+    assert_limit!(
+        ["nbox", "rack", "r1", "--journal-limit", "1"],
+        Command::Rack {
+            journal_limit: Some(1),
+            ..
+        }
+    );
+    assert_limit!(
+        ["nbox", "circuit", "C-1", "--journal-limit", "1"],
+        Command::Circuit {
+            journal_limit: Some(1),
+            ..
+        }
+    );
+    assert_limit!(
+        ["nbox", "aggregate", "10.0.0.0/8", "--journal-limit", "1"],
+        Command::Aggregate {
+            journal_limit: Some(1),
+            ..
+        }
+    );
+    assert_limit!(
+        ["nbox", "asn", "64512", "--journal-limit", "1"],
+        Command::Asn {
+            journal_limit: Some(1),
+            ..
+        }
+    );
+    assert_limit!(
+        ["nbox", "ip-range", "10.0.0.10", "--journal-limit", "1"],
+        Command::IpRange {
+            journal_limit: Some(1),
+            ..
+        }
+    );
 }

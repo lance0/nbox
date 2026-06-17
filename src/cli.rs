@@ -105,6 +105,10 @@ pub enum Command {
         /// Also fetch the object's recent journal entries.
         #[arg(long)]
         journal: bool,
+
+        /// Max inline journal entries to fold in (implies --journal; default 5).
+        #[arg(long, value_name = "N")]
+        journal_limit: Option<usize>,
     },
 
     /// Look up an IP address.
@@ -119,6 +123,10 @@ pub enum Command {
         /// Also fetch the object's recent journal entries.
         #[arg(long)]
         journal: bool,
+
+        /// Max inline journal entries to fold in (implies --journal; default 5).
+        #[arg(long, value_name = "N")]
+        journal_limit: Option<usize>,
     },
 
     /// Show prefix details and children.
@@ -133,6 +141,10 @@ pub enum Command {
         /// Also fetch the object's recent journal entries.
         #[arg(long)]
         journal: bool,
+
+        /// Max inline journal entries to fold in (implies --journal; default 5).
+        #[arg(long, value_name = "N")]
+        journal_limit: Option<usize>,
     },
 
     /// Show the next available IP address(es) in a prefix.
@@ -171,6 +183,10 @@ pub enum Command {
         /// Also fetch the object's recent journal entries.
         #[arg(long)]
         journal: bool,
+
+        /// Max inline journal entries to fold in (implies --journal; default 5).
+        #[arg(long, value_name = "N")]
+        journal_limit: Option<usize>,
     },
 
     /// Show a rack.
@@ -181,6 +197,10 @@ pub enum Command {
         /// Also fetch the object's recent journal entries.
         #[arg(long)]
         journal: bool,
+
+        /// Max inline journal entries to fold in (implies --journal; default 5).
+        #[arg(long, value_name = "N")]
+        journal_limit: Option<usize>,
     },
 
     /// Show a circuit by CID or numeric ID.
@@ -191,6 +211,10 @@ pub enum Command {
         /// Also fetch the object's recent journal entries.
         #[arg(long)]
         journal: bool,
+
+        /// Max inline journal entries to fold in (implies --journal; default 5).
+        #[arg(long, value_name = "N")]
+        journal_limit: Option<usize>,
     },
 
     /// Show an aggregate by CIDR or numeric ID.
@@ -201,6 +225,10 @@ pub enum Command {
         /// Also fetch the object's recent journal entries.
         #[arg(long)]
         journal: bool,
+
+        /// Max inline journal entries to fold in (implies --journal; default 5).
+        #[arg(long, value_name = "N")]
+        journal_limit: Option<usize>,
     },
 
     /// Show an ASN by number.
@@ -211,6 +239,10 @@ pub enum Command {
         /// Also fetch the object's recent journal entries.
         #[arg(long)]
         journal: bool,
+
+        /// Max inline journal entries to fold in (implies --journal; default 5).
+        #[arg(long, value_name = "N")]
+        journal_limit: Option<usize>,
     },
 
     /// Show an IP range by start address or numeric ID.
@@ -221,6 +253,10 @@ pub enum Command {
         /// Also fetch the object's recent journal entries.
         #[arg(long)]
         journal: bool,
+
+        /// Max inline journal entries to fold in (implies --journal; default 5).
+        #[arg(long, value_name = "N")]
+        journal_limit: Option<usize>,
     },
 
     /// Show a VLAN by VID or name.
@@ -239,6 +275,10 @@ pub enum Command {
         /// Also fetch the object's recent journal entries.
         #[arg(long)]
         journal: bool,
+
+        /// Max inline journal entries to fold in (implies --journal; default 5).
+        #[arg(long, value_name = "N")]
+        journal_limit: Option<usize>,
     },
 
     /// Show an interface on a device.

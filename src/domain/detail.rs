@@ -43,15 +43,15 @@ pub const JOURNAL_INLINE_MAX: usize = 5;
 
 /// Fetch the most recent journal entries for an object (by dotted content type
 /// and numeric ID) as display rows, reusing the same query + mapping as the
-/// standalone `nbox journal` command. Returns at most [`JOURNAL_INLINE_MAX`].
+/// standalone `nbox journal` command. Returns at most `max` entries; callers
+/// pass [`JOURNAL_INLINE_MAX`] for the default inline cap or a user override.
 pub async fn journal_rows(
     client: &NetBoxClient,
     content_type: &str,
     object_id: u64,
+    max: usize,
 ) -> Result<Vec<JournalEntryRow>> {
-    let entries = client
-        .journal_entries(content_type, object_id, JOURNAL_INLINE_MAX)
-        .await?;
+    let entries = client.journal_entries(content_type, object_id, max).await?;
     Ok(JournalView::from_models(entries).entries)
 }
 

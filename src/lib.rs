@@ -93,15 +93,24 @@ fn emit_with_journal<T: serde::Serialize>(
     })
 }
 
+/// Whether a detail command should fold in journal entries. Passing
+/// `--journal-limit` implies `--journal`, so either flag turns the output on.
+fn wants_journal(journal: bool, journal_limit: Option<usize>) -> bool {
+    journal || journal_limit.is_some()
+}
+
 /// Resolve a detail object's journal rows for inline display, addressing it by
-/// the same kind + reference the standalone `nbox journal` command uses.
+/// the same kind + reference the standalone `nbox journal` command uses. The cap
+/// is `journal_limit` when `--journal-limit` was given, else [`JOURNAL_INLINE_MAX`].
 async fn inline_journal(
     client: &NetBoxClient,
     kind: &str,
     value: &str,
+    journal_limit: Option<usize>,
 ) -> Result<Vec<JournalEntryRow>> {
     let (content_type, id) = resolve_content_type_id(client, kind, value).await?;
-    detail::journal_rows(client, content_type, id).await
+    let max = journal_limit.unwrap_or(detail::JOURNAL_INLINE_MAX);
+    detail::journal_rows(client, content_type, id, max).await
 }
 
 /// Dispatch a parsed [`Cli`] invocation.
@@ -145,15 +154,23 @@ pub async fn run(cli: Cli) -> Result<()> {
             };
             run_search(&ctx, &query, limit, filters, cols, partial).await
         }
-        Some(Command::Device { value, journal }) => run_device(&ctx, &value, journal).await,
+        Some(Command::Device {
+            value,
+            journal,
+            journal_limit,
+        }) => run_device(&ctx, &value, journal, journal_limit).await,
         Some(Command::Ip {
             address,
             vrf,
             journal,
-        }) => run_ip(&ctx, &address, vrf.as_deref(), journal).await,
-        Some(Command::Prefix { cidr, vrf, journal }) => {
-            run_prefix(&ctx, &cidr, vrf.as_deref(), journal).await
-        }
+            journal_limit,
+        }) => run_ip(&ctx, &address, vrf.as_deref(), journal, journal_limit).await,
+        Some(Command::Prefix {
+            cidr,
+            vrf,
+            journal,
+            journal_limit,
+        }) => run_prefix(&ctx, &cidr, vrf.as_deref(), journal, journal_limit).await,
         Some(Command::NextIp { prefix, count, vrf }) => {
             run_next_ip(&ctx, &prefix, count, vrf.as_deref()).await
         }
@@ -162,18 +179,53 @@ pub async fn run(cli: Cli) -> Result<()> {
             length,
             vrf,
         }) => run_next_prefix(&ctx, &prefix, length, vrf.as_deref()).await,
-        Some(Command::Site { value, journal }) => run_site(&ctx, &value, journal).await,
-        Some(Command::Rack { value, journal }) => run_rack(&ctx, &value, journal).await,
-        Some(Command::Circuit { value, journal }) => run_circuit(&ctx, &value, journal).await,
-        Some(Command::Aggregate { value, journal }) => run_aggregate(&ctx, &value, journal).await,
-        Some(Command::Asn { asn, journal }) => run_asn(&ctx, asn, journal).await,
-        Some(Command::IpRange { value, journal }) => run_ip_range(&ctx, &value, journal).await,
+        Some(Command::Site {
+            value,
+            journal,
+            journal_limit,
+        }) => run_site(&ctx, &value, journal, journal_limit).await,
+        Some(Command::Rack {
+            value,
+            journal,
+            journal_limit,
+        }) => run_rack(&ctx, &value, journal, journal_limit).await,
+        Some(Command::Circuit {
+            value,
+            journal,
+            journal_limit,
+        }) => run_circuit(&ctx, &value, journal, journal_limit).await,
+        Some(Command::Aggregate {
+            value,
+            journal,
+            journal_limit,
+        }) => run_aggregate(&ctx, &value, journal, journal_limit).await,
+        Some(Command::Asn {
+            asn,
+            journal,
+            journal_limit,
+        }) => run_asn(&ctx, asn, journal, journal_limit).await,
+        Some(Command::IpRange {
+            value,
+            journal,
+            journal_limit,
+        }) => run_ip_range(&ctx, &value, journal, journal_limit).await,
         Some(Command::Vlan {
             value,
             site,
             group,
             journal,
-        }) => run_vlan(&ctx, &value, site.as_deref(), group.as_deref(), journal).await,
+            journal_limit,
+        }) => {
+            run_vlan(
+                &ctx,
+                &value,
+                site.as_deref(),
+                group.as_deref(),
+                journal,
+                journal_limit,
+            )
+            .await
+        }
         Some(Command::Interface { device, interface }) => {
             run_interface(&ctx, &device, &interface).await
         }
@@ -364,11 +416,16 @@ async fn run_search(
 }
 
 /// `nbox device <value>` — look up a device with its interfaces, IPs, cables, VLANs.
-async fn run_device(ctx: &Ctx, value: &str, journal: bool) -> Result<()> {
+async fn run_device(
+    ctx: &Ctx,
+    value: &str,
+    journal: bool,
+    journal_limit: Option<usize>,
+) -> Result<()> {
     let client = connect(ctx)?;
     let view = detail::device_detail_by_ref(&client, value, &not_found).await?;
-    if journal {
-        let entries = inline_journal(&client, "device", value).await?;
+    if wants_journal(journal, journal_limit) {
+        let entries = inline_journal(&client, "device", value, journal_limit).await?;
         let plain = view.to_plain();
         emit_with_journal(ctx, view, entries, plain)
     } else {
@@ -384,11 +441,17 @@ async fn run_interface(ctx: &Ctx, device: &str, interface: &str) -> Result<()> {
 }
 
 /// `nbox ip <address>` — resolve an IP (scoped by `--vrf`) and its parent prefix.
-async fn run_ip(ctx: &Ctx, address: &str, vrf: Option<&str>, journal: bool) -> Result<()> {
+async fn run_ip(
+    ctx: &Ctx,
+    address: &str,
+    vrf: Option<&str>,
+    journal: bool,
+    journal_limit: Option<usize>,
+) -> Result<()> {
     let client = connect(ctx)?;
     let view = detail::ip_view_by_ref(&client, address, vrf, &not_found).await?;
-    if journal {
-        let entries = inline_journal(&client, "ip", address).await?;
+    if wants_journal(journal, journal_limit) {
+        let entries = inline_journal(&client, "ip", address, journal_limit).await?;
         let plain = view.to_key_values().render();
         emit_with_journal(ctx, view, entries, plain)
     } else {
@@ -402,11 +465,17 @@ async fn resolve_prefix(client: &NetBoxClient, cidr: &str, vrf: Option<&str>) ->
 }
 
 /// `nbox prefix <cidr>` — show a prefix (scoped by `--vrf`) with children and IPs.
-async fn run_prefix(ctx: &Ctx, cidr: &str, vrf: Option<&str>, journal: bool) -> Result<()> {
+async fn run_prefix(
+    ctx: &Ctx,
+    cidr: &str,
+    vrf: Option<&str>,
+    journal: bool,
+    journal_limit: Option<usize>,
+) -> Result<()> {
     let client = connect(ctx)?;
     let view = detail::prefix_view_by_ref(&client, cidr, vrf, &not_found).await?;
-    if journal {
-        let entries = inline_journal(&client, "prefix", cidr).await?;
+    if wants_journal(journal, journal_limit) {
+        let entries = inline_journal(&client, "prefix", cidr, journal_limit).await?;
         let plain = view.to_plain();
         emit_with_journal(ctx, view, entries, plain)
     } else {
@@ -486,11 +555,12 @@ async fn run_vlan(
     site: Option<&str>,
     group: Option<&str>,
     journal: bool,
+    journal_limit: Option<usize>,
 ) -> Result<()> {
     let client = connect(ctx)?;
     let view = detail::vlan_view_by_ref(&client, value, site, group, &not_found).await?;
-    if journal {
-        let entries = inline_journal(&client, "vlan", value).await?;
+    if wants_journal(journal, journal_limit) {
+        let entries = inline_journal(&client, "vlan", value, journal_limit).await?;
         let plain = view.to_plain();
         emit_with_journal(ctx, view, entries, plain)
     } else {
@@ -499,11 +569,16 @@ async fn run_vlan(
 }
 
 /// `nbox circuit <cid|id>` — show a circuit.
-async fn run_circuit(ctx: &Ctx, value: &str, journal: bool) -> Result<()> {
+async fn run_circuit(
+    ctx: &Ctx,
+    value: &str,
+    journal: bool,
+    journal_limit: Option<usize>,
+) -> Result<()> {
     let client = connect(ctx)?;
     let view = detail::circuit_view_by_ref(&client, value, &not_found).await?;
-    if journal {
-        let entries = inline_journal(&client, "circuit", value).await?;
+    if wants_journal(journal, journal_limit) {
+        let entries = inline_journal(&client, "circuit", value, journal_limit).await?;
         let plain = view.to_key_values().render();
         emit_with_journal(ctx, view, entries, plain)
     } else {
@@ -512,11 +587,16 @@ async fn run_circuit(ctx: &Ctx, value: &str, journal: bool) -> Result<()> {
 }
 
 /// `nbox ip-range <start|id>` — show an IP range.
-async fn run_ip_range(ctx: &Ctx, value: &str, journal: bool) -> Result<()> {
+async fn run_ip_range(
+    ctx: &Ctx,
+    value: &str,
+    journal: bool,
+    journal_limit: Option<usize>,
+) -> Result<()> {
     let client = connect(ctx)?;
     let view = detail::ip_range_view_by_ref(&client, value, &not_found).await?;
-    if journal {
-        let entries = inline_journal(&client, "ip-range", value).await?;
+    if wants_journal(journal, journal_limit) {
+        let entries = inline_journal(&client, "ip-range", value, journal_limit).await?;
         let plain = view.to_key_values().render();
         emit_with_journal(ctx, view, entries, plain)
     } else {
@@ -525,11 +605,16 @@ async fn run_ip_range(ctx: &Ctx, value: &str, journal: bool) -> Result<()> {
 }
 
 /// `nbox aggregate <cidr|id>` — show an aggregate.
-async fn run_aggregate(ctx: &Ctx, value: &str, journal: bool) -> Result<()> {
+async fn run_aggregate(
+    ctx: &Ctx,
+    value: &str,
+    journal: bool,
+    journal_limit: Option<usize>,
+) -> Result<()> {
     let client = connect(ctx)?;
     let view = detail::aggregate_view_by_ref(&client, value, &not_found).await?;
-    if journal {
-        let entries = inline_journal(&client, "aggregate", value).await?;
+    if wants_journal(journal, journal_limit) {
+        let entries = inline_journal(&client, "aggregate", value, journal_limit).await?;
         let plain = view.to_key_values().render();
         emit_with_journal(ctx, view, entries, plain)
     } else {
@@ -538,12 +623,12 @@ async fn run_aggregate(ctx: &Ctx, value: &str, journal: bool) -> Result<()> {
 }
 
 /// `nbox asn <asn>` — show an ASN.
-async fn run_asn(ctx: &Ctx, asn: u32, journal: bool) -> Result<()> {
+async fn run_asn(ctx: &Ctx, asn: u32, journal: bool, journal_limit: Option<usize>) -> Result<()> {
     let client = connect(ctx)?;
     let value = asn.to_string();
     let view = detail::asn_view_by_ref(&client, asn, &value, &not_found).await?;
-    if journal {
-        let entries = inline_journal(&client, "asn", &value).await?;
+    if wants_journal(journal, journal_limit) {
+        let entries = inline_journal(&client, "asn", &value, journal_limit).await?;
         let plain = view.to_key_values().render();
         emit_with_journal(ctx, view, entries, plain)
     } else {
@@ -552,11 +637,16 @@ async fn run_asn(ctx: &Ctx, asn: u32, journal: bool) -> Result<()> {
 }
 
 /// `nbox site <name|slug>` — show a site.
-async fn run_site(ctx: &Ctx, value: &str, journal: bool) -> Result<()> {
+async fn run_site(
+    ctx: &Ctx,
+    value: &str,
+    journal: bool,
+    journal_limit: Option<usize>,
+) -> Result<()> {
     let client = connect(ctx)?;
     let view = detail::site_view_by_ref(&client, value, &not_found).await?;
-    if journal {
-        let entries = inline_journal(&client, "site", value).await?;
+    if wants_journal(journal, journal_limit) {
+        let entries = inline_journal(&client, "site", value, journal_limit).await?;
         let plain = view.to_key_values().render();
         emit_with_journal(ctx, view, entries, plain)
     } else {
@@ -565,11 +655,16 @@ async fn run_site(ctx: &Ctx, value: &str, journal: bool) -> Result<()> {
 }
 
 /// `nbox rack <name|id>` — show a rack.
-async fn run_rack(ctx: &Ctx, value: &str, journal: bool) -> Result<()> {
+async fn run_rack(
+    ctx: &Ctx,
+    value: &str,
+    journal: bool,
+    journal_limit: Option<usize>,
+) -> Result<()> {
     let client = connect(ctx)?;
     let view = detail::rack_view_by_ref(&client, value, &not_found).await?;
-    if journal {
-        let entries = inline_journal(&client, "rack", value).await?;
+    if wants_journal(journal, journal_limit) {
+        let entries = inline_journal(&client, "rack", value, journal_limit).await?;
         let plain = view.to_key_values().render();
         emit_with_journal(ctx, view, entries, plain)
     } else {
@@ -765,9 +860,25 @@ fn not_found(noun: &str, value: &str) -> anyhow::Error {
 
 #[cfg(test)]
 mod tests {
-    use super::{check_raw_method, error, first_subnet_of_length, not_found, parse_object_ref};
+    use super::{
+        check_raw_method, error, first_subnet_of_length, not_found, parse_object_ref, wants_journal,
+    };
     use crate::domain::detail::resolve_unique;
     use crate::netbox::models::ipam::AvailablePrefix;
+
+    #[test]
+    fn wants_journal_is_implied_by_either_flag() {
+        // Neither flag: no journal output (default behavior unchanged).
+        assert!(!wants_journal(false, None));
+        // `--journal` alone.
+        assert!(wants_journal(true, None));
+        // `--journal-limit` alone implies journal output.
+        assert!(wants_journal(false, Some(3)));
+        // `--journal-limit 0` still implies journal (it's `Some`).
+        assert!(wants_journal(false, Some(0)));
+        // Both set.
+        assert!(wants_journal(true, Some(10)));
+    }
 
     #[test]
     fn raw_allows_get_only() {
