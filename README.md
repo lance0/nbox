@@ -7,12 +7,12 @@ Terminal UI and CLI for NetBox — fast search, IPAM lookups, and device context
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE-MIT)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-tip-ff5e5b?logo=ko-fi)](https://ko-fi.com/lance0)
 
-nbox answers the questions you actually ask at the terminal — *what is this IP,
-where is this device, what prefix owns this address, what VLAN is this* — from
-the shell as scriptable one-liners and interactively in a k9s-style TUI.
+Ask the questions you actually ask at the terminal — *what is this IP, where is
+this device, what owns this prefix?* — from the shell, a k9s-style TUI, or an MCP
+server for AI agents.
 
-**Status: pre-1.0 and read-only.** Every command reads; nothing is written.
-Safe, diff-confirmed `PATCH` writes come later. See [ROADMAP.md](ROADMAP.md).
+**Status: pre-1.0, read-only.** Safe, diff-confirmed `PATCH` writes come later
+([ROADMAP.md](ROADMAP.md)).
 
 ## Quick Start
 
@@ -42,12 +42,12 @@ See [Installation](#installation) below for setup instructions.
 ## Features
 
 - **Fast shell lookups** — `device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `circuit`, `aggregate`, `asn`, `ip-range`, and `interface`, each as a one-liner.
+- **Agent-ready** — `nbox serve` is a read-only MCP server: the same lookups exposed as eight tools over stdio, returning the exact JSON view models the CLI does, so AI agents (Claude Code, Claude Desktop, …) query NetBox safely. See [docs/MCP.md](docs/MCP.md).
 - **Normalized search** — one `search` query runs in parallel across devices, sites, IPs, prefixes, VLANs, circuits, aggregates, ASNs, and IP ranges and returns ranked, deduped hits.
 - **IPAM-aware** — IP → most-specific parent prefix → VLAN → scope resolution, prefix utilization and children, `next-ip` / `next-prefix` for available addresses and free blocks (computed locally with `ipnet`).
 - **Polymorphic scope** — `--site` on `search` resolves the site once and filters prefixes by NetBox 4.2's `scope_type=dcim.site` + `scope_id`; views expose `scope`/`scope_type` (site, location, region, site-group, …).
 - **Interactive TUI** — list/preview split, scrolling, command palette, recents, twelve themes (including a light theme), `NO_COLOR` honored.
 - **Scriptable** — `-o plain|json|csv`, `--fields`, `--raw`, versioned `--envelope`, and stable exit codes; stdout stays clean for piping, logs go to stderr (see [AGENTS.md](AGENTS.md)).
-- **MCP server** — `nbox serve` exposes the lookups as eight read-only MCP tools over stdio for AI agents.
 - **Open and copy** — open any object in the browser or copy a field straight from results.
 - **Profiles** for multiple NetBox instances, **journals** folded into detail lookups, and **tags** listing.
 
@@ -382,6 +382,7 @@ tool, and MCP resources/prompts come later.
 - [Changelog](CHANGELOG.md) — release history
 - [Roadmap](ROADMAP.md) — planned features
 - [Contributing](CONTRIBUTING.md) — development setup and guidelines
+- [Security](SECURITY.md) — vulnerability reporting and security posture
 
 ## License
 
