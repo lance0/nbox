@@ -5,65 +5,251 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
-permissions:
-  contents: write
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
+  audit:
+    name: Security Audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo-audit
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-0.21
+
+      - name: Install cargo-audit
+        run: command -v cargo-audit || cargo install cargo-audit --locked
+
+      - name: Run security audit
+        run: cargo audit
+
   build:
-    name: ${{ matrix.target }}
+    name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { os: ubuntu-latest, target: x86_64-unknown-linux-gnu }
-          - { os: ubuntu-latest, target: aarch64-unknown-linux-gnu }
-          - { os: macos-latest, target: x86_64-apple-darwin }
-          - { os: macos-latest, target: aarch64-apple-darwin }
-          - { os: windows-latest, target: x86_64-pc-windows-msvc }
+          # Linux x86_64 (static musl — portable across glibc versions; also the
+          # amd64 container binary)
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: false
+          # Linux aarch64 (static musl — the arm64 container binary)
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            cross: true
+          # Linux aarch64 (glibc)
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+            cross: true
+          # macOS aarch64 (Apple Silicon)
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            cross: false
+          # macOS x86_64 (Intel)
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            cross: false
+          # Windows x86_64
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            cross: false
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Install Rust toolchain
+      - name: Install Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.target }}
 
-      - name: Install aarch64 cross linker
-        if: matrix.target == 'aarch64-unknown-linux-gnu'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y gcc-aarch64-linux-gnu
-          echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+      - name: Cache cargo registry and git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Install cross
+        if: matrix.cross
+        run: cargo install cross --version 0.2.5
 
-      - name: Build
+      - name: Install musl-tools
+        if: ${{ !matrix.cross && contains(matrix.target, 'musl') }}
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build (native)
+        if: ${{ !matrix.cross }}
         run: cargo build --release --locked --features updates --target ${{ matrix.target }}
+
+      - name: Build (cross)
+        if: matrix.cross
+        run: cross build --release --locked --features updates --target ${{ matrix.target }}
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
         shell: bash
         run: |
-          dist="nbox-${{ matrix.target }}"
-          mkdir "$dist"
-          cp "target/${{ matrix.target }}/release/nbox" "$dist/"
-          cp README.md LICENSE-MIT LICENSE-APACHE "$dist/"
-          tar czf "$dist.tar.gz" "$dist"
-          shasum -a 256 "$dist.tar.gz" > "$dist.tar.gz.sha256"
+          cd target/${{ matrix.target }}/release
+          tar czvf ../../../nbox-${{ matrix.target }}.tar.gz nbox
+          cd -
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         shell: bash
         run: |
-          dist="nbox-${{ matrix.target }}"
-          mkdir "$dist"
-          cp "target/${{ matrix.target }}/release/nbox.exe" "$dist/"
-          cp README.md LICENSE-MIT LICENSE-APACHE "$dist/"
-          7z a "$dist.zip" "$dist" >/dev/null
-          certutil -hashfile "$dist.zip" SHA256 > "$dist.zip.sha256"
+          cd target/${{ matrix.target }}/release
+          7z a ../../../nbox-${{ matrix.target }}.zip nbox.exe >/dev/null
+          cd -
 
-      - name: Upload release assets
-        uses: softprops/action-gh-release@v2
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
         with:
-          files: nbox-${{ matrix.target }}.*
+          name: nbox-${{ matrix.target }}
+          path: |
+            nbox-${{ matrix.target }}.tar.gz
+            nbox-${{ matrix.target }}.zip
+          if-no-files-found: ignore
+
+  completions:
+    name: Generate Shell Completions and Man Page
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry and git
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-
+
+      - name: Build
+        run: cargo build --release --locked --features updates
+
+      - name: Generate completions and man page
+        run: |
+          mkdir -p completions
+          ./target/release/nbox completions bash > completions/nbox.bash
+          ./target/release/nbox completions zsh > completions/_nbox
+          ./target/release/nbox completions fish > completions/nbox.fish
+          ./target/release/nbox completions powershell > completions/_nbox.ps1
+          ./target/release/nbox completions elvish > completions/nbox.elv
+          ./target/release/nbox man > completions/nbox.1
+          tar czvf nbox-completions.tar.gz completions/
+
+      - name: Upload completions
+        uses: actions/upload-artifact@v4
+        with:
+          name: nbox-completions
+          path: nbox-completions.tar.gz
+
+  docker:
+    name: Publish Container Image (GHCR)
+    needs: [audit, build]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Linux musl artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: nbox-*-linux-musl
+          path: artifacts
+
+      - name: Stage binaries by Docker architecture
+        run: |
+          mkdir -p bin/amd64 bin/arm64
+          tar xzf artifacts/nbox-x86_64-unknown-linux-musl/nbox-x86_64-unknown-linux-musl.tar.gz -C bin/amd64
+          tar xzf artifacts/nbox-aarch64-unknown-linux-musl/nbox-aarch64-unknown-linux-musl.tar.gz -C bin/arm64
+
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Extract image metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+          labels: |
+            org.opencontainers.image.description=Terminal UI and CLI for NetBox — fast search, IPAM lookups, and device context
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.release
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
+  release:
+    name: Create Release
+    needs: [audit, build, completions]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: List artifacts
+        run: find artifacts -type f
+
+      - name: Collect assets and generate checksums
+        run: |
+          mkdir -p dist
+          find artifacts -type f \( -name "*.tar.gz" -o -name "*.zip" \) -exec mv {} dist/ \;
+          cd dist
+          sha256sum -- * > SHA256SUMS
+          cat SHA256SUMS
+          cd -
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            dist/*
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

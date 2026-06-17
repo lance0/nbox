@@ -1,13 +1,17 @@
 # Minimal runtime image for nbox.
 #
-# Expects a prebuilt static (musl) `nbox` binary in the build context — the
-# release build produces `nbox-x86_64-unknown-linux-musl`; stage its `nbox`
-# binary next to this file before `docker build`. This image is not a from-source
-# build; it just wraps the binary with CA certificates for HTTPS to NetBox.
-FROM alpine:3.20
+# Used by the release workflow: packages prebuilt static (musl) `nbox` binaries
+# (downloaded from the build matrix) into a minimal multi-arch image. The release
+# job stages each architecture's binary under `bin/<TARGETARCH>/nbox` before the
+# buildx build, so the right binary is copied per platform. This image is not a
+# from-source build; it just wraps the binary with CA certificates for HTTPS to
+# NetBox.
+FROM alpine:3.21
+ARG TARGETARCH
 
 RUN apk add --no-cache ca-certificates
 
-COPY nbox /usr/local/bin/nbox
+COPY bin/${TARGETARCH}/nbox /usr/local/bin/nbox
 
 ENTRYPOINT ["nbox"]
+CMD ["--help"]
