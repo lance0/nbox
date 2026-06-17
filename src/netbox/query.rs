@@ -15,6 +15,13 @@ use crate::netbox::models::ipam::{
 };
 use crate::netbox::pagination::Page;
 
+/// `limit` sent on the `available-prefixes` GET. Without an explicit `limit`
+/// NetBox returns its default of 50 free blocks, which silently truncates the
+/// candidate set for a large/fragmented parent (a fitting block past the 50th
+/// would be missed by the client-side `--length` filter). 1000 is NetBox's
+/// server-side cap, so it requests a full page without an unbounded list.
+const AVAILABLE_PREFIXES_LIMIT: usize = 1000;
+
 /// Resolve a fuzzy (name-contains) result set: the single match, `None` if empty,
 /// or an [`NboxError::Ambiguous`] listing the candidates when more than one match.
 fn ambiguous_or_first<T>(
@@ -245,10 +252,12 @@ impl NetBoxClient {
     }
 
     /// Available (free) child prefixes within a prefix (`…/available-prefixes/`).
+    /// Passes an explicit `limit` ([`AVAILABLE_PREFIXES_LIMIT`]) so the candidate
+    /// set isn't truncated at NetBox's 50-block default.
     pub async fn prefix_available_prefixes(&self, prefix_id: u64) -> Result<Vec<AvailablePrefix>> {
         self.get(
             &format!("/api/ipam/prefixes/{prefix_id}/available-prefixes/"),
-            &[],
+            &[("limit", AVAILABLE_PREFIXES_LIMIT.to_string())],
         )
         .await
     }
@@ -436,7 +445,44 @@ impl NetBoxClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ProfileConfig;
     use serde_json::json;
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn client_for(server: &MockServer) -> NetBoxClient {
+        let profile = ProfileConfig {
+            url: server.uri(),
+            ..Default::default()
+        };
+        NetBoxClient::new(&profile, None).unwrap()
+    }
+
+    #[tokio::test]
+    async fn available_prefixes_requests_full_page_not_default_50() {
+        let server = MockServer::start().await;
+        // Return 60 free blocks — more than NetBox's 50-block default — to prove
+        // candidates past the 50th are carried through when `limit` is sent.
+        let blocks: Vec<_> = (0..60)
+            .map(|i| json!({"family": 4, "prefix": format!("10.0.{i}.0/24")}))
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/prefixes/5/available-prefixes/"))
+            .and(query_param("limit", "1000"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!(blocks)))
+            .mount(&server)
+            .await;
+
+        let free = client_for(&server)
+            .prefix_available_prefixes(5)
+            .await
+            .expect("available-prefixes");
+
+        // The matcher above already enforces `limit=1000`; assert the full set
+        // (beyond 50) is parsed back, including a block past the default cap.
+        assert_eq!(free.len(), 60);
+        assert_eq!(free[55].prefix, "10.0.55.0/24");
+    }
 
     #[test]
     fn friendly_scope_type_maps_known_and_passes_through_unknown() {

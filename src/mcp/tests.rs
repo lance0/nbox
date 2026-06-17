@@ -745,6 +745,49 @@ async fn next_prefix_with_length_returns_first_block() {
 }
 
 #[tokio::test]
+async fn next_prefix_with_length_finds_fitting_block_beyond_first_50() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .and(query_param("prefix", "10.44.0.0/16"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 5, "url": "u", "prefix": "10.44.0.0/16"}]
+        })))
+        .mount(&mock)
+        .await;
+    // 60 free /26 blocks: a /26 can't be subnetted to a /25, so the first 59 are
+    // all too small. Only the 60th block — a /24, past NetBox's 50-default — can
+    // yield the requested /25. The query layer must send `limit=1000` to surface
+    // it; the matcher enforces that.
+    let mut blocks: Vec<_> = (0..59)
+        .map(|i| json!({"family": 4, "prefix": format!("10.44.{i}.0/26")}))
+        .collect();
+    blocks.push(json!({"family": 4, "prefix": "10.44.200.0/24"}));
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/5/available-prefixes/"))
+        .and(query_param("limit", "1000"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!(blocks)))
+        .mount(&mock)
+        .await;
+
+    let Json(report) = server_for(&mock)
+        .nbox_next_prefix(Parameters(NextPrefixArgs {
+            prefix: "10.44.0.0/16".to_string(),
+            length: Some(25),
+            vrf: None,
+        }))
+        .await
+        .expect("next prefix");
+
+    let value = serde_json::to_value(&report).expect("serialize report");
+    let available = value["available"].as_array().expect("available array");
+    assert_eq!(available.len(), 1);
+    // The first /25 carved from the fitting block that sits past the 50th candidate.
+    assert_eq!(available[0], "10.44.200.0/25");
+}
+
+#[tokio::test]
 async fn next_prefix_without_length_lists_all_free_blocks() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
