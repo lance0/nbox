@@ -4,6 +4,10 @@
 # Claude Code local session state
 /.claude/
 
+# Founding design doc — kept local/internal (partly aspirational; docs/ARCHITECTURE.md
+# is the public, accurate architecture doc, and ROADMAP.md is authoritative).
+/DESIGN.md
+
 # Editor / OS noise
 *.swp
 .DS_Store
