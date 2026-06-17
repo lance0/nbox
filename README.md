@@ -181,20 +181,22 @@ nbox prefix 10.44.208.0/24 --envelope --raw      # versioned, single-line JSON
 
 ## TUI Keybindings
 
-| Key                | Action                          |
-| ------------------ | ------------------------------- |
-| `/`                | search                          |
-| `:`                | command palette                 |
-| `Enter`            | open selected object            |
-| `b` / `Esc`        | back                            |
-| `o`                | open in browser                 |
-| `y`                | copy selected field             |
-| `r`                | refresh                         |
-| `Tab` / `Shift+Tab`| next / previous pane            |
-| `j`/`k`, `g`/`G`   | move, top / bottom              |
-| `t`                | cycle theme                     |
-| `?` / `F1`         | help                            |
-| `q` / `Ctrl+c`     | quit                            |
+| Key                | Action                                   |
+| ------------------ | ---------------------------------------- |
+| `/`                | search                                   |
+| `:`                | command palette                          |
+| `Tab` / `Shift+Tab`| switch pane focus                        |
+| `j` / `k`          | move selection (scroll detail/preview)   |
+| `g` / `G`          | top / bottom                             |
+| `PgUp` / `PgDn`    | page up / down                           |
+| `Enter`            | open selected object                     |
+| `o`                | open in browser                          |
+| `y`                | copy selected field                      |
+| `t`                | cycle theme                              |
+| `r`                | refresh                                  |
+| `b` / `Esc`        | back                                     |
+| `?` / `F1`         | help                                     |
+| `q` / `Ctrl+c`     | quit                                     |
 
 On a device screen: `i` interfaces · `p` IPs · `c` cables · `v` VLANs · `s` services.
 

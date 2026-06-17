@@ -466,6 +466,7 @@ impl App {
                 self.command_input.reset();
             }
             KeyCode::Char('t') => self.cycle_theme(),
+            KeyCode::Char('r') => return self.refresh_current_view(),
             // Tab / Shift+Tab cycle focus between the home split's panes.
             KeyCode::Tab if self.screen == Screen::Home => self.toggle_focus(),
             KeyCode::BackTab if self.screen == Screen::Home => self.toggle_focus(),
@@ -706,6 +707,38 @@ impl App {
             return vec![AppCommand::Search(query)];
         }
         Vec::new()
+    }
+
+    /// Manual refresh of whatever's on screen, bound to `r`. On the detail screen
+    /// it reloads the current object; on home it re-runs the active search the
+    /// same way the auto-refresh tick does — through the same `AppCommand::Search`
+    /// dispatch, capturing the cursor in `pending_reselect` so the selection is
+    /// preserved when the results land. With nothing to refresh (no detail loaded,
+    /// or an empty home with no prior query) it's a safe no-op with a gentle
+    /// status, never a stray fetch.
+    fn refresh_current_view(&mut self) -> Vec<AppCommand> {
+        match self.screen {
+            Screen::Detail => match &self.detail {
+                Some(d) => {
+                    let (kind, id) = (d.kind, d.id);
+                    self.set_status("refreshing…", Severity::Info);
+                    vec![AppCommand::LoadDetail { kind, id }]
+                }
+                None => Vec::new(),
+            },
+            Screen::Home => match self.last_query.clone() {
+                Some(query) => {
+                    self.pending_reselect = self.selected_result().map(|r| (r.kind, r.id));
+                    self.set_status(format!("refreshing {query}…"), Severity::Info);
+                    vec![AppCommand::Search(query)]
+                }
+                None => {
+                    self.set_status("nothing to refresh", Severity::Warning);
+                    Vec::new()
+                }
+            },
+            Screen::Help => Vec::new(),
+        }
     }
 
     /// Advance to the next built-in theme.
@@ -1767,6 +1800,60 @@ mod tests {
         // New results arrive in a different order; cursor should track id=3.
         set_results(&mut a, vec![result(3, "c"), result(1, "a"), result(2, "b")]);
         assert_eq!(a.selected_result().map(|r| r.id), Some(3));
+    }
+
+    #[test]
+    fn r_on_home_with_results_dispatches_refresh_search_preserving_selection() {
+        // `r` re-runs the active search through the same Search dispatch the
+        // auto-refresh tick uses, capturing the cursor so it's preserved when
+        // the (possibly reordered) results land.
+        let mut a = app();
+        set_results(&mut a, vec![result(1, "a"), result(2, "b"), result(3, "c")]);
+        a.last_query = Some("edge".into());
+        a.selected = 2; // id = 3
+
+        let cmds = a.handle_event(press(KeyCode::Char('r')));
+        assert!(matches!(cmds.as_slice(), [AppCommand::Search(q)] if q == "edge"));
+        assert!(a.loading(), "refresh is a tracked fetch");
+        assert!(a.status.contains("refreshing"));
+        // Results return reordered; the cursor still tracks id=3.
+        set_results(&mut a, vec![result(3, "c"), result(1, "a"), result(2, "b")]);
+        assert_eq!(a.selected_result().map(|r| r.id), Some(3));
+    }
+
+    #[test]
+    fn r_on_detail_dispatches_a_reload_of_the_current_object() {
+        // `r` on the detail screen reloads the open object through the same
+        // LoadDetail dispatch Enter uses, so the spinner/status flow is shared.
+        let mut a = app();
+        set_results(&mut a, vec![result(7, "edge07")]);
+        a.handle_event(press(KeyCode::Enter));
+        a.handle_event(AppEvent::DetailLoaded(Ok(preview_view(7, "body"))));
+        assert_eq!(a.screen, Screen::Detail);
+
+        let cmds = a.handle_event(press(KeyCode::Char('r')));
+        assert!(matches!(
+            cmds.as_slice(),
+            [AppCommand::LoadDetail {
+                kind: ObjectKind::Device,
+                id: 7
+            }]
+        ));
+        assert!(a.loading(), "a detail reload is a tracked fetch");
+        assert!(a.status.contains("refreshing"));
+    }
+
+    #[test]
+    fn r_on_empty_home_is_a_safe_noop() {
+        // Nothing searched yet: `r` must not fire a stray fetch, only leave a
+        // gentle status.
+        let mut a = app();
+        assert!(a.last_query.is_none());
+        let cmds = a.handle_event(press(KeyCode::Char('r')));
+        assert!(cmds.is_empty(), "no query → no fetch");
+        assert!(!a.loading());
+        assert_eq!(a.status_severity, Severity::Warning);
+        assert!(a.status.contains("nothing to refresh"));
     }
 
     fn results_n(n: u64) -> Vec<SearchResult> {

@@ -34,9 +34,10 @@ See [AGENTS.md](../AGENTS.md) for the machine-readable surface and exit codes.
 
 ## TUI
 
-`nbox` (no subcommand) launches the TUI: `/` search, `:` palette, `Enter` open,
-`o` browser, `y` copy, `t` theme, device tabs `i`/`p`/`c`/`v`/`s`, recents on the
-home screen, optional auto-refresh (`[ui].refresh_secs`).
+`nbox` (no subcommand) launches the TUI: `/` search, `:` palette, `Tab` switch
+pane, `Enter` open, `o` browser, `y` copy, `t` theme, `r` refresh, device tabs
+`i`/`p`/`c`/`v`/`s`, recents on the home screen, optional auto-refresh
+(`[ui].refresh_secs`).
 
 ## MCP server
 

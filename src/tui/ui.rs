@@ -308,6 +308,7 @@ pub fn help_bindings() -> Vec<Vec<(&'static str, &'static str)>> {
             ("o", "open in browser"),
             ("y", "copy"),
             ("t", "cycle theme"),
+            ("r", "refresh"),
             ("i p c v s", "device tabs"),
             ("b / Esc", "back"),
             ("? / F1", "toggle help"),
@@ -599,6 +600,7 @@ mod tests {
         assert!(has("o"), "o open in browser");
         assert!(has("y"), "y copy");
         assert!(has("t"), "t cycle theme");
+        assert!(has("r"), "r refresh");
         // The device-tab keys i/p/c/v/s.
         assert!(has("i p c v s"), "device tab keys");
         // Back / help / quit.
