@@ -95,8 +95,72 @@ mod tests {
     }
 
     #[test]
+    fn every_variant_keeps_its_code_when_wrapped_in_context() {
+        // The chain-walking path (`exit_code_for`) must recover the stable code
+        // for each variant even when buried under a `.context(...)` layer — this
+        // is the real path `main` takes, since handlers wrap errors with context.
+        let cases: [(NboxError, i32); 5] = [
+            (NboxError::Authentication, 3),
+            (NboxError::PermissionDenied, 3),
+            (NboxError::NotFound("nope".into()), 4),
+            (
+                NboxError::Ambiguous {
+                    noun: "device".into(),
+                    value: "edge".into(),
+                    matches: "edge01, edge02".into(),
+                },
+                5,
+            ),
+            (
+                NboxError::Api {
+                    status: 502,
+                    body: "bad gateway".into(),
+                },
+                1,
+            ),
+        ];
+        for (variant, code) in cases {
+            let err = anyhow::Error::from(variant).context("while looking up the object");
+            assert_eq!(
+                NboxError::exit_code_for(&err),
+                code,
+                "wrapped variant lost its code"
+            );
+        }
+    }
+
+    #[test]
+    fn exit_code_survives_multiple_context_layers() {
+        // Several nested context layers — the deepest typed error still wins.
+        let err = anyhow::Error::from(NboxError::Authentication)
+            .context("authenticating to NetBox")
+            .context("running `nbox device edge01`")
+            .context("dispatching command");
+        assert_eq!(NboxError::exit_code_for(&err), 3);
+    }
+
+    #[test]
+    fn typed_error_under_untyped_outer_context_is_still_found() {
+        // A typed error buried beneath an untyped (string) context layer — the
+        // realistic shape when a handler adds a `.with_context(|| "...")` note —
+        // is still recovered by walking the chain.
+        let err = anyhow::Error::from(NboxError::PermissionDenied)
+            .context("fetching /api/dcim/sites/")
+            .context("running `nbox site iad1`");
+        assert_eq!(NboxError::exit_code_for(&err), 3);
+    }
+
+    #[test]
     fn untyped_error_defaults_to_one() {
         let err = anyhow::anyhow!("some generic failure");
+        assert_eq!(NboxError::exit_code_for(&err), 1);
+    }
+
+    #[test]
+    fn untyped_error_with_context_still_defaults_to_one() {
+        let err = anyhow::anyhow!("disk full")
+            .context("writing cache")
+            .context("running command");
         assert_eq!(NboxError::exit_code_for(&err), 1);
     }
 }
