@@ -97,6 +97,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   any key or `Esc` closes it (consumed — no underlying action fires). The `cheese`
   Help wrapper was dropped; the layout helpers are pure and unit-tested.
 
+### Fixed
+- Scope disambiguation now prefers an exact match. `--site`/`--vrf`/`--group`
+  matched the scope's `display` by substring, so `nbox vlan 1234 --site ci-site`
+  also matched a prefix sibling like `ci-site2` (whose display contains
+  `ci-site`) and stayed ambiguous instead of resolving. `retain_scope` now keeps
+  candidates whose scope matches the reference exactly (name/slug/id) when any
+  do, and only falls back to the loose substring match when none do — so
+  `--vrf <rd>` (the RD lives in the VRF's display) still resolves.
+
 ## [0.1.1] - 2026-06-17
 
 The first real release. (`0.1.0` was a name reservation on crates.io.)

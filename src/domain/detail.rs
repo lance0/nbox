@@ -56,15 +56,29 @@ pub async fn journal_rows(
 }
 
 /// Drop candidates whose scope object doesn't match a user-supplied reference
-/// (e.g. `--vrf`). A no-op when `query` is `None`. Shared by the CLI handlers
-/// and the MCP tools so both filter candidate sets identically.
+/// (e.g. `--site`/`--vrf`). A no-op when `query` is `None`. Shared by the CLI
+/// handlers and the MCP tools so both filter candidate sets identically.
+///
+/// An exact match wins: if any candidate's scope matches `query` exactly (by
+/// name/slug/id), only those are kept. Only when nothing matches exactly do we
+/// fall back to the looser [`BriefObject::matches`] (display substring) — that
+/// fallback is what resolves `--vrf <rd>` (the RD lives in the VRF's display).
+/// Without the exact-wins step, `--site ci-site` would also retain `ci-site2`
+/// whose display contains the substring `ci-site`.
 pub(crate) fn retain_scope<T>(
     items: &mut Vec<T>,
     query: Option<&str>,
     scope: impl Fn(&T) -> Option<&BriefObject>,
 ) {
     if let Some(q) = query {
-        items.retain(|it| scope(it).is_some_and(|b| b.matches(q)));
+        let has_exact = items
+            .iter()
+            .any(|it| scope(it).is_some_and(|b| b.matches_exact(q)));
+        if has_exact {
+            items.retain(|it| scope(it).is_some_and(|b| b.matches_exact(q)));
+        } else {
+            items.retain(|it| scope(it).is_some_and(|b| b.matches(q)));
+        }
     }
 }
 

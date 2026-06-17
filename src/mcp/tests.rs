@@ -498,6 +498,68 @@ async fn get_vlan_disambiguated_by_site_resolves() {
 }
 
 #[tokio::test]
+async fn get_vlan_site_disambiguation_prefers_exact_slug_over_prefix_sibling() {
+    // Regression: the same VID at two sites whose slugs are prefix-related
+    // (`ci-site` / `ci-site2`). `--site ci-site` must resolve to ci-site's VLAN,
+    // NOT stay ambiguous — the loose display-substring match would otherwise also
+    // retain ci-site2 (its display contains the substring "ci-site").
+    let mock = MockServer::start().await;
+    let two_sited = || {
+        json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [
+                {"id": 7, "url": "u", "vid": 1234, "name": "ci-vlan",
+                 "site": {"id": 1, "display": "ci-site", "slug": "ci-site"}},
+                {"id": 8, "url": "u", "vid": 1234, "name": "ci-vlan2",
+                 "site": {"id": 2, "display": "ci-site2", "slug": "ci-site2"}}
+            ]
+        })
+    };
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/vlans/"))
+        .and(query_param("vid", "1234"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(two_sited()))
+        .mount(&mock)
+        .await;
+    // Either VLAN may be the one resolved; both prefix lookups return empty.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
+        .mount(&mock)
+        .await;
+
+    // `--site ci-site` → exact slug match on ci-site wins, ci-site2 excluded.
+    let Json(value) = server_for(&mock)
+        .nbox_get(Parameters(GetArgs {
+            kind: GetKind::Vlan,
+            reference: "1234".to_string(),
+            vrf: None,
+            site: Some("ci-site".to_string()),
+            group: None,
+        }))
+        .await
+        .expect("ci-site disambiguates to ci-vlan");
+    assert_eq!(value["vid"], 1234);
+    assert_eq!(value["name"], "ci-vlan");
+    assert_eq!(value["scope"], "ci-site");
+
+    // `--site ci-site2` resolves to the other VLAN.
+    let Json(value2) = server_for(&mock)
+        .nbox_get(Parameters(GetArgs {
+            kind: GetKind::Vlan,
+            reference: "1234".to_string(),
+            vrf: None,
+            site: Some("ci-site2".to_string()),
+            group: None,
+        }))
+        .await
+        .expect("ci-site2 disambiguates to ci-vlan2");
+    assert_eq!(value2["vid"], 1234);
+    assert_eq!(value2["name"], "ci-vlan2");
+    assert_eq!(value2["scope"], "ci-site2");
+}
+
+#[tokio::test]
 async fn get_site_returns_site_view() {
     let mock = MockServer::start().await;
     // site_by_ref tries slug first.

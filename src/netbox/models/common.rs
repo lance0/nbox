@@ -46,6 +46,22 @@ impl BriefObject {
                 .map(str::to_lowercase)
                 .is_some_and(|d| d == q || d.contains(&q))
     }
+
+    /// A strict, identity-level match: case-insensitive equality on `name` or
+    /// `slug`, or `id` equality when `query` parses to a number. Unlike
+    /// [`matches`](Self::matches) it never substring-matches `display`, so a
+    /// reference like `ci-site` won't match a prefix sibling such as `ci-site2`.
+    /// Scope disambiguation prefers this and only falls back to the looser
+    /// [`matches`](Self::matches) when nothing matches exactly (keeping
+    /// `--vrf <rd>`, which relies on the display substring, working).
+    pub fn matches_exact(&self, query: &str) -> bool {
+        let q = query.trim().to_lowercase();
+        if q.is_empty() {
+            return false;
+        }
+        let eq = |s: &Option<String>| s.as_deref().is_some_and(|x| x.to_lowercase() == q);
+        eq(&self.name) || eq(&self.slug) || q.parse::<u64>().is_ok_and(|n| n == self.id)
+    }
 }
 
 /// A NetBox choice field: `{value, label}` (e.g. status, role).
@@ -97,6 +113,37 @@ mod tests {
         let site: BriefObject =
             serde_json::from_value(json!({"id": 2, "name": "IAD1", "slug": "iad1"})).unwrap();
         assert!(site.matches("iad1")); // slug
+    }
+
+    #[test]
+    fn matches_exact_is_strict_no_display_substring() {
+        let site: BriefObject = serde_json::from_value(
+            json!({"id": 2, "name": "CI Site", "slug": "ci-site", "display": "CI Site"}),
+        )
+        .unwrap();
+        assert!(site.matches_exact("ci-site")); // slug, case-insensitive
+        assert!(site.matches_exact("CI Site")); // name
+        assert!(site.matches_exact("2")); // id
+        // A prefix sibling's reference must NOT match this one (the bug).
+        assert!(!site.matches_exact("ci-site2"));
+        assert!(!site.matches_exact("")); // empty never matches
+
+        // And, conversely, `ci-site` must not match the sibling whose display
+        // happens to contain it as a substring.
+        let sibling: BriefObject = serde_json::from_value(
+            json!({"id": 3, "name": "CI Site 2", "slug": "ci-site2", "display": "CI Site 2"}),
+        )
+        .unwrap();
+        assert!(!sibling.matches_exact("ci-site"));
+        assert!(sibling.matches_exact("ci-site2"));
+
+        // A VRF's RD lives only in `display`, so exact does NOT match it — that
+        // case relies on the looser `matches` fallback in `retain_scope`.
+        let vrf: BriefObject =
+            serde_json::from_value(json!({"id": 1, "name": "blue", "display": "blue (65000:1)"}))
+                .unwrap();
+        assert!(vrf.matches_exact("blue")); // name still matches exactly
+        assert!(!vrf.matches_exact("65000:1")); // RD substring does not
     }
 
     #[test]
