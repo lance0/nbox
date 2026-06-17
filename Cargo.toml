@@ -118,7 +118,7 @@ wiremock = "0.6"
 # private key via `jsonwebtoken`. Gated by the http-only tests at use sites.
 # `rand` 0.8 supplies the RNG for keygen (matches `rsa`'s `rand_core` 0.6).
 rsa = { version = "0.9", features = ["pem"] }
-rand = "0.8"
+rand = "0.10"
 base64 = "0.22"
 
 [profile.release]

@@ -1973,7 +1973,7 @@ dependencies = [
  "libc",
  "nucleo",
  "open",
- "rand 0.8.6",
+ "rand 0.10.1",
  "ratatui",
  "ratatui-cheese",
  "reqwest",
