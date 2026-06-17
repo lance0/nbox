@@ -66,19 +66,23 @@ open = "5"
 # IP/network handling
 ipnet = "2"
 
-# Unix syscalls — used in `main` to reset the SIGPIPE disposition to SIG_DFL so a
-# closed stdout pipe (e.g. `nbox … | head`) terminates the process normally
-# instead of panicking. Already in the tree transitively; declared here so the
-# direct use is explicit and version-controlled.
-[target.'cfg(unix)'.dependencies]
-libc = "0.2"
-
 # Caching, later
 rusqlite = { version = "0.40", features = ["bundled"], optional = true }
 
 # Update notifications, later
 update-informer = { version = "1", default-features = false, features = ["github", "ureq", "rustls-tls"], optional = true }
+
+# MCP server (`nbox serve`) — read-only tools over stdio
 rmcp = { version = "1.7", default-features = false, features = ["server", "macros", "transport-io"] }
+
+# Unix syscalls — used in `main` to reset the SIGPIPE disposition to SIG_DFL so a
+# closed stdout pipe (e.g. `nbox … | head`) terminates the process normally
+# instead of panicking. Already in the tree transitively; declared here so the
+# direct use is explicit and version-controlled. (Must stay AFTER the plain
+# [dependencies] above, or it swallows the entries below it — that broke the
+# Windows release build once already.)
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
 
 [features]
 default = ["clipboard"]
