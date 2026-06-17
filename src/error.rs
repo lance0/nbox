@@ -59,6 +59,21 @@ impl NboxError {
     }
 }
 
+/// True if `err`'s chain contains an [`io::ErrorKind::BrokenPipe`].
+///
+/// On Unix the SIGPIPE reset in `main` makes a closed stdout pipe terminate the
+/// process before this is reached, so this is the portable belt-and-suspenders
+/// path: any platform where a `BrokenPipe` surfaces as an `anyhow::Error`
+/// instead (e.g. an explicit `writeln!` whose error was propagated) gets a quiet
+/// exit rather than a printed error. It matches *only* `BrokenPipe`, so
+/// unrelated IO errors keep their normal noisy path.
+pub fn is_broken_pipe(err: &anyhow::Error) -> bool {
+    err.chain().any(|e| {
+        e.downcast_ref::<std::io::Error>()
+            .is_some_and(|io| io.kind() == std::io::ErrorKind::BrokenPipe)
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -162,5 +177,38 @@ mod tests {
             .context("writing cache")
             .context("running command");
         assert_eq!(NboxError::exit_code_for(&err), 1);
+    }
+
+    #[test]
+    fn broken_pipe_is_detected_directly_and_through_context() {
+        let bare = anyhow::Error::from(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "broken pipe",
+        ));
+        assert!(is_broken_pipe(&bare));
+
+        // The realistic shape: a write error wrapped with handler context.
+        let wrapped = anyhow::Error::from(std::io::Error::new(
+            std::io::ErrorKind::BrokenPipe,
+            "broken pipe",
+        ))
+        .context("writing output")
+        .context("running `nbox completions bash`");
+        assert!(is_broken_pipe(&wrapped));
+    }
+
+    #[test]
+    fn non_broken_pipe_io_errors_are_not_classified_as_broken_pipe() {
+        // Must not swallow unrelated IO errors: only BrokenPipe gets the quiet
+        // exit; everything else keeps its normal, noisy path.
+        let other = anyhow::Error::from(std::io::Error::new(
+            std::io::ErrorKind::PermissionDenied,
+            "denied",
+        ))
+        .context("writing output");
+        assert!(!is_broken_pipe(&other));
+
+        let untyped = anyhow::anyhow!("some non-IO failure");
+        assert!(!is_broken_pipe(&untyped));
     }
 }

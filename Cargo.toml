@@ -58,6 +58,13 @@ open = "5"
 # IP/network handling
 ipnet = "2"
 
+# Unix syscalls — used in `main` to reset the SIGPIPE disposition to SIG_DFL so a
+# closed stdout pipe (e.g. `nbox … | head`) terminates the process normally
+# instead of panicking. Already in the tree transitively; declared here so the
+# direct use is explicit and version-controlled.
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
 # Time
 chrono = { version = "0.4", features = ["serde"] }
 
