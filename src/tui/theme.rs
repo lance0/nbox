@@ -5,8 +5,25 @@
 //! comes from `[ui].theme` in the config and is cycled with `t` in the TUI
 //! (Phase 3). Ported from the xfr/ttl theme system.
 
-use ratatui::style::Color;
+use ratatui::style::{Color, Style};
 use std::borrow::Cow;
+
+/// The severity of a transient message (the status/footer line). Maps to one of
+/// the theme's success/warning/error colors, or neutral for ordinary chatter.
+/// Kept separate from the message text so the text→color mapping lives in one
+/// pure, testable place ([`Theme::message_style`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Severity {
+    /// Ordinary, non-alarming status (searching…, loading…, theme: nord).
+    #[default]
+    Info,
+    /// A completed action worth confirming (copied, refreshed).
+    Success,
+    /// A degraded / partial result (some endpoints failed, partial search).
+    Warning,
+    /// A failure (request error, load failure).
+    Error,
+}
 
 /// All themeable colors in the application.
 #[derive(Clone, Debug)]
@@ -340,6 +357,38 @@ impl Theme {
             .position(|n| n.eq_ignore_ascii_case(name))
             .unwrap_or(0)
     }
+
+    /// The style a transient message of a given [`Severity`] renders in: the
+    /// theme's success/warning/error color, or neutral (dim) text for `Info`.
+    /// The single place the severity→color mapping lives (pure, testable).
+    pub fn message_style(&self, severity: Severity) -> Style {
+        let color = match severity {
+            Severity::Info => self.text_dim,
+            Severity::Success => self.success,
+            Severity::Warning => self.warning,
+            Severity::Error => self.error,
+        };
+        Style::default().fg(color)
+    }
+
+    /// The style a NetBox object status (`active`, `offline`, `planned`, …)
+    /// renders in, mapped to the theme's palette by severity. Unknown statuses
+    /// stay neutral (the theme's normal text). Case-insensitive. The status
+    /// TEXT is never changed — only its color. Pure and testable.
+    pub fn status_style(&self, status: &str) -> Style {
+        let color = match status.trim().to_ascii_lowercase().as_str() {
+            // Healthy / in-service.
+            "active" | "connected" | "reserved" => self.success,
+            // In-progress / not-yet-live.
+            "planned" | "staged" | "staging" | "provisioning" | "offered" => self.warning,
+            // Out-of-service / failed / retiring.
+            "offline" | "deprecated" | "failed" | "decommissioning" | "deprovisioning"
+            | "retired" | "dhcp" => self.error,
+            // Anything else: leave neutral.
+            _ => self.text,
+        };
+        Style::default().fg(color)
+    }
 }
 
 #[cfg(test)]
@@ -377,5 +426,48 @@ mod tests {
             assert_eq!(Theme::index_of(name), i);
         }
         assert_eq!(Theme::index_of("unknown"), 0);
+    }
+
+    #[test]
+    fn message_style_maps_each_severity_to_its_theme_color() {
+        let t = Theme::default_theme();
+        assert_eq!(t.message_style(Severity::Success).fg, Some(t.success));
+        assert_eq!(t.message_style(Severity::Warning).fg, Some(t.warning));
+        assert_eq!(t.message_style(Severity::Error).fg, Some(t.error));
+        // Neutral chatter is dim, not one of the alarming colors.
+        assert_eq!(t.message_style(Severity::Info).fg, Some(t.text_dim));
+    }
+
+    #[test]
+    fn severity_default_is_info() {
+        assert_eq!(Severity::default(), Severity::Info);
+    }
+
+    #[test]
+    fn status_style_maps_common_netbox_statuses() {
+        let t = Theme::default_theme();
+        // Healthy → success (green).
+        assert_eq!(t.status_style("active").fg, Some(t.success));
+        // In-progress → warning.
+        assert_eq!(t.status_style("planned").fg, Some(t.warning));
+        assert_eq!(t.status_style("staged").fg, Some(t.warning));
+        assert_eq!(t.status_style("provisioning").fg, Some(t.warning));
+        // Out-of-service / failed → error.
+        assert_eq!(t.status_style("offline").fg, Some(t.error));
+        assert_eq!(t.status_style("deprecated").fg, Some(t.error));
+        assert_eq!(t.status_style("failed").fg, Some(t.error));
+        assert_eq!(t.status_style("decommissioning").fg, Some(t.error));
+        // Unknown / other → neutral text (no alarm color).
+        assert_eq!(t.status_style("whatever").fg, Some(t.text));
+    }
+
+    #[test]
+    fn status_style_is_case_and_whitespace_insensitive() {
+        let t = Theme::default_theme();
+        assert_eq!(t.status_style("ACTIVE").fg, t.status_style("active").fg);
+        assert_eq!(
+            t.status_style("  Offline ").fg,
+            t.status_style("offline").fg
+        );
     }
 }

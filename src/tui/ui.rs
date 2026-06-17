@@ -139,7 +139,7 @@ fn render_home_preview(frame: &mut Frame, area: Rect, app: &mut App) {
         .border_style(border);
 
     let body = app.preview_body();
-    let lines: Vec<Line> = body.lines().map(|l| Line::from(l.to_string())).collect();
+    let lines = body_lines(&body, theme);
     frame.render_widget(
         Paragraph::new(lines)
             .block(block)
@@ -147,6 +147,39 @@ fn render_home_preview(frame: &mut Frame, area: Rect, app: &mut App) {
             .scroll((app.preview_scroll, 0)),
         area,
     );
+}
+
+/// Turn a plain-text detail/preview body into colored lines. Lines are passed
+/// through untouched except for `status:`/`enabled:` `key: value` rows, whose
+/// VALUE is colored by the theme's status palette (active→green, offline→red,
+/// planned→yellow, …). The text itself is never altered — only its color.
+fn body_lines<'a>(body: &'a str, theme: &Theme) -> Vec<Line<'a>> {
+    body.lines().map(|l| status_line(l, theme)).collect()
+}
+
+/// Color one body line. A `status: <value>` (or `enabled: true/false`) line gets
+/// its value styled via [`Theme::status_style`]; everything else stays plain.
+fn status_line<'a>(line: &'a str, theme: &Theme) -> Line<'a> {
+    if let Some(rest) = line.strip_prefix("status: ") {
+        return Line::from(vec![
+            Span::raw("status: "),
+            Span::styled(rest, theme.status_style(rest)),
+        ]);
+    }
+    if let Some(rest) = line.strip_prefix("enabled: ") {
+        // Map the enabled flag onto a healthy/down status so ✓/true reads green
+        // and ✗/false reads red, reusing the same palette.
+        let proxy = match rest.trim() {
+            "true" => "active",
+            "false" => "offline",
+            other => other,
+        };
+        return Line::from(vec![
+            Span::raw("enabled: "),
+            Span::styled(rest, theme.status_style(proxy)),
+        ]);
+    }
+    Line::from(line.to_string())
 }
 
 /// A stateful list with the project's selection marker/highlight. ratatui draws
@@ -202,10 +235,12 @@ fn render_detail(frame: &mut Frame, area: Rect, app: &mut App) {
         Some(d) => d.title.as_str(),
         None => "Detail",
     };
+    // The detail screen is the active view, so it wears the focused-border color
+    // — the same focused/normal convention the home panes use (see `pane_border`).
     let block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {title} "))
-        .border_style(Style::default().fg(theme.border_focused));
+        .border_style(pane_border(theme, true));
 
     let mut lines: Vec<Line> = Vec::new();
     if let Some(d) = &app.detail
@@ -214,9 +249,7 @@ fn render_detail(frame: &mut Frame, area: Rect, app: &mut App) {
         lines.push(tab_bar(app, d));
         lines.push(Line::from(""));
     }
-    for line in app.detail_body().lines() {
-        lines.push(Line::from(line.to_string()));
-    }
+    lines.extend(body_lines(app.detail_body(), theme));
 
     frame.render_widget(
         Paragraph::new(lines)
@@ -253,7 +286,12 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     let line = match app.mode {
         Mode::Search => Line::from(format!("/{}", app.search_input)),
         Mode::Command => Line::from(format!(":{}", app.command_input)),
-        Mode::Normal if !app.status.is_empty() => Line::from(format!(" {} ", app.status)),
+        // A live status message is colored by its severity: errors red, partial
+        // results yellow, confirmations green, ordinary chatter dim.
+        Mode::Normal if !app.status.is_empty() => Line::from(Span::styled(
+            format!(" {} ", app.status),
+            theme.message_style(app.status_severity),
+        )),
         Mode::Normal => Line::from(Span::styled(
             " / search   Tab pane   Enter open   o browser   y copy   b back   t theme   ? help   q quit ",
             Style::default().fg(theme.text_dim),
@@ -270,5 +308,67 @@ fn mode_label(mode: Mode) -> &'static str {
         Mode::Normal => "normal",
         Mode::Search => "search",
         Mode::Command => "command",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Pull the foreground color the line's last span renders in.
+    fn last_fg(line: &Line) -> Option<ratatui::style::Color> {
+        line.spans.last().and_then(|s| s.style.fg)
+    }
+
+    #[test]
+    fn status_line_colors_the_value_by_status_palette() {
+        let theme = Theme::default_theme();
+        // active → success; offline → error; planned → warning.
+        assert_eq!(
+            last_fg(&status_line("status: active", &theme)),
+            Some(theme.success)
+        );
+        assert_eq!(
+            last_fg(&status_line("status: offline", &theme)),
+            Some(theme.error)
+        );
+        assert_eq!(
+            last_fg(&status_line("status: planned", &theme)),
+            Some(theme.warning)
+        );
+        // Unknown status stays neutral text.
+        assert_eq!(
+            last_fg(&status_line("status: whatever", &theme)),
+            Some(theme.text)
+        );
+    }
+
+    #[test]
+    fn status_line_colors_enabled_flag() {
+        let theme = Theme::default_theme();
+        assert_eq!(
+            last_fg(&status_line("enabled: true", &theme)),
+            Some(theme.success)
+        );
+        assert_eq!(
+            last_fg(&status_line("enabled: false", &theme)),
+            Some(theme.error)
+        );
+    }
+
+    #[test]
+    fn status_line_leaves_other_lines_plain() {
+        let theme = Theme::default_theme();
+        // A non-status line is a single unstyled span.
+        let line = status_line("name: edge01", &theme);
+        assert_eq!(line.spans.len(), 1);
+        assert_eq!(last_fg(&line), None);
+    }
+
+    #[test]
+    fn body_lines_preserves_line_count() {
+        let theme = Theme::default_theme();
+        let body = "name: edge01\nstatus: active\nsite: iad1";
+        assert_eq!(body_lines(body, &theme).len(), 3);
     }
 }

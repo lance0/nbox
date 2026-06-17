@@ -13,7 +13,7 @@ use crate::domain::detail::DetailView;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::search::{ObjectKind, SearchOutcome, SearchResult};
 use crate::tui::palette::{self, PaletteCommand};
-use crate::tui::theme::Theme;
+use crate::tui::theme::{Severity, Theme};
 
 /// Which screen is in the body area.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -117,6 +117,10 @@ pub struct App {
     pub focus: Focus,
     pub history: Vec<Screen>,
     pub status: String,
+    /// Severity of the current `status` message, so the footer can color it via
+    /// [`Theme::message_style`]. Set in lockstep with `status` (see
+    /// [`App::set_status`]); resets to `Info` whenever the status is cleared.
+    pub status_severity: Severity,
 
     pub search_input: String,
     pub command_input: String,
@@ -194,6 +198,7 @@ impl App {
             focus: Focus::List,
             history: Vec::new(),
             status: String::new(),
+            status_severity: Severity::Info,
             search_input: String::new(),
             command_input: String::new(),
             last_query: None,
@@ -226,15 +231,23 @@ impl App {
             AppEvent::SearchComplete(result) => {
                 match result {
                     Ok(outcome) => {
-                        let n = outcome.results.len();
-                        self.status = if outcome.errors.is_empty() {
-                            format!("{n} result(s)")
+                        if outcome.errors.is_empty() {
+                            // A clean, complete result set is a confirmation.
+                            self.set_status(
+                                format!("{} result(s)", outcome.results.len()),
+                                Severity::Success,
+                            );
                         } else {
-                            format!(
-                                "{n} result(s) (partial: {} endpoint(s) failed)",
-                                outcome.errors.len()
-                            )
-                        };
+                            // Some endpoints failed: a degraded / partial result.
+                            self.set_status(
+                                format!(
+                                    "{} result(s) (partial: {} endpoint(s) failed)",
+                                    outcome.results.len(),
+                                    outcome.errors.len()
+                                ),
+                                Severity::Warning,
+                            );
+                        }
                         self.results = outcome.results;
                         self.view = (0..self.results.len()).collect();
                         self.selected = self
@@ -250,7 +263,7 @@ impl App {
                         // debounce decide whether to (re)load the preview.
                         self.mark_preview_dirty();
                     }
-                    Err(e) => self.status = format!("error: {e:#}"),
+                    Err(e) => self.set_status(format!("error: {e:#}"), Severity::Error),
                 }
                 Vec::new()
             }
@@ -262,9 +275,9 @@ impl App {
                         self.detail = Some(view);
                         self.detail_tab = 0;
                         self.detail_scroll = 0;
-                        self.status.clear();
+                        self.clear_status();
                     }
-                    Err(e) => self.status = format!("error: {e:#}"),
+                    Err(e) => self.set_status(format!("error: {e:#}"), Severity::Error),
                 }
                 Vec::new()
             }
@@ -280,13 +293,16 @@ impl App {
                             self.preview_scroll = 0;
                         }
                         // Keep the lightweight peek; surface the failure quietly.
-                        Err(e) => self.status = format!("preview error: {e:#}"),
+                        Err(e) => self.set_status(format!("preview error: {e:#}"), Severity::Error),
                     }
                 }
                 Vec::new()
             }
             AppEvent::Status(message) => {
-                self.status = message;
+                // An async status push (e.g. "copied …"/"opened …"): classify it
+                // so confirmations and failures still get the right color.
+                let severity = classify_status(&message);
+                self.set_status(message, severity);
                 Vec::new()
             }
         }
@@ -360,7 +376,7 @@ impl App {
                 if self.screen == Screen::Home
                     && let Some((kind, id)) = self.home_target()
                 {
-                    self.status = "loading…".into();
+                    self.set_status("loading…", Severity::Info);
                     return vec![AppCommand::LoadDetail { kind, id }];
                 }
             }
@@ -389,7 +405,7 @@ impl App {
                 self.mode = Mode::Normal;
                 if !query.is_empty() {
                     self.last_query = Some(query.clone());
-                    self.status = format!("searching {query}…");
+                    self.set_status(format!("searching {query}…"), Severity::Info);
                     return vec![AppCommand::Search(query)];
                 }
             }
@@ -423,7 +439,7 @@ impl App {
                 if !input.is_empty() {
                     match palette::parse(&input) {
                         Ok(cmd) => return self.apply_palette(cmd),
-                        Err(e) => self.status = e,
+                        Err(e) => self.set_status(e, Severity::Error),
                     }
                 }
             }
@@ -440,25 +456,25 @@ impl App {
     fn apply_palette(&mut self, cmd: PaletteCommand) -> Vec<AppCommand> {
         match cmd {
             PaletteCommand::Lookup { kind, value } => {
-                self.status = format!("loading {value}…");
+                self.set_status(format!("loading {value}…"), Severity::Info);
                 vec![AppCommand::LoadByRef { kind, value }]
             }
             PaletteCommand::Search(query) => {
                 self.last_query = Some(query.clone());
-                self.status = format!("searching {query}…");
+                self.set_status(format!("searching {query}…"), Severity::Info);
                 vec![AppCommand::Search(query)]
             }
             PaletteCommand::Open => match self.selected_result() {
                 Some(r) => vec![AppCommand::OpenBrowser(r.url.clone())],
                 None => {
-                    self.status = "no selection".into();
+                    self.set_status("no selection", Severity::Warning);
                     Vec::new()
                 }
             },
             PaletteCommand::Copy => match self.selected_result() {
                 Some(r) => vec![AppCommand::Copy(r.display.clone())],
                 None => {
-                    self.status = "no selection".into();
+                    self.set_status("no selection", Severity::Warning);
                     Vec::new()
                 }
             },
@@ -468,11 +484,11 @@ impl App {
             }
             PaletteCommand::Refresh => match self.last_query.clone() {
                 Some(query) => {
-                    self.status = format!("refreshing {query}…");
+                    self.set_status(format!("refreshing {query}…"), Severity::Info);
                     vec![AppCommand::Search(query)]
                 }
                 None => {
-                    self.status = "nothing to refresh".into();
+                    self.set_status("nothing to refresh", Severity::Warning);
                     Vec::new()
                 }
             },
@@ -490,6 +506,20 @@ impl App {
     /// Pop back to the previous screen, or Home if the stack is empty.
     fn go_back(&mut self) {
         self.screen = self.history.pop().unwrap_or(Screen::Home);
+    }
+
+    /// Set the transient status message together with its severity, so the
+    /// footer colors it via [`Theme::message_style`]. The one place message text
+    /// and its color classification are kept in lockstep.
+    fn set_status(&mut self, message: impl Into<String>, severity: Severity) {
+        self.status = message.into();
+        self.status_severity = severity;
+    }
+
+    /// Clear the status line back to its neutral resting state.
+    fn clear_status(&mut self) {
+        self.status.clear();
+        self.status_severity = Severity::Info;
     }
 
     /// Flip focus between the home split's list and preview panes. Switching to
@@ -574,13 +604,13 @@ impl App {
         let list = Theme::list();
         self.theme_index = (self.theme_index + 1) % list.len();
         self.theme = Theme::by_name(list[self.theme_index]);
-        self.status = format!("theme: {}", list[self.theme_index]);
+        self.set_status(format!("theme: {}", list[self.theme_index]), Severity::Info);
     }
 
     fn set_theme_by_name(&mut self, name: &str) {
         self.theme = Theme::by_name(name);
         self.theme_index = Theme::index_of(name);
-        self.status = format!("theme: {}", self.theme.name());
+        self.set_status(format!("theme: {}", self.theme.name()), Severity::Info);
     }
 
     /// Recompute the visible `view` by fuzzy-filtering results on `search_input`.
@@ -925,6 +955,29 @@ struct PreviewStub<'a> {
     url: Option<&'a str>,
 }
 
+/// Classify a free-form status message (typically pushed from an async task,
+/// e.g. "copied: …" / "open failed: …") into a [`Severity`] so the footer can
+/// color it. Failures → error, confirmations (copied/opened/refreshed/done) →
+/// success, anything else → neutral. Pure and case-insensitive.
+fn classify_status(message: &str) -> Severity {
+    let m = message.to_ascii_lowercase();
+    // "partial" wins over "failed": a partial result names failed endpoints but
+    // is a degraded, not a hard, failure.
+    if m.contains("partial") {
+        Severity::Warning
+    } else if m.contains("error") || m.contains("failed") || m.contains("failure") {
+        Severity::Error
+    } else if m.starts_with("copied")
+        || m.starts_with("opened")
+        || m.contains("refreshed")
+        || m.contains("done")
+    {
+        Severity::Success
+    } else {
+        Severity::Info
+    }
+}
+
 /// Delete the trailing word (and its preceding spaces) from `s`.
 fn trim_last_word(s: &mut String) {
     let trimmed = s.trim_end_matches(' ');
@@ -981,6 +1034,61 @@ mod tests {
             results: items,
             errors: Vec::new(),
         })));
+    }
+
+    #[test]
+    fn classify_status_maps_messages_to_severity() {
+        assert_eq!(classify_status("copied: edge01"), Severity::Success);
+        assert_eq!(classify_status("opened in browser"), Severity::Success);
+        assert_eq!(
+            classify_status("copy failed: no clipboard"),
+            Severity::Error
+        );
+        assert_eq!(classify_status("open failed: x"), Severity::Error);
+        assert_eq!(classify_status("error: 404 not found"), Severity::Error);
+        assert_eq!(
+            classify_status("3 result(s) (partial: 1 endpoint(s) failed)"),
+            Severity::Warning
+        );
+        assert_eq!(classify_status("searching edge…"), Severity::Info);
+        assert_eq!(classify_status("theme: nord"), Severity::Info);
+    }
+
+    #[test]
+    fn search_complete_sets_success_severity_clean_and_warning_partial() {
+        let mut a = app();
+        // A clean result set is a success-colored confirmation.
+        set_results(&mut a, results_n(2));
+        assert_eq!(a.status_severity, Severity::Success);
+        // A partial result (some endpoints failed) is warning-colored.
+        a.handle_event(AppEvent::SearchComplete(Ok(SearchOutcome {
+            results: vec![result(1, "edge01")],
+            errors: vec!["dcim/devices: 500".into()],
+        })));
+        assert_eq!(a.status_severity, Severity::Warning);
+        assert!(a.status.contains("partial"));
+    }
+
+    #[test]
+    fn request_error_sets_error_severity() {
+        let mut a = app();
+        a.handle_event(AppEvent::SearchComplete(Err(anyhow::anyhow!(
+            "403 forbidden"
+        ))));
+        assert_eq!(a.status_severity, Severity::Error);
+        a.handle_event(AppEvent::DetailLoaded(Err(anyhow::anyhow!(
+            "404 not found"
+        ))));
+        assert_eq!(a.status_severity, Severity::Error);
+    }
+
+    #[test]
+    fn async_status_event_is_classified() {
+        let mut a = app();
+        a.handle_event(AppEvent::Status("copied: edge01".into()));
+        assert_eq!(a.status_severity, Severity::Success);
+        a.handle_event(AppEvent::Status("copy failed: x".into()));
+        assert_eq!(a.status_severity, Severity::Error);
     }
 
     #[test]
