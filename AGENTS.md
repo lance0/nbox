@@ -44,7 +44,7 @@ nbox circuit <cid|id>
 nbox aggregate <cidr|id>
 nbox asn <number>
 nbox ip-range <start|id>
-nbox search <query> [--limit N] [--status S] [--site SLUG] [--region SLUG] [--site-group SLUG] [--location SLUG] [--tenant SLUG] [--role SLUG] [--tag SLUG] [--cols a,b,c] [--partial]
+nbox search <query> [--limit N] [--status S] [--site SLUG] [--region SLUG] [--site-group SLUG] [--location SLUG] [--tenant SLUG] [--role SLUG] [--tag SLUG] [--vrf <id|rd|name>] [--cols a,b,c] [--partial]
 nbox tags
 nbox journal <kind> <ref>
 nbox open <kind>/<ref>
@@ -70,7 +70,7 @@ stderr. Every tool is annotated read-only.
 | Tool | Purpose |
 | ---- | ------- |
 | `nbox_status` | Connection + NetBox/Django/Python versions (call first to confirm reachability). |
-| `nbox_search` | Search devices/sites/IPs/prefixes/VLANs; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag` (one scope filter at a time). Find a reference before `nbox_get`. |
+| `nbox_search` | Search devices/sites/IPs/prefixes/VLANs; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag` (one scope filter at a time), `vrf` (id\|rd\|name; filters IP/prefix results only). Find a reference before `nbox_get`. |
 | `nbox_get` | One object: `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range) + `ref`; `vrf`/`site`/`group` disambiguate (an ambiguous ref returns the candidates). |
 | `nbox_get_interface` | One interface on a device: config, addresses, cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix (nothing reserved); `count`, `vrf`. |

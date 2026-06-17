@@ -180,6 +180,7 @@ async fn search_returns_results_and_errors() {
             tenant: None,
             role: None,
             tag: None,
+            vrf: None,
         }))
         .await
         .expect("search");
@@ -256,6 +257,7 @@ async fn search_reports_partial_endpoint_errors() {
             tenant: None,
             role: None,
             tag: None,
+            vrf: None,
         }))
         .await
         .expect("search");

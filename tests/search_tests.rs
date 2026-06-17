@@ -640,6 +640,276 @@ async fn search_with_two_scope_filters_is_a_usage_error() {
 }
 
 #[tokio::test]
+async fn search_with_vrf_filters_ip_and_prefix_by_vrf_id() {
+    // `--vrf` resolves the ref to an id once, then filters the VRF-capable
+    // endpoints (IPs, prefixes) by `vrf_id=`. VRF-incapable endpoints (devices,
+    // sites, …) are not vrf-filtered — they're queried with `q` only.
+    let server = MockServer::start().await;
+
+    // VRF resolution: a non-numeric ref tries `rd` first (VRFs have no slug);
+    // return id 7. A catch-all keeps the later name fallbacks from 404ing.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/vrfs/"))
+        .and(query_param("rd", "blue"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 7, "url": "http://nb/api/ipam/vrfs/7/", "name": "blue", "rd": "blue"
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    // IPs carry the vrf filter and a matching IP comes back (proving it's
+    // applied, not dropped).
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/ip-addresses/"))
+        .and(query_param("vrf_id", "7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 21, "url": "http://nb/api/ipam/ip-addresses/21/", "address": "10.0.0.1/24",
+                "vrf": {"id": 7, "display": "blue"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+    // Prefixes carry the vrf filter too.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .and(query_param("vrf_id", "7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 31, "url": "http://nb/api/ipam/prefixes/31/", "prefix": "10.0.0.0/24",
+                "vrf": {"id": 7, "display": "blue"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    // VRF-incapable endpoints are queried WITHOUT a vrf filter (matched on `q`).
+    // A device hit here must NOT carry `vrf_id`; mount it on the plain `q` query
+    // so a regression that vrf-filtered devices would 404 instead.
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/"))
+        .and(query_param("q", "10.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 1, "url": "http://nb/api/dcim/devices/1/", "name": "10.0-edge"}]
+        })))
+        .mount(&server)
+        .await;
+    mount_empty(&server, "/api/dcim/sites/").await;
+    mount_empty(&server, "/api/ipam/vlans/").await;
+    mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/ipam/aggregates/").await;
+    mount_empty(&server, "/api/ipam/asns/").await;
+    mount_empty(&server, "/api/ipam/ip-ranges/").await;
+
+    let outcome = client(&server)
+        .search(SearchRequest {
+            query: "10.0".into(),
+            limit: 25,
+            filters: SearchFilters {
+                vrf: Some("blue".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+
+    assert!(
+        outcome.errors.is_empty(),
+        "no vrf filter should leak onto a vrf-incapable endpoint; errors: {:?}",
+        outcome.errors
+    );
+    let ip = outcome
+        .results
+        .iter()
+        .find(|r| r.kind == ObjectKind::IpAddress)
+        .expect("vrf-filtered IP surfaced");
+    assert_eq!(ip.display, "10.0.0.1/24");
+    let prefix = outcome
+        .results
+        .iter()
+        .find(|r| r.kind == ObjectKind::Prefix)
+        .expect("vrf-filtered prefix surfaced");
+    assert_eq!(prefix.display, "10.0.0.0/24");
+    // The device (vrf-incapable) still surfaces — it isn't vrf-filtered away.
+    assert!(
+        outcome.results.iter().any(|r| r.kind == ObjectKind::Device),
+        "vrf-incapable device should still surface"
+    );
+}
+
+#[tokio::test]
+async fn search_with_vrf_resolved_by_id_filters_prefixes() {
+    // A numeric `--vrf` resolves straight off the detail endpoint, then filters.
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/vrfs/7/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7, "url": "http://nb/api/ipam/vrfs/7/", "name": "blue", "rd": "65000:7"
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .and(query_param("vrf_id", "7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 31, "url": "http://nb/api/ipam/prefixes/31/", "prefix": "10.0.0.0/24",
+                "vrf": {"id": 7, "display": "blue"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+    mount_empty(&server, "/api/ipam/ip-addresses/").await;
+    mount_empty(&server, "/api/dcim/devices/").await;
+    mount_empty(&server, "/api/dcim/sites/").await;
+    mount_empty(&server, "/api/ipam/vlans/").await;
+    mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/ipam/aggregates/").await;
+    mount_empty(&server, "/api/ipam/asns/").await;
+    mount_empty(&server, "/api/ipam/ip-ranges/").await;
+
+    let results = client(&server)
+        .search(SearchRequest {
+            query: "10.0".into(),
+            limit: 25,
+            filters: SearchFilters {
+                vrf: Some("7".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap()
+        .results;
+
+    let prefix = results
+        .iter()
+        .find(|r| r.kind == ObjectKind::Prefix)
+        .expect("vrf-filtered prefix surfaced");
+    assert_eq!(prefix.display, "10.0.0.0/24");
+}
+
+#[tokio::test]
+async fn search_with_unknown_vrf_errors_not_found_not_empty() {
+    // An unknown `--vrf` must fail with a typed not-found (exit 4), not quietly
+    // return an empty result set — VRF resolution happens before the fan-out.
+    let server = MockServer::start().await;
+
+    // Every VRF lookup (`rd`, `name__ie`, `name__ic`) comes back empty.
+    mount_empty(&server, "/api/ipam/vrfs/").await;
+
+    let err = client(&server)
+        .search(SearchRequest {
+            query: "10.0".into(),
+            limit: 25,
+            filters: SearchFilters {
+                vrf: Some("nope".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .expect_err("unknown vrf should error, not return empty");
+
+    assert_eq!(nbox::error::NboxError::exit_code_for(&err), 4);
+    assert!(
+        format!("{err:#}").contains("no VRF matched \"nope\""),
+        "got: {err:#}"
+    );
+}
+
+#[tokio::test]
+async fn search_combines_vrf_and_site_scope_on_prefixes() {
+    // `--vrf` is orthogonal to `--site`: prefixes carry BOTH `scope_*` and
+    // `vrf_id` (NetBox ANDs them); other endpoints honor only what they can.
+    let server = MockServer::start().await;
+
+    // Site resolution → id 9.
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/sites/"))
+        .and(query_param("slug", "iad1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 9, "url": "http://nb/api/dcim/sites/9/", "name": "iad1", "slug": "iad1"}]
+        })))
+        .mount(&server)
+        .await;
+    // VRF resolution (by id) → id 7.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/vrfs/7/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7, "url": "http://nb/api/ipam/vrfs/7/", "name": "blue"
+        })))
+        .mount(&server)
+        .await;
+
+    // Prefixes must carry scope_type/scope_id AND vrf_id together.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .and(query_param("scope_type", "dcim.site"))
+        .and(query_param("scope_id", "9"))
+        .and(query_param("vrf_id", "7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 31, "url": "http://nb/api/ipam/prefixes/31/", "prefix": "10.0.0.0/24",
+                "scope_type": "dcim.site", "scope": {"id": 9, "display": "iad1"},
+                "vrf": {"id": 7, "display": "blue"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    // The site-search branch hits `/api/dcim/sites/` with `q=`; empty page so the
+    // slug resolution above stays unambiguous.
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/sites/"))
+        .and(query_param("q", "10.0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .mount(&server)
+        .await;
+    // IPs honor vrf (and skip on site since IPs can't carry `--site` here).
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/"))
+        .and(query_param("site", "iad1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/vlans/"))
+        .and(query_param("site", "iad1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .mount(&server)
+        .await;
+
+    let results = client(&server)
+        .search(SearchRequest {
+            query: "10.0".into(),
+            limit: 25,
+            filters: SearchFilters {
+                site: Some("iad1".into()),
+                vrf: Some("7".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap()
+        .results;
+
+    let prefix = results
+        .iter()
+        .find(|r| r.kind == ObjectKind::Prefix)
+        .expect("vrf+site-scoped prefix surfaced");
+    assert_eq!(prefix.display, "10.0.0.0/24");
+}
+
+#[tokio::test]
 async fn search_region_scope_skips_non_prefix_non_device_endpoints() {
     // An id-based scope (region) has no clean filter on IPs/sites/circuits/…, so
     // those endpoints are skipped (never hit). Only the region lookup, the prefix

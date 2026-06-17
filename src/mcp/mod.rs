@@ -78,6 +78,9 @@ pub struct SearchArgs {
     pub role: Option<String>,
     /// Filter by tag slug.
     pub tag: Option<String>,
+    /// Filter by VRF (id, RD, or name). Applies to IP and prefix results; other
+    /// object kinds carry no VRF and are unaffected.
+    pub vrf: Option<String>,
 }
 
 /// Arguments for `nbox_get`.
@@ -259,7 +262,7 @@ impl NboxMcp {
     /// aggregates, ASNs, and IP ranges.
     #[tool(
         name = "nbox_search",
-        description = "Search across devices, sites, IP addresses, prefixes, VLANs, circuits, aggregates, ASNs, and IP ranges by free text. Returns ranked hits with kind, display name, and URL. Use this to find an object's exact reference before nbox_get. Optional filters narrow by status/site/tenant/role/tag.",
+        description = "Search across devices, sites, IP addresses, prefixes, VLANs, circuits, aggregates, ASNs, and IP ranges by free text. Returns ranked hits with kind, display name, and URL. Use this to find an object's exact reference before nbox_get. Optional filters narrow by status/site/tenant/role/tag; vrf (id|rd|name) narrows IP and prefix results.",
         annotations(read_only_hint = true)
     )]
     async fn nbox_search(
@@ -280,6 +283,7 @@ impl NboxMcp {
                     tenant: args.tenant,
                     role: args.role,
                     tag: args.tag,
+                    vrf: args.vrf,
                 },
             })
             .await

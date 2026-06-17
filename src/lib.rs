@@ -270,6 +270,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             tenant,
             role,
             tag,
+            vrf,
             cols,
             partial,
         }) => {
@@ -282,6 +283,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                 tenant,
                 role,
                 tag,
+                vrf,
             };
             run_search(&ctx, &query, limit, filters, cols, partial).await
         }

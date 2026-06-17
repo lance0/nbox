@@ -12,7 +12,7 @@ use crate::netbox::models::dcim::{Device, Interface, Location, Rack, Region, Sit
 use crate::netbox::models::extras::{JournalEntry, TagInfo};
 use crate::netbox::models::ipam::{
     Aggregate, Asn, AvailableIp, AvailablePrefix, IpAddress, IpRange, Prefix, Service, Vlan,
-    VlanGroup,
+    VlanGroup, Vrf,
 };
 use crate::netbox::pagination::Page;
 
@@ -413,6 +413,34 @@ impl NetBoxClient {
         ambiguous_or_first("location", value, contains.results, |l| l.name.clone())
     }
 
+    /// Resolve a VRF by numeric id, then exact RD, then exact name, then
+    /// name-contains. VRFs have no slug (unlike sites/regions), so the order is
+    /// id → `rd` → `name__ie` → `name__ic`. Used to translate `--vrf` into a
+    /// numeric id for the `vrf_id=` search/list filter on IPs and prefixes.
+    pub async fn vrf_by_ref(&self, value: &str) -> Result<Option<Vrf>> {
+        if let Ok(id) = value.parse::<u64>() {
+            return self
+                .get_optional(&format!("/api/ipam/vrfs/{id}/"), &[])
+                .await;
+        }
+        let by_rd: Page<Vrf> = self
+            .list(Endpoint::Vrfs, vec![("rd", value.to_string())])
+            .await?;
+        if let Some(v) = by_rd.results.into_iter().next() {
+            return Ok(Some(v));
+        }
+        let exact: Page<Vrf> = self
+            .list(Endpoint::Vrfs, vec![("name__ie", value.to_string())])
+            .await?;
+        if let Some(v) = exact.results.into_iter().next() {
+            return Ok(Some(v));
+        }
+        let contains: Page<Vrf> = self
+            .list(Endpoint::Vrfs, vec![("name__ic", value.to_string())])
+            .await?;
+        ambiguous_or_first("VRF", value, contains.results, |v| v.name.clone())
+    }
+
     /// Resolve an IP range by numeric ID, or by its start address.
     pub async fn ip_range_by_ref(&self, value: &str) -> Result<Option<IpRange>> {
         if let Ok(id) = value.parse::<u64>() {
@@ -579,6 +607,79 @@ mod tests {
             .expect("region lookup")
             .expect("region present");
         assert_eq!(region.id, 3);
+    }
+
+    #[tokio::test]
+    async fn vrf_by_ref_resolves_by_id() {
+        // A numeric ref hits the detail endpoint directly (no list filtering).
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/vrfs/7/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 7, "url": "http://nb/api/ipam/vrfs/7/", "name": "blue", "rd": "65000:7"
+            })))
+            .mount(&server)
+            .await;
+
+        let vrf = client_for(&server)
+            .vrf_by_ref("7")
+            .await
+            .expect("vrf lookup")
+            .expect("vrf present");
+        assert_eq!(vrf.id, 7);
+    }
+
+    #[tokio::test]
+    async fn vrf_by_ref_resolves_by_rd() {
+        // VRFs have no slug; a non-numeric ref is tried as `rd` first.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/vrfs/"))
+            .and(query_param("rd", "65000:7"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{"id": 7, "url": "http://nb/api/ipam/vrfs/7/", "name": "blue", "rd": "65000:7"}]
+            })))
+            .mount(&server)
+            .await;
+
+        let vrf = client_for(&server)
+            .vrf_by_ref("65000:7")
+            .await
+            .expect("vrf lookup")
+            .expect("vrf present");
+        assert_eq!(vrf.id, 7);
+        assert_eq!(vrf.name, "blue");
+    }
+
+    #[tokio::test]
+    async fn vrf_by_ref_resolves_by_name() {
+        // RD lookup misses, name (exact, `name__ie`) resolves.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/vrfs/"))
+            .and(query_param("rd", "blue"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 0, "next": null, "previous": null, "results": []
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/vrfs/"))
+            .and(query_param("name__ie", "blue"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{"id": 7, "url": "http://nb/api/ipam/vrfs/7/", "name": "blue"}]
+            })))
+            .mount(&server)
+            .await;
+
+        let vrf = client_for(&server)
+            .vrf_by_ref("blue")
+            .await
+            .expect("vrf lookup")
+            .expect("vrf present");
+        assert_eq!(vrf.id, 7);
     }
 
     #[tokio::test]

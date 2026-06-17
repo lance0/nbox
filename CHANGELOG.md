@@ -8,6 +8,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `search --vrf <id|rd|name>` server-side filter (and on the `nbox_search` MCP
+  tool). The VRF reference is resolved once up front via `vrf_by_ref` (numeric
+  id, then RD, then name — VRFs have no slug), then applied as `vrf_id=` on the
+  VRF-capable endpoints (IP addresses, prefixes); endpoints that carry no VRF
+  (devices, sites, VLANs, circuits, aggregates, ASNs, …) skip the filter rather
+  than being dropped. An unknown VRF is a not-found error (exit `4`), not a
+  silent empty result. Orthogonal to the `--site`/`--region`/`--site-group`/
+  `--location` scope filters: both may be set, and NetBox ANDs them on prefixes.
+  Reuses the same `--vrf` resolution as the `nbox ip`/`prefix` exact-lookup path.
 - Operational layer for the HTTP transport (`nbox serve --http`): a structured
   audit log and a per-caller rate limit (completes the read-only HTTP/OAuth v1,
   DESIGN §24). Every authenticated request to `/mcp` emits one structured

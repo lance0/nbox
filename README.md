@@ -213,10 +213,12 @@ A man page is available too: `nbox man > nbox.1`.
 ```bash
 nbox                              # launch the TUI
 nbox status                       # connection + NetBox/Django/Python versions
-nbox search <query> [--limit N] [--status/--site/--region/--site-group/--location/--tenant/--role/--tag <v>] [--cols a,b,c] [--partial]
+nbox search <query> [--limit N] [--status/--site/--region/--site-group/--location/--tenant/--role/--tag <v>] [--vrf <id|rd|name>] [--cols a,b,c] [--partial]
                                   # --site/--region/--site-group/--location resolve the ref once and filter
                                   # prefixes by that scope (scope_type=dcim.<kind> + scope_id), exact match.
                                   # At most one scope flag (else exit 2); an unknown ref errors (exit 4)
+                                  # --vrf resolves id|rd|name once and filters IP/prefix results by vrf_id
+                                  # (VRF-incapable endpoints skip it); orthogonal to scope; unknown → exit 4
 nbox device <name-or-id> [--journal] [--journal-limit N]
 nbox ip <address> [--vrf <name>] [--journal]    # --vrf disambiguates duplicates across VRFs
 nbox prefix <cidr> [--vrf <name>] [--journal]   # includes utilization + children when present

@@ -6,7 +6,7 @@ nbox is a read-only NetBox client (v0.1) — a CLI and a TUI over the same core.
 
 | Command | What |
 | ------- | ---- |
-| `nbox search <q>` | Parallel search across devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP-ranges. Filters: `--status/--site/--region/--site-group/--location/--tenant/--role/--tag`, `--limit`, `--cols`, `--partial`. |
+| `nbox search <q>` | Parallel search across devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP-ranges. Filters: `--status/--site/--region/--site-group/--location/--tenant/--role/--tag/--vrf`, `--limit`, `--cols`, `--partial`. |
 | `nbox device <name\|slug\|id> [--journal]` | Device + interfaces, IPs, cables, VLANs, services. |
 | `nbox interface <device> <iface>` | One interface: type, MTU, MAC, mode, VLANs, cable, **cable path** (trace), addresses. |
 | `nbox ip <addr> [--vrf] [--journal]` | IP + most-specific parent prefix (VRF-scoped) and its VLAN plus the prefix's `scope`/`scope_type` (site, location, region, …). |
@@ -38,6 +38,14 @@ one is a usage error (exit `2`). An unknown reference is a not-found error (exit
 VLANs honor `--site` directly; endpoints that can't filter by a given scope are
 skipped rather than sent a dead param.
 
+`search --vrf <id|rd|name>` resolves the VRF once (numeric id, then RD, then
+name — VRFs have no slug) and filters the VRF-capable endpoints (IPs, prefixes)
+by `vrf_id=`. Endpoints that carry no VRF (devices, sites, VLANs, circuits, …)
+are skipped for this filter (queried unfiltered, not dropped). `--vrf` is
+orthogonal to the scope filters above — both may be set, and NetBox ANDs them on
+prefixes. An unknown VRF is a not-found error (exit `4`), not a silent empty
+result.
+
 ## Output
 
 Every data command takes `-o plain|json` (`--json` is shorthand). JSON adds
@@ -64,7 +72,7 @@ are annotated read-only.
 | Tool | What |
 | ---- | ---- |
 | `nbox_status` | Connection + NetBox/Django/Python versions. |
-| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/aggregates/ASNs/IP-ranges; `query`, `limit`, `status`, `site`, `tenant`, `role`, `tag`. |
+| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/aggregates/ASNs/IP-ranges; `query`, `limit`, `status`, `site`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; IP/prefix only). |
 | `nbox_get` | One object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range) + `ref`; `vrf`/`site`/`group` disambiguate. |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix. |

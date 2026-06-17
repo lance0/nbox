@@ -67,6 +67,11 @@ pub struct SearchFilters {
     pub tenant: Option<String>,
     pub role: Option<String>,
     pub tag: Option<String>,
+    /// VRF reference (id | rd | name). Resolved once to a numeric id and applied
+    /// as `vrf_id=` on the VRF-capable endpoints (IPs, prefixes) only; endpoints
+    /// that carry no VRF are skipped for this filter. Orthogonal to the scope
+    /// filters above — both may be set at once.
+    pub vrf: Option<String>,
 }
 
 /// A scope filter resolved to a NetBox content type + numeric id. Exactly one
@@ -234,11 +239,19 @@ impl NetBoxClient {
         // flag filters by its own scope only — no hierarchy/descendant semantics.
         let scope = self.resolve_scope(f).await?;
 
+        // Resolve the (optional) `--vrf` reference (id | rd | name) to a numeric
+        // id once, up front. An unknown VRF is a hard not-found error (exit 4) so
+        // search fails loudly rather than quietly returning nothing — matching the
+        // scope-filter behavior. The resolved id is applied as `vrf_id=` on the
+        // VRF-capable endpoints (IPs, prefixes); the rest skip the vrf filter.
+        // `--vrf` is orthogonal to the scope filters: both may be active at once.
+        let vrf_id = self.resolve_vrf(f).await?;
+
         let (devices, sites, ips, prefixes, vlans, circuits, aggregates, asns, ip_ranges) = tokio::join!(
             self.search_devices(&q, f, scope.as_ref()),
             self.search_sites(&q, f, scope.as_ref()),
-            self.search_ips(&q, f, scope.as_ref()),
-            self.search_prefixes(&q, f, scope.as_ref()),
+            self.search_ips(&q, f, scope.as_ref(), vrf_id),
+            self.search_prefixes(&q, f, scope.as_ref(), vrf_id),
             self.search_vlans(&q, f, scope.as_ref()),
             self.search_circuits(&q, f, scope.as_ref()),
             self.search_aggregates(&q, f, scope.as_ref()),
@@ -361,6 +374,23 @@ impl NetBoxClient {
         Ok(None)
     }
 
+    /// Resolve the optional `--vrf` reference (id | rd | name) to a numeric id.
+    ///
+    /// Reuses the same [`vrf_by_ref`](NetBoxClient::vrf_by_ref) resolver the
+    /// exact-lookup path uses, so `--vrf` means the same thing across `nbox ip`,
+    /// `nbox prefix`, and search. An unknown ref is a not-found error (exit 4) —
+    /// search fails loudly rather than silently returning an empty set.
+    async fn resolve_vrf(&self, f: &SearchFilters) -> Result<Option<u64>> {
+        let Some(reference) = &f.vrf else {
+            return Ok(None);
+        };
+        let v = self
+            .vrf_by_ref(reference)
+            .await?
+            .ok_or_else(|| not_found("VRF", reference))?;
+        Ok(Some(v.id))
+    }
+
     async fn search_devices(
         &self,
         q: &str,
@@ -437,13 +467,18 @@ impl NetBoxClient {
         q: &str,
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
+        vrf_id: Option<u64>,
     ) -> Result<Vec<SearchResult>> {
         if skip_for_id_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(params) = endpoint_params(q, f, &["status", "tenant", "role", "tag"]) else {
+        let Some(mut params) = endpoint_params(q, f, &["status", "tenant", "role", "tag"]) else {
             return Ok(Vec::new());
         };
+        // IPs carry a VRF: apply the resolved `--vrf` id as `vrf_id=`.
+        if let Some(id) = vrf_id {
+            params.push(("vrf_id", id.to_string()));
+        }
         let page: Page<IpAddress> = self.list(Endpoint::IpAddresses, params).await?;
         Ok(page
             .results
@@ -464,6 +499,7 @@ impl NetBoxClient {
         q: &str,
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
+        vrf_id: Option<u64>,
     ) -> Result<Vec<SearchResult>> {
         // Scope is handled out-of-band, not through the allowlist: NetBox 4.2
         // dropped the prefix `site` FK for the polymorphic `scope`, so a plain
@@ -489,6 +525,12 @@ impl NetBoxClient {
         if let Some(s) = scope {
             params.push(("scope_type", s.content_type.to_string()));
             params.push(("scope_id", s.id.to_string()));
+        }
+        // Prefixes carry a VRF: apply the resolved `--vrf` id as `vrf_id=`. This
+        // is orthogonal to scope — NetBox ANDs them, so a vrf+scope combo narrows
+        // to prefixes matching both.
+        if let Some(id) = vrf_id {
+            params.push(("vrf_id", id.to_string()));
         }
         let page: Page<Prefix> = self.list(Endpoint::Prefixes, params).await?;
         Ok(page

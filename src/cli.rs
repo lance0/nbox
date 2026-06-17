@@ -108,6 +108,11 @@ pub enum Command {
         #[arg(long)]
         tag: Option<String>,
 
+        /// Filter by VRF (id, RD, or name). Applies to IP and prefix results;
+        /// other object kinds carry no VRF and are unaffected.
+        #[arg(long)]
+        vrf: Option<String>,
+
         /// Columns to include in CSV output (comma-separated, e.g. kind,display,url).
         #[arg(long)]
         cols: Option<String>,
@@ -524,6 +529,15 @@ mod tests {
                 location: Some(l),
                 ..
             }) if r == "us-east" && g == "campus" && l == "row-a"
+        ));
+    }
+
+    #[test]
+    fn search_parses_vrf_filter() {
+        let cli = Cli::try_parse_from(["nbox", "search", "10.0", "--vrf", "blue"]).unwrap();
+        assert!(matches!(
+            cli.command,
+            Some(Command::Search { vrf: Some(v), .. }) if v == "blue"
         ));
     }
 
