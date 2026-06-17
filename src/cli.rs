@@ -284,6 +284,18 @@ pub enum Command {
         journal_limit: Option<usize>,
     },
 
+    /// Show a tenant by slug, name, or numeric ID.
+    Tenant {
+        /// Tenant slug, name, or numeric ID.
+        value: String,
+    },
+
+    /// Show a contact by name or numeric ID.
+    Contact {
+        /// Contact name or numeric ID.
+        value: String,
+    },
+
     /// Show a VLAN by VID or name.
     Vlan {
         /// VLAN VID or name.
@@ -658,6 +670,20 @@ mod tests {
                 rate_limit: None,
                 ..
             })
+        ));
+    }
+
+    #[test]
+    fn parses_tenant_and_contact_lookups() {
+        let tenant = Cli::try_parse_from(["nbox", "tenant", "acme"]).unwrap();
+        assert!(matches!(
+            tenant.command,
+            Some(Command::Tenant { value }) if value == "acme"
+        ));
+        let contact = Cli::try_parse_from(["nbox", "contact", "Jane Doe"]).unwrap();
+        assert!(matches!(
+            contact.command,
+            Some(Command::Contact { value }) if value == "Jane Doe"
         ));
     }
 

@@ -16,6 +16,7 @@ use anyhow::{Context, Result};
 use crate::domain::aggregate_view::AggregateView;
 use crate::domain::asn_view::AsnView;
 use crate::domain::circuit_view::CircuitView;
+use crate::domain::contact_view::ContactView;
 use crate::domain::device_detail::DeviceDetail;
 use crate::domain::interface_view::InterfaceView;
 use crate::domain::ip_range_view::IpRangeView;
@@ -24,6 +25,7 @@ use crate::domain::journal_view::{JournalEntryRow, JournalView};
 use crate::domain::prefix_view::PrefixView;
 use crate::domain::rack_view::RackView;
 use crate::domain::site_view::SiteView;
+use crate::domain::tenant_view::TenantView;
 use crate::domain::vlan_view::VlanView;
 use crate::error::NboxError;
 use crate::netbox::client::NetBoxClient;
@@ -31,6 +33,7 @@ use crate::netbox::models::circuits::Circuit;
 use crate::netbox::models::common::BriefObject;
 use crate::netbox::models::dcim::{Device, Site};
 use crate::netbox::models::ipam::{Aggregate, Asn, IpAddress, IpRange, Prefix, Vlan, VlanGroup};
+use crate::netbox::models::tenancy::{Contact, Tenant};
 use crate::netbox::query;
 use crate::netbox::search::ObjectKind;
 
@@ -348,6 +351,32 @@ pub async fn ip_range_view_by_ref(
     Ok(IpRangeView::from_model(range))
 }
 
+/// `tenant <slug|id>`: resolve a tenant and build its view. Shared by CLI/MCP.
+pub async fn tenant_view_by_ref(
+    client: &NetBoxClient,
+    value: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<TenantView> {
+    let tenant = client
+        .tenant_by_ref(value)
+        .await?
+        .ok_or_else(|| not_found("tenant", value))?;
+    Ok(TenantView::from_model(tenant))
+}
+
+/// `contact <name|id>`: resolve a contact and build its view. Shared by CLI/MCP.
+pub async fn contact_view_by_ref(
+    client: &NetBoxClient,
+    value: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<ContactView> {
+    let contact = client
+        .contact_by_ref(value)
+        .await?
+        .ok_or_else(|| not_found("contact", value))?;
+    Ok(ContactView::from_model(contact))
+}
+
 /// A switchable section on a detail screen (e.g. a device's interfaces).
 #[derive(Debug, Clone)]
 pub struct DetailTab {
@@ -489,6 +518,20 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
                 v.to_key_values().render(),
             )
         }
+        ObjectKind::Tenant => {
+            let t: Tenant = client
+                .get(&format!("/api/tenancy/tenants/{id}/"), &[])
+                .await?;
+            let v = TenantView::from_model(t);
+            (format!("tenant {}", v.name), v.to_key_values().render())
+        }
+        ObjectKind::Contact => {
+            let c: Contact = client
+                .get(&format!("/api/tenancy/contacts/{id}/"), &[])
+                .await?;
+            let v = ContactView::from_model(c);
+            (format!("contact {}", v.name), v.to_key_values().render())
+        }
     };
     Ok(DetailView::new(kind, id, title, body).with_tabs(tabs))
 }
@@ -609,6 +652,28 @@ pub async fn load_detail_by_ref(
             (
                 id,
                 format!("ip-range {}-{}", v.start_address, v.end_address),
+                v.to_key_values().render(),
+            )
+        }
+        ObjectKind::Tenant => {
+            let t = client
+                .tenant_by_ref(value)
+                .await?
+                .with_context(|| format!("no tenant matched \"{value}\""))?;
+            let id = t.id;
+            let v = TenantView::from_model(t);
+            (id, format!("tenant {}", v.name), v.to_key_values().render())
+        }
+        ObjectKind::Contact => {
+            let c = client
+                .contact_by_ref(value)
+                .await?
+                .with_context(|| format!("no contact matched \"{value}\""))?;
+            let id = c.id;
+            let v = ContactView::from_model(c);
+            (
+                id,
+                format!("contact {}", v.name),
                 v.to_key_values().render(),
             )
         }

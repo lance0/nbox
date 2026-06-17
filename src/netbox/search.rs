@@ -15,6 +15,7 @@ use crate::netbox::endpoints::Endpoint;
 use crate::netbox::models::circuits::Circuit;
 use crate::netbox::models::dcim::{Device, Site};
 use crate::netbox::models::ipam::{Aggregate, Asn, IpAddress, IpRange, Prefix, Vlan};
+use crate::netbox::models::tenancy::{Contact, Tenant};
 use crate::netbox::pagination::Page;
 use crate::util::format::api_to_web_url;
 
@@ -31,6 +32,8 @@ pub enum ObjectKind {
     Aggregate,
     Asn,
     IpRange,
+    Tenant,
+    Contact,
 }
 
 impl ObjectKind {
@@ -46,6 +49,8 @@ impl ObjectKind {
             ObjectKind::Aggregate => "aggregate",
             ObjectKind::Asn => "asn",
             ObjectKind::IpRange => "ip-range",
+            ObjectKind::Tenant => "tenant",
+            ObjectKind::Contact => "contact",
         }
     }
 }
@@ -219,7 +224,7 @@ fn endpoint_params(
 
 impl NetBoxClient {
     /// Search across devices, sites, IPs, prefixes, VLANs, circuits,
-    /// aggregates, ASNs, and IP ranges in parallel.
+    /// aggregates, ASNs, IP ranges, tenants, and contacts in parallel.
     ///
     /// Returns ranked results plus a list of endpoints that failed. If every
     /// endpoint fails and nothing matched, returns the underlying `Err` (so a
@@ -247,7 +252,19 @@ impl NetBoxClient {
         // `--vrf` is orthogonal to the scope filters: both may be active at once.
         let vrf_id = self.resolve_vrf(f).await?;
 
-        let (devices, sites, ips, prefixes, vlans, circuits, aggregates, asns, ip_ranges) = tokio::join!(
+        let (
+            devices,
+            sites,
+            ips,
+            prefixes,
+            vlans,
+            circuits,
+            aggregates,
+            asns,
+            ip_ranges,
+            tenants,
+            contacts,
+        ) = tokio::join!(
             self.search_devices(&q, f, scope.as_ref()),
             self.search_sites(&q, f, scope.as_ref()),
             self.search_ips(&q, f, scope.as_ref(), vrf_id),
@@ -257,6 +274,8 @@ impl NetBoxClient {
             self.search_aggregates(&q, f, scope.as_ref()),
             self.search_asns(&q, f, scope.as_ref()),
             self.search_ip_ranges(&q, f, scope.as_ref()),
+            self.search_tenants(&q, f, scope.as_ref()),
+            self.search_contacts(&q, f, scope.as_ref()),
         );
 
         let mut merged = Vec::new();
@@ -272,6 +291,8 @@ impl NetBoxClient {
             ("aggregates", aggregates),
             ("asns", asns),
             ("ip-ranges", ip_ranges),
+            ("tenants", tenants),
+            ("contacts", contacts),
         ];
         for (name, branch) in branches {
             match branch {
@@ -720,6 +741,73 @@ impl NetBoxClient {
                     url: api_to_web_url(&r.url),
                     display,
                 }
+            })
+            .collect())
+    }
+
+    async fn search_tenants(
+        &self,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+    ) -> Result<Vec<SearchResult>> {
+        // Tenants carry no region/site-group/location scope filter — skip them
+        // for an id-based scope rather than return an unfiltered set.
+        if skip_for_id_scope(scope) {
+            return Ok(Vec::new());
+        }
+        // The tenant endpoint accepts only `q` + `tag` from our filter set
+        // (no status/site/tenant/role), so an unsupported active filter skips it.
+        let Some(params) = endpoint_params(q, f, &["tag"]) else {
+            return Ok(Vec::new());
+        };
+        let page: Page<Tenant> = self.list(Endpoint::Tenants, params).await?;
+        Ok(page
+            .results
+            .into_iter()
+            .map(|t| SearchResult {
+                kind: ObjectKind::Tenant,
+                id: t.id,
+                score: score_match(q, &t.name),
+                subtitle: t
+                    .group
+                    .as_ref()
+                    .map(super::models::common::BriefObject::label)
+                    .or(Some(t.slug)),
+                url: api_to_web_url(&t.url),
+                display: t.name,
+            })
+            .collect())
+    }
+
+    async fn search_contacts(
+        &self,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+    ) -> Result<Vec<SearchResult>> {
+        if skip_for_id_scope(scope) {
+            return Ok(Vec::new());
+        }
+        // Contacts accept only `q` + `tag` (no status/site/tenant/role).
+        let Some(params) = endpoint_params(q, f, &["tag"]) else {
+            return Ok(Vec::new());
+        };
+        let page: Page<Contact> = self.list(Endpoint::Contacts, params).await?;
+        Ok(page
+            .results
+            .into_iter()
+            .map(|c| SearchResult {
+                kind: ObjectKind::Contact,
+                id: c.id,
+                score: score_match(q, &c.name),
+                subtitle: c
+                    .group
+                    .as_ref()
+                    .map(super::models::common::BriefObject::label)
+                    .or_else(|| non_empty(c.email)),
+                url: api_to_web_url(&c.url),
+                display: c.name,
             })
             .collect())
     }

@@ -59,6 +59,8 @@ async fn search_merges_ranks_and_dedups_across_endpoints() {
     mount_empty(&server, "/api/ipam/aggregates/").await;
     mount_empty(&server, "/api/ipam/asns/").await;
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty(&server, "/api/tenancy/tenants/").await;
+    mount_empty(&server, "/api/tenancy/contacts/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -104,6 +106,8 @@ async fn search_truncates_to_limit() {
     mount_empty(&server, "/api/ipam/aggregates/").await;
     mount_empty(&server, "/api/ipam/asns/").await;
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty(&server, "/api/tenancy/tenants/").await;
+    mount_empty(&server, "/api/tenancy/contacts/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -141,6 +145,8 @@ async fn search_reports_partial_endpoint_failures() {
     mount_empty(&server, "/api/ipam/aggregates/").await;
     mount_empty(&server, "/api/ipam/asns/").await;
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty(&server, "/api/tenancy/tenants/").await;
+    mount_empty(&server, "/api/tenancy/contacts/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -213,6 +219,8 @@ async fn search_surfaces_circuits_aggregates_asns_and_ip_ranges() {
     mount_empty(&server, "/api/ipam/ip-addresses/").await;
     mount_empty(&server, "/api/ipam/prefixes/").await;
     mount_empty(&server, "/api/ipam/vlans/").await;
+    mount_empty(&server, "/api/tenancy/tenants/").await;
+    mount_empty(&server, "/api/tenancy/contacts/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -249,6 +257,75 @@ async fn search_surfaces_circuits_aggregates_asns_and_ip_ranges() {
 }
 
 #[tokio::test]
+async fn search_surfaces_tenants_and_contacts() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/tenancy/tenants/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 1, "url": "http://nb/api/tenancy/tenants/1/",
+                "name": "Acme Corp", "slug": "acme",
+                "group": {"id": 5, "display": "Customers"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/tenancy/contacts/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 2, "url": "http://nb/api/tenancy/contacts/2/",
+                "name": "Acme NOC", "email": "noc@acme.example"
+            }]
+        })))
+        .mount(&server)
+        .await;
+    mount_empty(&server, "/api/dcim/devices/").await;
+    mount_empty(&server, "/api/dcim/sites/").await;
+    mount_empty(&server, "/api/ipam/ip-addresses/").await;
+    mount_empty(&server, "/api/ipam/prefixes/").await;
+    mount_empty(&server, "/api/ipam/vlans/").await;
+    mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/ipam/aggregates/").await;
+    mount_empty(&server, "/api/ipam/asns/").await;
+    mount_empty(&server, "/api/ipam/ip-ranges/").await;
+
+    let outcome = client(&server)
+        .search(SearchRequest {
+            query: "acme".into(),
+            limit: 25,
+            filters: SearchFilters::default(),
+        })
+        .await
+        .unwrap();
+    assert!(outcome.errors.is_empty(), "errors: {:?}", outcome.errors);
+    let results = outcome.results;
+
+    let kinds: Vec<ObjectKind> = results.iter().map(|r| r.kind).collect();
+    assert!(kinds.contains(&ObjectKind::Tenant), "got: {kinds:?}");
+    assert!(kinds.contains(&ObjectKind::Contact), "got: {kinds:?}");
+
+    let tenant = results
+        .iter()
+        .find(|r| r.kind == ObjectKind::Tenant)
+        .unwrap();
+    assert_eq!(tenant.display, "Acme Corp");
+    assert_eq!(tenant.subtitle.as_deref(), Some("Customers"));
+    assert_eq!(tenant.url, "http://nb/tenancy/tenants/1/");
+
+    let contact = results
+        .iter()
+        .find(|r| r.kind == ObjectKind::Contact)
+        .unwrap();
+    assert_eq!(contact.display, "Acme NOC");
+    assert_eq!(contact.subtitle.as_deref(), Some("noc@acme.example"));
+    assert_eq!(contact.url, "http://nb/tenancy/contacts/2/");
+}
+
+#[tokio::test]
 async fn search_matches_asn_by_number() {
     let server = MockServer::start().await;
     // A numeric query is routed to the `asn=` filter (not the text `q`), so the
@@ -270,6 +347,8 @@ async fn search_matches_asn_by_number() {
     mount_empty(&server, "/api/circuits/circuits/").await;
     mount_empty(&server, "/api/ipam/aggregates/").await;
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty(&server, "/api/tenancy/tenants/").await;
+    mount_empty(&server, "/api/tenancy/contacts/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -706,6 +785,8 @@ async fn search_with_vrf_filters_ip_and_prefix_by_vrf_id() {
     mount_empty(&server, "/api/ipam/aggregates/").await;
     mount_empty(&server, "/api/ipam/asns/").await;
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty(&server, "/api/tenancy/tenants/").await;
+    mount_empty(&server, "/api/tenancy/contacts/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -775,6 +856,8 @@ async fn search_with_vrf_resolved_by_id_filters_prefixes() {
     mount_empty(&server, "/api/ipam/aggregates/").await;
     mount_empty(&server, "/api/ipam/asns/").await;
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty(&server, "/api/tenancy/tenants/").await;
+    mount_empty(&server, "/api/tenancy/contacts/").await;
 
     let results = client(&server)
         .search(SearchRequest {

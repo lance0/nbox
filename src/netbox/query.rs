@@ -14,6 +14,7 @@ use crate::netbox::models::ipam::{
     Aggregate, Asn, AvailableIp, AvailablePrefix, IpAddress, IpRange, Prefix, Service, Vlan,
     VlanGroup, Vrf,
 };
+use crate::netbox::models::tenancy::{Contact, Tenant};
 use crate::netbox::pagination::Page;
 
 /// `limit` sent on the `available-prefixes` GET. Without an explicit `limit`
@@ -543,6 +544,54 @@ impl NetBoxClient {
             .list(Endpoint::Racks, vec![("name__ic", value.to_string())])
             .await?;
         ambiguous_or_first("rack", value, contains.results, |r| r.name.clone())
+    }
+
+    /// Resolve a tenant by numeric ID, then slug, then exact name, then
+    /// name-contains. Mirrors [`site_by_ref`](Self::site_by_ref) (tenants, like
+    /// sites, carry a slug), with an id fast-path for numeric refs.
+    pub async fn tenant_by_ref(&self, value: &str) -> Result<Option<Tenant>> {
+        if let Ok(id) = value.parse::<u64>() {
+            return self
+                .get_optional(&format!("/api/tenancy/tenants/{id}/"), &[])
+                .await;
+        }
+        let by_slug: Page<Tenant> = self
+            .list(Endpoint::Tenants, vec![("slug", value.to_string())])
+            .await?;
+        if let Some(t) = by_slug.results.into_iter().next() {
+            return Ok(Some(t));
+        }
+        let exact: Page<Tenant> = self
+            .list(Endpoint::Tenants, vec![("name__ie", value.to_string())])
+            .await?;
+        if let Some(t) = exact.results.into_iter().next() {
+            return Ok(Some(t));
+        }
+        let contains: Page<Tenant> = self
+            .list(Endpoint::Tenants, vec![("name__ic", value.to_string())])
+            .await?;
+        ambiguous_or_first("tenant", value, contains.results, |t| t.name.clone())
+    }
+
+    /// Resolve a contact by numeric ID, then exact name, then name-contains.
+    /// Contacts have no slug, so the order is id → `name__ie` → `name__ic`
+    /// (ambiguous → exit 5).
+    pub async fn contact_by_ref(&self, value: &str) -> Result<Option<Contact>> {
+        if let Ok(id) = value.parse::<u64>() {
+            return self
+                .get_optional(&format!("/api/tenancy/contacts/{id}/"), &[])
+                .await;
+        }
+        let exact: Page<Contact> = self
+            .list(Endpoint::Contacts, vec![("name__ie", value.to_string())])
+            .await?;
+        if let Some(c) = exact.results.into_iter().next() {
+            return Ok(Some(c));
+        }
+        let contains: Page<Contact> = self
+            .list(Endpoint::Contacts, vec![("name__ic", value.to_string())])
+            .await?;
+        ambiguous_or_first("contact", value, contains.results, |c| c.name.clone())
     }
 }
 

@@ -14,6 +14,19 @@ fn client(server: &MockServer) -> NetBoxClient {
     NetBoxClient::new(&profile, None).unwrap()
 }
 
+/// Mount an empty paginated page for a `path`+`query_param` combination, used to
+/// model a resolution step (slug/name__ie) that finds nothing before a fallback.
+async fn mount_empty_page(server: &MockServer, p: &str, key: &str, value: &str) {
+    Mock::given(method("GET"))
+        .and(path(p))
+        .and(query_param(key, value))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 0, "next": null, "previous": null, "results": []
+        })))
+        .mount(server)
+        .await;
+}
+
 #[tokio::test]
 async fn device_by_name_uses_name_ie_filter() {
     let server = MockServer::start().await;
@@ -461,4 +474,180 @@ async fn rack_by_id_hits_detail_endpoint() {
 
     let rack = client(&server).rack_by_ref("12").await.unwrap().unwrap();
     assert_eq!(rack.name, "r12");
+}
+
+#[tokio::test]
+async fn tenant_by_slug_uses_slug_filter() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/tenancy/tenants/"))
+        .and(query_param("slug", "acme"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 4, "url": "http://nb/api/tenancy/tenants/4/",
+                "name": "Acme Corp", "slug": "acme"
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let tenant = client(&server)
+        .tenant_by_ref("acme")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(tenant.id, 4);
+    assert_eq!(tenant.slug, "acme");
+}
+
+#[tokio::test]
+async fn tenant_by_id_hits_detail_endpoint() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/tenancy/tenants/9/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 9, "url": "http://nb/api/tenancy/tenants/9/", "name": "corp", "slug": "corp"
+        })))
+        .mount(&server)
+        .await;
+
+    let tenant = client(&server).tenant_by_ref("9").await.unwrap().unwrap();
+    assert_eq!(tenant.id, 9);
+    assert_eq!(tenant.name, "corp");
+}
+
+#[tokio::test]
+async fn tenant_by_name_falls_back_to_name_ie_then_ic() {
+    let server = MockServer::start().await;
+    // slug + name__ie miss; name__ic resolves the single match.
+    Mock::given(method("GET"))
+        .and(path("/api/tenancy/tenants/"))
+        .and(query_param("slug", "acme corp"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 0, "next": null, "previous": null, "results": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/tenancy/tenants/"))
+        .and(query_param("name__ie", "acme corp"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 0, "next": null, "previous": null, "results": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/tenancy/tenants/"))
+        .and(query_param("name__ic", "acme corp"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 4, "url": "u", "name": "Acme Corp", "slug": "acme"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let tenant = client(&server)
+        .tenant_by_ref("acme corp")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(tenant.id, 4);
+}
+
+#[tokio::test]
+async fn tenant_contains_with_multiple_matches_is_ambiguous() {
+    let server = MockServer::start().await;
+    mount_empty_page(&server, "/api/tenancy/tenants/", "slug", "acme").await;
+    mount_empty_page(&server, "/api/tenancy/tenants/", "name__ie", "acme").await;
+    Mock::given(method("GET"))
+        .and(path("/api/tenancy/tenants/"))
+        .and(query_param("name__ic", "acme"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [
+                {"id": 1, "url": "u", "name": "Acme East", "slug": "acme-east"},
+                {"id": 2, "url": "u", "name": "Acme West", "slug": "acme-west"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let err = client(&server).tenant_by_ref("acme").await.unwrap_err();
+    assert_eq!(nbox::error::NboxError::exit_code_for(&err), 5);
+    let msg = format!("{err:#}");
+    assert!(msg.contains("ambiguous"), "got: {msg}");
+    assert!(
+        msg.contains("Acme East") && msg.contains("Acme West"),
+        "got: {msg}"
+    );
+}
+
+#[tokio::test]
+async fn contact_by_name_uses_name_ie_filter() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/tenancy/contacts/"))
+        .and(query_param("name__ie", "Jane Doe"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 7, "url": "http://nb/api/tenancy/contacts/7/", "name": "Jane Doe",
+                "email": "jane@example.com"
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let contact = client(&server)
+        .contact_by_ref("Jane Doe")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(contact.id, 7);
+    assert_eq!(contact.email.as_deref(), Some("jane@example.com"));
+}
+
+#[tokio::test]
+async fn contact_by_id_hits_detail_endpoint() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/tenancy/contacts/7/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7, "url": "http://nb/api/tenancy/contacts/7/", "name": "Jane Doe"
+        })))
+        .mount(&server)
+        .await;
+
+    let contact = client(&server).contact_by_ref("7").await.unwrap().unwrap();
+    assert_eq!(contact.id, 7);
+    assert_eq!(contact.name, "Jane Doe");
+}
+
+#[tokio::test]
+async fn contact_contains_with_multiple_matches_is_ambiguous() {
+    let server = MockServer::start().await;
+    // Contacts have no slug: exact (name__ie) misses, contains returns several.
+    mount_empty_page(&server, "/api/tenancy/contacts/", "name__ie", "jane").await;
+    Mock::given(method("GET"))
+        .and(path("/api/tenancy/contacts/"))
+        .and(query_param("name__ic", "jane"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [
+                {"id": 1, "url": "u", "name": "Jane Doe"},
+                {"id": 2, "url": "u", "name": "Jane Roe"}
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let err = client(&server).contact_by_ref("jane").await.unwrap_err();
+    assert_eq!(nbox::error::NboxError::exit_code_for(&err), 5);
+    let msg = format!("{err:#}");
+    assert!(msg.contains("ambiguous"), "got: {msg}");
+    assert!(
+        msg.contains("Jane Doe") && msg.contains("Jane Roe"),
+        "got: {msg}"
+    );
 }

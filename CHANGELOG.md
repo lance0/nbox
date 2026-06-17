@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- Tenancy lookups: `nbox tenant <slug|name|id>` and `nbox contact <name|id>`,
+  read-only and additive. Tenant surfaces its group (brief), description,
+  non-zero relation counts (devices, prefixes, sites, …), tags, and custom
+  fields; contact surfaces title, phone, email, address, link, group, tags, and
+  custom fields. Both render plain and `--json`. Tenants resolve id → slug →
+  `name__ie` → `name__ic`; contacts (no slug) resolve id → `name__ie` →
+  `name__ic`; an ambiguous reference exits `5` with the candidates. Search now
+  fans out to tenants and contacts (both honor `q=` and `--tag`; id-based scope
+  filters skip them), and the `nbox_get` MCP tool gains `kind=tenant` /
+  `kind=contact`, routed through the same shared view layer as the CLI. `nbox
+  open tenant|contact/<ref>` and `nbox journal tenant|contact <ref>` work too.
 - `search --vrf <id|rd|name>` server-side filter (and on the `nbox_search` MCP
   tool). The VRF reference is resolved once up front via `vrf_by_ref` (numeric
   id, then RD, then name — VRFs have no slug), then applied as `vrf_id=` on the

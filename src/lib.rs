@@ -342,6 +342,8 @@ pub async fn run(cli: Cli) -> Result<()> {
             journal,
             journal_limit,
         }) => run_ip_range(&ctx, &value, journal, journal_limit).await,
+        Some(Command::Tenant { value }) => run_tenant(&ctx, &value).await,
+        Some(Command::Contact { value }) => run_contact(&ctx, &value).await,
         Some(Command::Vlan {
             value,
             site,
@@ -954,6 +956,20 @@ async fn run_rack(
     }
 }
 
+/// `nbox tenant <slug|id>` — show a tenant.
+async fn run_tenant(ctx: &Ctx, value: &str) -> Result<()> {
+    let client = connect(ctx)?;
+    let view = detail::tenant_view_by_ref(&client, value, &not_found).await?;
+    emit(ctx, &view, || view.to_key_values().print())
+}
+
+/// `nbox contact <name|id>` — show a contact.
+async fn run_contact(ctx: &Ctx, value: &str) -> Result<()> {
+    let client = connect(ctx)?;
+    let view = detail::contact_view_by_ref(&client, value, &not_found).await?;
+    emit(ctx, &view, || view.to_key_values().print())
+}
+
 /// `nbox open <kind/ref>` — resolve an object and open it in the browser.
 async fn run_open(ctx: &Ctx, object_ref: &str) -> Result<()> {
     let (kind, value) = parse_object_ref(object_ref)?;
@@ -1005,6 +1021,8 @@ pub(crate) async fn resolve_object_url(
             client.asn_by_ref(number).await?.map(|a| a.url)
         }
         "ip-range" | "iprange" => client.ip_range_by_ref(value).await?.map(|r| r.url),
+        "tenant" => client.tenant_by_ref(value).await?.map(|t| t.url),
+        "contact" => client.contact_by_ref(value).await?.map(|c| c.url),
         // `interface/<device-ref>/<name>`: the device ref is the first segment of
         // `value`, and EVERYTHING after the next `/` is the interface name —
         // taken verbatim, since names contain slashes (e.g. `xe-0/0/1`,
@@ -1022,7 +1040,7 @@ pub(crate) async fn resolve_object_url(
             client.device_interface(dev.id, name).await?.map(|i| i.url)
         }
         other => anyhow::bail!(
-            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, interface)"
+            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, interface)"
         ),
     };
     Ok(url)
@@ -1035,7 +1053,7 @@ fn parse_object_ref(s: &str) -> Result<(&str, &str)> {
         .filter(|(kind, value)| !kind.is_empty() && !value.is_empty())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "object reference must be `<kind>/<ref>` (e.g. device/edge01)\n\nKinds: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range"
+                "object reference must be `<kind>/<ref>` (e.g. device/edge01)\n\nKinds: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact"
             )
         })
 }
@@ -1115,8 +1133,16 @@ pub(crate) async fn resolve_content_type_id(
             .ip_range_by_ref(value)
             .await?
             .map(|r| ("ipam.iprange", r.id)),
+        "tenant" => client
+            .tenant_by_ref(value)
+            .await?
+            .map(|t| ("tenancy.tenant", t.id)),
+        "contact" => client
+            .contact_by_ref(value)
+            .await?
+            .map(|c| ("tenancy.contact", c.id)),
         other => anyhow::bail!(
-            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range)"
+            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact)"
         ),
     };
     resolved.ok_or_else(|| not_found(kind, value))

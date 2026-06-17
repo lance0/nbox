@@ -142,7 +142,7 @@ async fn get_missing_device_is_invalid_params() {
 async fn search_returns_results_and_errors() {
     let mock = MockServer::start().await;
     // search fans out across devices, sites, ips, prefixes, vlans, circuits,
-    // aggregates, asns, ip-ranges (q=…).
+    // aggregates, asns, ip-ranges, tenants, contacts (q=…).
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
@@ -160,6 +160,8 @@ async fn search_returns_results_and_errors() {
         "/api/ipam/aggregates/",
         "/api/ipam/asns/",
         "/api/ipam/ip-ranges/",
+        "/api/tenancy/tenants/",
+        "/api/tenancy/contacts/",
     ] {
         Mock::given(method("GET"))
             .and(path(p))
@@ -241,6 +243,8 @@ async fn search_reports_partial_endpoint_errors() {
         "/api/ipam/aggregates/",
         "/api/ipam/asns/",
         "/api/ipam/ip-ranges/",
+        "/api/tenancy/tenants/",
+        "/api/tenancy/contacts/",
     ] {
         mount_empty(&mock, p).await;
     }
@@ -617,6 +621,84 @@ async fn get_circuit_returns_circuit_view() {
     assert_eq!(value["provider"], "ACME");
     assert_eq!(value["status"], "active");
     assert_eq!(value["commit_rate_kbps"], 1_000_000);
+}
+
+#[tokio::test]
+async fn get_tenant_returns_tenant_view() {
+    let mock = MockServer::start().await;
+    // tenant_by_ref tries slug first.
+    Mock::given(method("GET"))
+        .and(path("/api/tenancy/tenants/"))
+        .and(query_param("slug", "acme"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 4, "url": "http://nb/api/tenancy/tenants/4/",
+                "name": "Acme Corp", "slug": "acme",
+                "group": {"id": 2, "display": "Customers"},
+                "device_count": 12, "prefix_count": 5, "site_count": 0,
+                "tags": [{"id": 1, "name": "vip", "slug": "vip"}],
+                "custom_fields": {"account_id": "A-100"}
+            }]
+        })))
+        .mount(&mock)
+        .await;
+
+    let Json(value) = server_for(&mock)
+        .nbox_get(Parameters(get_args(GetKind::Tenant, "acme")))
+        .await
+        .expect("tenant lookup");
+
+    assert_eq!(value["name"], "Acme Corp");
+    assert_eq!(value["slug"], "acme");
+    assert_eq!(value["group"], "Customers");
+    assert_eq!(value["device_count"], 12);
+    assert_eq!(value["prefix_count"], 5);
+    // Zero counts are dropped.
+    assert!(value.get("site_count").is_none());
+    assert_eq!(value["tags"][0], "vip");
+    assert_eq!(value["custom_fields"]["account_id"], "A-100");
+}
+
+#[tokio::test]
+async fn get_contact_returns_contact_view() {
+    let mock = MockServer::start().await;
+    // contact_by_ref has no slug; it tries `name__ie` first.
+    Mock::given(method("GET"))
+        .and(path("/api/tenancy/contacts/"))
+        .and(query_param("name__ie", "Jane Doe"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 7, "url": "http://nb/api/tenancy/contacts/7/",
+                "name": "Jane Doe",
+                "group": {"id": 3, "display": "NOC"},
+                "title": "Network Engineer",
+                "phone": "+1-555-0100",
+                "email": "jane@example.com",
+                "address": "",
+                "link": "https://example.com/jane",
+                "tags": [{"id": 2, "name": "oncall", "slug": "oncall"}],
+                "custom_fields": {"pager": "555-9000"}
+            }]
+        })))
+        .mount(&mock)
+        .await;
+
+    let Json(value) = server_for(&mock)
+        .nbox_get(Parameters(get_args(GetKind::Contact, "Jane Doe")))
+        .await
+        .expect("contact lookup");
+
+    assert_eq!(value["name"], "Jane Doe");
+    assert_eq!(value["group"], "NOC");
+    assert_eq!(value["title"], "Network Engineer");
+    assert_eq!(value["email"], "jane@example.com");
+    assert_eq!(value["link"], "https://example.com/jane");
+    // Empty string dropped.
+    assert!(value.get("address").is_none());
+    assert_eq!(value["tags"][0], "oncall");
+    assert_eq!(value["custom_fields"]["pager"], "555-9000");
 }
 
 #[tokio::test]
