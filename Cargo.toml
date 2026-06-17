@@ -24,6 +24,13 @@ reqwest = { version = "0.12", default-features = false, features = ["json", "rus
 ratatui = "0.30"
 crossterm = { version = "0.29", features = ["event-stream"] }
 nucleo = "0.5"
+# Polished widgets (Input cursor editing for search/palette). Pinned: 0.7.0
+# targets ratatui ^0.30, matching nbox — confined behind the cheese adapter
+# layer in `src/tui/cheese.rs`.
+ratatui-cheese = "=0.7.0"
+# Display width of glyphs, to place the terminal cursor on the cheese input the
+# same way cheese lays it out (already in the tree via ratatui/cheese).
+unicode-width = "0.2"
 
 # CLI
 clap = { version = "4", features = ["derive", "env"] }

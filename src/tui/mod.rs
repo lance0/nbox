@@ -5,6 +5,7 @@
 //! color theme definitions.
 
 pub mod app;
+pub mod cheese;
 pub mod events;
 pub mod fuzzy;
 pub mod palette;

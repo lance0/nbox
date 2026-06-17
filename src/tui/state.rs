@@ -12,6 +12,7 @@ use ratatui::widgets::TableState;
 use crate::domain::detail::DetailView;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::search::{ObjectKind, SearchOutcome, SearchResult};
+use crate::tui::cheese::TextInput;
 use crate::tui::palette::{self, PaletteCommand};
 use crate::tui::theme::{Severity, Theme};
 
@@ -123,8 +124,13 @@ pub struct App {
     /// [`App::set_status`]); resets to `Info` whenever the status is cleared.
     pub status_severity: Severity,
 
-    pub search_input: String,
-    pub command_input: String,
+    /// The `/` search line editor. Text entry, backspace/delete, cursor
+    /// movement and the visible cursor are delegated to the cheese-backed
+    /// [`TextInput`] wrapper (see `tui::cheese`); the submit/cancel flow stays
+    /// here. Read its text with [`TextInput::value`].
+    pub search_input: TextInput,
+    /// The `:` command-palette line editor — same cheese-backed wrapper.
+    pub command_input: TextInput,
     pub last_query: Option<String>,
 
     pub results: Vec<SearchResult>,
@@ -207,8 +213,8 @@ impl App {
             history: Vec::new(),
             status: String::new(),
             status_severity: Severity::Info,
-            search_input: String::new(),
-            command_input: String::new(),
+            search_input: TextInput::new("search NetBox…"),
+            command_input: TextInput::new("command (e.g. device edge01)"),
             last_query: None,
             results: Vec::new(),
             view: Vec::new(),
@@ -349,12 +355,12 @@ impl App {
             KeyCode::Esc | KeyCode::Char('b') => self.go_back(),
             KeyCode::Char('/') => {
                 self.mode = Mode::Search;
-                self.search_input.clear();
+                self.search_input.reset();
                 self.refilter();
             }
             KeyCode::Char(':') => {
                 self.mode = Mode::Command;
-                self.command_input.clear();
+                self.command_input.reset();
             }
             KeyCode::Char('t') => self.cycle_theme(),
             // Tab / Shift+Tab cycle focus between the home split's panes.
@@ -406,11 +412,13 @@ impl App {
     }
 
     fn handle_search_key(&mut self, key: KeyEvent) -> Vec<AppCommand> {
-        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
+            // Esc cancels the search; Enter submits it. Everything else is text
+            // editing, delegated to the cheese-backed input (chars, backspace,
+            // delete, cursor movement, Ctrl+U clear, Ctrl+W word-delete).
             KeyCode::Esc => self.mode = Mode::Normal,
             KeyCode::Enter => {
-                let query = self.search_input.trim().to_string();
+                let query = self.search_input.value().trim().to_string();
                 self.mode = Mode::Normal;
                 if !query.is_empty() {
                     self.last_query = Some(query.clone());
@@ -418,32 +426,23 @@ impl App {
                     return vec![AppCommand::Search(query)];
                 }
             }
-            KeyCode::Char('u') if ctrl => {
-                self.search_input.clear();
-                self.refilter();
+            _ => {
+                // An edit refilters the live view; a non-editing key is ignored.
+                if self.search_input.handle_key(key) {
+                    self.refilter();
+                }
             }
-            KeyCode::Char('w') if ctrl => {
-                trim_last_word(&mut self.search_input);
-                self.refilter();
-            }
-            KeyCode::Backspace => {
-                self.search_input.pop();
-                self.refilter();
-            }
-            KeyCode::Char(c) => {
-                self.search_input.push(c);
-                self.refilter();
-            }
-            _ => {}
         }
         Vec::new()
     }
 
     fn handle_command_key(&mut self, key: KeyEvent) -> Vec<AppCommand> {
         match key.code {
+            // Esc cancels the palette; Enter executes it. Everything else is text
+            // editing, delegated to the cheese-backed input.
             KeyCode::Esc => self.mode = Mode::Normal,
             KeyCode::Enter => {
-                let input = self.command_input.trim().to_string();
+                let input = self.command_input.value().trim().to_string();
                 self.mode = Mode::Normal;
                 if !input.is_empty() {
                     match palette::parse(&input) {
@@ -452,11 +451,9 @@ impl App {
                     }
                 }
             }
-            KeyCode::Backspace => {
-                self.command_input.pop();
+            _ => {
+                self.command_input.handle_key(key);
             }
-            KeyCode::Char(c) => self.command_input.push(c),
-            _ => {}
         }
         Vec::new()
     }
@@ -625,7 +622,7 @@ impl App {
     /// Recompute the visible `view` by fuzzy-filtering results on `search_input`.
     fn refilter(&mut self) {
         let displays: Vec<&str> = self.results.iter().map(|r| r.display.as_str()).collect();
-        self.view = crate::tui::fuzzy::rank(&self.search_input, &displays);
+        self.view = crate::tui::fuzzy::rank(self.search_input.value(), &displays);
         self.selected = 0;
         // The highlighted result moved; let the debounce reconcile the preview.
         self.mark_preview_dirty();
@@ -1019,13 +1016,6 @@ fn classify_status(message: &str) -> Severity {
     }
 }
 
-/// Delete the trailing word (and its preceding spaces) from `s`.
-fn trim_last_word(s: &mut String) {
-    let trimmed = s.trim_end_matches(' ');
-    let cut = trimmed.rfind(' ').map(|i| i + 1).unwrap_or(0);
-    s.truncate(cut);
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1218,6 +1208,97 @@ mod tests {
     }
 
     #[test]
+    fn esc_cancels_search_without_emitting_a_command() {
+        // Esc must leave search mode and issue no command, with the typed text
+        // discarded (the next `/` opens a fresh, empty line).
+        let mut a = app();
+        a.handle_event(press(KeyCode::Char('/')));
+        for c in "edge".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        assert_eq!(a.search_input.value(), "edge");
+        let cmds = a.handle_event(press(KeyCode::Esc));
+        assert!(cmds.is_empty());
+        assert_eq!(a.mode, Mode::Normal);
+        // Reopening search starts empty.
+        a.handle_event(press(KeyCode::Char('/')));
+        assert_eq!(a.search_input.value(), "");
+    }
+
+    #[test]
+    fn search_cursor_editing_inserts_mid_string() {
+        // The cheese-backed cursor lets Home/Left position the insertion point so
+        // characters land mid-string, driven entirely through the pure handler.
+        let mut a = app();
+        a.handle_event(press(KeyCode::Char('/')));
+        for c in "ege".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        // Move to the start, step right once (between 'e' and 'g'), insert 'd'.
+        a.handle_event(press(KeyCode::Home));
+        a.handle_event(press(KeyCode::Right));
+        a.handle_event(press(KeyCode::Char('d')));
+        assert_eq!(a.search_input.value(), "edge");
+        // Backspace removes the char before the cursor (the 'd' just typed).
+        a.handle_event(press(KeyCode::Backspace));
+        assert_eq!(a.search_input.value(), "ege");
+        // Delete (forward) at this position removes the 'g' under the cursor.
+        a.handle_event(press(KeyCode::Delete));
+        assert_eq!(a.search_input.value(), "ee");
+    }
+
+    #[test]
+    fn search_enter_after_cursor_editing_submits_full_value() {
+        // After mid-string editing, Enter still submits the whole buffer as the
+        // search query — the submit semantics are unchanged by the cursor work.
+        let mut a = app();
+        a.handle_event(press(KeyCode::Char('/')));
+        for c in "edge1".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        a.handle_event(press(KeyCode::Home));
+        a.handle_event(press(KeyCode::Char('x'))); // prepend
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(matches!(cmds.as_slice(), [AppCommand::Search(q)] if q == "xedge1"));
+        assert_eq!(a.last_query.as_deref(), Some("xedge1"));
+        assert_eq!(a.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn esc_cancels_command_palette() {
+        // Esc closes the palette, runs nothing, and discards the typed command.
+        let mut a = app();
+        a.handle_event(press(KeyCode::Char(':')));
+        for c in "device edge01".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        assert_eq!(a.command_input.value(), "device edge01");
+        let cmds = a.handle_event(press(KeyCode::Esc));
+        assert!(cmds.is_empty());
+        assert_eq!(a.mode, Mode::Normal);
+        a.handle_event(press(KeyCode::Char(':')));
+        assert_eq!(a.command_input.value(), "");
+    }
+
+    #[test]
+    fn command_cursor_editing_then_enter_executes_edited_command() {
+        // Cursor editing in the palette feeds into the same parse → AppCommand
+        // flow: build "device edge01" by inserting the digit mid-token, submit.
+        let mut a = app();
+        a.handle_event(press(KeyCode::Char(':')));
+        for c in "device edge0".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        a.handle_event(press(KeyCode::Char('1')));
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(matches!(
+            cmds.as_slice(),
+            [AppCommand::LoadByRef { kind: ObjectKind::Device, value }] if value == "edge01"
+        ));
+        assert_eq!(a.mode, Mode::Normal);
+    }
+
+    #[test]
     fn enter_on_result_loads_detail_and_back_returns_home() {
         let mut a = app();
         set_results(&mut a, vec![result(1, "edge01")]);
@@ -1363,14 +1444,21 @@ mod tests {
 
     #[test]
     fn ctrl_w_deletes_last_word() {
+        // Word-delete is delegated to the cheese-backed input, but it must still
+        // work through the pure search handler: type a two-word query, Ctrl+W
+        // eats the trailing word (and its space).
         let mut a = app();
-        a.mode = Mode::Search;
-        a.search_input = "edge router".into();
+        a.handle_event(press(KeyCode::Char('/')));
+        for c in "edge router".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
         a.handle_event(AppEvent::Key(KeyEvent::new(
             KeyCode::Char('w'),
             KeyModifiers::CONTROL,
         )));
-        assert_eq!(a.search_input, "edge ");
+        // The trailing word is gone; the separating space remains, matching the
+        // previous trim-last-word behavior.
+        assert_eq!(a.search_input.value(), "edge ");
     }
 
     #[test]

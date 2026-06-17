@@ -374,21 +374,40 @@ fn tab_bar<'a>(app: &App, detail: &'a crate::domain::detail::DetailView) -> Line
     Line::from(spans)
 }
 
-fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
+fn render_footer(frame: &mut Frame, area: Rect, app: &mut App) {
+    // In Search/Command mode the footer is the cheese-backed line editor: it
+    // draws the `sigil value` line itself (with a visible cursor) and reports
+    // where the terminal cursor should sit, which we then place. The borrow of
+    // `app.theme` is cloned out first so the input can borrow `app` mutably.
+    match app.mode {
+        Mode::Search => {
+            let theme = app.theme.clone();
+            let pos = app.search_input.render(frame, area, '/', &theme);
+            frame.set_cursor_position(pos);
+            return;
+        }
+        Mode::Command => {
+            let theme = app.theme.clone();
+            let pos = app.command_input.render(frame, area, ':', &theme);
+            frame.set_cursor_position(pos);
+            return;
+        }
+        Mode::Normal => {}
+    }
+
     let theme = &app.theme;
-    let line = match app.mode {
-        Mode::Search => Line::from(format!("/{}", app.search_input)),
-        Mode::Command => Line::from(format!(":{}", app.command_input)),
+    let line = if !app.status.is_empty() {
         // A live status message is colored by its severity: errors red, partial
         // results yellow, confirmations green, ordinary chatter dim.
-        Mode::Normal if !app.status.is_empty() => Line::from(Span::styled(
+        Line::from(Span::styled(
             format!(" {} ", app.status),
             theme.message_style(app.status_severity),
-        )),
-        Mode::Normal => Line::from(Span::styled(
+        ))
+    } else {
+        Line::from(Span::styled(
             " / search   Tab pane   Enter open   o browser   y copy   b back   t theme   ? help   q quit ",
             Style::default().fg(theme.text_dim),
-        )),
+        ))
     };
     frame.render_widget(
         Paragraph::new(line).style(Style::default().fg(theme.text)),
