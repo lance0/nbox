@@ -1,15 +1,24 @@
 //! Integration tests for the multi-endpoint search fan-out.
 
-use nbox::config::ProfileConfig;
+use nbox::config::{BackendKind, ProfileConfig};
 use nbox::netbox::client::NetBoxClient;
 use nbox::netbox::search::{ObjectKind, SearchFilters, SearchRequest};
 use serde_json::json;
-use wiremock::matchers::{method, path, query_param};
+use wiremock::matchers::{body_string_contains, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 fn client(server: &MockServer) -> NetBoxClient {
     let profile = ProfileConfig {
         url: server.uri(),
+        ..Default::default()
+    };
+    NetBoxClient::new(&profile, None).unwrap()
+}
+
+fn graphql_client(server: &MockServer) -> NetBoxClient {
+    let profile = ProfileConfig {
+        url: server.uri(),
+        backend: Some(BackendKind::Graphql),
         ..Default::default()
     };
     NetBoxClient::new(&profile, None).unwrap()
@@ -23,6 +32,91 @@ async fn mount_empty(server: &MockServer, p: &str) {
     Mock::given(method("GET"))
         .and(path(p))
         .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .mount(server)
+        .await;
+}
+
+async fn mount_graphql_device_schema(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/graphql/"))
+        .and(body_string_contains("__schema"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "__schema": {
+                    "queryType": {
+                        "fields": [{
+                            "name": "device_list",
+                            "args": [
+                                {
+                                    "name": "filters",
+                                    "type": {"kind": "INPUT_OBJECT", "name": "DeviceFilter"}
+                                },
+                                {
+                                    "name": "pagination",
+                                    "type": {"kind": "INPUT_OBJECT", "name": "PaginationInput"}
+                                }
+                            ]
+                        }]
+                    }
+                }
+            }
+        })))
+        .mount(server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/graphql/"))
+        .and(body_string_contains("__type"))
+        .and(body_string_contains("DeviceFilter"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "device": {
+                    "inputFields": [
+                        {
+                            "name": "q",
+                            "type": {"kind": "SCALAR", "name": "String"}
+                        },
+                        {
+                            "name": "status",
+                            "type": {"kind": "INPUT_OBJECT", "name": "StringLookup"}
+                        }
+                    ]
+                }
+            }
+        })))
+        .mount(server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/graphql/"))
+        .and(body_string_contains("__type"))
+        .and(body_string_contains("ASNFilter"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {}
+        })))
+        .mount(server)
+        .await;
+}
+
+async fn mount_graphql_device_result(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/graphql/"))
+        .and(body_string_contains("device_list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "device_list": [{
+                    "id": "7",
+                    "name": "edge01",
+                    "display": "edge01",
+                    "site": {
+                        "id": "9",
+                        "name": "iad1",
+                        "display": "iad1",
+                        "slug": "iad1"
+                    }
+                }]
+            }
+        })))
         .mount(server)
         .await;
 }
@@ -84,6 +178,103 @@ async fn search_merges_ranks_and_dedups_across_endpoints() {
     assert_eq!(results[0].url, "http://nb/dcim/devices/1/");
     // VLAN (partial match) ranks lower.
     assert_eq!(results[1].kind, ObjectKind::Vlan);
+}
+
+#[tokio::test]
+async fn graphql_backend_search_shapes_lookup_filters_and_synthesizes_urls() {
+    let server = MockServer::start().await;
+    mount_graphql_device_schema(&server).await;
+    mount_graphql_device_result(&server).await;
+
+    let results = graphql_client(&server)
+        .search(SearchRequest {
+            query: "edge".into(),
+            limit: 10,
+            filters: SearchFilters {
+                status: Some("active".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap()
+        .results;
+
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].kind, ObjectKind::Device);
+    assert_eq!(results[0].display, "edge01");
+    assert_eq!(results[0].subtitle.as_deref(), Some("iad1"));
+    assert_eq!(results[0].url, format!("{}/dcim/devices/7/", server.uri()));
+
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|request| request.url.path() == "/graphql/"),
+        "GraphQL backend should not hit REST search endpoints: {requests:#?}"
+    );
+    let device_query: serde_json::Value = requests
+        .iter()
+        .map(|request| request.body_json().unwrap())
+        .find(|body: &serde_json::Value| {
+            body.get("query")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|query| query.contains("device_list"))
+        })
+        .expect("device_list query was sent");
+    assert!(
+        device_query["query"]
+            .as_str()
+            .unwrap()
+            .contains("pagination: {offset: 0, limit: 10}"),
+        "query should use offset pagination when the schema advertises it: {device_query:#}"
+    );
+    assert_eq!(device_query["variables"]["filters"]["q"], "edge");
+    assert_eq!(
+        device_query["variables"]["filters"]["status"],
+        json!({"exact": "STATUS_ACTIVE"})
+    );
+}
+
+#[tokio::test]
+async fn graphql_backend_skips_scoped_branch_when_filter_is_not_in_schema() {
+    let server = MockServer::start().await;
+    mount_graphql_device_schema(&server).await;
+    mount_graphql_device_result(&server).await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/sites/"))
+        .and(query_param("slug", "iad1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 9, "url": "http://nb/api/dcim/sites/9/", "name": "iad1", "slug": "iad1"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let outcome = graphql_client(&server)
+        .search(SearchRequest {
+            query: "edge".into(),
+            limit: 10,
+            filters: SearchFilters {
+                site: Some("iad1".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+
+    assert!(outcome.results.is_empty(), "got: {:?}", outcome.results);
+    assert!(outcome.errors.is_empty(), "errors: {:?}", outcome.errors);
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .filter_map(|request| request.body_json::<serde_json::Value>().ok())
+            .all(|body| body
+                .get("query")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(|query| !query.contains("device_list"))),
+        "device_list query should be skipped when site_id is not in DeviceFilter: {requests:#?}"
+    );
 }
 
 #[tokio::test]

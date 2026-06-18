@@ -22,6 +22,7 @@ confirm_writes = true      # reserved for v0.2 writes
 url = "https://netbox.example.com"
 token_env = "NETBOX_TOKEN"   # nbox reads the token from this env var
 auth_scheme = "auto"         # auto | bearer | token (auto-detects v2 nbt_ tokens)
+backend = "rest"             # rest | graphql (GraphQL currently backs search)
 verify_tls = true
 timeout_secs = 15
 page_size = 100

@@ -120,6 +120,9 @@ MCP prompts are later. See `docs/MCP.md`.
   (`nbox config token set`) → none. Env always overrides the keyring. Inspect the
   active source with `nbox config token status` (never prints the token). Select a
   profile with `--profile <name>` or set the active one.
+- Backend: REST is the default. A profile may set `backend = "graphql"` to use
+  GraphQL for `search`; nbox probes `/graphql/` and adapts to NetBox 4.2, 4.3,
+  and 4.5+ filter/pagination shapes. Non-search operations remain REST-backed.
 - Logging: quiet by default (warnings to stderr). `--log-level` / `NBOX_LOG` /
   `RUST_LOG` set verbosity; `--log-file <PATH>` (or config `log_file`) also tees
   `tracing` output to a file. stdout stays data-only on every path.
