@@ -11,11 +11,25 @@ use ratatui::widgets::TableState;
 
 use crate::config::ProfileConfig;
 use crate::domain::detail::DetailView;
+use crate::netbox::auth::AuthScheme;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::search::{ObjectKind, SearchOutcome, SearchResult};
 use crate::tui::cheese::{Spinner, TextInput};
+use crate::tui::config_modal::{ConfigModal, ModalOutcome, ProfilesMode, TestState};
 use crate::tui::palette::{self, PaletteCommand};
 use crate::tui::theme::{Severity, Theme};
+
+/// A floating overlay drawn on top of the live screen. Both are modal: while one
+/// is open keys route to it and are consumed (the underlying screen is untouched).
+/// Mirrors the old `help_open` flag, generalized so the Config editor can share
+/// the overlay machinery (rendered last, keys consumed while open).
+pub enum Modal {
+    /// The `?`/`F1` keybindings overlay — any key (or `Esc`) closes it.
+    Help,
+    /// The `S` (or palette `config`) Config modal: an in-app profile editor (and,
+    /// in a later phase, settings). Has its own key handling.
+    Config(ConfigModal),
+}
 
 /// Which screen is in the body area.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,7 +95,59 @@ pub enum AppEvent {
         name: String,
         result: anyhow::Result<(NetBoxClient, String)>,
     },
+    /// A test-connect probe (from the Config modal's add/edit form) finished:
+    /// success carries the probed NetBox version, failure the error. Tagged with
+    /// the monotonic test `id` so a superseded test — the form changed and the
+    /// user re-tested — is dropped on arrival (the request-id guard).
+    ConnectTested {
+        id: RequestId,
+        result: anyhow::Result<String>,
+    },
     Status(String),
+}
+
+/// The fields a test-connect / save needs to build a temporary client for a
+/// candidate profile, independent of whether it's saved yet. The token is the
+/// raw secret typed into the (masked) form; it is passed straight to the temp
+/// client and never logged or persisted to TOML. Built from the form on demand.
+///
+/// `Debug` is hand-written to **redact the token** — it must never leak into a
+/// log or a `{:?}` of the carrying [`AppCommand`].
+#[derive(Clone)]
+pub struct ConnectRequest {
+    pub url: String,
+    pub auth_scheme: AuthScheme,
+    pub verify_tls: bool,
+    /// The token to authenticate the probe with: the form's typed token, else the
+    /// resolved env/keyring token for the (possibly existing) profile. `None` ⇒
+    /// the probe runs unauthenticated and likely 401s — surfaced as a failure.
+    pub token: Option<String>,
+}
+
+impl std::fmt::Debug for ConnectRequest {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // The token is a secret: never print its value, only whether one is set.
+        f.debug_struct("ConnectRequest")
+            .field("url", &self.url)
+            .field("auth_scheme", &self.auth_scheme)
+            .field("verify_tls", &self.verify_tls)
+            .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .finish()
+    }
+}
+
+impl ConnectRequest {
+    /// Build a [`ProfileConfig`] for this candidate (for `NetBoxClient::new`). The
+    /// token isn't part of the profile (it's resolved separately / passed
+    /// alongside), so it never lands in a serialized profile.
+    pub fn to_profile(&self) -> ProfileConfig {
+        ProfileConfig {
+            url: self.url.clone(),
+            auth_scheme: Some(self.auth_scheme),
+            verify_tls: Some(self.verify_tls),
+            ..Default::default()
+        }
+    }
 }
 
 /// A recently-opened object, for quick reopening from the home screen.
@@ -164,6 +230,16 @@ pub enum AppCommand {
         /// only).
         config_path: Option<PathBuf>,
     },
+    /// Test-connect a candidate profile from the Config modal: build a temporary
+    /// client from `req` and probe `/api/status/` (the same `verify_compatible`
+    /// path a real connect/switch uses), off the render thread. The result returns
+    /// as [`AppEvent::ConnectTested`]; `id` (the monotonic test id, echoed back)
+    /// is what a superseded test is dropped by on arrival. The carried token is a
+    /// secret — never logged (see [`ConnectRequest`]'s redacting `Debug`).
+    TestConnect {
+        id: RequestId,
+        req: ConnectRequest,
+    },
 }
 
 impl AppCommand {
@@ -181,6 +257,7 @@ impl AppCommand {
                 | AppCommand::LoadPreview { .. }
                 | AppCommand::LoadByRef { .. }
                 | AppCommand::SwitchProfile { .. }
+                | AppCommand::TestConnect { .. }
         )
     }
 }
@@ -228,11 +305,19 @@ pub struct App {
 
     pub mode: Mode,
     pub screen: Screen,
-    /// Whether the help overlay is open. Orthogonal to `screen`: help floats over
-    /// the live Home/Detail view as a centered modal (see `tui::ui::render_help`),
-    /// so opening or closing it never disturbs the underlying screen or history.
-    /// `?`/`F1` toggle it; while open, any key (or `Esc`) closes it.
-    pub help_open: bool,
+    /// The open floating overlay, if any (Help or the Config editor). Orthogonal
+    /// to `screen`: a modal floats over the live Home/Detail view (see
+    /// `tui::ui::render` drawing it last), so opening or closing it never disturbs
+    /// the underlying screen or history. While a modal is open, keys route to it
+    /// and are consumed. Help is any-key-close; Config has its own key handling.
+    pub modal: Option<Modal>,
+    /// Monotonic id source for Config-modal test-connect probes. Each
+    /// [`AppCommand::TestConnect`] bumps this and records it as the high-water
+    /// mark; an older [`AppEvent::ConnectTested`] is dropped (latest-test-wins),
+    /// so editing the form and re-testing can't be settled by a stale probe.
+    pub test_seq: RequestId,
+    /// High-water mark: the id of the latest test-connect initiated.
+    pub test_gen: RequestId,
     /// Which home pane has focus: the results list or the preview. Movement keys
     /// route to it. `Tab`/`Shift+Tab` toggle it; only meaningful on Home.
     pub focus: Focus,
@@ -360,7 +445,9 @@ impl App {
             switch_gen: 0,
             mode: Mode::Normal,
             screen: Screen::Home,
-            help_open: false,
+            modal: None,
+            test_seq: 0,
+            test_gen: 0,
             focus: Focus::List,
             history: Vec::new(),
             status: String::new(),
@@ -457,7 +544,8 @@ impl App {
                 AppCommand::LoadPreview { .. }
                 | AppCommand::OpenBrowser(_)
                 | AppCommand::Copy(_)
-                | AppCommand::SwitchProfile { .. } => {}
+                | AppCommand::SwitchProfile { .. }
+                | AppCommand::TestConnect { .. } => {}
             }
         }
     }
@@ -630,6 +718,27 @@ impl App {
                 }
                 Vec::new()
             }
+            AppEvent::ConnectTested { id, result } => {
+                // The test-connect probe settled — count it down even when dropped
+                // as stale below, so the spinner can't hang on a superseded test.
+                self.end_request();
+                // Latest-test-wins: drop a probe the user has already superseded by
+                // editing + re-testing (its result describes stale form contents).
+                if id < self.test_gen {
+                    return Vec::new();
+                }
+                // Land the result in the open form, if one is still showing. (The
+                // user may have navigated away; then there's nothing to update.)
+                if let Some(Modal::Config(modal)) = &mut self.modal
+                    && let Some(form) = modal.form_mut()
+                {
+                    form.test = match result {
+                        Ok(version) => TestState::Ok(version),
+                        Err(e) => TestState::Failed(format!("{e:#}")),
+                    };
+                }
+                Vec::new()
+            }
             AppEvent::Status(message) => {
                 // An async status push (e.g. "copied …"/"opened …"): classify it
                 // so confirmations and failures still get the right color.
@@ -685,19 +794,19 @@ impl App {
 
     fn handle_normal_key(&mut self, key: KeyEvent) -> Vec<AppCommand> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        // The help overlay is a modal: while it's open ANY key closes it and is
-        // consumed here, so it never also acts on the underlying screen (ttl's
-        // "press any key to close"). Ctrl+C still quits, mirroring the rest of
-        // the app's hard-exit. Closing leaves `screen`/history untouched.
-        if self.help_open {
+        // A modal floats over the live screen and consumes keys: while one is open
+        // the key routes to it (Help = any-key-close; Config = its own handling)
+        // and never also acts on the underlying screen. Ctrl+C still hard-quits
+        // regardless, mirroring the rest of the app. Closing leaves `screen`/
+        // history untouched.
+        if self.modal.is_some() {
             if let KeyCode::Char('c') = key.code
                 && ctrl
             {
                 self.should_quit = true;
-            } else {
-                self.help_open = false;
+                return Vec::new();
             }
-            return Vec::new();
+            return self.handle_modal_key(key);
         }
         match key.code {
             KeyCode::Char('c') if ctrl => self.should_quit = true,
@@ -708,7 +817,10 @@ impl App {
                     self.go_back();
                 }
             }
-            KeyCode::Char('?') | KeyCode::F(1) => self.help_open = true,
+            KeyCode::Char('?') | KeyCode::F(1) => self.modal = Some(Modal::Help),
+            // `S` opens the Config modal (Profiles section); also the palette
+            // `config` verb. Free key — no clash with the bound set.
+            KeyCode::Char('S') => self.open_config_modal(),
             KeyCode::Esc | KeyCode::Char('b') => self.go_back(),
             KeyCode::Char('/') => {
                 self.mode = Mode::Search;
@@ -777,6 +889,327 @@ impl App {
             _ => {}
         }
         Vec::new()
+    }
+
+    /// Open the Config modal on the Profiles section (the `S` key / palette
+    /// `config`). A no-op while one is already open.
+    fn open_config_modal(&mut self) {
+        if self.modal.is_none() {
+            self.modal = Some(Modal::Config(ConfigModal::new()));
+        }
+    }
+
+    /// Route a key to the open modal. Help is any-key-close (no command); the
+    /// Config modal yields a [`ModalOutcome`] this turns into state changes /
+    /// commands (test-connect, save, select, edit, delete, close).
+    fn handle_modal_key(&mut self, key: KeyEvent) -> Vec<AppCommand> {
+        match self.modal {
+            Some(Modal::Help) => {
+                // Any key (incl. Esc) closes help; it issues no command.
+                self.modal = None;
+                Vec::new()
+            }
+            Some(Modal::Config(_)) => self.handle_config_modal_key(key),
+            None => Vec::new(),
+        }
+    }
+
+    /// Drive the Config modal: feed it the key with the live profile list + active
+    /// name, then act on its [`ModalOutcome`].
+    fn handle_config_modal_key(&mut self, key: KeyEvent) -> Vec<AppCommand> {
+        let names: Vec<String> = self.profiles.iter().map(|p| p.name.clone()).collect();
+        let active = self.profile_name.clone();
+        let Some(Modal::Config(modal)) = &mut self.modal else {
+            return Vec::new();
+        };
+        let outcome = modal.handle_key(key, &names, &active);
+        self.apply_modal_outcome(outcome)
+    }
+
+    /// Act on a Config-modal outcome. Performs no blocking I/O itself: file writes
+    /// and the keyring are synchronous-but-local (mirroring the existing
+    /// `save_ui_theme` on the render thread); the network (test-connect, the
+    /// switch reconnect) is dispatched as a command.
+    fn apply_modal_outcome(&mut self, outcome: ModalOutcome) -> Vec<AppCommand> {
+        match outcome {
+            ModalOutcome::None => Vec::new(),
+            ModalOutcome::Close => {
+                self.modal = None;
+                Vec::new()
+            }
+            ModalOutcome::TestConnect => self.modal_test_connect(),
+            ModalOutcome::Save { use_it } => self.modal_save(use_it),
+            ModalOutcome::Select(name) => self.modal_select(&name),
+            ModalOutcome::Edit(name) => {
+                self.modal_open_edit(&name);
+                Vec::new()
+            }
+            ModalOutcome::Delete(name) => self.modal_delete(&name),
+        }
+    }
+
+    /// Build a [`ConnectRequest`] from the open form: the form's url/auth/tls plus
+    /// the token to probe with (the typed token, else the resolved token for the
+    /// profile being edited — so testing an edit without re-typing the token still
+    /// authenticates). Returns `None` if no form is open.
+    fn form_connect_request(&self) -> Option<ConnectRequest> {
+        let Some(Modal::Config(modal)) = &self.modal else {
+            return None;
+        };
+        let form = modal.form()?;
+        // The typed token wins; otherwise fall back to the resolved token for the
+        // existing profile (env/keyring) so an edit can be tested as-is.
+        let token = form.token().or_else(|| {
+            let name = form.editing.as_deref()?;
+            let profile = self.profiles.iter().find(|p| p.name == name)?;
+            let path = self
+                .config_path
+                .clone()
+                .unwrap_or_else(|| PathBuf::from(""));
+            crate::config::resolve_token(&profile.config, &path, name)
+        });
+        Some(ConnectRequest {
+            url: form.url(),
+            auth_scheme: form.auth_scheme,
+            verify_tls: form.verify_tls,
+            token,
+        })
+    }
+
+    /// Dispatch a test-connect for the open form (id-guarded, spinner-tracked).
+    fn modal_test_connect(&mut self) -> Vec<AppCommand> {
+        let Some(req) = self.form_connect_request() else {
+            return Vec::new();
+        };
+        self.test_seq += 1;
+        self.test_gen = self.test_seq;
+        vec![AppCommand::TestConnect {
+            id: self.test_seq,
+            req,
+        }]
+    }
+
+    /// Persist the open form's profile (config-file metadata + optional keyring
+    /// token), add/update it in the live `profiles`, and — when `use_it` — set it
+    /// active and ride the switch path to reconnect. Returns the switch command
+    /// when switching, else nothing.
+    fn modal_save(&mut self, use_it: bool) -> Vec<AppCommand> {
+        // Snapshot the form fields (the borrow of `self.modal` must end before we
+        // touch `self.profiles`/config).
+        let Some(Modal::Config(modal)) = &self.modal else {
+            return Vec::new();
+        };
+        let Some(form) = modal.form() else {
+            return Vec::new();
+        };
+        let name = form.name();
+        let url = form.url();
+        let token_env = form.token_env();
+        let auth_scheme = form.auth_scheme;
+        let verify_tls = form.verify_tls;
+        let token = form.token();
+        let original = form.editing.clone();
+
+        // Write the metadata to the config file (format-preserving), if we have a
+        // backing path. The token is NEVER written here.
+        if let Some(path) = self.config_path.clone() {
+            if let Err(e) = Self::persist_profile(
+                &path,
+                &name,
+                &url,
+                token_env.as_deref(),
+                auth_scheme,
+                verify_tls,
+            ) {
+                self.set_status(format!("save failed: {e:#}"), Severity::Error);
+                return Vec::new();
+            }
+            // A typed token goes to the OS keyring (never TOML). Surface a clear
+            // status when the keyring is unavailable, but still keep the saved
+            // metadata.
+            if let Some(token) = &token {
+                let account = crate::secret::account_key(&path.display().to_string(), &name);
+                match crate::secret::keyring_set(&account, token) {
+                    Ok(()) => {}
+                    Err(_) => {
+                        self.set_status(
+                            "saved — keyring unavailable; set a token_env or NBOX_TOKEN"
+                                .to_string(),
+                            Severity::Warning,
+                        );
+                    }
+                }
+            }
+        }
+
+        // Build the live profile entry from the form + reflect it into `profiles`.
+        let mut config = ProfileConfig {
+            url: url.clone(),
+            token_env: token_env.clone(),
+            auth_scheme: Some(auth_scheme),
+            verify_tls: Some(verify_tls),
+            ..Default::default()
+        };
+        // Carry over any non-editor fields (timeout/page_size/…) when editing.
+        if let Some(orig) = &original
+            && let Some(existing) = self.profiles.iter().find(|p| &p.name == orig)
+        {
+            config.timeout_secs = existing.config.timeout_secs;
+            config.page_size = existing.config.page_size;
+            config.exclude_config_context = existing.config.exclude_config_context;
+        }
+        self.upsert_live_profile(original.as_deref(), &name, config);
+
+        // Return to the list, selecting the saved profile.
+        let idx = self
+            .profiles
+            .iter()
+            .position(|p| p.name == name)
+            .unwrap_or(0);
+        if let Some(Modal::Config(modal)) = &mut self.modal {
+            modal.show_list(idx);
+        }
+
+        if use_it {
+            // Persist active + ride the existing switch path to reconnect. The
+            // switch id-guard composes with any in-flight prior switch (a stale one
+            // is dropped on arrival), and an explicit select persists active.
+            if let Some(path) = self.config_path.clone()
+                && let Err(e) = crate::config::save_active_profile(&path, &name)
+            {
+                self.set_status(format!("set-active failed: {e:#}"), Severity::Error);
+            }
+            self.modal = None;
+            return self.switch_to_index(idx);
+        }
+        self.set_status(format!("saved profile '{name}'"), Severity::Success);
+        Vec::new()
+    }
+
+    /// Persist a profile's editor metadata to the config file (format-preserving).
+    /// The token is never written here — it goes to the keyring separately.
+    fn persist_profile(
+        path: &std::path::Path,
+        name: &str,
+        url: &str,
+        token_env: Option<&str>,
+        auth_scheme: AuthScheme,
+        verify_tls: bool,
+    ) -> anyhow::Result<()> {
+        let mut doc = crate::config::load_doc_or_new(path)?;
+        crate::config::upsert_profile(&mut doc, name, url, None)?;
+        crate::config::set_profile_token_env(&mut doc, name, token_env)?;
+        crate::config::set_profile_auth_scheme(&mut doc, name, Some(auth_scheme))?;
+        crate::config::set_profile_verify_tls(&mut doc, name, Some(verify_tls))?;
+        // First profile in a fresh file becomes active.
+        if doc.get("active_profile").is_none() {
+            crate::config::set_active_profile(&mut doc, name);
+        }
+        crate::config::write_doc(path, &doc)?;
+        Ok(())
+    }
+
+    /// Insert or replace a profile in the live `profiles` list. On a rename
+    /// (editing with a changed name), the old entry is removed. Keeps
+    /// `profile_index` pointed at the active profile by name.
+    fn upsert_live_profile(&mut self, original: Option<&str>, name: &str, config: ProfileConfig) {
+        // Remove the pre-edit entry on a rename.
+        if let Some(orig) = original
+            && orig != name
+        {
+            self.profiles.retain(|p| p.name != orig);
+        }
+        match self.profiles.iter_mut().find(|p| p.name == name) {
+            Some(entry) => entry.config = config,
+            None => self.profiles.push(ProfileEntry {
+                name: name.to_string(),
+                config,
+            }),
+        }
+        // Re-anchor the active index by name (the list may have grown/shrunk).
+        if let Some(idx) = self
+            .profiles
+            .iter()
+            .position(|p| p.name == self.profile_name)
+        {
+            self.profile_index = idx;
+        }
+    }
+
+    /// Open the prefilled edit form for `name` (the modal owns rendering; the app
+    /// fills it from the live `ProfileConfig`).
+    fn modal_open_edit(&mut self, name: &str) {
+        let Some(entry) = self.profiles.iter().find(|p| p.name == name) else {
+            return;
+        };
+        let url = entry.config.url.clone();
+        let token_env = entry.config.token_env.clone();
+        let auth_scheme = entry.config.auth_scheme.unwrap_or(AuthScheme::Auto);
+        let verify_tls = entry.config.verify_tls.unwrap_or(true);
+        if let Some(Modal::Config(modal)) = &mut self.modal {
+            modal.open_edit_form(name, &url, token_env.as_deref(), auth_scheme, verify_tls);
+        }
+    }
+
+    /// Select (switch to) `name` from the modal: persist it as active, close the
+    /// modal, and ride the switch path to reconnect.
+    fn modal_select(&mut self, name: &str) -> Vec<AppCommand> {
+        let Some(idx) = self.profiles.iter().position(|p| p.name == name) else {
+            self.set_status(format!("no profile named '{name}'"), Severity::Error);
+            return Vec::new();
+        };
+        if let Some(path) = self.config_path.clone()
+            && let Err(e) = crate::config::save_active_profile(&path, name)
+        {
+            self.set_status(format!("set-active failed: {e:#}"), Severity::Error);
+        }
+        self.modal = None;
+        self.switch_to_index(idx)
+    }
+
+    /// Delete `name` from the modal: drop it from the config file, the keyring, and
+    /// the live `profiles`. The active/last guards already ran in the modal.
+    fn modal_delete(&mut self, name: &str) -> Vec<AppCommand> {
+        if let Some(path) = self.config_path.clone() {
+            match Self::remove_profile_file(&path, name) {
+                Ok(()) => {}
+                Err(e) => {
+                    self.set_status(format!("delete failed: {e:#}"), Severity::Error);
+                    return Vec::new();
+                }
+            }
+            // Best-effort keyring removal (no-op when unavailable / no entry).
+            let account = crate::secret::account_key(&path.display().to_string(), name);
+            let _ = crate::secret::keyring_delete(&account);
+        }
+        self.profiles.retain(|p| p.name != name);
+        // Re-anchor the active index + the modal's list selection.
+        if let Some(idx) = self
+            .profiles
+            .iter()
+            .position(|p| p.name == self.profile_name)
+        {
+            self.profile_index = idx;
+        }
+        if let Some(Modal::Config(modal)) = &mut self.modal {
+            let sel = match &modal.profiles.mode {
+                ProfilesMode::List { selected } => {
+                    (*selected).min(self.profiles.len().saturating_sub(1))
+                }
+                _ => 0,
+            };
+            modal.show_list(sel);
+        }
+        self.set_status(format!("deleted profile '{name}'"), Severity::Success);
+        Vec::new()
+    }
+
+    /// Remove a profile from the config file (format-preserving).
+    fn remove_profile_file(path: &std::path::Path, name: &str) -> anyhow::Result<()> {
+        let mut doc = crate::config::load_doc_or_new(path)?;
+        crate::config::remove_profile(&mut doc, name)?;
+        crate::config::write_doc(path, &doc)?;
+        Ok(())
     }
 
     fn handle_search_key(&mut self, key: KeyEvent) -> Vec<AppCommand> {
@@ -874,6 +1307,10 @@ impl App {
                 Vec::new()
             }
             PaletteCommand::Profile(name) => self.select_profile(&name),
+            PaletteCommand::Config => {
+                self.open_config_modal();
+                Vec::new()
+            }
             PaletteCommand::Refresh => {
                 if self.fence_during_switch() {
                     return Vec::new();
@@ -1929,35 +2366,48 @@ mod tests {
         assert!(a.should_quit);
     }
 
+    /// True iff the Help modal is open.
+    fn help_open(a: &App) -> bool {
+        matches!(a.modal, Some(Modal::Help))
+    }
+
+    /// True iff the Config modal is open.
+    fn config_open(a: &App) -> bool {
+        matches!(a.modal, Some(Modal::Config(_)))
+    }
+
     #[test]
     fn help_toggles_open_and_any_key_closes_it_without_quitting() {
-        // Help is an overlay flag, not a screen: ?/F1 open it without changing the
-        // underlying screen or pushing history; while open, any key closes it and
-        // q (consumed by the modal) does NOT quit the app.
+        // Help is an overlay (the `modal` enum), not a screen: ?/F1 open it without
+        // changing the underlying screen or pushing history; while open, any key
+        // closes it and q (consumed by the modal) does NOT quit the app.
         let mut a = app();
-        assert!(!a.help_open);
+        assert!(a.modal.is_none());
         a.handle_event(press(KeyCode::Char('?')));
-        assert!(a.help_open);
+        assert!(help_open(&a));
         assert_eq!(a.screen, Screen::Home, "help doesn't change the screen");
         assert!(a.history.is_empty(), "help doesn't push history");
         // q while help is open closes the modal, not the app.
         a.handle_event(press(KeyCode::Char('q')));
-        assert!(!a.help_open);
+        assert!(a.modal.is_none());
         assert!(!a.should_quit);
         assert_eq!(a.screen, Screen::Home);
 
         // F1 toggles it open too, and ?/F1 again (a fresh handler call) re-toggles
         // by way of any-key-close.
         a.handle_event(press(KeyCode::F(1)));
-        assert!(a.help_open);
+        assert!(help_open(&a));
         a.handle_event(press(KeyCode::F(1)));
-        assert!(!a.help_open, "any key (incl. F1) closes the open modal");
+        assert!(
+            a.modal.is_none(),
+            "any key (incl. F1) closes the open modal"
+        );
 
         // Esc also closes it.
         a.handle_event(press(KeyCode::Char('?')));
-        assert!(a.help_open);
+        assert!(help_open(&a));
         a.handle_event(press(KeyCode::Esc));
-        assert!(!a.help_open);
+        assert!(a.modal.is_none());
     }
 
     #[test]
@@ -1969,10 +2419,10 @@ mod tests {
         set_results(&mut a, results_n(3));
         assert_eq!(a.selected, 0);
         a.handle_event(press(KeyCode::Char('?')));
-        assert!(a.help_open);
+        assert!(help_open(&a));
         let cmds = a.handle_event(press(KeyCode::Char('j')));
         assert!(cmds.is_empty(), "an any-key-close issues no command");
-        assert!(!a.help_open, "the key closed the modal");
+        assert!(a.modal.is_none(), "the key closed the modal");
         assert_eq!(a.selected, 0, "the key did not move the selection");
         assert_eq!(a.screen, Screen::Home);
     }
@@ -3966,5 +4416,365 @@ mod tests {
         ));
         profile_switched_ok(&mut a, "4.5.0");
         assert_eq!(a.profile_name, "gamma");
+    }
+
+    // --- Phase B: in-app Config modal (Profiles editor) ---------------------
+
+    use crate::tui::config_modal::{ConfigSection, ProfileForm};
+
+    /// An app with profiles AND a real on-disk config file, so the save/delete
+    /// persistence paths run. Returns the app + the temp file path (kept alive by
+    /// the returned `TempDir`).
+    fn app_with_config(names: &[&str]) -> (App, tempfile::TempDir, std::path::PathBuf) {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        // Seed the file with the profiles + the first as active.
+        let mut doc = crate::config::load_doc_or_new(&path).unwrap();
+        for n in names {
+            crate::config::upsert_profile(&mut doc, n, &format!("https://{n}"), None).unwrap();
+        }
+        if let Some(first) = names.first() {
+            crate::config::set_active_profile(&mut doc, first);
+        }
+        crate::config::write_doc(&path, &doc).unwrap();
+
+        let mut a = app_with_profiles(names);
+        a.config_path = Some(path.clone());
+        (a, dir, path)
+    }
+
+    /// Type a string into the open Config form's focused field.
+    fn type_form(a: &mut App, s: &str) {
+        for c in s.chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+    }
+
+    #[test]
+    fn s_key_opens_config_modal_on_profiles() {
+        let mut a = app_with_profiles(&["a", "b"]);
+        assert!(a.modal.is_none());
+        a.handle_event(press(KeyCode::Char('S')));
+        assert!(config_open(&a), "S opens the Config modal");
+        if let Some(Modal::Config(m)) = &a.modal {
+            assert_eq!(m.section, ConfigSection::Profiles);
+        }
+        // Esc closes it.
+        a.handle_event(press(KeyCode::Esc));
+        assert!(a.modal.is_none());
+    }
+
+    #[test]
+    fn palette_config_verb_opens_the_modal() {
+        let mut a = app_with_profiles(&["a"]);
+        let cmds = a.apply_palette(PaletteCommand::Config);
+        assert!(cmds.is_empty());
+        assert!(config_open(&a));
+    }
+
+    #[test]
+    fn config_modal_consumes_keys_and_does_not_act_on_underlying_screen() {
+        // With the Config modal open, `j` moves the modal list selection, NOT the
+        // home results selection underneath.
+        let mut a = app_with_profiles(&["a", "b"]);
+        set_results(&mut a, results_n(3));
+        assert_eq!(a.selected, 0);
+        a.handle_event(press(KeyCode::Char('S')));
+        a.handle_event(press(KeyCode::Char('j')));
+        assert_eq!(a.selected, 0, "home selection untouched while modal open");
+        if let Some(Modal::Config(m)) = &a.modal {
+            assert!(matches!(
+                m.profiles.mode,
+                ProfilesMode::List { selected: 1 }
+            ));
+        } else {
+            panic!("config modal should still be open");
+        }
+    }
+
+    #[test]
+    fn ctrl_c_quits_even_with_a_modal_open() {
+        let mut a = app_with_profiles(&["a"]);
+        a.handle_event(press(KeyCode::Char('S')));
+        assert!(config_open(&a));
+        a.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('c'),
+            KeyModifiers::CONTROL,
+        )));
+        assert!(a.should_quit, "Ctrl+C hard-quits regardless of the modal");
+    }
+
+    #[test]
+    fn add_profile_saves_metadata_to_config_and_live_list_without_token_in_toml() {
+        let (mut a, _dir, path) = app_with_config(&["alpha"]);
+        a.handle_event(press(KeyCode::Char('S'))); // open modal
+        a.handle_event(press(KeyCode::Char('a'))); // add form
+        type_form(&mut a, "lab"); // name
+        a.handle_event(press(KeyCode::Tab));
+        type_form(&mut a, "https://nb.lab"); // url
+        a.handle_event(press(KeyCode::Tab)); // → token_env
+        a.handle_event(press(KeyCode::Tab)); // → token (masked)
+        type_form(&mut a, "nbt_supersecret.value"); // token → keyring only
+        // Enter saves (no test required).
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(cmds.is_empty(), "plain save does not switch");
+        // The live list gained the profile.
+        assert!(a.profiles.iter().any(|p| p.name == "lab"));
+        // The file has the metadata but NEVER the token.
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[profiles.lab]"));
+        assert!(text.contains("https://nb.lab"));
+        assert!(
+            !text.contains("nbt_supersecret"),
+            "the token must never be written to TOML"
+        );
+        // Back on the list, the saved profile is selected.
+        if let Some(Modal::Config(m)) = &a.modal {
+            assert!(matches!(m.profiles.mode, ProfilesMode::List { .. }));
+        }
+    }
+
+    #[test]
+    fn edit_profile_prefills_form_and_persists_changes() {
+        let (mut a, _dir, path) = app_with_config(&["alpha", "beta"]);
+        a.handle_event(press(KeyCode::Char('S')));
+        a.handle_event(press(KeyCode::Char('j'))); // select beta
+        a.handle_event(press(KeyCode::Char('e'))); // edit
+        // The form is prefilled with beta's url.
+        if let Some(Modal::Config(m)) = &a.modal {
+            let f = m.form().expect("edit form open");
+            assert_eq!(f.name(), "beta");
+            // Prefilled from the LIVE profile entry (app_with_profiles' url shape).
+            assert_eq!(f.url(), "http://beta.example");
+            assert_eq!(f.editing.as_deref(), Some("beta"));
+        } else {
+            panic!("edit form should be open");
+        }
+        // Cycle auth_scheme to bearer and toggle verify_tls off, then save.
+        a.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('s'),
+            KeyModifiers::CONTROL,
+        )));
+        a.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('l'),
+            KeyModifiers::CONTROL,
+        )));
+        a.handle_event(press(KeyCode::Enter));
+        // The changes persisted to the file.
+        let cfg = crate::config::load(&path).unwrap();
+        let beta = &cfg.profiles["beta"];
+        assert_eq!(beta.auth_scheme, Some(AuthScheme::Bearer));
+        assert_eq!(beta.verify_tls, Some(false));
+        // And to the live entry.
+        let live = a.profiles.iter().find(|p| p.name == "beta").unwrap();
+        assert_eq!(live.config.auth_scheme, Some(AuthScheme::Bearer));
+        assert_eq!(live.config.verify_tls, Some(false));
+    }
+
+    #[test]
+    fn select_from_modal_persists_active_and_rides_the_switch_path() {
+        let (mut a, _dir, path) = app_with_config(&["alpha", "beta"]);
+        a.handle_event(press(KeyCode::Char('S')));
+        a.handle_event(press(KeyCode::Char('j'))); // → beta
+        let cmds = a.handle_event(press(KeyCode::Enter)); // select beta
+        // The modal closed and a switch was dispatched.
+        assert!(a.modal.is_none());
+        assert!(matches!(
+            cmds.as_slice(),
+            [AppCommand::SwitchProfile { name, .. }] if name == "beta"
+        ));
+        // active_profile was persisted (explicit select persists, unlike P-cycle).
+        let cfg = crate::config::load(&path).unwrap();
+        assert_eq!(cfg.active_profile.as_deref(), Some("beta"));
+    }
+
+    #[test]
+    fn save_then_switch_drops_a_stale_prior_switch_via_the_id_guard() {
+        // A quick P-cycle starts a switch (id 1). Before it returns, an explicit
+        // modal save+use starts a newer switch (id 2). The stale id-1 completion is
+        // dropped; only the id-2 (save+use) switch settles.
+        let (mut a, _dir, _path) = app_with_config(&["alpha", "beta"]);
+        // P → switch to beta (id 1, pending).
+        a.handle_event(press(KeyCode::Char('P')));
+        let stale_id = a.pending_switch.expect("a switch is pending");
+        assert_eq!(a.pending_profile.as_deref(), Some("beta"));
+        // Open the modal and add+use a new profile (a newer switch, id 2).
+        a.handle_event(press(KeyCode::Char('S')));
+        a.handle_event(press(KeyCode::Char('a')));
+        type_form(&mut a, "gamma");
+        a.handle_event(press(KeyCode::Tab));
+        type_form(&mut a, "https://nb.gamma");
+        let cmds = a.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+        )));
+        let new_id = match cmds.as_slice() {
+            [AppCommand::SwitchProfile { id, name, .. }] if name == "gamma" => *id,
+            other => panic!("expected a switch to gamma, got {other:?}"),
+        };
+        assert!(
+            new_id > stale_id,
+            "the save+use switch supersedes the cycle"
+        );
+        // The stale id-1 completion is dropped (latest-switch-wins).
+        let client = NetBoxClient::new(
+            &ProfileConfig {
+                url: "http://x".into(),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        a.handle_event(AppEvent::ProfileSwitched {
+            id: stale_id,
+            name: "beta".into(),
+            result: Ok((client, "4.5.0".into())),
+        });
+        assert_ne!(a.profile_name, "beta", "the stale switch did not settle");
+        // The newer (gamma) completion does settle.
+        let client2 = NetBoxClient::new(
+            &ProfileConfig {
+                url: "http://x".into(),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        a.handle_event(AppEvent::ProfileSwitched {
+            id: new_id,
+            name: "gamma".into(),
+            result: Ok((client2, "4.5.0".into())),
+        });
+        assert_eq!(a.profile_name, "gamma");
+    }
+
+    #[test]
+    fn delete_removes_from_file_and_live_list() {
+        let (mut a, _dir, path) = app_with_config(&["alpha", "beta"]);
+        a.handle_event(press(KeyCode::Char('S')));
+        a.handle_event(press(KeyCode::Char('j'))); // → beta (not active)
+        a.handle_event(press(KeyCode::Char('d'))); // confirm
+        let cmds = a.handle_event(press(KeyCode::Char('y'))); // delete
+        assert!(cmds.is_empty());
+        // Gone from the live list and the file.
+        assert!(!a.profiles.iter().any(|p| p.name == "beta"));
+        let cfg = crate::config::load(&path).unwrap();
+        assert!(!cfg.profiles.contains_key("beta"));
+        assert!(cfg.profiles.contains_key("alpha"));
+    }
+
+    #[test]
+    fn delete_active_profile_is_blocked_with_a_message() {
+        let (mut a, _dir, _path) = app_with_config(&["alpha", "beta"]);
+        a.handle_event(press(KeyCode::Char('S'))); // alpha is selected + active
+        a.handle_event(press(KeyCode::Char('d')));
+        // No confirm opened; a guidance message is set.
+        if let Some(Modal::Config(m)) = &a.modal {
+            assert!(matches!(m.profiles.mode, ProfilesMode::List { .. }));
+            assert!(m.profiles.message.as_deref().unwrap().contains("active"));
+        } else {
+            panic!("modal should still be open on the list");
+        }
+        assert!(
+            a.profiles.iter().any(|p| p.name == "alpha"),
+            "still present"
+        );
+    }
+
+    #[test]
+    fn test_connect_dispatches_a_guarded_command_and_result_lands_in_the_form() {
+        let (mut a, _dir, _path) = app_with_config(&["alpha"]);
+        a.handle_event(press(KeyCode::Char('S')));
+        a.handle_event(press(KeyCode::Char('a')));
+        type_form(&mut a, "lab");
+        a.handle_event(press(KeyCode::Tab));
+        type_form(&mut a, "https://nb.lab");
+        // Ctrl+T → a test-connect command, spinner up, form in Testing.
+        let cmds = a.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('t'),
+            KeyModifiers::CONTROL,
+        )));
+        let id = match cmds.as_slice() {
+            [AppCommand::TestConnect { id, .. }] => *id,
+            other => panic!("expected a TestConnect, got {other:?}"),
+        };
+        assert!(a.loading(), "a test-connect is a tracked fetch");
+        if let Some(Modal::Config(m)) = &a.modal {
+            assert_eq!(m.form().unwrap().test, TestState::Testing);
+        }
+        // The result lands in the form and clears the spinner.
+        a.handle_event(AppEvent::ConnectTested {
+            id,
+            result: Ok("4.5.0".into()),
+        });
+        assert!(!a.loading());
+        if let Some(Modal::Config(m)) = &a.modal {
+            assert_eq!(m.form().unwrap().test, TestState::Ok("4.5.0".into()));
+        }
+    }
+
+    #[test]
+    fn stale_test_connect_result_is_dropped() {
+        let (mut a, _dir, _path) = app_with_config(&["alpha"]);
+        a.handle_event(press(KeyCode::Char('S')));
+        a.handle_event(press(KeyCode::Char('a')));
+        type_form(&mut a, "lab");
+        a.handle_event(press(KeyCode::Tab));
+        type_form(&mut a, "https://nb.lab");
+        // Two tests; only the second (newer id) result should land.
+        let first = match a
+            .handle_event(AppEvent::Key(KeyEvent::new(
+                KeyCode::Char('t'),
+                KeyModifiers::CONTROL,
+            )))
+            .as_slice()
+        {
+            [AppCommand::TestConnect { id, .. }] => *id,
+            _ => panic!(),
+        };
+        let second = match a
+            .handle_event(AppEvent::Key(KeyEvent::new(
+                KeyCode::Char('t'),
+                KeyModifiers::CONTROL,
+            )))
+            .as_slice()
+        {
+            [AppCommand::TestConnect { id, .. }] => *id,
+            _ => panic!(),
+        };
+        assert!(second > first);
+        // The stale (first) result is dropped — the form stays Testing.
+        a.handle_event(AppEvent::ConnectTested {
+            id: first,
+            result: Ok("9.9.9".into()),
+        });
+        if let Some(Modal::Config(m)) = &a.modal {
+            assert_eq!(m.form().unwrap().test, TestState::Testing);
+        }
+        // The current (second) result lands.
+        a.handle_event(AppEvent::ConnectTested {
+            id: second,
+            result: Err(anyhow::anyhow!("unreachable")),
+        });
+        if let Some(Modal::Config(m)) = &a.modal {
+            assert!(matches!(m.form().unwrap().test, TestState::Failed(_)));
+        }
+    }
+
+    #[test]
+    fn form_is_invalidated_after_a_successful_test_when_edited() {
+        // A test OK shouldn't survive a further edit (it would describe stale
+        // contents). The pure form invalidates the test on the next keystroke.
+        let mut f = ProfileForm::add();
+        f.test = TestState::Ok("4.5.0".into());
+        // Reuse the modal's key path: typing into the focused field invalidates.
+        let mut m = ConfigModal::new();
+        m.profiles.mode = ProfilesMode::Form(f);
+        m.handle_key(
+            KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
+            &[],
+            "",
+        );
+        assert_eq!(m.form().unwrap().test, TestState::Idle);
     }
 }

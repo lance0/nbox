@@ -8,6 +8,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- In-app Config modal with a profile editor (TUI). Press `S` (or run `config` in
+  the command palette) to open a floating Config modal on its Profiles section:
+  list the configured profiles (the active one marked), and add / edit / select /
+  delete them without leaving the TUI or hand-editing `config.toml`. The add/edit
+  form has fields for `name`, `url`, `token_env`, an `auth_scheme` cycle
+  (auto/bearer/token), a `verify_tls` toggle, and an optional masked token field.
+  A typed token is stored in the OS keyring on save (never written to TOML, never
+  echoed); when the keyring is unavailable the profile metadata is still saved
+  with a clear "set a token_env or NBOX_TOKEN" note. `Ctrl+T` test-connects the
+  form (it rebuilds a temporary client and re-probes `/api/status/`, the same
+  check launch runs) and shows success/failure before you commit; `Enter` saves,
+  `Ctrl+U` saves and switches to the profile. An explicit add/select **persists**
+  `active_profile` to the file (the quick `P`/`Ctrl+P` cycle stays session-only).
+  Delete drops the profile from the file, the keyring, and the live list, and is
+  blocked for the active or last-remaining profile. The modal has a Settings
+  section placeholder for a later phase.
 - OS keyring token storage + `nbox config token set|clear|status`. `set` stores
   the active (or `--profile`) profile's NetBox API token in the OS keyring,
   reading it without echo from a TTY prompt — or as a single line from stdin when

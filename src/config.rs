@@ -345,6 +345,95 @@ pub fn upsert_profile(
     Ok(())
 }
 
+/// Set (or clear) `profiles.<name>.token_env` in a format-preserving document.
+/// `None` (or an empty name) removes the key. The in-app editor uses this so
+/// clearing the `token_env` field actually drops it from the file, rather than
+/// leaving a stale variable name behind. (The CLI `profile add` keeps the
+/// additive [`upsert_profile`] behavior — it never clears an existing key.)
+pub fn set_profile_token_env(
+    doc: &mut DocumentMut,
+    name: &str,
+    token_env: Option<&str>,
+) -> Result<()> {
+    let prof = profile_table_mut(doc, name)?;
+    match token_env.filter(|s| !s.is_empty()) {
+        Some(env) => prof["token_env"] = value(env),
+        None => {
+            prof.remove("token_env");
+        }
+    }
+    Ok(())
+}
+
+/// Set (or clear) `profiles.<name>.auth_scheme` in a format-preserving document.
+/// `None` removes the key (falls back to the `auto` default). The profile table
+/// is created if absent. Mirrors [`upsert_profile`]'s toml_edit pattern.
+pub fn set_profile_auth_scheme(
+    doc: &mut DocumentMut,
+    name: &str,
+    scheme: Option<AuthScheme>,
+) -> Result<()> {
+    let prof = profile_table_mut(doc, name)?;
+    match scheme {
+        // `Auto` is the implicit default — write it out only when explicitly
+        // bearer/token, and clear the key for auto so the file stays minimal.
+        Some(AuthScheme::Bearer) => prof["auth_scheme"] = value("bearer"),
+        Some(AuthScheme::Token) => prof["auth_scheme"] = value("token"),
+        Some(AuthScheme::Auto) | None => {
+            prof.remove("auth_scheme");
+        }
+    }
+    Ok(())
+}
+
+/// Set (or clear) `profiles.<name>.verify_tls` in a format-preserving document.
+/// `None` removes the key (falls back to the `true` default).
+pub fn set_profile_verify_tls(
+    doc: &mut DocumentMut,
+    name: &str,
+    verify: Option<bool>,
+) -> Result<()> {
+    let prof = profile_table_mut(doc, name)?;
+    match verify {
+        Some(v) => prof["verify_tls"] = value(v),
+        None => {
+            prof.remove("verify_tls");
+        }
+    }
+    Ok(())
+}
+
+/// Remove `profiles.<name>` from a format-preserving document. Returns
+/// `Ok(false)` when there was no such profile (idempotent), `Ok(true)` when one
+/// was removed. Comments and other keys are preserved.
+pub fn remove_profile(doc: &mut DocumentMut, name: &str) -> Result<bool> {
+    let Some(profiles) = doc.get_mut("profiles") else {
+        return Ok(false);
+    };
+    let profiles = profiles
+        .as_table_mut()
+        .context("`profiles` is not a table")?;
+    Ok(profiles.remove(name).is_some())
+}
+
+/// Get a mutable handle to `profiles.<name>` as a table, creating the `profiles`
+/// table and the profile entry as needed. Shared by the profile-field setters.
+fn profile_table_mut<'a>(doc: &'a mut DocumentMut, name: &str) -> Result<&'a mut Table> {
+    let profiles = doc.entry("profiles").or_insert_with(|| {
+        let mut t = Table::new();
+        t.set_implicit(true);
+        Item::Table(t)
+    });
+    let profiles = profiles
+        .as_table_mut()
+        .context("`profiles` is not a table")?;
+    let prof = profiles
+        .entry(name)
+        .or_insert_with(|| Item::Table(Table::new()));
+    prof.as_table_mut()
+        .with_context(|| format!("`profiles.{name}` is not a table"))
+}
+
 /// Set the active profile in a format-preserving document.
 pub fn set_active_profile(doc: &mut DocumentMut, name: &str) {
     doc["active_profile"] = value(name);
@@ -366,8 +455,18 @@ pub fn save_ui_theme(path: &Path, theme: &str) -> Result<()> {
     Ok(())
 }
 
+/// Persist the active profile to the config file (format-preserving). The
+/// in-app editor's explicit "use it"/select calls this so `active_profile`
+/// survives a restart (unlike the session-only `P`/`Ctrl+P` quick cycle).
+pub fn save_active_profile(path: &Path, name: &str) -> Result<()> {
+    let mut doc = load_doc_or_new(path)?;
+    set_active_profile(&mut doc, name);
+    write_doc(path, &doc)?;
+    Ok(())
+}
+
 /// Load the editable document at `path`, or start a fresh one if absent.
-fn load_doc_or_new(path: &Path) -> Result<DocumentMut> {
+pub fn load_doc_or_new(path: &Path) -> Result<DocumentMut> {
     if path.exists() {
         let text = fs::read_to_string(path)?;
         text.parse::<DocumentMut>()
@@ -378,7 +477,7 @@ fn load_doc_or_new(path: &Path) -> Result<DocumentMut> {
 }
 
 /// Write a document to `path`, creating parent directories as needed.
-fn write_doc(path: &Path, doc: &DocumentMut) -> Result<()> {
+pub fn write_doc(path: &Path, doc: &DocumentMut) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
@@ -930,5 +1029,76 @@ page_size = 250
         let out = doc.to_string();
         assert!(out.contains("# my notes"), "comment should survive edit");
         assert!(out.contains("[profiles.b]"));
+    }
+
+    #[test]
+    fn remove_profile_preserves_comments_and_other_keys() {
+        // Removing one profile must leave the file's comments, top-level keys, and
+        // the *other* profile entirely intact (format-preserving round-trip).
+        let original = "\
+# keep me
+active_profile = \"a\"
+
+[ui]
+theme = \"nord\"  # inline note
+
+[profiles.a]
+url = \"https://a\"
+token_env = \"A_TOKEN\"
+
+[profiles.b]
+url = \"https://b\"
+";
+        let mut doc = original.parse::<DocumentMut>().unwrap();
+        assert!(remove_profile(&mut doc, "a").unwrap(), "a was removed");
+        let out = doc.to_string();
+        // Comments and unrelated keys survive.
+        assert!(out.contains("# keep me"), "top comment preserved");
+        assert!(out.contains("theme = \"nord\""), "ui section preserved");
+        assert!(out.contains("# inline note"), "inline comment preserved");
+        assert!(
+            out.contains("active_profile = \"a\""),
+            "other keys preserved"
+        );
+        // The removed profile is gone; the sibling stays.
+        let cfg: Config = toml::from_str(&out).unwrap();
+        assert!(!cfg.profiles.contains_key("a"), "a removed");
+        assert!(cfg.profiles.contains_key("b"), "b kept");
+        assert_eq!(cfg.profiles["b"].url, "https://b");
+        // Removing a non-existent profile is a no-op returning false.
+        assert!(!remove_profile(&mut doc, "nope").unwrap());
+        // Removing on a doc with no `profiles` table is also a clean false.
+        let mut empty = DocumentMut::new();
+        assert!(!remove_profile(&mut empty, "x").unwrap());
+    }
+
+    #[test]
+    fn profile_field_setters_round_trip_and_clear() {
+        let mut doc = DocumentMut::new();
+        upsert_profile(&mut doc, "lab", "https://nb.lab", None).unwrap();
+        set_profile_auth_scheme(&mut doc, "lab", Some(AuthScheme::Bearer)).unwrap();
+        set_profile_verify_tls(&mut doc, "lab", Some(false)).unwrap();
+        set_profile_token_env(&mut doc, "lab", Some("LAB_TOKEN")).unwrap();
+
+        let cfg: Config = toml::from_str(&doc.to_string()).unwrap();
+        let lab = &cfg.profiles["lab"];
+        assert_eq!(lab.auth_scheme, Some(AuthScheme::Bearer));
+        assert_eq!(lab.verify_tls, Some(false));
+        assert_eq!(lab.token_env.as_deref(), Some("LAB_TOKEN"));
+
+        // Clearing drops the keys (back to the implicit defaults), and `auto`
+        // writes nothing (it's the default).
+        set_profile_auth_scheme(&mut doc, "lab", Some(AuthScheme::Auto)).unwrap();
+        set_profile_verify_tls(&mut doc, "lab", None).unwrap();
+        set_profile_token_env(&mut doc, "lab", None).unwrap();
+        let out = doc.to_string();
+        assert!(!out.contains("auth_scheme"), "auto clears the key");
+        assert!(!out.contains("verify_tls"), "None clears verify_tls");
+        assert!(!out.contains("token_env"), "None clears token_env");
+        let cfg2: Config = toml::from_str(&out).unwrap();
+        let lab2 = &cfg2.profiles["lab"];
+        assert_eq!(lab2.auth_scheme, None);
+        assert_eq!(lab2.verify_tls, None);
+        assert_eq!(lab2.token_env, None);
     }
 }

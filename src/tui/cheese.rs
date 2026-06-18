@@ -16,6 +16,7 @@ use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
 use ratatui::style::Style;
 use ratatui::text::Span;
+use ratatui::widgets::Paragraph;
 use ratatui_cheese::input::{Input, InputState};
 use ratatui_cheese::spinner::{SpinnerState, SpinnerType};
 use ratatui_cheese::theme::Palette;
@@ -117,7 +118,19 @@ impl Default for Spinner {
 pub struct TextInput {
     state: InputState,
     placeholder: String,
+    /// When set, the rendered text is masked with `•` (password mode): the raw
+    /// value is never drawn. The editing model and [`value`](Self::value) are
+    /// unchanged — only the on-screen glyphs differ — so a token field can be
+    /// edited normally while never exposing its characters. Drives the masked
+    /// branch of [`rendered_text`](Self::rendered_text) and cheese's
+    /// `password_mode` at render time.
+    masked: bool,
 }
+
+/// The glyph a masked input renders for each character (a bullet, never the raw
+/// value). Public so a form's render path / tests can name the mask without
+/// reaching into a cheese type.
+pub const MASK_CHAR: char = '•';
 
 impl TextInput {
     /// A fresh, empty input with the given placeholder (shown when empty).
@@ -125,6 +138,37 @@ impl TextInput {
         Self {
             state: InputState::new(),
             placeholder: placeholder.into(),
+            masked: false,
+        }
+    }
+
+    /// A fresh, empty *masked* input (password mode): its value renders as a row
+    /// of [`MASK_CHAR`] bullets, never the raw text. Used for the token field.
+    pub fn masked(placeholder: impl Into<String>) -> Self {
+        Self {
+            state: InputState::new(),
+            placeholder: placeholder.into(),
+            masked: true,
+        }
+    }
+
+    /// Whether this input masks its value on screen.
+    pub fn is_masked(&self) -> bool {
+        self.masked
+    }
+
+    /// The text as it appears on screen: the raw value, or — when
+    /// [`masked`](Self::masked) — one [`MASK_CHAR`] per character, so the secret
+    /// is never exposed in any rendered string. Pure; the editing buffer and
+    /// [`value`](Self::value) are untouched. Tests assert a masked field's
+    /// rendered text contains no character of the real value.
+    pub fn rendered_text(&self) -> String {
+        if self.masked {
+            MASK_CHAR
+                .to_string()
+                .repeat(self.state.value().chars().count())
+        } else {
+            self.state.value().to_string()
         }
     }
 
@@ -182,6 +226,19 @@ impl TextInput {
     /// The current text.
     pub fn value(&self) -> &str {
         self.state.value()
+    }
+
+    /// Replace the buffer with `value`, cursor at the end. Used to prefill a
+    /// field when editing an existing record. PURE: no I/O.
+    pub fn set_value(&mut self, value: impl Into<String>) {
+        self.state.set_value(value.into());
+        self.state.end();
+    }
+
+    /// The cursor position (in chars from the start), for placing the terminal
+    /// cursor on a focused field.
+    pub fn cursor_pos(&self) -> usize {
+        self.state.cursor_pos()
     }
 
     /// Reset to empty, cursor at the start.
@@ -242,6 +299,8 @@ impl TextInput {
         let input = Input::new("")
             .prompt(&sigil)
             .placeholder(&self.placeholder)
+            .password_mode(self.masked)
+            .password_char(MASK_CHAR)
             .palette(&palette);
         frame.render_stateful_widget(input, area, &mut self.state);
 
@@ -270,6 +329,164 @@ impl TextInput {
             .saturating_add((prompt_width + before) as u16)
             .min(area.right().saturating_sub(1));
         Position::new(x, area.y)
+    }
+}
+
+/// A labelled multi-field text form — an ordered set of [`TextInput`]s plus a
+/// focus index — built on the same pure, cheese-backed editing model.
+///
+/// Keystrokes route to the focused field; `Tab`/`Shift-Tab` move focus (wrapping
+/// at both ends). One field can be [`masked`](TextInput::masked) (the token
+/// field), so its value renders as bullets and never appears in any rendered
+/// string. PURE + unit-testable: [`focus_next`](Self::focus_next)/
+/// [`focus_prev`](Self::focus_prev)/[`handle_key`](Self::handle_key) are state
+/// transitions with no I/O, and [`rendered_lines`](Self::rendered_lines) returns
+/// the label+value strings the renderer paints (so masking is testable).
+///
+/// The form holds *only* free-text fields; non-text controls (an auth-scheme
+/// cycle, a verify-tls toggle) are owned by the caller's modal state, not here.
+pub struct FormInput {
+    /// `(label, input)` in display order.
+    fields: Vec<(String, TextInput)>,
+    /// Index of the focused field; always in range while `fields` is non-empty.
+    focus: usize,
+}
+
+impl FormInput {
+    /// Build a form from `(label, input)` pairs, focusing the first field.
+    pub fn new(fields: Vec<(String, TextInput)>) -> Self {
+        Self { fields, focus: 0 }
+    }
+
+    /// The index of the currently focused field.
+    pub fn focus(&self) -> usize {
+        self.focus
+    }
+
+    /// Number of fields.
+    pub fn len(&self) -> usize {
+        self.fields.len()
+    }
+
+    /// Whether the form has no fields.
+    pub fn is_empty(&self) -> bool {
+        self.fields.is_empty()
+    }
+
+    /// Move focus to the next field, wrapping past the last back to the first.
+    /// No-op on an empty form.
+    pub fn focus_next(&mut self) {
+        if !self.fields.is_empty() {
+            self.focus = (self.focus + 1) % self.fields.len();
+        }
+    }
+
+    /// Move focus to the previous field, wrapping before the first to the last.
+    /// No-op on an empty form.
+    pub fn focus_prev(&mut self) {
+        if !self.fields.is_empty() {
+            let len = self.fields.len();
+            self.focus = (self.focus + len - 1) % len;
+        }
+    }
+
+    /// Route a key to the focused field's editor. `Tab`/`Shift-Tab` move focus
+    /// instead of editing. Returns `true` when the key was consumed (an edit or a
+    /// focus move), `false` for a pass-through (Enter/Esc, left to the caller).
+    /// PURE: no I/O.
+    pub fn handle_key(&mut self, key: KeyEvent) -> bool {
+        match key.code {
+            KeyCode::Tab => {
+                self.focus_next();
+                true
+            }
+            KeyCode::BackTab => {
+                self.focus_prev();
+                true
+            }
+            _ => match self.fields.get_mut(self.focus) {
+                Some((_, input)) => input.handle_key(key),
+                None => false,
+            },
+        }
+    }
+
+    /// The current value of the field at `idx`, if any. The raw value — callers
+    /// reading the token for the keyring use this; it is never rendered.
+    pub fn value(&self, idx: usize) -> Option<&str> {
+        self.fields.get(idx).map(|(_, i)| i.value())
+    }
+
+    /// Mutable access to the input at `idx`, for prefilling on edit.
+    pub fn input_mut(&mut self, idx: usize) -> Option<&mut TextInput> {
+        self.fields.get_mut(idx).map(|(_, i)| i)
+    }
+
+    /// The label + on-screen text for each field, in order, as the renderer would
+    /// paint them: a masked field's text is bullets, never the secret. Pure, so a
+    /// test can assert the token field's rendered string exposes no real char.
+    pub fn rendered_lines(&self) -> Vec<(String, String)> {
+        self.fields
+            .iter()
+            .map(|(label, input)| (label.clone(), input.rendered_text()))
+            .collect()
+    }
+
+    /// Render the form into `area`, one labelled row per field, returning the
+    /// terminal cursor position for the focused field so the caller can place a
+    /// real cursor there. Styling comes from [`cheese_palette`] (Theme is the
+    /// source of truth). A masked field draws bullets via the field's own
+    /// password mode.
+    pub fn render(&mut self, frame: &mut Frame, area: Rect, theme: &Theme) -> Option<Position> {
+        let palette = cheese_palette(theme);
+        let label_w = self
+            .fields
+            .iter()
+            .map(|(l, _)| display_width(l))
+            .max()
+            .unwrap_or(0);
+        let mut cursor = None;
+        for (row, (label, input)) in self.fields.iter_mut().enumerate() {
+            let y = area.y.saturating_add(row as u16);
+            if y >= area.bottom() {
+                break;
+            }
+            // Label cell (right-padded) in the muted/secondary color.
+            let label_cell = format!("{label:<label_w$}  ");
+            let label_w16 = display_width(&label_cell) as u16;
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    label_cell.clone(),
+                    Style::default().fg(palette.secondary),
+                )),
+                Rect::new(area.x, y, label_w16.min(area.width), 1),
+            );
+            // The value sits after the label cell.
+            let value_x = area.x.saturating_add(label_w16);
+            let value_w = area.width.saturating_sub(label_w16);
+            if value_w == 0 {
+                continue;
+            }
+            let value_area = Rect::new(value_x, y, value_w, 1);
+            let focused = row == self.focus;
+            input.state.set_focused(focused);
+            let widget = Input::new("")
+                .placeholder(&input.placeholder)
+                .password_mode(input.masked)
+                .password_char(MASK_CHAR)
+                .palette(&palette);
+            frame.render_stateful_widget(widget, value_area, &mut input.state);
+            if focused {
+                // The Input has no prompt here, so the cursor sits `cursor_pos`
+                // display columns into the value area (masked chars are 1 wide).
+                let before = input.cursor_pos() as u16;
+                let x = value_x
+                    .saturating_add(before)
+                    .min(value_area.right().saturating_sub(1));
+                cursor = Some(Position::new(x, y));
+            }
+        }
+        cursor
     }
 }
 
@@ -449,6 +666,126 @@ mod tests {
         // After a tick the span tracks the new glyph.
         s.tick();
         assert_eq!(s.span(&theme).content, s.frame());
+    }
+
+    fn form(labels: &[&str]) -> FormInput {
+        let fields = labels
+            .iter()
+            .map(|l| ((*l).to_string(), TextInput::new("")))
+            .collect();
+        FormInput::new(fields)
+    }
+
+    #[test]
+    fn form_focus_next_and_prev_wrap() {
+        let mut f = form(&["name", "url", "token_env"]);
+        assert_eq!(f.focus(), 0);
+        f.focus_next();
+        assert_eq!(f.focus(), 1);
+        f.focus_next();
+        assert_eq!(f.focus(), 2);
+        // Next past the last wraps to the first.
+        f.focus_next();
+        assert_eq!(f.focus(), 0);
+        // Prev before the first wraps to the last.
+        f.focus_prev();
+        assert_eq!(f.focus(), 2);
+        f.focus_prev();
+        assert_eq!(f.focus(), 1);
+    }
+
+    #[test]
+    fn form_tab_and_backtab_move_focus_and_are_consumed() {
+        let mut f = form(&["a", "b"]);
+        assert!(f.handle_key(key(KeyCode::Tab)));
+        assert_eq!(f.focus(), 1);
+        assert!(f.handle_key(key(KeyCode::BackTab)));
+        assert_eq!(f.focus(), 0);
+    }
+
+    #[test]
+    fn form_routes_keystrokes_to_the_focused_field_only() {
+        let mut f = form(&["name", "url"]);
+        // Type into field 0.
+        for c in "edge".chars() {
+            assert!(f.handle_key(key(KeyCode::Char(c))));
+        }
+        assert_eq!(f.value(0), Some("edge"));
+        assert_eq!(f.value(1), Some(""), "the unfocused field is untouched");
+        // Move focus and type into field 1.
+        f.handle_key(key(KeyCode::Tab));
+        for c in "https://x".chars() {
+            f.handle_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(f.value(0), Some("edge"), "field 0 keeps its value");
+        assert_eq!(f.value(1), Some("https://x"));
+    }
+
+    #[test]
+    fn form_passes_through_enter_and_esc() {
+        let mut f = form(&["a"]);
+        // Non-editing keys are not consumed — the caller handles submit/cancel.
+        assert!(!f.handle_key(key(KeyCode::Enter)));
+        assert!(!f.handle_key(key(KeyCode::Esc)));
+    }
+
+    #[test]
+    fn masked_field_never_exposes_its_value_in_the_rendered_string() {
+        let mut token = TextInput::masked("token");
+        type_str(&mut token, "nbt_secret123");
+        // The editing value is intact (the keyring read uses it)…
+        assert_eq!(token.value(), "nbt_secret123");
+        // …but the rendered string is all bullets, exposing no real character.
+        let shown = token.rendered_text();
+        assert!(shown.chars().all(|c| c == super::MASK_CHAR));
+        assert_eq!(shown.chars().count(), "nbt_secret123".chars().count());
+        for c in "nbt_secret123".chars() {
+            assert!(
+                !shown.contains(c) || c == super::MASK_CHAR,
+                "rendered text must not contain a real value char ({c})"
+            );
+        }
+        // A non-masked field renders verbatim.
+        let mut name = TextInput::new("name");
+        type_str(&mut name, "edge01");
+        assert_eq!(name.rendered_text(), "edge01");
+    }
+
+    #[test]
+    fn form_rendered_lines_mask_only_the_masked_field() {
+        let fields = vec![
+            ("name".to_string(), TextInput::new("")),
+            ("token".to_string(), TextInput::masked("")),
+        ];
+        let mut f = FormInput::new(fields);
+        // name = "edge01"
+        for c in "edge01".chars() {
+            f.handle_key(key(KeyCode::Char(c)));
+        }
+        // focus token, type a secret
+        f.handle_key(key(KeyCode::Tab));
+        for c in "s3cr3t".chars() {
+            f.handle_key(key(KeyCode::Char(c)));
+        }
+        let lines = f.rendered_lines();
+        assert_eq!(lines[0], ("name".to_string(), "edge01".to_string()));
+        assert_eq!(lines[1].0, "token");
+        assert!(lines[1].1.chars().all(|c| c == super::MASK_CHAR));
+        assert!(!lines[1].1.contains("s3cr3t"));
+    }
+
+    #[test]
+    fn form_set_value_prefills_for_edit() {
+        let mut f = form(&["name", "url"]);
+        f.input_mut(0).unwrap().set_value("core01");
+        f.input_mut(1).unwrap().set_value("https://nb");
+        assert_eq!(f.value(0), Some("core01"));
+        assert_eq!(f.value(1), Some("https://nb"));
+        // Cursor lands at the end so further typing appends.
+        for c in "/api".chars() {
+            f.handle_key(key(KeyCode::Char(c)));
+        }
+        assert_eq!(f.value(0), Some("core01/api"));
     }
 
     #[test]

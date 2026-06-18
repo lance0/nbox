@@ -130,7 +130,30 @@ fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent
                     .await;
             });
         }
+        AppCommand::TestConnect { id, req } => {
+            tokio::spawn(async move {
+                // Build a temporary client from the candidate form fields and probe
+                // `/api/status/` via the same `verify_compatible` path a real
+                // connect/switch uses — off the render thread. The carried token is
+                // a secret; it's consumed here and never logged. The test `id` is
+                // echoed back so a superseded test is dropped on arrival.
+                let result = test_connect(&req).await;
+                let _ = tx.send(AppEvent::ConnectTested { id, result }).await;
+            });
+        }
     }
+}
+
+/// Build a temporary client for the candidate `req` and probe the instance,
+/// returning its NetBox version on success. Reuses [`NetBoxClient::new`] +
+/// [`NetBoxClient::verify_compatible`] — the same pair launch/switch use — so a
+/// test enforces the same reachability + version floor and surfaces the same
+/// errors. The token is moved straight into the client; it is never logged.
+async fn test_connect(req: &crate::tui::state::ConnectRequest) -> Result<String> {
+    let profile = req.to_profile();
+    let client = NetBoxClient::new(&profile, req.token.clone())?;
+    let status = client.verify_compatible().await?;
+    Ok(status.netbox_version)
 }
 
 /// Build a fresh client for `profile` and re-probe the instance, returning the

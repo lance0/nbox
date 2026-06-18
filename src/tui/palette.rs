@@ -17,6 +17,8 @@ pub enum PaletteCommand {
     Theme(String),
     /// Switch the active NetBox profile by name.
     Profile(String),
+    /// Open the in-app Config modal (Profiles section).
+    Config,
     /// Re-run the last search.
     Refresh,
 }
@@ -73,6 +75,7 @@ pub fn parse(input: &str) -> Result<PaletteCommand, String> {
                 Ok(PaletteCommand::Profile(rest.to_string()))
             }
         }
+        "config" | "cfg" => Ok(PaletteCommand::Config),
         "refresh" | "r" => Ok(PaletteCommand::Refresh),
         // Anything else: treat the whole input as a search query.
         _ => Ok(PaletteCommand::Search(input.to_string())),
@@ -138,6 +141,14 @@ mod tests {
             parse("profile   work  ").unwrap(),
             PaletteCommand::Profile("work".into())
         );
+    }
+
+    #[test]
+    fn parses_config_verb_and_alias() {
+        assert_eq!(parse("config").unwrap(), PaletteCommand::Config);
+        assert_eq!(parse("cfg").unwrap(), PaletteCommand::Config);
+        // Trailing args are ignored — the modal opens on the Profiles section.
+        assert_eq!(parse("config profiles").unwrap(), PaletteCommand::Config);
     }
 
     #[test]

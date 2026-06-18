@@ -6,7 +6,8 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table};
 
-use crate::tui::state::{App, Focus, Mode, Screen, result_row_cells};
+use crate::tui::config_modal::{ConfigModal, ConfigSection, ProfilesMode, TestState};
+use crate::tui::state::{App, Focus, Modal, Mode, Screen, result_row_cells};
 use crate::tui::theme::Theme;
 
 /// Column widths for the results table. KIND is fixed-width so the kind tags line
@@ -80,12 +81,23 @@ pub fn render(frame: &mut Frame, app: &mut App) {
 
     render_footer(frame, areas[2], app);
 
-    // The help overlay floats over the whole frame, on top of the live screen —
-    // it's a modal, not its own page (mirrors ttl/xfr). Drawn last so it sits
-    // above everything; `Clear` only wipes the popup rect, leaving the rest of
-    // the UI visible behind/around it.
-    if app.help_open {
-        render_help(frame, frame.area(), &app.theme);
+    // A modal floats over the whole frame, on top of the live screen — it's an
+    // overlay, not its own page (mirrors ttl/xfr). Drawn last so it sits above
+    // everything; `Clear` only wipes the popup rect, leaving the rest of the UI
+    // visible behind/around it.
+    let area = frame.area();
+    let theme = app.theme.clone();
+    // The profile list + active marker the Config modal renders come from the live
+    // app; capture them before the mutable borrow of `app.modal` (the form render
+    // needs `&mut` for its cursor placement).
+    let names: Vec<String> = app.profiles.iter().map(|p| p.name.clone()).collect();
+    let active = app.profile_name.clone();
+    match &mut app.modal {
+        Some(Modal::Help) => render_help(frame, area, &theme),
+        Some(Modal::Config(modal)) => {
+            render_config(frame, area, modal, &names, &active, &theme);
+        }
+        None => {}
     }
 }
 
@@ -366,6 +378,7 @@ pub fn help_bindings() -> Vec<Vec<(&'static str, &'static str)>> {
             ("t", "cycle theme"),
             ("r", "refresh"),
             ("P / C-P", "switch profile"),
+            ("S", "config / profiles"),
             ("i p c v s", "device tabs"),
             ("b / Esc", "back"),
             ("? / F1", "toggle help"),
@@ -470,6 +483,201 @@ fn render_help(frame: &mut Frame, area: Rect, theme: &Theme) {
             .style(Style::default().fg(theme.text)),
         popup,
     );
+}
+
+/// A centered popup `Rect` of the given inner content size (plus borders),
+/// clamped to `area`. Shared sizing for the floating modals.
+fn centered_popup(area: Rect, content_w: u16, content_h: u16) -> Rect {
+    let popup_w = (content_w + 4).min(area.width);
+    let popup_h = (content_h + 2).min(area.height);
+    let popup_x = area.x + area.width.saturating_sub(popup_w) / 2;
+    let popup_y = area.y + area.height.saturating_sub(popup_h) / 2;
+    Rect::new(popup_x, popup_y, popup_w, popup_h)
+}
+
+/// Render the centered Config modal over the full frame `area`. Two sections
+/// (Profiles | Settings, `Tab` to switch); only Profiles is interactive — it
+/// lists the configured profiles (active marked) and, in a form, edits one. The
+/// modal is rendered last so it floats over the live screen (`Clear`ed rect).
+fn render_config(
+    frame: &mut Frame,
+    area: Rect,
+    modal: &mut ConfigModal,
+    names: &[String],
+    active: &str,
+    theme: &Theme,
+) {
+    let popup = centered_popup(area, 60, area.height.saturating_sub(4));
+    frame.render_widget(Clear, popup);
+
+    let section_label = match modal.section {
+        ConfigSection::Profiles => "Profiles",
+        ConfigSection::Settings => "Settings",
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(format!(" Config — {section_label} "))
+        .title(
+            Line::from(" Tab: section  Esc: close ")
+                .right_aligned()
+                .style(theme.text_dim),
+        )
+        .border_style(Style::default().fg(theme.border_focused));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    match modal.section {
+        ConfigSection::Profiles => {
+            render_config_profiles(frame, inner, modal, names, active, theme);
+        }
+        ConfigSection::Settings => {
+            let lines = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Settings — coming soon.",
+                    Style::default().fg(theme.text_dim),
+                )),
+            ];
+            frame.render_widget(Paragraph::new(lines), inner);
+        }
+    }
+}
+
+/// The Profiles section body: the list, or the add/edit form, or a delete prompt.
+fn render_config_profiles(
+    frame: &mut Frame,
+    area: Rect,
+    modal: &mut ConfigModal,
+    names: &[String],
+    active: &str,
+    theme: &Theme,
+) {
+    // Snapshot the list message before the mutable form borrow below.
+    let list_message = modal.profiles.message.clone();
+    match &mut modal.profiles.mode {
+        ProfilesMode::List { selected } => {
+            let mut lines: Vec<Line> = Vec::new();
+            if names.is_empty() {
+                lines.push(Line::from(Span::styled(
+                    "  no profiles configured — press a to add one",
+                    Style::default().fg(theme.text_dim),
+                )));
+            }
+            for (i, name) in names.iter().enumerate() {
+                let is_active = name == active;
+                let cursor = if i == *selected { "> " } else { "  " };
+                let marker = if is_active { "* " } else { "  " };
+                let style = if i == *selected {
+                    Style::default().fg(theme.text).bg(theme.highlight_bg)
+                } else {
+                    Style::default().fg(theme.text)
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("{cursor}{marker}{name}"),
+                    style,
+                )));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(Span::styled(
+                "  a add   e edit   Enter/s select   d delete",
+                Style::default().fg(theme.text_dim),
+            )));
+            if let Some(msg) = &list_message {
+                lines.push(Line::from(Span::styled(
+                    format!("  {msg}"),
+                    Style::default().fg(theme.error),
+                )));
+            }
+            frame.render_widget(Paragraph::new(lines), area);
+        }
+        ProfilesMode::Form(form) => {
+            // Layout: the 4 form rows up top, then the auth/tls controls, the test
+            // state, the help line, and an optional message.
+            let rows = Layout::vertical([
+                Constraint::Length(4), // the FormInput rows
+                Constraint::Length(1), // auth_scheme
+                Constraint::Length(1), // verify_tls
+                Constraint::Length(1), // blank
+                Constraint::Length(1), // test state
+                Constraint::Length(1), // message
+                Constraint::Min(1),    // help
+            ])
+            .split(area);
+
+            if let Some(pos) = form.inputs.render(frame, rows[0], theme) {
+                frame.set_cursor_position(pos);
+            }
+
+            let scheme = match form.auth_scheme {
+                crate::netbox::auth::AuthScheme::Auto => "auto",
+                crate::netbox::auth::AuthScheme::Bearer => "bearer",
+                crate::netbox::auth::AuthScheme::Token => "token",
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("auth_scheme  ", Style::default().fg(theme.header)),
+                    Span::styled(scheme, Style::default().fg(theme.accent)),
+                    Span::styled("  (Ctrl+S cycles)", Style::default().fg(theme.text_dim)),
+                ])),
+                rows[1],
+            );
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("verify_tls   ", Style::default().fg(theme.header)),
+                    Span::styled(
+                        if form.verify_tls { "on" } else { "off" },
+                        Style::default().fg(theme.accent),
+                    ),
+                    Span::styled("  (Ctrl+L toggles)", Style::default().fg(theme.text_dim)),
+                ])),
+                rows[2],
+            );
+
+            let (test_text, test_style) = match &form.test {
+                TestState::Idle => (String::new(), Style::default().fg(theme.text_dim)),
+                TestState::Testing => (
+                    "testing connection…".to_string(),
+                    Style::default().fg(theme.text_dim),
+                ),
+                TestState::Ok(v) => (
+                    format!("✓ connected (NetBox v{v})"),
+                    Style::default().fg(theme.success),
+                ),
+                TestState::Failed(e) => (format!("✗ {e}"), Style::default().fg(theme.error)),
+            };
+            frame.render_widget(Paragraph::new(Span::styled(test_text, test_style)), rows[4]);
+
+            if let Some(msg) = &form.message {
+                frame.render_widget(
+                    Paragraph::new(Span::styled(msg.clone(), Style::default().fg(theme.error))),
+                    rows[5],
+                );
+            }
+
+            frame.render_widget(
+                Paragraph::new(Span::styled(
+                    "Tab: field  Ctrl+T: test  Enter: save  Ctrl+U: save+use  Esc: back",
+                    Style::default().fg(theme.text_dim),
+                )),
+                rows[6],
+            );
+        }
+        ProfilesMode::ConfirmDelete { name, .. } => {
+            let lines = vec![
+                Line::from(""),
+                Line::from(Span::styled(
+                    format!("  Delete profile '{name}'?"),
+                    Style::default().fg(theme.text),
+                )),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  y/Enter: delete   any other key: cancel",
+                    Style::default().fg(theme.text_dim),
+                )),
+            ];
+            frame.render_widget(Paragraph::new(lines), area);
+        }
+    }
 }
 
 fn render_detail(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -741,6 +949,7 @@ mod tests {
         assert!(has("t"), "t cycle theme");
         assert!(has("r"), "r refresh");
         assert!(has("P / C-P"), "P/Ctrl+P switch profile");
+        assert!(has("S"), "S config / profiles");
         // The device-tab keys i/p/c/v/s.
         assert!(has("i p c v s"), "device tab keys");
         // Back / help / quit.

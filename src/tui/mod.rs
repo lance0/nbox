@@ -11,6 +11,7 @@
 
 pub mod app;
 pub mod cheese;
+pub mod config_modal;
 pub mod events;
 pub mod fuzzy;
 pub mod palette;

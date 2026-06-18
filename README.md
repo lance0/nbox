@@ -304,14 +304,15 @@ auth/permission (401/403), `4` not found, `5` ambiguous reference. See
 | `t` | cycle theme |
 | `r` | refresh |
 | `P` / `Ctrl+P` | switch profile (cycle forward / backward) |
+| `S` | open the Config modal (manage profiles) |
 | `b` / `Esc` | back |
 | `i p c v s` | device tabs (interfaces / IPs / cables / VLANs / services) |
 | `?` / `F1` | help |
 | `q` / `Ctrl+c` | quit |
 
 The command palette (`:`) accepts `device`/`ip`/`prefix`/`vlan`/`site <ref>`,
-`find <q>` (or bare text), `open`, `copy`, `theme <name>`, `profile <name>`, and
-`refresh`. The home screen lists recently opened objects (deduped,
+`find <q>` (or bare text), `open`, `copy`, `theme <name>`, `profile <name>`,
+`config`, and `refresh`. The home screen lists recently opened objects (deduped,
 most-recent-first) when there are no search results — press `Enter` to reopen one.
 Set `[ui].refresh_secs` to auto-refresh the current search on an interval (off by
 default).
@@ -319,9 +320,19 @@ default).
 `P` / `Ctrl+P` (or `profile <name>` in the palette) switches between the profiles
 in your config without restarting: it rebuilds the client for that instance and
 re-probes `/api/status/`, so the header flips to the new profile and its NetBox
-version. With a single profile the hotkey is a no-op. The change is session-only —
+version. With a single profile the hotkey is a no-op. The cycle is session-only —
 it does not rewrite `active_profile` in your config (use `nbox profile use <name>`
 for that).
+
+`S` (or `config` in the palette) opens the Config modal to manage profiles
+in-app: list them (active marked), and add / edit / select / delete without
+hand-editing `config.toml`. The add/edit form covers `name`, `url`, `token_env`,
+`auth_scheme`, and `verify_tls`, plus an optional masked token field — a typed
+token is stored in the OS keyring (never written to `config.toml`). `Ctrl+T`
+test-connects before you commit; `Enter` saves, `Ctrl+U` saves and switches to
+it. Unlike the quick `P` cycle, selecting or adding-and-using a profile here
+**persists** `active_profile` to your config. Deleting the active or last
+profile is blocked.
 
 ## Themes
 
