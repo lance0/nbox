@@ -6,6 +6,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::domain::custom;
+use crate::domain::util::non_empty;
 use crate::netbox::models::ipam::{Prefix, Vlan, VlanGroup};
 use crate::netbox::query::friendly_scope_type;
 use crate::output::plain::KeyValues;
@@ -43,6 +44,8 @@ pub struct VlanView {
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub custom_fields: BTreeMap<String, Value>,
     pub prefixes: Vec<String>,
@@ -56,7 +59,6 @@ impl VlanView {
     /// Pass `None` when the VLAN has no group, or for callers that don't surface
     /// the group scope — the existing fields/output are then unchanged.
     pub fn build(v: Vlan, prefixes: Vec<Prefix>, group: Option<VlanGroup>) -> Self {
-        let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
         // Prefer a polymorphic scope; fall back to a directly assigned site
         // (the common case on current NetBox, where `scope_type` is "site").
         let (scope, scope_type) = match (v.scope.as_ref(), v.scope_type.as_deref()) {
@@ -94,6 +96,7 @@ impl VlanView {
             tenant: v.tenant.map(|b| b.label()),
             role: v.role.map(|b| b.label()),
             description: v.description.and_then(non_empty),
+            tags: v.tags.into_iter().map(|tag| tag.slug).collect(),
             custom_fields: custom::fields(&v.custom_fields),
             prefixes: prefixes.into_iter().map(|p| p.prefix).collect(),
         }
@@ -113,6 +116,9 @@ impl VlanView {
             .push_opt("tenant", self.tenant.clone())
             .push_opt("role", self.role.clone())
             .push_opt("description", self.description.clone());
+        if !self.tags.is_empty() {
+            kv.push("tags", self.tags.join(", "));
+        }
         custom::append(&mut kv, &self.custom_fields);
         let mut out = kv.render();
 
@@ -135,7 +141,8 @@ mod tests {
         let v: Vlan = serde_json::from_value(json!({
             "id": 3, "url": "u", "vid": 208, "name": "users",
             "status": {"value": "active", "label": "Active"},
-            "group": {"id": 1, "display": "iad1-campus"}
+            "group": {"id": 1, "display": "iad1-campus"},
+            "tags": [{"id": 1, "name": "users", "slug": "users"}]
         }))
         .unwrap();
         let prefixes: Vec<Prefix> = vec![
@@ -149,10 +156,25 @@ mod tests {
         assert_eq!(view.vid, 208);
         assert_eq!(view.group.as_deref(), Some("iad1-campus"));
         assert_eq!(view.prefixes.len(), 2);
+        assert_eq!(view.tags, vec!["users"]);
 
         let plain = view.to_plain();
         assert!(plain.contains("vid: 208"));
+        assert!(plain.contains("tags: users"));
         assert!(plain.contains("Prefixes\n  10.44.208.0/24\n  10.45.208.0/24"));
+    }
+
+    #[test]
+    fn tags_dropped_when_empty() {
+        let v: Vlan = serde_json::from_value(json!({
+            "id": 3, "url": "u", "vid": 208, "name": "users"
+        }))
+        .unwrap();
+        let view = VlanView::build(v, vec![], None);
+        assert!(view.tags.is_empty());
+        let value = serde_json::to_value(&view).unwrap();
+        assert!(value.get("tags").is_none());
+        assert!(!view.to_plain().contains("tags:"));
     }
 
     #[test]

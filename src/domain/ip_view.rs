@@ -10,6 +10,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::domain::custom;
+use crate::domain::util::non_empty;
 use crate::netbox::models::ipam::{IpAddress, Prefix};
 use crate::netbox::query::friendly_scope_type;
 use crate::output::plain::KeyValues;
@@ -39,6 +40,8 @@ pub struct IpView {
     /// Friendly scope type of the parent prefix, e.g. `site`/`location`/`region`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope_type: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub custom_fields: BTreeMap<String, Value>,
 }
@@ -46,8 +49,6 @@ pub struct IpView {
 impl IpView {
     /// Build a view from an IP and its (optional) most-specific parent prefix.
     pub fn build(ip: IpAddress, parent: Option<Prefix>) -> Self {
-        let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
-
         let (parent_prefix, vlan, scope, scope_type) = match parent {
             Some(p) => {
                 let scope = p
@@ -71,6 +72,7 @@ impl IpView {
             vlan,
             scope,
             scope_type,
+            tags: ip.tags.into_iter().map(|tag| tag.slug).collect(),
             custom_fields: custom::fields(&ip.custom_fields),
         }
     }
@@ -88,6 +90,9 @@ impl IpView {
             .push_opt("vlan", self.vlan.clone())
             .push_opt("scope", self.scope.clone())
             .push_opt("scope_type", self.scope_type.clone());
+        if !self.tags.is_empty() {
+            kv.push("tags", self.tags.join(", "));
+        }
         custom::append(&mut kv, &self.custom_fields);
         kv
     }
@@ -168,7 +173,8 @@ mod tests {
         let ip: IpAddress = serde_json::from_value(json!({
             "id": 7, "url": "http://nb/ip/7/", "address": "10.44.208.55/24",
             "status": {"value": "active", "label": "Active"},
-            "dns_name": "printer-55.example.com"
+            "dns_name": "printer-55.example.com",
+            "tags": [{"id": 1, "name": "printer", "slug": "printer"}]
         }))
         .unwrap();
         let parent: Prefix = serde_json::from_value(json!({
@@ -185,6 +191,21 @@ mod tests {
         assert_eq!(view.scope_type.as_deref(), Some("site"));
         assert_eq!(view.vlan.as_deref(), Some("208 (users)"));
         assert_eq!(view.dns_name.as_deref(), Some("printer-55.example.com"));
+        assert_eq!(view.tags, vec!["printer"]);
+        assert!(view.to_key_values().render().contains("tags: printer"));
+    }
+
+    #[test]
+    fn tags_dropped_when_empty() {
+        let ip: IpAddress = serde_json::from_value(json!({
+            "id": 7, "url": "http://nb/ip/7/", "address": "10.0.0.5/24"
+        }))
+        .unwrap();
+        let view = IpView::build(ip, None);
+        assert!(view.tags.is_empty());
+        let value = serde_json::to_value(&view).unwrap();
+        assert!(value.get("tags").is_none());
+        assert!(!view.to_key_values().render().contains("tags:"));
     }
 
     #[test]

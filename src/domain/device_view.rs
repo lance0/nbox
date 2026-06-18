@@ -6,6 +6,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::domain::custom;
+use crate::domain::util::non_empty;
 use crate::netbox::models::dcim::Device;
 use crate::output::plain::KeyValues;
 
@@ -34,6 +35,8 @@ pub struct DeviceView {
     pub serial: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub custom_fields: BTreeMap<String, Value>,
 }
@@ -41,7 +44,6 @@ pub struct DeviceView {
 impl DeviceView {
     /// Normalize a wire [`Device`] into a flat view.
     pub fn from_model(d: Device) -> Self {
-        let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
         Self {
             id: d.id,
             name: d.name,
@@ -55,6 +57,7 @@ impl DeviceView {
             primary_ip6: d.primary_ip6.map(|b| b.label()),
             serial: d.serial.and_then(non_empty),
             description: d.description.and_then(non_empty),
+            tags: d.tags.into_iter().map(|tag| tag.slug).collect(),
             custom_fields: custom::fields(&d.custom_fields),
         }
     }
@@ -73,6 +76,9 @@ impl DeviceView {
             .push_opt("primary_ip6", self.primary_ip6.clone())
             .push_opt("serial", self.serial.clone())
             .push_opt("description", self.description.clone());
+        if !self.tags.is_empty() {
+            kv.push("tags", self.tags.join(", "));
+        }
         custom::append(&mut kv, &self.custom_fields);
         kv
     }
@@ -94,6 +100,7 @@ mod tests {
             "rack": {"id": 2, "name": "r12"},
             "primary_ip4": {"id": 9, "display": "10.44.12.9/32"},
             "serial": "",
+            "tags": [{"id": 1, "name": "edge", "slug": "edge"}],
             "custom_fields": {}
         }))
         .unwrap();
@@ -105,11 +112,26 @@ mod tests {
         assert_eq!(view.primary_ip4.as_deref(), Some("10.44.12.9/32"));
         // Empty serial is dropped, not shown as "".
         assert_eq!(view.serial, None);
+        assert_eq!(view.tags, vec!["edge"]);
 
         let plain = view.to_key_values().render();
         assert!(plain.starts_with("name: edge01"));
         assert!(plain.contains("primary_ip4: 10.44.12.9/32"));
+        assert!(plain.contains("tags: edge"));
         assert!(!plain.contains("serial:"));
+    }
+
+    #[test]
+    fn tags_dropped_when_empty() {
+        let device: Device = serde_json::from_value(json!({
+            "id": 1, "url": "u", "name": "edge01"
+        }))
+        .unwrap();
+        let view = DeviceView::from_model(device);
+        assert!(view.tags.is_empty());
+        let value = serde_json::to_value(&view).unwrap();
+        assert!(value.get("tags").is_none());
+        assert!(!view.to_key_values().render().contains("tags:"));
     }
 
     #[test]

@@ -77,6 +77,8 @@ pub struct Prefix {
     pub utilization: Option<serde_json::Value>,
 
     #[serde(default)]
+    pub tags: Vec<Tag>,
+    #[serde(default)]
     pub custom_fields: serde_json::Value,
 }
 

@@ -6,6 +6,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::domain::custom;
+use crate::domain::util::non_empty;
 use crate::netbox::models::dcim::Rack;
 use crate::output::plain::KeyValues;
 
@@ -32,6 +33,8 @@ pub struct RackView {
     pub asset_tag: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub custom_fields: BTreeMap<String, Value>,
 }
@@ -39,7 +42,6 @@ pub struct RackView {
 impl RackView {
     /// Normalize a wire [`Rack`].
     pub fn from_model(r: Rack) -> Self {
-        let non_empty = |x: String| if x.is_empty() { None } else { Some(x) };
         Self {
             id: r.id,
             name: r.name,
@@ -52,6 +54,7 @@ impl RackView {
             serial: r.serial.and_then(non_empty),
             asset_tag: r.asset_tag.and_then(non_empty),
             description: r.description.and_then(non_empty),
+            tags: r.tags.into_iter().map(|tag| tag.slug).collect(),
             custom_fields: custom::fields(&r.custom_fields),
         }
     }
@@ -69,6 +72,9 @@ impl RackView {
             .push_opt("serial", self.serial.clone())
             .push_opt("asset_tag", self.asset_tag.clone())
             .push_opt("description", self.description.clone());
+        if !self.tags.is_empty() {
+            kv.push("tags", self.tags.join(", "));
+        }
         custom::append(&mut kv, &self.custom_fields);
         kv
     }
@@ -85,12 +91,29 @@ mod tests {
             "id": 12, "url": "u", "name": "r12",
             "status": {"value": "active", "label": "Active"},
             "site": {"id": 1, "display": "iad1"},
-            "u_height": 42
+            "u_height": 42,
+            "tags": [{"id": 1, "name": "row-a", "slug": "row-a"}]
         }))
         .unwrap();
         let view = RackView::from_model(r);
         assert_eq!(view.site.as_deref(), Some("iad1"));
         assert_eq!(view.u_height, Some(42));
-        assert!(view.to_key_values().render().contains("u_height: 42"));
+        assert_eq!(view.tags, vec!["row-a"]);
+        let plain = view.to_key_values().render();
+        assert!(plain.contains("u_height: 42"));
+        assert!(plain.contains("tags: row-a"));
+    }
+
+    #[test]
+    fn tags_dropped_when_empty() {
+        let r: Rack = serde_json::from_value(json!({
+            "id": 12, "url": "u", "name": "r12"
+        }))
+        .unwrap();
+        let view = RackView::from_model(r);
+        assert!(view.tags.is_empty());
+        let value = serde_json::to_value(&view).unwrap();
+        assert!(value.get("tags").is_none());
+        assert!(!view.to_key_values().render().contains("tags:"));
     }
 }

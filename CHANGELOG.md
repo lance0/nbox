@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- `tags` on the remaining detail views, for consistency with the newer ones.
+  `nbox device`/`site`/`rack`/`circuit`/`ip`/`prefix`/`vlan`/`interface`/
+  `aggregate`/`asn`/`ip-range` now surface the object's tags — joined slugs as a
+  `tags:` line in plain output, a `tags` array in `--json` — dropped when the
+  object has none, exactly as tenant/contact/provider/vm/cluster already do. The
+  wire models already carried `tags` except `Prefix`, which gained the field (an
+  additive, `#[serde(default)]` `Vec<Tag>` matching its siblings). Read-only and
+  additive to the `--json` shape; `--fields` consumers are unaffected.
 - TUI profile switcher: cycle between the profiles in your config without
   restarting. `P` switches to the next profile, `Ctrl+P` the previous (wrapping
   at both ends), and the palette `profile <name>` (alias `prof`) verb jumps to a
@@ -160,6 +168,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WorkerGuard` is held for the process lifetime so buffered lines flush on exit.
 
 ### Changed
+- Internal: the `non_empty` (drop empty string → `None`) and `non_zero` (drop
+  zero count → `None`) filters the detail views all duplicated are now shared
+  `pub(crate)` helpers in `src/domain/util.rs`, replacing ~17 local `non_empty`
+  closures and 3 local `non_zero` fns. Pure refactor — output is byte-identical.
 - `clippy::pedantic` is now enforced across all crates incl. tests via a
   `[lints]` table. The pedantic gate + curated allow-list moved from the
   `src/lib.rs` / `src/main.rs` inner attributes into `[lints.clippy]` in

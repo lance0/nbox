@@ -6,6 +6,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::domain::custom;
+use crate::domain::util::non_empty;
 use crate::netbox::models::circuits::Circuit;
 use crate::output::plain::KeyValues;
 
@@ -27,6 +28,8 @@ pub struct CircuitView {
     pub commit_rate_kbps: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub custom_fields: BTreeMap<String, Value>,
 }
@@ -34,7 +37,6 @@ pub struct CircuitView {
 impl CircuitView {
     /// Normalize a wire [`Circuit`] into a flat view.
     pub fn from_model(c: Circuit) -> Self {
-        let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
         Self {
             cid: c.cid,
             provider: c.provider.map(|b| b.label()),
@@ -44,6 +46,7 @@ impl CircuitView {
             install_date: c.install_date.and_then(non_empty),
             commit_rate_kbps: c.commit_rate,
             description: c.description.and_then(non_empty),
+            tags: c.tags.into_iter().map(|tag| tag.slug).collect(),
             custom_fields: custom::fields(&c.custom_fields),
         }
     }
@@ -62,6 +65,9 @@ impl CircuitView {
                 self.commit_rate_kbps.map(|r| r.to_string()),
             )
             .push_opt("description", self.description.clone());
+        if !self.tags.is_empty() {
+            kv.push("tags", self.tags.join(", "));
+        }
         custom::append(&mut kv, &self.custom_fields);
         kv
     }
@@ -80,6 +86,7 @@ mod tests {
             "type": {"id": 2, "display": "Internet"},
             "status": {"value": "active", "label": "Active"},
             "commit_rate": 1_000_000,
+            "tags": [{"id": 1, "name": "transit", "slug": "transit"}],
             "custom_fields": {}
         }))
         .unwrap();
@@ -88,10 +95,25 @@ mod tests {
         assert_eq!(view.provider.as_deref(), Some("ACME"));
         assert_eq!(view.type_.as_deref(), Some("Internet"));
         assert_eq!(view.commit_rate_kbps, Some(1_000_000));
+        assert_eq!(view.tags, vec!["transit"]);
 
         let plain = view.to_key_values().render();
         assert!(plain.starts_with("cid: ACME-1234"));
         assert!(plain.contains("provider: ACME"));
         assert!(plain.contains("commit_rate_kbps: 1000000"));
+        assert!(plain.contains("tags: transit"));
+    }
+
+    #[test]
+    fn tags_dropped_when_empty() {
+        let circuit: Circuit = serde_json::from_value(json!({
+            "id": 3, "url": "u", "cid": "ACME-1234"
+        }))
+        .unwrap();
+        let view = CircuitView::from_model(circuit);
+        assert!(view.tags.is_empty());
+        let value = serde_json::to_value(&view).unwrap();
+        assert!(value.get("tags").is_none());
+        assert!(!view.to_key_values().render().contains("tags:"));
     }
 }

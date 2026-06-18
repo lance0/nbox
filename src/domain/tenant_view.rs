@@ -6,6 +6,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::domain::custom;
+use crate::domain::util::{non_empty, non_zero};
 use crate::netbox::models::tenancy::Tenant;
 use crate::output::plain::KeyValues;
 
@@ -44,15 +45,9 @@ pub struct TenantView {
     pub custom_fields: BTreeMap<String, Value>,
 }
 
-/// Keep a count only when it is present and non-zero (zero counts are noise).
-fn non_zero(count: Option<u64>) -> Option<u64> {
-    count.filter(|&n| n > 0)
-}
-
 impl TenantView {
     /// Normalize a wire [`Tenant`] into a flat view.
     pub fn from_model(t: Tenant) -> Self {
-        let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
         Self {
             id: t.id,
             name: t.name,

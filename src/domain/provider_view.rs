@@ -6,6 +6,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::domain::custom;
+use crate::domain::util::{non_empty, non_zero};
 use crate::netbox::models::circuits::{Provider, ProviderAccount};
 use crate::output::plain::KeyValues;
 
@@ -30,15 +31,9 @@ pub struct ProviderView {
     pub custom_fields: BTreeMap<String, Value>,
 }
 
-/// Keep a count only when it is present and non-zero (zero counts are noise).
-fn non_zero(count: Option<u64>) -> Option<u64> {
-    count.filter(|&n| n > 0)
-}
-
 impl ProviderView {
     /// Normalize a wire [`Provider`] into a flat view.
     pub fn from_model(p: Provider) -> Self {
-        let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
         Self {
             id: p.id,
             name: p.name,

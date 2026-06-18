@@ -6,6 +6,7 @@ use std::collections::HashSet;
 use serde::Serialize;
 
 use crate::domain::device_view::DeviceView;
+use crate::domain::util::non_empty;
 use crate::netbox::models::dcim::{Device, Interface};
 use crate::netbox::models::ipam::{IpAddress, Service};
 
@@ -82,8 +83,6 @@ impl DeviceDetail {
         ips: Vec<IpAddress>,
         services: Vec<Service>,
     ) -> Self {
-        let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
-
         let mut vlans: Vec<VlanRow> = Vec::new();
         let mut seen_vlan = HashSet::new();
         let mut cables: Vec<CableRow> = Vec::new();

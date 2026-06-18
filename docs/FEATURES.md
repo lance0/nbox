@@ -26,6 +26,10 @@ nbox is a read-only NetBox client (v0.1) — a CLI and a TUI over the same core.
 | `nbox open <kind>/<ref>` | Open an object in the browser. Kinds: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, and `interface/<device>/<name>` (the interface name may contain slashes, e.g. `xe-0/0/1`). |
 | `nbox raw GET <path>` | Raw read-only API request (escape hatch). |
 
+Every detail lookup surfaces the object's `tags` (joined slugs in plain output, a
+`tags` array in `--json`), dropped when the object has none, plus its non-empty
+custom fields as `cf.<name>`.
+
 Duplicate references across scopes (an address/CIDR in several VRFs, a VID at
 several sites) exit `5` and list the candidates; scope with `--vrf`/`--site`/`--group`.
 

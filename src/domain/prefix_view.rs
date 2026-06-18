@@ -8,6 +8,7 @@ use serde_json::Value;
 
 use crate::domain::custom;
 use crate::domain::ip_view::assigned_label;
+use crate::domain::util::non_empty;
 use crate::netbox::models::ipam::{IpAddress, Prefix};
 use crate::netbox::query::friendly_scope_type;
 use crate::output::plain::KeyValues;
@@ -47,6 +48,8 @@ pub struct PrefixView {
     pub utilization: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
     pub custom_fields: BTreeMap<String, Value>,
     pub child_prefixes: Vec<String>,
@@ -56,7 +59,6 @@ pub struct PrefixView {
 impl PrefixView {
     /// Build a view from a prefix plus its children and contained IPs.
     pub fn build(p: Prefix, children: Vec<Prefix>, ips: Vec<IpAddress>) -> Self {
-        let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
         let scope = p
             .scope
             .as_ref()
@@ -75,6 +77,7 @@ impl PrefixView {
             children: p.children,
             utilization: p.utilization.as_ref().and_then(coerce_pct),
             description: p.description.and_then(non_empty),
+            tags: p.tags.into_iter().map(|tag| tag.slug).collect(),
             custom_fields: custom::fields(&p.custom_fields),
             child_prefixes: children.into_iter().map(|c| c.prefix).collect(),
             ip_addresses: ips
@@ -101,6 +104,9 @@ impl PrefixView {
             .push_opt("children", self.children.map(|c| c.to_string()))
             .push_opt("utilization", self.utilization.map(format_utilization))
             .push_opt("description", self.description.clone());
+        if !self.tags.is_empty() {
+            kv.push("tags", self.tags.join(", "));
+        }
         custom::append(&mut kv, &self.custom_fields);
         let mut out = kv.render();
 
@@ -198,7 +204,8 @@ mod tests {
             "scope_type": "dcim.site",
             "scope": {"id": 1, "display": "iad1"},
             "vlan": {"id": 2, "display": "208 (users)"},
-            "children": 4
+            "children": 4,
+            "tags": [{"id": 9, "name": "users", "slug": "users"}]
         }))
         .unwrap();
         let children: Vec<Prefix> = vec![
@@ -218,6 +225,7 @@ mod tests {
         assert_eq!(view.scope_type.as_deref(), Some("site"));
         assert_eq!(view.vlan.as_deref(), Some("208 (users)"));
         assert_eq!(view.children, Some(4));
+        assert_eq!(view.tags, vec!["users"]);
         assert_eq!(view.child_prefixes, vec!["10.44.208.0/26"]);
         assert_eq!(
             view.ip_addresses[0].assigned.as_deref(),
@@ -228,8 +236,20 @@ mod tests {
         assert!(plain.contains("prefix: 10.44.208.0/24"));
         assert!(plain.contains("scope: iad1"));
         assert!(plain.contains("scope_type: site"));
+        assert!(plain.contains("tags: users"));
         assert!(plain.contains("Child Prefixes\n  10.44.208.0/26"));
         assert!(plain.contains("IP Addresses\n  10.44.208.1/24  edge01 irb.208"));
+    }
+
+    #[test]
+    fn tags_dropped_when_empty() {
+        let p: Prefix =
+            serde_json::from_value(json!({"id": 5, "url": "u", "prefix": "10.0.0.0/8"})).unwrap();
+        let view = PrefixView::build(p, vec![], vec![]);
+        assert!(view.tags.is_empty());
+        let value = serde_json::to_value(&view).unwrap();
+        assert!(value.get("tags").is_none());
+        assert!(!view.to_plain().contains("tags:"));
     }
 
     #[test]

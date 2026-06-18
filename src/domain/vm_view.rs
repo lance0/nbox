@@ -6,6 +6,7 @@ use serde::Serialize;
 use serde_json::Value;
 
 use crate::domain::custom;
+use crate::domain::util::non_empty;
 use crate::netbox::models::virtualization::VirtualMachine;
 use crate::output::plain::KeyValues;
 
@@ -49,7 +50,6 @@ pub struct VmView {
 impl VmView {
     /// Normalize a wire [`VirtualMachine`] into a flat view.
     pub fn from_model(vm: VirtualMachine) -> Self {
-        let non_empty = |s: String| if s.is_empty() { None } else { Some(s) };
         Self {
             id: vm.id,
             name: vm.name,
