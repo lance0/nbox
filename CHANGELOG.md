@@ -541,6 +541,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   log. The audit event now records `session` — a short SHA-256 prefix of the
   session id — which stays correlatable across a session's requests without
   putting the raw session handle in the log.
+- The `cargo audit` release gate stays strict, with one documented exception in
+  `.cargo/audit.toml`: RUSTSEC-2023-0071 (the `rsa` "Marvin Attack" timing
+  side-channel, no fix available). It reaches us only via `jsonwebtoken`'s
+  `rust_crypto` backend, used solely for OIDC JWT signature *verification* (a
+  public-key operation); the binary performs no RSA private-key operations, so the
+  attack does not apply. See the file for the full rationale.
 
 ## [0.1.1] - 2026-06-17
 
