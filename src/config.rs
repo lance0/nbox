@@ -26,7 +26,6 @@ active_profile = "default"
 
 [ui]
 theme = "default"
-wide = false
 confirm_writes = true
 open_browser_command = ""
 
@@ -145,12 +144,14 @@ impl std::fmt::Debug for ServeConfig {
 }
 
 /// UI / TUI preferences.
+///
+/// (The former `wide` knob was removed — nothing read it, so shipping it was a
+/// no-op. An existing `wide = …` in a user's file is harmlessly ignored, since
+/// unknown keys aren't rejected.)
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiConfig {
     #[serde(default = "default_theme")]
     pub theme: String,
-    #[serde(default)]
-    pub wide: bool,
     #[serde(default = "default_true")]
     pub confirm_writes: bool,
     #[serde(default)]
@@ -164,7 +165,6 @@ impl Default for UiConfig {
     fn default() -> Self {
         Self {
             theme: default_theme(),
-            wide: false,
             confirm_writes: true,
             open_browser_command: String::new(),
             refresh_secs: None,
@@ -599,12 +599,23 @@ pub fn build_open_argv(command: &str, url: &str) -> Option<Vec<String>> {
 /// and run with the URL appended as a final, non-interpolated argument. When it's
 /// blank, falls back to the OS default via `open::that`. Errors propagate so the
 /// caller can surface them. Never logs or interpolates the URL into a shell.
+///
+/// A non-zero exit from the custom command is treated as an error (L1): otherwise
+/// `nbox open` would exit `0` and the TUI would say "opened" for a command that
+/// actually failed (e.g. `false`, or a misconfigured opener).
 pub fn open_url(command: &str, url: &str) -> std::io::Result<()> {
     match build_open_argv(command, url) {
         Some(argv) => {
             let (program, rest) = argv.split_first().expect("argv has the program");
-            std::process::Command::new(program).args(rest).status()?;
-            Ok(())
+            let status = std::process::Command::new(program).args(rest).status()?;
+            if status.success() {
+                Ok(())
+            } else {
+                Err(std::io::Error::other(match status.code() {
+                    Some(code) => format!("open command `{program}` exited with status {code}"),
+                    None => format!("open command `{program}` terminated by a signal"),
+                }))
+            }
         }
         None => open::that(url),
     }
@@ -836,7 +847,10 @@ fn read_token_raw_tty() -> Result<String> {
         }
         match key.code {
             KeyCode::Enter => break,
-            KeyCode::Backspace => {
+            // There's no visible cursor in the no-echo reader, so Delete behaves
+            // like Backspace — drop the last typed char — rather than being a
+            // silent no-op that confuses a user who hits it (L7).
+            KeyCode::Backspace | KeyCode::Delete => {
                 token.pop();
             }
             KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
@@ -1458,6 +1472,15 @@ url = \"https://a\"
         // Empty / whitespace-only command ⇒ None ⇒ caller falls back to open::that.
         assert_eq!(build_open_argv("", "https://x"), None);
         assert_eq!(build_open_argv("   ", "https://x"), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_url_reports_a_non_zero_exit_as_an_error() {
+        // L1: a custom open command that exits non-zero (`false`) is an error, not
+        // a false "opened". `true` (exit 0) succeeds.
+        assert!(open_url("false", "https://x").is_err());
+        assert!(open_url("true", "https://x").is_ok());
     }
 
     #[test]

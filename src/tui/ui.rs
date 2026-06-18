@@ -505,6 +505,25 @@ fn render_config(
     active: &str,
     theme: &Theme,
 ) {
+    // L9: guard a too-small terminal. The modal needs room for its border + the
+    // form rows; below that, the Layout splits would collapse and render garbage.
+    // Show a compact "resize" hint instead, clamped to whatever space there is.
+    const MIN_W: u16 = 24;
+    const MIN_H: u16 = 8;
+    if area.width < MIN_W || area.height < MIN_H {
+        let popup = centered_popup(area, area.width.saturating_sub(2).min(20), 1);
+        frame.render_widget(Clear, popup);
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "terminal too small",
+                Style::default().fg(theme.text_dim),
+            ))
+            .block(Block::default().borders(Borders::ALL)),
+            popup,
+        );
+        return;
+    }
+
     let popup = centered_popup(area, 60, area.height.saturating_sub(4));
     frame.render_widget(Clear, popup);
 
@@ -537,8 +556,8 @@ fn render_config(
 /// The Settings section body: the three real `[ui]` settings as a small form —
 /// theme (a cycle), refresh_secs (numeric), open_browser_command (text). The
 /// focused row is marked with `>`; the theme value shows the selection and the
-/// two text rows render their (live) inputs. The no-op `wide`/`confirm_writes`
-/// knobs are intentionally absent.
+/// two text rows render their (live) inputs. The no-op `confirm_writes` knob is
+/// intentionally absent.
 fn render_config_settings(frame: &mut Frame, area: Rect, modal: &mut ConfigModal, theme: &Theme) {
     use crate::tui::config_modal::setting;
 

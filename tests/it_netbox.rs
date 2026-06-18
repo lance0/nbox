@@ -71,8 +71,9 @@ fn run_nbox_with_page_size(page_size: usize, args: &[&str]) -> Output {
         .arg("--config")
         .arg(config.path())
         .args(args)
-        // `NBOX_TOKEN` is the highest-priority token source in `resolve_token`,
-        // so the bogus `token_env` above is never consulted.
+        // Token precedence is token_env → NBOX_TOKEN → keyring. The profile's
+        // `token_env` (`NETBOX_TOKEN_UNUSED`) is deliberately never exported, so
+        // resolution falls through to the `NBOX_TOKEN` we set here.
         .env("NBOX_TOKEN", netbox_token())
         .env_remove("NBOX_LOG")
         .env_remove("RUST_LOG")

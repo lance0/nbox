@@ -277,6 +277,19 @@ pub async fn run(
                     }
                     WizardAction::Save => {
                         let outcome = persist(&wizard.form, path)?;
+                        // L8: when nothing authenticatable landed, surface the
+                        // env-var guidance *in the wizard* (its final frame) rather
+                        // than only after it exits, so the message is part of the
+                        // onboarding flow the user is still looking at.
+                        if outcome.needs_env_guidance {
+                            wizard.form.message = Some(
+                                "profile saved — set NBOX_TOKEN or a token_env to authenticate"
+                                    .to_string(),
+                            );
+                            terminal.draw(|frame| {
+                                render(frame, frame.area(), &mut wizard, theme);
+                            })?;
+                        }
                         return Ok(Some(outcome));
                     }
                 }
@@ -313,6 +326,18 @@ async fn probe(req: &ConnectRequest) -> Result<String> {
 /// profile form, the auth/tls controls, the test state, an optional message, and
 /// the key hints. Mirrors the Config modal's profile-form rendering.
 fn render(frame: &mut ratatui::Frame, area: Rect, wizard: &mut OnboardingWizard, theme: &Theme) {
+    // L9: a too-small terminal can't fit the wizard's fixed row layout; show a
+    // compact resize hint instead of a collapsed, garbled panel.
+    if area.width < 24 || area.height < 12 {
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                "terminal too small — resize to set up nbox",
+                Style::default().fg(theme.text_dim),
+            )),
+            area,
+        );
+        return;
+    }
     // A roomy centered panel; clamp to the available area.
     let popup_w = 64.min(area.width);
     let popup_h = 16.min(area.height);

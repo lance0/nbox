@@ -9,9 +9,10 @@ same JSON view models. Nothing is ever written.
 ## Prerequisites
 
 A configured profile, exactly as the CLI needs one: a NetBox `url` and a token.
-`nbox serve` resolves the token the same way every other command does — from
-`NBOX_TOKEN`, or the env var named by the profile's `token_env` — and it honors
-the same global flags (`-p`/`--profile <name>`, `--config <path>`). See
+`nbox serve` resolves the token the same way every other command does, in
+precedence order: the env var named by the profile's `token_env`, then
+`NBOX_TOKEN`, then the profile's OS-keyring entry (`nbox config token set`). It
+honors the same global flags (`-p`/`--profile <name>`, `--config <path>`). See
 [docs/CONFIG.md](CONFIG.md) for profiles and token resolution. Confirm the CLI
 works first:
 

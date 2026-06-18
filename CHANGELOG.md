@@ -454,6 +454,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - docs: `docs/CONFIG.md` and `examples/config.toml` now document the `[serve]`
   section (http / http_token / oidc_issuer / audience / jwks_url / allowed_hosts /
   rate_limit), noting `http_token` is a secret (prefer the env var).
+- `nbox open` / the TUI browser-open now treat a non-zero exit from a custom
+  `open_browser_command` as an error instead of reporting success.
+- The unused `[ui].wide` knob (nothing read it) is no longer written by
+  `config init` / the example config, nor exposed as a field; an existing
+  `wide = …` in a user's file is harmlessly ignored.
+- A pasted token is trimmed of surrounding whitespace before it's stored, so a
+  trailing newline from a paste no longer breaks auth.
+- `keyring_get` now distinguishes a missing entry (the silent "no token" case)
+  from a real backend failure, which is logged at debug while still returning
+  `None` for the UI.
+- The no-echo `config token set` reader handles the Delete key (like Backspace)
+  instead of ignoring it.
+- The first-run wizard shows the "set NBOX_TOKEN / a token_env" guidance on its
+  own final frame when no token landed, not only after it exits.
+- The Config modal and onboarding wizard show a compact "terminal too small" hint
+  on a tiny terminal instead of a collapsed, garbled layout.
+- docs: `docs/MCP.md` and a `tests/it_netbox.rs` comment now state the real token
+  precedence (token_env → `NBOX_TOKEN` → keyring) after the earlier reversal.
 
 ### Security
 - `nbox config show` no longer prints `serve.http_token` — the one secret that can

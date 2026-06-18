@@ -6,7 +6,7 @@
 //! field is masked (never written to TOML; stored in the OS keyring on save). The
 //! Settings section is a small form over the *real* `[ui]` settings — theme (a
 //! cycle), `refresh_secs` (numeric), and `open_browser_command` (text); the no-op
-//! `wide`/`confirm_writes` knobs are deliberately excluded.
+//! `confirm_writes` knob is deliberately excluded.
 //!
 //! Everything here is PURE: key handling mutates the modal's own state and yields
 //! a [`ModalOutcome`] describing what the app should *do* (test-connect, save,
@@ -184,10 +184,17 @@ impl ProfileForm {
         if v.is_empty() { None } else { Some(v) }
     }
 
-    /// The token field's raw value, `None` when empty. Used only to hand straight
-    /// to the keyring; it is never rendered (the field is masked) or logged.
+    /// The token field's value, trimmed of surrounding whitespace, `None` when
+    /// empty. Used only to hand straight to the keyring; it is never rendered (the
+    /// field is masked) or logged. Trimming (L6) drops a trailing newline/space a
+    /// paste can leave behind, which would otherwise break auth.
     pub fn token(&self) -> Option<String> {
-        let v = self.inputs.value(field::TOKEN).unwrap_or("").to_string();
+        let v = self
+            .inputs
+            .value(field::TOKEN)
+            .unwrap_or("")
+            .trim()
+            .to_string();
         if v.is_empty() { None } else { Some(v) }
     }
 
@@ -954,6 +961,18 @@ mod tests {
             "",
             "Ctrl+U cleared the name field"
         );
+    }
+
+    #[test]
+    fn token_field_is_trimmed_so_a_pasted_newline_does_not_break_auth() {
+        // L6: a trailing space/newline from a paste is trimmed off the token.
+        let mut m = ConfigModal::default();
+        m.handle_key(key(KeyCode::Char('a')), &[], "");
+        for _ in 0..field::TOKEN {
+            m.handle_key(key(KeyCode::Tab), &[], "");
+        }
+        type_into(&mut m, "  nbt_secret  ");
+        assert_eq!(m.form().unwrap().token().as_deref(), Some("nbt_secret"));
     }
 
     #[test]

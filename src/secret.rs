@@ -74,12 +74,26 @@ pub fn keyring_get(account: &str) -> Option<String> {
         if !keyring_available() {
             return None;
         }
-        match keyring::Entry::new(SERVICE, account) {
+        let entry = match keyring::Entry::new(SERVICE, account) {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::debug!("keyring open failed: {e}");
+                return None;
+            }
+        };
+        match entry.get_password() {
             // An empty stored value is treated as "no token" — an empty string
             // would otherwise flow through `resolve_token` and produce a confusing
             // 401 instead of a clean "no token from any source".
-            Ok(entry) => entry.get_password().ok().filter(|t| !t.is_empty()),
-            Err(_) => None,
+            Ok(token) => (!token.is_empty()).then_some(token),
+            // A missing entry is the normal "no token here" case (silent). A real
+            // backend failure (locked keystore, D-Bus error) is logged at debug so
+            // it's diagnosable, but still returns None so the UI falls through (L5).
+            Err(keyring::Error::NoEntry) => None,
+            Err(e) => {
+                tracing::debug!("keyring read failed: {e}");
+                None
+            }
         }
     }
     #[cfg(not(feature = "keyring"))]
