@@ -161,6 +161,11 @@ struct Ctx {
     profile: Option<String>,
     format: Format,
     json_opts: output::json::JsonOptions,
+    /// `--no-tui`: the non-interactive guarantee for agents/scripts. The dispatch
+    /// in [`run`] already refuses launching the TUI; carried here so `run_tui` can
+    /// also refuse the first-run onboarding *wizard* (which is just as interactive)
+    /// if it's ever reached under the flag — exit 2 with guidance, never prompt.
+    no_tui: bool,
 }
 
 /// Render a serializable view per the selected format, or run `plain` for text.
@@ -229,6 +234,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         profile: cli.profile,
         format: Format::resolve(cli.json, cli.output),
         json_opts,
+        no_tui: cli.no_tui,
     };
 
     match cli.command {
@@ -673,6 +679,13 @@ async fn run_tui(ctx: &Ctx) -> Result<()> {
     // Onboard before `config::load` can error on a missing/empty config. Drive the
     // wizard and the app loop on a single terminal (init once, restore once).
     if config::needs_onboarding(&path, ctx.profile.as_deref()) {
+        // M14: the onboarding wizard is interactive — `--no-tui` must refuse it too
+        // (the same exit-2 guarantee as refusing the TUI), never drop a script into
+        // a prompt. (The top-level dispatch already guards the common path; this
+        // keeps the invariant local to where onboarding is decided.)
+        if ctx.no_tui {
+            return Err(no_tui_onboarding_refusal());
+        }
         let mut terminal = ratatui::init();
         let result = run_tui_onboarding(ctx, &path, &mut terminal).await;
         ratatui::restore();
@@ -717,6 +730,7 @@ async fn run_tui_onboarding(
         profile: Some(outcome.name.clone()),
         format: ctx.format,
         json_opts: ctx.json_opts.clone(),
+        no_tui: ctx.no_tui,
     };
     let mut app = build_tui_app(&onboarded, path, &cfg).await?;
     // When no token landed anywhere (no keyring entry, no token_env), steer the
@@ -1425,6 +1439,21 @@ fn no_tui_refusal(explicit_tui: bool) -> anyhow::Error {
         "no command given; --no-tui suppresses the interactive UI.\n\nRun `nbox --help` for the available commands."
     };
     error::NboxError::Usage(msg.to_string()).into()
+}
+
+/// The usage error `--no-tui` raises when a launch would otherwise drop into the
+/// interactive first-run onboarding wizard. Typed as [`error::NboxError::Usage`]
+/// so it exits `2`, and points the user at the non-interactive setup path.
+fn no_tui_onboarding_refusal() -> anyhow::Error {
+    error::NboxError::Usage(
+        "no usable config and --no-tui set: the interactive onboarding wizard is suppressed.\n\n\
+         Set up a profile non-interactively first:\n  \
+         nbox config init\n  \
+         nbox profile add <name> --url <url> [--token-env <VAR>]\n\
+         then export NBOX_TOKEN or set the profile's token_env."
+            .to_string(),
+    )
+    .into()
 }
 
 /// A friendly "not found" error with an actionable suggestion (DESIGN §17).

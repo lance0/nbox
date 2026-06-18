@@ -135,15 +135,25 @@ impl OnboardingWizard {
     }
 
     /// Build a [`ConnectRequest`] from the current form for a test-connect probe.
-    /// The token is the typed (masked) token, passed straight to the temp client
-    /// and never logged.
+    /// The probe token uses the same precedence as the eventual launch (M15): the
+    /// typed (masked) token wins, else the form's `token_env` (resolved from the
+    /// environment), else `NBOX_TOKEN`. There's no profile yet, so there's no
+    /// keyring tier here. The token is passed straight to the temp client, never
+    /// logged.
     #[must_use]
     pub fn connect_request(&self) -> ConnectRequest {
+        let token = self.form.token().or_else(|| {
+            self.form
+                .token_env()
+                .and_then(|name| std::env::var(&name).ok())
+                .filter(|t| !t.is_empty())
+                .or_else(|| std::env::var("NBOX_TOKEN").ok().filter(|t| !t.is_empty()))
+        });
         ConnectRequest {
             url: self.form.url(),
             auth_scheme: self.form.auth_scheme,
             verify_tls: self.form.verify_tls,
-            token: self.form.token(),
+            token,
         }
     }
 }
@@ -241,24 +251,34 @@ pub async fn run(
             return Ok(None);
         };
         match event {
-            AppEvent::Key(key) => match wizard.handle_key(key) {
-                WizardAction::None => {}
-                WizardAction::Quit => return Ok(None),
-                WizardAction::TestConnect => {
+            AppEvent::Key(key) => {
+                // Snapshot whether a probe is in flight, so a probe-relevant edit
+                // that supersedes it (the form drops back to Idle) bumps the test
+                // id — dropping the now-stale in-flight result on arrival (H4).
+                let was_testing = wizard.form.test == TestState::Testing;
+                let action = wizard.handle_key(key);
+                if was_testing && wizard.form.test == TestState::Idle {
                     test_seq += 1;
-                    let id = test_seq;
-                    let req = wizard.connect_request();
-                    let tx = tx.clone();
-                    tokio::spawn(async move {
-                        let result = probe(&req).await;
-                        let _ = tx.send(AppEvent::ConnectTested { id, result }).await;
-                    });
                 }
-                WizardAction::Save => {
-                    let outcome = persist(&wizard.form, path)?;
-                    return Ok(Some(outcome));
+                match action {
+                    WizardAction::None => {}
+                    WizardAction::Quit => return Ok(None),
+                    WizardAction::TestConnect => {
+                        test_seq += 1;
+                        let id = test_seq;
+                        let req = wizard.connect_request();
+                        let tx = tx.clone();
+                        tokio::spawn(async move {
+                            let result = probe(&req).await;
+                            let _ = tx.send(AppEvent::ConnectTested { id, result }).await;
+                        });
+                    }
+                    WizardAction::Save => {
+                        let outcome = persist(&wizard.form, path)?;
+                        return Ok(Some(outcome));
+                    }
                 }
-            },
+            }
             AppEvent::ConnectTested { id, result } => {
                 // Drop a superseded probe (the user edited + re-tested).
                 if id < test_seq {

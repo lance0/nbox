@@ -25,9 +25,15 @@ const SERVICE: &str = "nbox";
 /// resolved config path keeps two configs — or `--config <tmp>` runs — from
 /// clobbering one another's stored token; the profile name keeps profiles within
 /// one config distinct.
+///
+/// Collision-safe: a plain `{path}::{profile}` join is ambiguous — a config path
+/// ending in `::x` with profile `y` collides with path `…` + profile `x::y`. We
+/// length-prefix the config path (`<len>:<path>::<profile>`) so the split point is
+/// unambiguous regardless of which side contains `::`.
 #[must_use]
 pub fn account_key(config_path: &str, profile_name: &str) -> String {
-    format!("{config_path}::{profile_name}")
+    let len = config_path.len();
+    format!("{len}:{config_path}::{profile_name}")
 }
 
 /// Whether a *persistent* OS keystore is compiled in for this target.
@@ -69,7 +75,10 @@ pub fn keyring_get(account: &str) -> Option<String> {
             return None;
         }
         match keyring::Entry::new(SERVICE, account) {
-            Ok(entry) => entry.get_password().ok(),
+            // An empty stored value is treated as "no token" — an empty string
+            // would otherwise flow through `resolve_token` and produce a confusing
+            // 401 instead of a clean "no token from any source".
+            Ok(entry) => entry.get_password().ok().filter(|t| !t.is_empty()),
             Err(_) => None,
         }
     }
@@ -86,6 +95,12 @@ pub fn keyring_get(account: &str) -> Option<String> {
 /// missing-backend / feature-off cases) so the CLI can print env-var guidance and
 /// exit non-zero, rather than appearing to succeed against a throwaway store.
 pub fn keyring_set(account: &str, token: &str) -> anyhow::Result<()> {
+    // Reject an empty token outright: storing `""` would round-trip as a token
+    // that `keyring_get` then drops to `None` (a silent no-op for the caller).
+    // Callers that mean "no token" should `keyring_delete` instead.
+    if token.is_empty() {
+        anyhow::bail!("refusing to store an empty token");
+    }
     #[cfg(feature = "keyring")]
     {
         if !keyring_available() {
@@ -134,15 +149,30 @@ mod tests {
 
     #[test]
     fn account_key_namespaces_by_config_and_profile() {
+        // Length-prefixed so the path/profile split is unambiguous.
         assert_eq!(
             account_key("/home/u/.config/nbox/config.toml", "work"),
-            "/home/u/.config/nbox/config.toml::work"
+            "32:/home/u/.config/nbox/config.toml::work"
         );
         // Same profile name under two configs must not collide.
         assert_ne!(
             account_key("/a/config.toml", "default"),
             account_key("/b/config.toml", "default")
         );
+    }
+
+    #[test]
+    fn account_key_is_collision_safe_across_the_separator() {
+        // A `{path}::{profile}` join is ambiguous: path "/a::x" + profile "y" and
+        // path "/a" + profile "x::y" would both render "/a::x::y". The length
+        // prefix disambiguates them.
+        assert_ne!(
+            account_key("/a::x", "y"),
+            account_key("/a", "x::y"),
+            "the path/profile boundary must be unambiguous"
+        );
+        // A path that itself ends in `::` doesn't collide with a longer path.
+        assert_ne!(account_key("/a::", "b"), account_key("/a", "::b"));
     }
 
     #[test]
@@ -163,6 +193,14 @@ mod tests {
             assert!(keyring_set(&key, "secret").is_err());
             assert!(keyring_delete(&key).is_err());
         }
+    }
+
+    #[test]
+    fn set_rejects_an_empty_token_regardless_of_backend() {
+        // An empty token is rejected before any backend call, so this holds whether
+        // or not a persistent keystore is compiled in.
+        let key = account_key("/nbox/test/empty", "p");
+        assert!(keyring_set(&key, "").is_err());
     }
 
     #[test]

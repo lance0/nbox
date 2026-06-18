@@ -405,8 +405,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   which search has never covered, and omitted the kinds it does — now the
   accurate set: devices, sites, IPs, prefixes, VLANs, circuits, aggregates,
   ASNs, IP ranges, tenants, contacts, providers, VMs, and clusters.
+- TUI: onboarding and Config-modal form fields no longer render a stray `>` with
+  the cursor two cells off. The cheese `Input` adapter for multi-field forms left
+  the widget's default `>` prompt in place; form rows now use an empty prompt, and
+  the focused cursor is placed by display-column width (wide glyphs included).
+- TUI: renaming a profile in the Config modal no longer leaves an orphaned
+  `[profiles.<old>]` section in `config.toml` (a phantom that returned on the next
+  launch). A rename now removes the old section and, if it was the active profile,
+  repoints `active_profile` to the new name. The OS-keyring entry is migrated to
+  the new key too (or cleared/stored per the token field), so a renamed
+  keyring-backed profile keeps its auth.
+- TUI: a typed token is no longer silently discarded when the OS keyring is
+  unavailable. The save path used to overwrite the keyring warning with a "saved"
+  status, so the user saw success while nothing was stored. The warning now
+  survives — it states the token was NOT stored and how to provide one (a
+  `token_env` or `NBOX_TOKEN`).
+- TUI: editing a probe-relevant field (url / token / `token_env` / auth /
+  verify-tls) while a test-connect is in flight no longer shows the old result as
+  if it matched the new form. The in-flight probe is superseded (result cleared +
+  test id bumped) in both onboarding and the Config-modal editor.
+- TUI: test-connect now builds its probe token with the same precedence as a real
+  save/launch — typed token → form `token_env` → `NBOX_TOKEN` → keyring — so
+  changing `token_env` actually tests the new source (it previously tested the old
+  typed-only / saved-profile token).
+- TUI: the Config-modal save+use action moved from `Ctrl+U` (which collided with
+  the text field's clear-line) to `Ctrl+G`; `Ctrl+U` now clears the focused field.
+  The edit form gained `Ctrl+X` to clear a stored keyring token on save.
+- TUI: adding a profile whose name already exists is rejected on save (a rename
+  onto another existing profile is likewise blocked); cancelling an add/edit with
+  `Esc` returns to the previously selected list row instead of snapping to the top.
+- TUI/config: a profile save with no backing config-file path now surfaces an
+  error instead of a misleading "saved".
+- config: an empty OS-keyring entry is treated as "no token" rather than an empty
+  string (which produced a confusing `401` instead of a clean "no token").
+- `--no-tui` now also refuses the first-run onboarding wizard (exit `2` with setup
+  guidance), matching its refusal of the interactive TUI.
 
 ### Security
+- `nbox config show` no longer prints `serve.http_token` — the one secret that can
+  live in `config.toml`. It is redacted to `<redacted>` in both the human TOML and
+  the `--json` output (an absent token stays absent, so you can still tell whether
+  one is configured without revealing it).
+- `ServeConfig` has a hand-written `Debug` that redacts `http_token`, so a `{:?}`
+  or log line of a `Config` can never leak the serve token.
+- The OS-keyring account key is now collision-safe: it length-prefixes the config
+  path so the path/profile boundary is unambiguous (a `{path}::{profile}` join
+  could otherwise alias two different (path, profile) pairs onto one secret).
+- `keyring_set` rejects an empty token (it would otherwise round-trip as a no-op),
+  and the `TokenAction` carrying a typed token redacts its value in `Debug`.
 - `nbox serve --http` (OIDC mode, `http` feature): the HTTPS-only rule for the IdP
   issuer / JWKS / discovered endpoints is now enforced on **every HTTP redirect
   hop**, not just the original URL. The IdP client previously followed redirects

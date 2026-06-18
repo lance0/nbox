@@ -79,7 +79,11 @@ pub struct Config {
 
 /// `nbox serve` (MCP server) settings. The CLI flags (`--http`, `--http-token`)
 /// take precedence over these; everything is optional and absent ⇒ stdio.
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+///
+/// `Debug` is hand-written (not derived) so `http_token` — a secret — is never
+/// printed: it renders as `<redacted>`/`None`, so a `{:?}`/log of a `Config` can't
+/// leak it. Keep in sync with [`redact_secrets`].
+#[derive(Clone, Default, Serialize, Deserialize)]
 pub struct ServeConfig {
     /// Loopback address to serve HTTP on, e.g. `127.0.0.1:8080`. Absent ⇒ stdio.
     /// Overridden by `--http`.
@@ -119,6 +123,25 @@ pub struct ServeConfig {
     /// minute. Absent / `0` ⇒ disabled (default). Overridden by `--rate-limit`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_limit: Option<u32>,
+}
+
+impl std::fmt::Debug for ServeConfig {
+    /// Redacts `http_token` so the secret never lands in a `{:?}`/log line: a set
+    /// token shows as `Some("<redacted>")`, an unset one as `None`.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ServeConfig")
+            .field("http", &self.http)
+            .field(
+                "http_token",
+                &self.http_token.as_ref().map(|_| "<redacted>"),
+            )
+            .field("oidc_issuer", &self.oidc_issuer)
+            .field("audience", &self.audience)
+            .field("jwks_url", &self.jwks_url)
+            .field("allowed_hosts", &self.allowed_hosts)
+            .field("rate_limit", &self.rate_limit)
+            .finish()
+    }
 }
 
 /// UI / TUI preferences.
@@ -644,11 +667,26 @@ pub fn run_config(
             })
         }
         ConfigCommand::Show => {
-            let cfg = load(&path)?;
+            let mut cfg = load(&path)?;
+            // Never expose secrets. `serve.http_token` is the one secret that can
+            // live in the file; redact it (a placeholder, not the value) in BOTH
+            // the human TOML and the `--json` output before emitting.
+            redact_secrets(&mut cfg);
             crate::output::emit(format, json_opts, &cfg, || {
                 print!("{}", toml::to_string_pretty(&cfg).unwrap_or_default());
             })
         }
+    }
+}
+
+/// Replace any secret value in `cfg` with a redaction placeholder, in place, so
+/// it can be safely printed. Today the only file-stored secret is
+/// `serve.http_token`; a present token becomes `"<redacted>"` (an absent one stays
+/// `None`, so `config show` still tells you whether one is configured without ever
+/// revealing it). Keep this in sync with [`ServeConfig`]'s `Debug` redaction.
+pub(crate) fn redact_secrets(cfg: &mut Config) {
+    if cfg.serve.http_token.is_some() {
+        cfg.serve.http_token = Some("<redacted>".to_string());
     }
 }
 
@@ -898,6 +936,48 @@ page_size = 250
         assert_eq!(work.auth_scheme, Some(AuthScheme::Bearer));
         assert_eq!(work.page_size, Some(250));
         assert_eq!(work.verify_tls, None);
+    }
+
+    #[test]
+    fn config_show_redacts_http_token_in_toml_and_json() {
+        // H7: `config show` must never print the http_token value. Redact in both
+        // the human TOML and the serialized (JSON) form.
+        let mut cfg: Config = toml::from_str(
+            "[serve]\nhttp = \"127.0.0.1:8080\"\nhttp_token = \"super-secret-value\"\n",
+        )
+        .unwrap();
+        redact_secrets(&mut cfg);
+        assert_eq!(cfg.serve.http_token.as_deref(), Some("<redacted>"));
+        let toml_out = toml::to_string_pretty(&cfg).unwrap();
+        assert!(
+            !toml_out.contains("super-secret-value"),
+            "TOML must not leak"
+        );
+        assert!(toml_out.contains("<redacted>"));
+        let json_out = serde_json::to_string(&cfg).unwrap();
+        assert!(
+            !json_out.contains("super-secret-value"),
+            "JSON must not leak"
+        );
+        // An absent token stays None (config show still says "no token configured").
+        let mut none: Config = toml::from_str("[serve]\nhttp = \"127.0.0.1:8080\"\n").unwrap();
+        redact_secrets(&mut none);
+        assert_eq!(none.serve.http_token, None);
+    }
+
+    #[test]
+    fn serve_config_debug_redacts_the_http_token() {
+        // M2: a `{:?}` of a ServeConfig (or any Config) must not print the token.
+        let cfg: Config = toml::from_str(
+            "[serve]\nhttp = \"127.0.0.1:8080\"\nhttp_token = \"super-secret-value\"\n",
+        )
+        .unwrap();
+        let dbg = format!("{cfg:?}");
+        assert!(
+            !dbg.contains("super-secret-value"),
+            "Debug must not leak token"
+        );
+        assert!(dbg.contains("<redacted>"));
     }
 
     #[test]

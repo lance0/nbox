@@ -969,7 +969,24 @@ impl App {
         let Some(Modal::Config(modal)) = &mut self.modal else {
             return Vec::new();
         };
+        // Snapshot whether a test was in flight, so a probe-relevant edit that
+        // supersedes it (the form drops back to Idle) can bump the generation id —
+        // dropping the now-stale in-flight result on arrival (H4).
+        let was_testing = modal
+            .form()
+            .is_some_and(|f| f.test == crate::tui::config_modal::TestState::Testing);
         let outcome = modal.handle_key(key, &names, &active);
+        if was_testing
+            && let Some(Modal::Config(modal)) = &self.modal
+            && modal
+                .form()
+                .is_some_and(|f| f.test == crate::tui::config_modal::TestState::Idle)
+        {
+            // The edit superseded the in-flight probe: advance the guard so its
+            // ConnectTested is discarded when it lands.
+            self.test_gen = self.test_seq + 1;
+            self.test_seq = self.test_gen;
+        }
         self.apply_modal_outcome(outcome)
     }
 
@@ -1065,24 +1082,33 @@ impl App {
     }
 
     /// Build a [`ConnectRequest`] from the open form: the form's url/auth/tls plus
-    /// the token to probe with (the typed token, else the resolved token for the
-    /// profile being edited — so testing an edit without re-typing the token still
-    /// authenticates). Returns `None` if no form is open.
+    /// the token to probe with. The probe token uses the SAME precedence as save /
+    /// launch (M15) so the test reflects what a real connection would use:
+    ///   typed token → form `token_env` → `NBOX_TOKEN` → keyring (for the
+    ///   profile being edited).
+    /// Returns `None` if no form is open.
     fn form_connect_request(&self) -> Option<ConnectRequest> {
         let Some(Modal::Config(modal)) = &self.modal else {
             return None;
         };
         let form = modal.form()?;
-        // The typed token wins; otherwise fall back to the resolved token for the
-        // existing profile (env/keyring) so an edit can be tested as-is.
+        let path = self
+            .config_path
+            .clone()
+            .unwrap_or_else(|| PathBuf::from(""));
+        // The token to probe with, in resolve-order: a typed token wins; else the
+        // form's token_env (as it would be used at launch); else NBOX_TOKEN; else
+        // the keyring entry for the profile being edited.
         let token = form.token().or_else(|| {
-            let name = form.editing.as_deref()?;
-            let profile = self.profiles.iter().find(|p| p.name == name)?;
-            let path = self
-                .config_path
-                .clone()
-                .unwrap_or_else(|| PathBuf::from(""));
-            crate::config::resolve_token(&profile.config, &path, name)
+            form.token_env()
+                .and_then(|name| std::env::var(&name).ok())
+                .filter(|t| !t.is_empty())
+                .or_else(|| std::env::var("NBOX_TOKEN").ok().filter(|t| !t.is_empty()))
+                .or_else(|| {
+                    let name = form.editing.as_deref()?;
+                    let account = crate::secret::account_key(&path.display().to_string(), name);
+                    crate::secret::keyring_get(&account)
+                })
         });
         Some(ConnectRequest {
             url: form.url(),
@@ -1123,40 +1149,46 @@ impl App {
         let token_env = form.token_env();
         let auth_scheme = form.auth_scheme;
         let verify_tls = form.verify_tls;
-        let token = form.token();
+        let token_action = form.token_action();
         let original = form.editing.clone();
 
-        // Write the metadata to the config file (format-preserving), if we have a
-        // backing path. The token is NEVER written here.
-        if let Some(path) = self.config_path.clone() {
-            if let Err(e) = Self::persist_profile(
-                &path,
-                &name,
-                &url,
-                token_env.as_deref(),
-                auth_scheme,
-                verify_tls,
-            ) {
-                self.set_status(format!("save failed: {e:#}"), Severity::Error);
-                return Vec::new();
-            }
-            // A typed token goes to the OS keyring (never TOML). Surface a clear
-            // status when the keyring is unavailable, but still keep the saved
-            // metadata.
-            if let Some(token) = &token {
-                let account = crate::secret::account_key(&path.display().to_string(), &name);
-                match crate::secret::keyring_set(&account, token) {
-                    Ok(()) => {}
-                    Err(_) => {
-                        self.set_status(
-                            "saved — keyring unavailable; set a token_env or NBOX_TOKEN"
-                                .to_string(),
-                            Severity::Warning,
-                        );
-                    }
-                }
-            }
+        // M7: a save with no backing config path can't persist anything; surface an
+        // error rather than silently "succeeding" with an in-memory-only edit.
+        let Some(path) = self.config_path.clone() else {
+            self.set_status(
+                "can't save: no config file path (pass --config or run `nbox config init`)"
+                    .to_string(),
+                Severity::Error,
+            );
+            return Vec::new();
+        };
+
+        // Write the metadata to the config file (format-preserving). The token is
+        // NEVER written here. On a rename the old TOML section is removed (H1).
+        if let Err(e) = Self::persist_profile(
+            &path,
+            original.as_deref(),
+            &name,
+            &url,
+            token_env.as_deref(),
+            auth_scheme,
+            verify_tls,
+        ) {
+            self.set_status(format!("save failed: {e:#}"), Severity::Error);
+            return Vec::new();
         }
+
+        // Reconcile the OS-keyring token (H2/H3/H5): store a new value, clear on the
+        // explicit clear intent, or migrate the existing entry across a rename. The
+        // token is never written to TOML; a keyring-unavailable store surfaces a
+        // clear warning so the user knows the token did NOT land anywhere.
+        let token_status = Self::apply_token_change(
+            &path,
+            original.as_deref(),
+            &name,
+            &token_action,
+            token_env.is_some(),
+        );
 
         // Build the live profile entry from the form + reflect it into `profiles`.
         let mut config = ProfileConfig {
@@ -1190,22 +1222,36 @@ impl App {
             // Persist active + ride the existing switch path to reconnect. The
             // switch id-guard composes with any in-flight prior switch (a stale one
             // is dropped on arrival), and an explicit select persists active.
-            if let Some(path) = self.config_path.clone()
-                && let Err(e) = crate::config::save_active_profile(&path, &name)
-            {
+            if let Err(e) = crate::config::save_active_profile(&path, &name) {
                 self.set_status(format!("set-active failed: {e:#}"), Severity::Error);
+            } else if let Some((msg, sev)) = token_status {
+                // H5: a keyring warning must survive — don't let "switching…" bury
+                // the fact the token wasn't stored.
+                self.set_status(msg, sev);
             }
             self.modal = None;
             return self.switch_to_index(idx);
         }
-        self.set_status(format!("saved profile '{name}'"), Severity::Success);
+        // H5: surface the token warning instead of an unconditional "saved", so a
+        // dropped token (keyring unavailable) is never masked by a success line.
+        match token_status {
+            Some((msg, sev)) => self.set_status(msg, sev),
+            None => self.set_status(format!("saved profile '{name}'"), Severity::Success),
+        }
         Vec::new()
     }
 
     /// Persist a profile's editor metadata to the config file (format-preserving).
     /// The token is never written here — it goes to the keyring separately.
+    ///
+    /// `original` is the pre-edit name when editing (`None` on add). On a rename
+    /// (`original` differs from `name`) the old `[profiles.<original>]` section is
+    /// removed (H1) so a phantom profile can't return on the next launch; if the
+    /// renamed profile was the active one, `active_profile` is repointed to the new
+    /// name so the file stays self-consistent.
     fn persist_profile(
         path: &std::path::Path,
+        original: Option<&str>,
         name: &str,
         url: &str,
         token_env: Option<&str>,
@@ -1213,6 +1259,19 @@ impl App {
         verify_tls: bool,
     ) -> anyhow::Result<()> {
         let mut doc = crate::config::load_doc_or_new(path)?;
+        // Rename: drop the old section and repoint active_profile if it named it.
+        if let Some(orig) = original
+            && orig != name
+        {
+            crate::config::remove_profile(&mut doc, orig)?;
+            let active_was_orig = doc
+                .get("active_profile")
+                .and_then(|v| v.as_str())
+                .is_some_and(|a| a == orig);
+            if active_was_orig {
+                crate::config::set_active_profile(&mut doc, name);
+            }
+        }
         crate::config::upsert_profile(&mut doc, name, url, None)?;
         crate::config::set_profile_token_env(&mut doc, name, token_env)?;
         crate::config::set_profile_auth_scheme(&mut doc, name, Some(auth_scheme))?;
@@ -1223,6 +1282,78 @@ impl App {
         }
         crate::config::write_doc(path, &doc)?;
         Ok(())
+    }
+
+    /// Reconcile the OS-keyring token for a profile save (H2/H3/H5). Returns an
+    /// optional `(message, severity)` to surface when something noteworthy happened
+    /// (a dropped token, a clear, a migration) — `None` on the quiet happy path.
+    ///
+    /// The token value never appears in the returned message or any log.
+    ///
+    /// - [`TokenAction::Set`]: store the new token under the (new) key. If the
+    ///   keyring is unavailable, the token is NOT stored — warn the user clearly and
+    ///   point them at `token_env`/`NBOX_TOKEN`. On a rename, also delete the old key.
+    /// - [`TokenAction::Clear`]: delete the entry under the current (and, on rename,
+    ///   the old) key.
+    /// - [`TokenAction::Keep`]: leave the value; on a rename, migrate the existing
+    ///   entry from the old key to the new one so a renamed profile keeps its auth.
+    fn apply_token_change(
+        path: &std::path::Path,
+        original: Option<&str>,
+        name: &str,
+        action: &crate::tui::config_modal::TokenAction,
+        has_token_env: bool,
+    ) -> Option<(String, Severity)> {
+        use crate::tui::config_modal::TokenAction;
+        let path_str = path.display().to_string();
+        let new_key = crate::secret::account_key(&path_str, name);
+        // The old key when this is a rename (renamed away from `original`).
+        let old_key = original
+            .filter(|orig| *orig != name)
+            .map(|orig| crate::secret::account_key(&path_str, orig));
+
+        match action {
+            TokenAction::Set(token) => {
+                // Drop any old-key entry first (rename), then store under the new key.
+                if let Some(old) = &old_key {
+                    let _ = crate::secret::keyring_delete(old);
+                }
+                match crate::secret::keyring_set(&new_key, token) {
+                    Ok(()) => None,
+                    Err(_) => Some((
+                        if has_token_env {
+                            "saved — keyring unavailable, token NOT stored; the token_env will be used".to_string()
+                        } else {
+                            "saved, but the token was NOT stored: keyring unavailable — set a token_env or export NBOX_TOKEN".to_string()
+                        },
+                        Severity::Warning,
+                    )),
+                }
+            }
+            TokenAction::Clear => {
+                let _ = crate::secret::keyring_delete(&new_key);
+                if let Some(old) = &old_key {
+                    let _ = crate::secret::keyring_delete(old);
+                }
+                Some(("saved — stored token cleared".to_string(), Severity::Info))
+            }
+            TokenAction::Keep => {
+                // Migrate the existing entry across a rename so auth follows the name.
+                if let Some(old) = &old_key
+                    && let Some(existing) = crate::secret::keyring_get(old)
+                {
+                    let migrated = crate::secret::keyring_set(&new_key, &existing).is_ok();
+                    let _ = crate::secret::keyring_delete(old);
+                    if !migrated {
+                        return Some((
+                            "saved — could not migrate the stored token to the new name; re-enter it or set a token_env".to_string(),
+                            Severity::Warning,
+                        ));
+                    }
+                }
+                None
+            }
+        }
     }
 
     /// Insert or replace a profile in the live `profiles` list. On a rename
@@ -4691,6 +4822,55 @@ mod tests {
     }
 
     #[test]
+    fn edit_rename_removes_the_old_toml_section_and_repoints_active() {
+        // H1: renaming a profile via edit must drop the old [profiles.<old>] from
+        // the file (no phantom returns next launch) and, if it was active, repoint
+        // active_profile to the new name.
+        let (mut a, _dir, path) = app_with_config(&["alpha", "beta"]);
+        // alpha is active; edit it and rename to "renamed".
+        a.handle_event(press(KeyCode::Char('S')));
+        a.handle_event(press(KeyCode::Char('e'))); // edit selected (alpha, idx 0)
+        // Clear the name field (Ctrl+U) and type the new name.
+        a.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+        )));
+        type_form(&mut a, "renamed");
+        a.handle_event(press(KeyCode::Enter)); // save (no use)
+
+        let cfg = crate::config::load(&path).unwrap();
+        assert!(!cfg.profiles.contains_key("alpha"), "old section removed");
+        assert!(cfg.profiles.contains_key("renamed"), "new section written");
+        assert!(cfg.profiles.contains_key("beta"), "sibling untouched");
+        assert_eq!(
+            cfg.active_profile.as_deref(),
+            Some("renamed"),
+            "active repointed to the new name"
+        );
+        // The live list also no longer carries the old name.
+        assert!(a.profiles.iter().all(|p| p.name != "alpha"));
+        assert!(a.profiles.iter().any(|p| p.name == "renamed"));
+    }
+
+    #[test]
+    fn save_with_no_config_path_surfaces_an_error_not_a_false_success() {
+        // M7: a save with no backing config path can't persist — surface an error
+        // (not a misleading "saved").
+        let mut a = app_with_profiles(&["alpha", "beta"]);
+        a.config_path = None;
+        a.handle_event(press(KeyCode::Char('S')));
+        a.handle_event(press(KeyCode::Char('a'))); // add form
+        type_form(&mut a, "gamma");
+        a.handle_event(press(KeyCode::Tab));
+        type_form(&mut a, "https://nb.gamma");
+        a.handle_event(press(KeyCode::Enter));
+        // No new live profile, and the status reflects the failure.
+        assert!(a.profiles.iter().all(|p| p.name != "gamma"));
+        assert_eq!(a.status_severity, Severity::Error);
+        assert!(a.status.contains("no config file path"));
+    }
+
+    #[test]
     fn select_from_modal_persists_active_and_rides_the_switch_path() {
         let (mut a, _dir, path) = app_with_config(&["alpha", "beta"]);
         a.handle_event(press(KeyCode::Char('S')));
@@ -4723,8 +4903,9 @@ mod tests {
         type_form(&mut a, "gamma");
         a.handle_event(press(KeyCode::Tab));
         type_form(&mut a, "https://nb.gamma");
+        // Ctrl+G = save+use (Ctrl+U is the field clear-line, not save+use).
         let cmds = a.handle_event(AppEvent::Key(KeyEvent::new(
-            KeyCode::Char('u'),
+            KeyCode::Char('g'),
             KeyModifiers::CONTROL,
         )));
         let new_id = match cmds.as_slice() {

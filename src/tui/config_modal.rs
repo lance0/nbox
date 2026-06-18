@@ -37,6 +37,32 @@ pub mod field {
     pub const TOKEN: usize = 3;
 }
 
+/// What the profile-save path should do with the OS-keyring token, derived from
+/// the edit form's token field + clear intent (see [`ProfileForm::token_action`]).
+/// The token value is never logged; only this intent crosses the pure/IO seam.
+#[derive(Clone, PartialEq, Eq)]
+pub enum TokenAction {
+    /// Store this freshly-typed token under the (possibly renamed) keyring key.
+    Set(String),
+    /// Delete the stored keyring entry (the explicit `Ctrl+X` clear).
+    Clear,
+    /// Leave the stored token as-is (blank field, no clear intent). On a rename,
+    /// the existing entry is migrated to the new key.
+    Keep,
+}
+
+impl std::fmt::Debug for TokenAction {
+    /// Redacts the token value: a `Set` shows as `Set(<redacted>)`, never the
+    /// secret, so a `{:?}` of an outcome carrying it can't leak.
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Set(_) => f.write_str("Set(<redacted>)"),
+            Self::Clear => f.write_str("Clear"),
+            Self::Keep => f.write_str("Keep"),
+        }
+    }
+}
+
 /// The result of a test-connect attempt, shown in the form before committing.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TestState {
@@ -67,6 +93,12 @@ pub struct ProfileForm {
     pub test: TestState,
     /// A transient validation / info line shown under the form.
     pub message: Option<String>,
+    /// "Clear the stored keyring token" intent, toggled with `Ctrl+X` on an edit
+    /// form. The token field starts blank on edit (the secret is never read back),
+    /// so blank-means-keep can't express "delete it"; this flag does. When set,
+    /// save deletes the keyring entry. Typing a new token clears the flag (a value
+    /// to store overrides a clear).
+    pub clear_token: bool,
 }
 
 impl ProfileForm {
@@ -94,6 +126,7 @@ impl ProfileForm {
             editing: None,
             test: TestState::Idle,
             message: None,
+            clear_token: false,
         }
     }
 
@@ -158,6 +191,29 @@ impl ProfileForm {
         if v.is_empty() { None } else { Some(v) }
     }
 
+    /// What the save path should do with the keyring token, from the form state:
+    /// a typed value ⇒ store it (overrides a pending clear); else the `Ctrl+X`
+    /// clear intent ⇒ delete the entry; else ⇒ keep whatever is stored. PURE.
+    pub fn token_action(&self) -> TokenAction {
+        match self.token() {
+            Some(t) => TokenAction::Set(t),
+            None if self.clear_token => TokenAction::Clear,
+            None => TokenAction::Keep,
+        }
+    }
+
+    /// Toggle the "clear stored token" intent (`Ctrl+X`). A no-op model change;
+    /// the deletion happens on save. Returns the new flag for the caller's hint.
+    pub fn toggle_clear_token(&mut self) -> bool {
+        self.clear_token = !self.clear_token;
+        self.message = Some(if self.clear_token {
+            "will clear the stored token on save".to_string()
+        } else {
+            "keeping the stored token".to_string()
+        });
+        self.clear_token
+    }
+
     /// Read-only access to the form's text inputs (for the onboarding wizard,
     /// which reuses this form standalone before the `App` exists).
     pub fn form_input(&self) -> &FormInput {
@@ -195,11 +251,13 @@ impl ProfileForm {
     }
 
     /// Any edit to the form invalidates a prior test result (it no longer
-    /// describes the current contents) so the user can't save a stale OK.
+    /// describes the current contents) so the user can't save a stale OK. This
+    /// resets to [`TestState::Idle`] even mid-test (H4): the in-flight probe is
+    /// superseded by the edit, so its result must not be shown as if it matched
+    /// the new contents. The driver also bumps the test generation id so a probe
+    /// that lands after the edit is dropped on arrival.
     fn invalidate_test(&mut self) {
-        if self.test != TestState::Testing {
-            self.test = TestState::Idle;
-        }
+        self.test = TestState::Idle;
         self.message = None;
     }
 
@@ -214,6 +272,23 @@ impl ProfileForm {
         }
         if !(url.starts_with("http://") || url.starts_with("https://")) {
             return Err("url must start with http:// or https://".to_string());
+        }
+        Ok(())
+    }
+
+    /// [`validate`](Self::validate) plus a duplicate-name guard against `existing`
+    /// (the live profile names). On *add* a name already in use is rejected; on
+    /// *edit* the form's own original name is allowed (renaming to a *different*
+    /// existing name is still rejected). Save runs this; test-connect uses the
+    /// plain `validate` (a probe doesn't care about name collisions).
+    pub fn validate_for_save(&self, existing: &[String]) -> Result<(), String> {
+        self.validate()?;
+        let name = self.name();
+        let collides = existing
+            .iter()
+            .any(|n| n == &name && self.editing.as_deref() != Some(n.as_str()));
+        if collides {
+            return Err(format!("a profile named '{name}' already exists"));
         }
         Ok(())
     }
@@ -236,6 +311,10 @@ pub struct ProfilesPane {
     /// A transient list-level guidance line (e.g. why a delete was blocked),
     /// shown under the list. Cleared on the next navigation.
     pub message: Option<String>,
+    /// The list selection to restore when a form/confirm is dismissed with `Esc`,
+    /// so cancelling an add/edit returns to the row the user was on instead of
+    /// snapping back to 0.
+    pub last_selected: usize,
 }
 
 impl ProfilesPane {
@@ -243,6 +322,7 @@ impl ProfilesPane {
         Self {
             mode: ProfilesMode::List { selected: 0 },
             message: None,
+            last_selected: 0,
         }
     }
 }
@@ -508,7 +588,7 @@ impl ConfigModal {
         // each arm a clean state transition.
         match &mut self.profiles.mode {
             ProfilesMode::List { .. } => self.handle_list_key(key, profiles, active),
-            ProfilesMode::Form(_) => self.handle_form_key(key),
+            ProfilesMode::Form(_) => self.handle_form_key(key, profiles),
             ProfilesMode::ConfirmDelete { .. } => self.handle_confirm_key(key, active),
         }
     }
@@ -543,16 +623,20 @@ impl ConfigModal {
                 ModalOutcome::None
             }
             KeyCode::Char('a') => {
+                // Remember the row to come back to if the add is cancelled.
+                self.profiles.last_selected = *selected;
                 self.profiles.mode = ProfilesMode::Form(ProfileForm::add());
                 ModalOutcome::None
             }
             KeyCode::Char('e') => {
                 // Edit the selected profile: surface the request; the app opens the
                 // prefilled form via `open_edit_form` (it owns the ProfileConfig),
-                // keeping this module pure.
-                profiles
-                    .get(*selected)
-                    .map_or(ModalOutcome::None, |name| ModalOutcome::Edit(name.clone()))
+                // keeping this module pure. Remember the row to restore on cancel.
+                let sel = *selected;
+                profiles.get(sel).map_or(ModalOutcome::None, |name| {
+                    self.profiles.last_selected = sel;
+                    ModalOutcome::Edit(name.clone())
+                })
             }
             KeyCode::Enter | KeyCode::Char('s') => {
                 profiles.get(*selected).map_or(ModalOutcome::None, |name| {
@@ -585,15 +669,18 @@ impl ConfigModal {
         }
     }
 
-    fn handle_form_key(&mut self, key: KeyEvent) -> ModalOutcome {
+    fn handle_form_key(&mut self, key: KeyEvent, profiles: &[String]) -> ModalOutcome {
         let ProfilesMode::Form(form) = &mut self.profiles.mode else {
             return ModalOutcome::None;
         };
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
             KeyCode::Esc => {
-                // Back to the list, discarding the form.
-                self.profiles.mode = ProfilesMode::List { selected: 0 };
+                // Back to the list, discarding the form — restoring the row the form
+                // was opened from (not snapping back to 0).
+                self.profiles.mode = ProfilesMode::List {
+                    selected: self.profiles.last_selected,
+                };
                 ModalOutcome::None
             }
             // Ctrl+S cycles the auth scheme; Ctrl+L toggles verify-tls. These use
@@ -618,25 +705,39 @@ impl ConfigModal {
                     ModalOutcome::None
                 }
             },
-            KeyCode::Enter => match form.validate() {
+            KeyCode::Enter => match form.validate_for_save(profiles) {
                 Ok(()) => ModalOutcome::Save { use_it: false },
                 Err(e) => {
                     form.message = Some(e);
                     ModalOutcome::None
                 }
             },
-            KeyCode::Char('u') if ctrl => match form.validate() {
+            // Ctrl+G saves + uses it (Ctrl+U is the field clear-line in the text
+            // inputs, so it can't double as save+use).
+            KeyCode::Char('g') if ctrl => match form.validate_for_save(profiles) {
                 Ok(()) => ModalOutcome::Save { use_it: true },
                 Err(e) => {
                     form.message = Some(e);
                     ModalOutcome::None
                 }
             },
+            // Ctrl+X toggles "clear the stored keyring token on save". Only
+            // meaningful while editing (a fresh add has no stored token to clear),
+            // but harmless on add — token_action ignores Clear when a value is typed.
+            KeyCode::Char('x') if ctrl => {
+                form.toggle_clear_token();
+                ModalOutcome::None
+            }
             _ => {
                 // Everything else is text editing / focus movement; an edit
                 // invalidates a prior test result.
                 if form.inputs.handle_key(key) {
                     form.invalidate_test();
+                    // Typing into the token field overrides a pending clear: a value
+                    // to store wins. (Other fields don't touch the token intent.)
+                    if form.inputs.focus() == field::TOKEN && form.token().is_some() {
+                        form.clear_token = false;
+                    }
                 }
                 ModalOutcome::None
             }
@@ -836,9 +937,55 @@ mod tests {
         type_into(&mut m, "https://nb.lab");
         let out = m.handle_key(key(KeyCode::Enter), &[], "");
         assert_eq!(out, ModalOutcome::Save { use_it: false });
-        // Ctrl+U saves + uses it.
-        let out = m.handle_key(ctrl('u'), &[], "");
+        // Ctrl+G saves + uses it (Ctrl+U is the field clear-line, not save+use).
+        let out = m.handle_key(ctrl('g'), &[], "");
         assert_eq!(out, ModalOutcome::Save { use_it: true });
+    }
+
+    #[test]
+    fn ctrl_u_clears_the_focused_field_not_save_and_use() {
+        // M4: Ctrl+U must clear the focused text line (cheese TextInput behavior),
+        // not trigger save+use — that's now Ctrl+G.
+        let mut m = ConfigModal::default();
+        m.handle_key(key(KeyCode::Char('a')), &[], "");
+        type_into(&mut m, "lab");
+        assert_eq!(m.form().unwrap().name(), "lab");
+        let out = m.handle_key(ctrl('u'), &[], "");
+        assert_eq!(out, ModalOutcome::None, "Ctrl+U is not save+use");
+        assert_eq!(
+            m.form().unwrap().name(),
+            "",
+            "Ctrl+U cleared the name field"
+        );
+    }
+
+    #[test]
+    fn token_action_models_set_clear_and_keep() {
+        // Edit form: token blank, no clear intent ⇒ Keep.
+        let mut m = ConfigModal::default();
+        m.open_edit_form("work", "https://w", None, AuthScheme::Auto, true);
+        assert_eq!(m.form().unwrap().token_action(), TokenAction::Keep);
+        // Ctrl+X toggles the clear intent ⇒ Clear.
+        m.handle_key(ctrl('x'), &[], "");
+        assert_eq!(m.form().unwrap().token_action(), TokenAction::Clear);
+        // Tab to the token field and type a value ⇒ Set wins over a pending clear.
+        for _ in 0..field::TOKEN {
+            m.handle_key(key(KeyCode::Tab), &[], "");
+        }
+        type_into(&mut m, "nbt_new");
+        assert_eq!(
+            m.form().unwrap().token_action(),
+            TokenAction::Set("nbt_new".to_string())
+        );
+        assert!(
+            !m.form().unwrap().clear_token,
+            "typing a token clears the flag"
+        );
+        // The Debug of a Set never leaks the value.
+        assert_eq!(
+            format!("{:?}", m.form().unwrap().token_action()),
+            "Set(<redacted>)"
+        );
     }
 
     #[test]
@@ -907,6 +1054,60 @@ mod tests {
         let token_line = &lines[field::TOKEN].1;
         assert!(!token_line.contains("nbt_secret"));
         assert!(!token_line.contains("secret"));
+    }
+
+    #[test]
+    fn add_rejects_a_duplicate_name_but_edit_keeps_its_own() {
+        // M5: adding a profile whose name already exists is rejected on save.
+        let names = vec!["work".to_string(), "lab".to_string()];
+        let mut m = ConfigModal::default();
+        m.handle_key(key(KeyCode::Char('a')), &names, "work"); // add form
+        type_into(&mut m, "work"); // name collides with an existing profile
+        m.handle_key(key(KeyCode::Tab), &names, "work");
+        type_into(&mut m, "https://nb"); // valid url
+        let out = m.handle_key(key(KeyCode::Enter), &names, "work");
+        assert_eq!(out, ModalOutcome::None, "duplicate name blocks save");
+        assert!(
+            m.form()
+                .unwrap()
+                .message
+                .as_deref()
+                .unwrap()
+                .contains("already exists")
+        );
+        // Editing 'work' and saving under its own name is allowed.
+        let mut m2 = ConfigModal::default();
+        m2.open_edit_form("work", "https://w", None, AuthScheme::Auto, true);
+        let out = m2.handle_key(key(KeyCode::Enter), &names, "work");
+        assert_eq!(out, ModalOutcome::Save { use_it: false });
+        // …but renaming 'work' to the *other* existing name 'lab' is rejected.
+        let mut m3 = ConfigModal::default();
+        m3.open_edit_form("work", "https://w", None, AuthScheme::Auto, true);
+        // Clear the name field and retype 'lab'.
+        m3.handle_key(ctrl('u'), &names, "work");
+        type_into(&mut m3, "lab");
+        let out = m3.handle_key(key(KeyCode::Enter), &names, "work");
+        assert_eq!(
+            out,
+            ModalOutcome::None,
+            "rename onto another profile is blocked"
+        );
+    }
+
+    #[test]
+    fn esc_from_form_restores_the_prior_list_selection() {
+        // M6: cancelling an add/edit returns to the row the form was opened from.
+        let names = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let mut m = ConfigModal::default();
+        m.handle_key(key(KeyCode::Char('j')), &names, "a"); // → 1
+        m.handle_key(key(KeyCode::Char('j')), &names, "a"); // → 2
+        m.handle_key(key(KeyCode::Char('a')), &names, "a"); // open add form
+        assert!(matches!(m.profiles.mode, ProfilesMode::Form(_)));
+        m.handle_key(key(KeyCode::Esc), &names, "a"); // cancel
+        assert!(
+            matches!(m.profiles.mode, ProfilesMode::List { selected: 2 }),
+            "selection restored to row 2, not reset to 0"
+        );
     }
 
     #[test]

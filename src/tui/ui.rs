@@ -746,11 +746,15 @@ fn render_config_profiles(
                 );
             }
 
+            // Save+use is Ctrl+G (Ctrl+U is the field clear-line). On an edit form
+            // also advertise Ctrl+X, which clears the stored keyring token on save.
+            let help = if form.editing.is_some() {
+                "Tab: field  Ctrl+T: test  Enter: save  Ctrl+G: save+use  Ctrl+X: clear token  Esc: back"
+            } else {
+                "Tab: field  Ctrl+T: test  Enter: save  Ctrl+G: save+use  Esc: back"
+            };
             frame.render_widget(
-                Paragraph::new(Span::styled(
-                    "Tab: field  Ctrl+T: test  Enter: save  Ctrl+U: save+use  Esc: back",
-                    Style::default().fg(theme.text_dim),
-                )),
+                Paragraph::new(Span::styled(help, Style::default().fg(theme.text_dim))),
                 rows[6],
             );
         }

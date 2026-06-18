@@ -241,6 +241,19 @@ impl TextInput {
         self.state.cursor_pos()
     }
 
+    /// The cursor's offset in *display columns* from the start of the value (wide
+    /// CJK glyphs count as 2; masked chars are 1 wide each). Used by a prompt-less
+    /// field (the [`FormInput`] rows) to place the terminal cursor: the text
+    /// starts at the value area's left edge, so the cursor sits this many columns
+    /// in. PURE; no I/O.
+    pub fn cursor_display_col(&self) -> u16 {
+        self.value()
+            .chars()
+            .take(self.state.cursor_pos())
+            .map(|c| char_width(c) as u16)
+            .sum()
+    }
+
     /// Reset to empty, cursor at the start.
     pub fn clear(&mut self) {
         self.state = InputState::new();
@@ -485,17 +498,20 @@ impl FormInput {
             let focused = row == self.focus;
             input.state.set_focused(focused);
             let widget = Input::new("")
+                // cheese's `Input` defaults its prompt to ">"; a form field has no
+                // sigil, so set an explicit empty prompt or every field renders a
+                // stray "> " and the cursor lands two cells off.
+                .prompt("")
                 .placeholder(&input.placeholder)
                 .password_mode(input.masked)
                 .password_char(MASK_CHAR)
                 .palette(&palette);
             frame.render_stateful_widget(widget, value_area, &mut input.state);
             if focused {
-                // The Input has no prompt here, so the cursor sits `cursor_pos`
-                // display columns into the value area (masked chars are 1 wide).
-                let before = input.cursor_pos() as u16;
+                // With an empty prompt the text starts at the value area's left
+                // edge, so the cursor sits `cursor_pos` display columns into it.
                 let x = value_x
-                    .saturating_add(before)
+                    .saturating_add(input.cursor_display_col())
                     .min(value_area.right().saturating_sub(1));
                 cursor = Some(Position::new(x, y));
             }
@@ -800,6 +816,26 @@ mod tests {
             f.handle_key(key(KeyCode::Char(c)));
         }
         assert_eq!(f.value(0), Some("core01/api"));
+    }
+
+    #[test]
+    fn cursor_display_col_is_zero_based_and_width_aware() {
+        // A prompt-less FormInput field places its cursor `cursor_display_col`
+        // columns into the value area — starting at 0 (no stray prompt offset).
+        let mut input = TextInput::new("");
+        // Empty field: cursor at the very start (column 0), not offset by a prompt.
+        assert_eq!(input.cursor_display_col(), 0);
+        type_str(&mut input, "abc");
+        // After "abc" the cursor is 3 columns in.
+        assert_eq!(input.cursor_display_col(), 3);
+        input.handle_key(key(KeyCode::Home));
+        assert_eq!(input.cursor_display_col(), 0);
+        // A wide (CJK) glyph counts as two display columns.
+        let mut wide = TextInput::new("");
+        type_str(&mut wide, "世a"); // 世 is width 2, a is width 1
+        assert_eq!(wide.cursor_display_col(), 3);
+        wide.handle_key(key(KeyCode::Left)); // cursor before 'a', after 世
+        assert_eq!(wide.cursor_display_col(), 2);
     }
 
     #[test]
