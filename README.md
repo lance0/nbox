@@ -388,6 +388,7 @@ confirm_writes = true
 url = "https://netbox.example.com"
 token_env = "NETBOX_TOKEN"
 auth_scheme = "auto"          # auto | bearer | token
+backend = "rest"              # rest | graphql (GraphQL currently backs search)
 verify_tls = true
 timeout_secs = 15
 page_size = 100
@@ -464,8 +465,11 @@ raw escape-hatch tool come later.
 - Targets the NetBox **REST API** (`/api/`) as the primary integration path.
 - Auto-detects **v2 API tokens** (NetBox 4.5+, `Authorization: Bearer nbt_…`) and
   legacy **v1 tokens** (`Authorization: Token …`); force one with `auth_scheme`.
-- Optional, read-only **GraphQL** (`/graphql/`) for nested detail views is on the
-  roadmap (later).
+- Optional, read-only **GraphQL** (`/graphql/`) search backend is available per
+  profile with `backend = "graphql"`. It probes the schema so NetBox 4.2, 4.3,
+  and 4.5+ filter/pagination differences are handled without hard-coding a
+  version. REST remains the default and continues to power detail lookups, raw,
+  journals, and available-IP/prefix operations.
 
 ## Documentation
 

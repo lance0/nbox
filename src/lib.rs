@@ -271,7 +271,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                 tag,
                 vrf,
             };
-            run_search(&ctx, &query, limit, filters, cols, partial).await
+            Box::pin(run_search(&ctx, &query, limit, filters, cols, partial)).await
         }
         Some(Command::Device {
             value,
@@ -844,13 +844,12 @@ async fn run_search(
     partial: bool,
 ) -> Result<()> {
     let client = connect(ctx)?;
-    let outcome = client
-        .search(SearchRequest {
-            query: query.to_string(),
-            limit,
-            filters,
-        })
-        .await?;
+    let outcome = Box::pin(client.search(SearchRequest {
+        query: query.to_string(),
+        limit,
+        filters,
+    }))
+    .await?;
 
     // Fail closed by default: if some endpoints failed, don't present partial
     // results as if they were complete. `--partial` opts into a best-effort run.

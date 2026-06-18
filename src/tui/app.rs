@@ -92,13 +92,12 @@ fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent
     match command {
         AppCommand::Search { query, req } => {
             tokio::spawn(async move {
-                let result = client
-                    .search(SearchRequest {
-                        query,
-                        limit: 50,
-                        filters: SearchFilters::default(),
-                    })
-                    .await;
+                let result = Box::pin(client.search(SearchRequest {
+                    query,
+                    limit: 50,
+                    filters: SearchFilters::default(),
+                }))
+                .await;
                 // Echo the request id back so a stale (superseded) search result
                 // is dropped by the pure handler.
                 let _ = tx.send(AppEvent::SearchComplete { req, result }).await;

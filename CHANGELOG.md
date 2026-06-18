@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Profile-level GraphQL search backend. Set `backend = "graphql"` on a profile to
+  run `nbox search` through NetBox's `/graphql/` endpoint while keeping REST as
+  the default and as the backend for detail lookups, journals, raw reads, and
+  available-IP/prefix commands. The GraphQL path probes the schema at runtime and
+  adapts to NetBox 4.2 unpaginated list fields, NetBox 4.3+ offset pagination,
+  and NetBox 4.5+ lookup-wrapper filters for IDs/enums.
+
 ## [0.2.0] - 2026-06-18
 
 ### Added

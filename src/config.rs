@@ -33,6 +33,7 @@ open_browser_command = ""
 url = "https://netbox.example.com"
 token_env = "NETBOX_TOKEN"
 auth_scheme = "auto"        # auto | bearer | token
+backend = "rest"            # rest | graphql
 verify_tls = true
 timeout_secs = 15
 page_size = 100
@@ -184,6 +185,9 @@ pub struct ProfileConfig {
     pub auth_scheme: Option<AuthScheme>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<BackendKind>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_tls: Option<bool>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -194,6 +198,25 @@ pub struct ProfileConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exclude_config_context: Option<bool>,
+}
+
+/// Which NetBox read backend a profile should prefer.
+///
+/// REST remains the default and full-coverage backend. GraphQL is opt-in and may
+/// fall back to REST for operations NetBox does not expose through GraphQL.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendKind {
+    #[default]
+    Rest,
+    Graphql,
+}
+
+impl ProfileConfig {
+    #[must_use]
+    pub fn backend(&self) -> BackendKind {
+        self.backend.unwrap_or_default()
+    }
 }
 
 fn default_theme() -> String {
@@ -948,6 +971,7 @@ theme = "nord"
 url = "https://netbox.example.com"
 token_env = "NETBOX_TOKEN"
 auth_scheme = "bearer"
+backend = "graphql"
 page_size = 250
 "#;
 
@@ -961,8 +985,15 @@ page_size = 250
         let work = &cfg.profiles["work"];
         assert_eq!(work.url, "https://netbox.example.com");
         assert_eq!(work.auth_scheme, Some(AuthScheme::Bearer));
+        assert_eq!(work.backend(), BackendKind::Graphql);
         assert_eq!(work.page_size, Some(250));
         assert_eq!(work.verify_tls, None);
+    }
+
+    #[test]
+    fn profile_backend_defaults_to_rest() {
+        let profile: ProfileConfig = toml::from_str("url = \"https://nb.example\"").unwrap();
+        assert_eq!(profile.backend(), BackendKind::Rest);
     }
 
     #[test]

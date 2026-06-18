@@ -59,6 +59,15 @@ orthogonal to the scope filters above — both may be set, and NetBox ANDs them 
 prefixes. An unknown VRF is a not-found error (exit `4`), not a silent empty
 result.
 
+Profiles can opt search into NetBox GraphQL with `backend = "graphql"`.
+GraphQL search returns the same normalized `SearchResult` shape and keeps the
+same fail-closed/`--partial` behavior. nbox probes `/graphql/` at runtime and
+adapts to the schema: NetBox 4.2's unpaginated list fields, NetBox 4.3+'s offset
+pagination, and NetBox 4.5+'s lookup-wrapper filters are all shaped from
+introspection rather than version strings. REST remains the default backend and
+still powers detail lookups, raw reads, journals, and available-IP/prefix
+commands.
+
 ## Output
 
 Every data command takes `-o plain|json` (`--json` is shorthand). JSON adds

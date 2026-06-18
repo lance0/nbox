@@ -408,25 +408,23 @@ impl NboxMcp {
         &self,
         Parameters(args): Parameters<SearchArgs>,
     ) -> Result<Json<SearchReport>, ErrorData> {
-        let outcome = self
-            .client
-            .search(SearchRequest {
-                query: args.query,
-                limit: args.limit.unwrap_or(25),
-                filters: SearchFilters {
-                    status: args.status,
-                    site: args.site,
-                    region: args.region,
-                    site_group: args.site_group,
-                    location: args.location,
-                    tenant: args.tenant,
-                    role: args.role,
-                    tag: args.tag,
-                    vrf: args.vrf,
-                },
-            })
-            .await
-            .map_err(to_mcp_error)?;
+        let outcome = Box::pin(self.client.search(SearchRequest {
+            query: args.query,
+            limit: args.limit.unwrap_or(25),
+            filters: SearchFilters {
+                status: args.status,
+                site: args.site,
+                region: args.region,
+                site_group: args.site_group,
+                location: args.location,
+                tenant: args.tenant,
+                role: args.role,
+                tag: args.tag,
+                vrf: args.vrf,
+            },
+        }))
+        .await
+        .map_err(to_mcp_error)?;
 
         // Fail-closed reporting: surface partial-failure endpoints alongside the
         // results so the agent can decide whether the set is trustworthy.
