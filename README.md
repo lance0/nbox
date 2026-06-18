@@ -262,7 +262,7 @@ These apply to every command:
 | `--config <path>` | Use an alternate config file |
 | `--log-level <spec>` | `tracing` filter (`info`, `debug`, `nbox=debug`, …) |
 | `--log-file <path>` | Write logs to this file (and stderr); stdout stays clean |
-| `--no-tui` | Never fall through to the interactive TUI |
+| `--no-tui` | Refuse to launch the interactive TUI (a bare `nbox` or `nbox tui` exits `2` instead) |
 
 `-o csv` is for tabular/list results (e.g. `search`); a single object is rejected
 (use `--json` or plain). Custom fields appear as `cf.<name>` rows in plain output

@@ -258,6 +258,12 @@ pub async fn run(cli: Cli) -> Result<()> {
     };
 
     match cli.command {
+        // `--no-tui` is a hard guarantee of non-interactive behavior for agents
+        // and scripts: both ways into the TUI (a bare `nbox` and an explicit
+        // `nbox tui`) refuse rather than launch it. Refusing the explicit `tui`
+        // command — instead of letting it win — is the predictable choice: a
+        // script that sets `--no-tui` never gets a terminal UI, whatever follows.
+        None | Some(Command::Tui) if cli.no_tui => Err(no_tui_refusal(cli.command.is_some())),
         None | Some(Command::Tui) => run_tui(&ctx).await,
         Some(Command::Search {
             query,
@@ -1234,6 +1240,19 @@ fn check_raw_method(method: &str) -> Result<()> {
     }
 }
 
+/// The usage error `--no-tui` raises on an invocation that would otherwise launch
+/// the TUI. Typed as [`error::NboxError::Usage`] so it exits `2`, like other usage
+/// errors. `explicit_tui` is true when the `tui` subcommand was given (vs. a bare
+/// `nbox`), so the message names the right conflict.
+fn no_tui_refusal(explicit_tui: bool) -> anyhow::Error {
+    let msg = if explicit_tui {
+        "--no-tui conflicts with the `tui` command, which launches the interactive UI.\n\nDrop one or the other. Run `nbox --help` for the non-interactive commands."
+    } else {
+        "no command given; --no-tui suppresses the interactive UI.\n\nRun `nbox --help` for the available commands."
+    };
+    error::NboxError::Usage(msg.to_string()).into()
+}
+
 /// A friendly "not found" error with an actionable suggestion (DESIGN §17).
 /// Typed as [`error::NboxError::NotFound`] so it carries a stable exit code.
 fn not_found(noun: &str, value: &str) -> anyhow::Error {
@@ -1246,8 +1265,8 @@ fn not_found(noun: &str, value: &str) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::{
-        check_raw_method, error, first_subnet_of_length, init_logging, not_found, parse_object_ref,
-        resolve_logging, wants_journal,
+        check_raw_method, error, first_subnet_of_length, init_logging, no_tui_refusal, not_found,
+        parse_object_ref, resolve_logging, wants_journal,
     };
     use crate::domain::detail::resolve_unique;
     use crate::netbox::models::ipam::AvailablePrefix;
@@ -1415,6 +1434,25 @@ mod tests {
         .unwrap_err();
         assert_eq!(error::NboxError::exit_code_for(&many), 5); // ambiguous
         assert!(format!("{many:#}").contains("edge01"));
+    }
+
+    #[test]
+    fn no_tui_refusal_is_usage_exit_2_and_explains() {
+        // Bare `nbox --no-tui`: a usage error (exit 2) that names the empty
+        // invocation and points at --help.
+        let bare = no_tui_refusal(false);
+        assert_eq!(error::NboxError::exit_code_for(&bare), 2);
+        let bare_msg = format!("{bare:#}");
+        assert!(bare_msg.contains("no command given"));
+        assert!(bare_msg.contains("--no-tui"));
+        assert!(bare_msg.contains("nbox --help"));
+
+        // `nbox --no-tui tui`: still exit 2, but the message names the conflict
+        // with the explicit `tui` command rather than an empty invocation.
+        let explicit = no_tui_refusal(true);
+        assert_eq!(error::NboxError::exit_code_for(&explicit), 2);
+        let explicit_msg = format!("{explicit:#}");
+        assert!(explicit_msg.contains("conflicts with the `tui` command"));
     }
 
     #[test]

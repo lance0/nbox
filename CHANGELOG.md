@@ -154,6 +154,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Help wrapper was dropped; the layout helpers are pure and unit-tested.
 
 ### Fixed
+- `--no-tui` is now honored. The flag was defined and documented but ignored in
+  dispatch, so a bare `nbox --no-tui` still launched the interactive TUI — bad for
+  agents/scripts that pass it to guarantee non-interactive behavior. Any invocation
+  that would otherwise launch the TUI (a bare `nbox`, or an explicit `nbox tui`) now
+  refuses with a usage error (exit `2`) and an explanation on stderr, leaving stdout
+  clean; `nbox tui` is refused too (a script that sets `--no-tui` never gets a
+  terminal UI, whatever follows). `--no-tui` is a no-op on any other subcommand,
+  which never launches the TUI anyway.
 - TUI command palette `ip <address>` lookups now route through the same
   ambiguity-aware resolver the CLI/MCP use. The palette path took the first of
   `ip_candidates()`, so an address present in more than one VRF would silently

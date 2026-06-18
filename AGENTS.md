@@ -2,7 +2,10 @@
 
 `nbox` is a CLI + TUI for NetBox (DCIM/IPAM). For programmatic/agent use, drive the
 CLI subcommands with machine-readable output. The interactive TUI (`nbox` with no
-subcommand) is for humans; agents should always pass a subcommand.
+subcommand) is for humans; agents should always pass a subcommand. Pass `--no-tui`
+to make that a hard guarantee: any invocation that would launch the TUI (a bare
+`nbox`, or `nbox tui`) refuses with a usage error (exit 2) instead of blocking on a
+terminal.
 
 ## Output
 
