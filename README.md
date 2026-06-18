@@ -107,8 +107,8 @@ and gets the same JSON view models the CLI returns. See [docs/MCP.md](docs/MCP.m
 
 ## Installation
 
-> The first published release is **0.1.1** (0.1.0 is a reserved name-camp). The
-> install channels below go live with that release.
+> The first published release was **0.1.1** (0.1.0 is a reserved name-camp). Use
+> the latest release unless you need to pin a version.
 
 ### From crates.io (Recommended)
 
@@ -331,12 +331,13 @@ for that).
 `S` (or `config` in the palette) opens the Config modal to manage profiles
 in-app: list them (active marked), and add / edit / select / delete without
 hand-editing `config.toml`. The add/edit form covers `name`, `url`, `token_env`,
-`auth_scheme`, and `verify_tls`, plus an optional masked token field — a typed
-token is stored in the OS keyring (never written to `config.toml`). `Ctrl+T`
-test-connects before you commit; `Enter` saves, `Ctrl+U` saves and switches to
-it. Unlike the quick `P` cycle, selecting or adding-and-using a profile here
-**persists** `active_profile` to your config. Deleting the active or last
-profile is blocked.
+`auth_scheme`, and `verify_tls`, plus an optional masked token field. When a
+keyring is available, a typed token is stored there (never in `config.toml`);
+otherwise nbox saves the profile metadata and tells you to use `token_env` or
+`NBOX_TOKEN`. `Ctrl+T` test-connects before you commit; `Enter` saves, `Ctrl+G`
+saves and switches to it. Unlike the quick `P` cycle, selecting or adding-and-using
+a profile here **persists** `active_profile` to your config. Deleting the active
+or last profile is blocked.
 
 `Tab` switches the Config modal to its **Settings** section, an in-app editor for
 the real `[ui]` settings: `theme` (cycle with `←`/`→`/Space, applied live),

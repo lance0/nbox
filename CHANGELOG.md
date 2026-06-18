@@ -27,10 +27,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (auto/bearer/token), a `verify_tls` toggle, and an optional masked token field.
   A typed token is stored in the OS keyring on save (never written to TOML, never
   echoed); when the keyring is unavailable the profile metadata is still saved
-  with a clear "set a token_env or NBOX_TOKEN" note. `Ctrl+T` test-connects the
+  with a clear "set a token_env or NBOX_TOKEN" note that survives save+use
+  reconnects. `Ctrl+T` test-connects the
   form (it rebuilds a temporary client and re-probes `/api/status/`, the same
   check launch runs) and shows success/failure before you commit; `Enter` saves,
-  `Ctrl+U` saves and switches to the profile. An explicit add/select **persists**
+  `Ctrl+G` saves and switches to the profile. An explicit add/select **persists**
   `active_profile` to the file (the quick `P`/`Ctrl+P` cycle stays session-only).
   Delete drops the profile from the file, the keyring, and the live list, and is
   blocked for the active or last-remaining profile.
@@ -414,11 +415,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   launch). A rename now removes the old section and, if it was the active profile,
   repoints `active_profile` to the new name. The OS-keyring entry is migrated to
   the new key too (or cleared/stored per the token field), so a renamed
-  keyring-backed profile keeps its auth.
+  keyring-backed profile keeps its auth. When the active profile is renamed with a
+  plain save, the running TUI label and active index follow the new name too.
 - TUI: a typed token is no longer silently discarded when the OS keyring is
-  unavailable. The save path used to overwrite the keyring warning with a "saved"
-  status, so the user saw success while nothing was stored. The warning now
-  survives — it states the token was NOT stored and how to provide one (a
+  unavailable. The save paths used to overwrite or hide the keyring warning with
+  "saved", "switching", or "switched" statuses, so the user saw success while
+  nothing was stored. The warning now survives plain save and successful save+use
+  reconnects — it states the token was NOT stored and how to provide one (a
   `token_env` or `NBOX_TOKEN`).
 - TUI: editing a probe-relevant field (url / token / `token_env` / auth /
   verify-tls) while a test-connect is in flight no longer shows the old result as

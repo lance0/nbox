@@ -345,6 +345,11 @@ pub struct App {
     /// High-water mark: the id of the latest initiated switch. A `ProfileSwitched`
     /// with an older id is dropped on arrival (latest-switch-wins).
     pub switch_gen: RequestId,
+    /// A status notice that should survive the current profile switch, keyed by the
+    /// switch id. Used when save+use produced an important local warning (for
+    /// example: a pasted token could not be stored in the keyring); without this the
+    /// normal "switching…"/"switched…" status would hide it.
+    pending_switch_notice: Option<(RequestId, String, Severity)>,
 
     pub mode: Mode,
     pub screen: Screen,
@@ -488,6 +493,7 @@ impl App {
             switch_seq: 0,
             pending_switch: None,
             switch_gen: 0,
+            pending_switch_notice: None,
             mode: Mode::Normal,
             screen: Screen::Home,
             modal: None,
@@ -747,6 +753,10 @@ impl App {
                 if !self.is_current_switch(id) {
                     return Vec::new();
                 }
+                let switch_notice = self
+                    .pending_switch_notice
+                    .take()
+                    .filter(|(notice_id, _, _)| *notice_id == id);
                 self.pending_profile = None;
                 self.pending_switch = None;
                 match result {
@@ -765,10 +775,14 @@ impl App {
                         }
                         self.profile_name.clone_from(&name);
                         self.clear_for_profile_switch();
-                        self.set_status(
-                            format!("switched to '{name}' (NetBox v{})", self.netbox_version),
-                            Severity::Success,
-                        );
+                        if let Some((_, message, severity)) = switch_notice {
+                            self.set_status(format!("{message}; switched to '{name}'"), severity);
+                        } else {
+                            self.set_status(
+                                format!("switched to '{name}' (NetBox v{})", self.netbox_version),
+                                Severity::Success,
+                            );
+                        }
                     }
                     // The new instance was unreachable/incompatible: the old client
                     // is still valid, so a failed switch is a no-op + error toast.
@@ -1242,13 +1256,20 @@ impl App {
             // is dropped on arrival), and an explicit select persists active.
             if let Err(e) = crate::config::save_active_profile(&path, &name) {
                 self.set_status(format!("set-active failed: {e:#}"), Severity::Error);
-            } else if let Some((msg, sev)) = token_status {
-                // H5: a keyring warning must survive — don't let "switching…" bury
-                // the fact the token wasn't stored.
-                self.set_status(msg, sev);
             }
             self.modal = None;
-            return self.switch_to_index(idx);
+            let commands = self.switch_to_index(idx);
+            if let Some((msg, sev)) = token_status {
+                // H5: a keyring warning must survive both the immediate
+                // "switching…" status and the eventual "switched…" success status.
+                // Key it to the switch id so a superseded reconnect cannot show a
+                // stale warning on a later switch.
+                if let Some(id) = self.pending_switch {
+                    self.pending_switch_notice = Some((id, msg.clone(), sev));
+                }
+                self.set_status(msg, sev);
+            }
+            return commands;
         }
         // H5: surface the token warning instead of an unconditional "saved", so a
         // dropped token (keyring unavailable) is never masked by a success line.
@@ -1378,6 +1399,7 @@ impl App {
     /// (editing with a changed name), the old entry is removed. Keeps
     /// `profile_index` pointed at the active profile by name.
     fn upsert_live_profile(&mut self, original: Option<&str>, name: &str, config: ProfileConfig) {
+        let renamed_active = original.is_some_and(|orig| orig != name && orig == self.profile_name);
         // Remove the pre-edit entry on a rename.
         if let Some(orig) = original
             && orig != name
@@ -1390,6 +1412,9 @@ impl App {
                 name: name.to_string(),
                 config,
             }),
+        }
+        if renamed_active {
+            self.profile_name = name.to_string();
         }
         // Re-anchor the active index by name (the list may have grown/shrunk).
         if let Some(idx) = self
@@ -1841,6 +1866,7 @@ impl App {
         self.pending_switch = Some(self.switch_seq);
         self.switch_gen = self.switch_seq;
         self.pending_profile = Some(entry.name.clone());
+        self.pending_switch_notice = None;
         self.set_status(format!("switching to '{}'…", entry.name), Severity::Info);
         vec![AppCommand::SwitchProfile {
             id: self.switch_seq,
@@ -4875,6 +4901,14 @@ mod tests {
         // The live list also no longer carries the old name.
         assert!(a.profiles.iter().all(|p| p.name != "alpha"));
         assert!(a.profiles.iter().any(|p| p.name == "renamed"));
+        assert_eq!(
+            a.profile_name, "renamed",
+            "the running active label follows the rename"
+        );
+        assert_eq!(
+            a.profiles[a.profile_index].name, "renamed",
+            "active index re-anchors to the renamed profile"
+        );
     }
 
     #[test]
@@ -4971,6 +5005,43 @@ mod tests {
             result: Ok((client2, "4.5.0".into())),
         });
         assert_eq!(a.profile_name, "gamma");
+    }
+
+    #[test]
+    fn switch_success_preserves_pending_warning_notice() {
+        let mut a = app_with_profiles(&["alpha", "beta"]);
+        let cmds = a.handle_event(press(KeyCode::Char('P'))); // switch to beta
+        let id = match cmds.as_slice() {
+            [AppCommand::SwitchProfile { id, name, .. }] if name == "beta" => *id,
+            other => panic!("expected beta switch, got {other:?}"),
+        };
+
+        a.pending_switch_notice = Some((
+            id,
+            "saved, but the token was NOT stored".to_string(),
+            Severity::Warning,
+        ));
+        let client = NetBoxClient::new(
+            &ProfileConfig {
+                url: "http://beta.example".into(),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+        a.handle_event(AppEvent::ProfileSwitched {
+            id,
+            name: "beta".into(),
+            result: Ok((client, "4.5.0".into())),
+        });
+
+        assert_eq!(a.profile_name, "beta");
+        assert!(
+            a.status.contains("token was NOT stored"),
+            "warning should survive successful switch, got: {}",
+            a.status
+        );
+        assert_eq!(a.status_severity, Severity::Warning);
     }
 
     #[test]

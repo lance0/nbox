@@ -697,7 +697,7 @@ impl ConfigModal {
                 form.toggle_verify_tls();
                 ModalOutcome::None
             }
-            // Ctrl+T tests the connection; Enter saves; Ctrl+U saves + uses it.
+            // Ctrl+T tests the connection; Enter saves; Ctrl+G saves + uses it.
             KeyCode::Char('t') if ctrl => match form.validate() {
                 Ok(()) => {
                     form.test = TestState::Testing;

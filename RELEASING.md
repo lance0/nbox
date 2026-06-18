@@ -20,11 +20,12 @@ combined `SHA256SUMS` and auto-generated release notes.
   cargo publish --dry-run
   ```
 
-## Crate name: already camped
+## Crate name and version floor
 
 `nbox` **0.1.0 is already published** on crates.io as a name reservation. No
-reservation step is needed. crates.io versions are **immutable**, so the first
-real release must be **`0.1.1` or higher** — never try to publish `0.1.0`.
+reservation step is needed. `0.1.1` was the first real release. crates.io
+versions are **immutable**, so never try to publish `0.1.0`; future releases must
+use the next SemVer version in both `Cargo.toml` and `Cargo.lock`.
 
 ## Cut a release
 
@@ -32,11 +33,15 @@ The toolchain floor is **Rust 1.95** (`rust-version` in `Cargo.toml`; the `cache
 feature pulls `libsqlite3-sys`, whose build script needs `cfg_select!`, stable
 since 1.95). CI enforces it via the `msrv` job.
 
-1. **Pre-flight (CI enforces all three):**
+1. **Pre-flight (CI enforces these):**
    ```bash
    cargo fmt --all -- --check
    cargo clippy --all-targets --all-features -- -D warnings   # clippy::pedantic, project-wide via the [lints] table
+   cargo clippy --all-targets --no-default-features -- -D warnings
+   cargo build --all-features
+   cargo build --no-default-features
    cargo test --all-features                                   # integration tests are #[ignore]; CI runs them separately
+   cargo test --no-default-features
    ```
 2. **Bump the version.** Set `Cargo.toml` `version = "X.Y.Z"` (≥ 0.1.1), then
    regenerate the lockfile so it isn't dirty at publish time:
