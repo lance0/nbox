@@ -6,14 +6,14 @@
 
 use std::collections::HashSet;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
 use crate::config::BackendKind;
-use crate::netbox::client::NetBoxClient;
+use crate::netbox::client::{MAX_PAGE_SIZE, NetBoxClient};
 use crate::netbox::endpoints::Endpoint;
 use crate::netbox::graphql::GraphqlCapabilities;
 use crate::netbox::models::circuits::{Circuit, Provider};
@@ -261,6 +261,8 @@ impl NetBoxClient {
     /// [`SearchOutcome::errors`] for the caller to act on.
     pub async fn search(&self, req: SearchRequest) -> Result<SearchOutcome> {
         if self.backend() == BackendKind::Graphql {
+            // Keep the large GraphQL fan-out future boxed at this public entry
+            // point so spawned call sites can await `search()` normally.
             return Box::pin(self.search_graphql(req)).await;
         }
 
@@ -558,8 +560,9 @@ impl NetBoxClient {
         let Some(filter_type) = field.filter_type() else {
             return Ok(Vec::new());
         };
+        let page_limit = limit.clamp(1, MAX_PAGE_SIZE);
         let pagination = if field.has_pagination() {
-            format!(", pagination: {{offset: 0, limit: {}}}", limit.max(1))
+            format!(", pagination: {{offset: 0, limit: {page_limit}}}")
         } else {
             String::new()
         };
@@ -571,7 +574,8 @@ impl NetBoxClient {
             .get(list_name)
             .cloned()
             .unwrap_or_else(|| Value::Array(Vec::new()));
-        serde_json::from_value(rows).map_err(Into::into)
+        serde_json::from_value(rows)
+            .with_context(|| format!("deserializing GraphQL {list_name} rows"))
     }
 
     fn gql_filters(
@@ -836,6 +840,9 @@ impl NetBoxClient {
                 json!(scope.id),
             )
         {
+            // Prefer the friendly per-scope key when NetBox exposes one. The
+            // 4.2+ polymorphic shape instead exposes `scope_type`+`scope_id`,
+            // which preserves exact scope semantics across site/region/group/location.
             let added_type = Self::gql_add_filter(
                 caps,
                 "prefix_list",
@@ -1334,6 +1341,8 @@ impl NetBoxClient {
                 json!(scope.id),
             )
         {
+            // Prefer the friendly per-scope key when available; otherwise fall
+            // back to NetBox's polymorphic `scope_type`+`scope_id` filters.
             let added_type = Self::gql_add_filter(
                 caps,
                 "cluster_list",
@@ -1945,7 +1954,18 @@ trait GqlId {
     fn raw_id(&self) -> Option<&str>;
 
     fn id(&self) -> Option<u64> {
-        self.raw_id()?.parse().ok()
+        let raw_id = self.raw_id()?;
+        match raw_id.parse() {
+            Ok(id) => Some(id),
+            Err(error) => {
+                tracing::debug!(
+                    raw_id,
+                    error = %error,
+                    "dropping GraphQL search row with non-numeric id"
+                );
+                None
+            }
+        }
     }
 }
 

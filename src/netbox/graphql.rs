@@ -300,9 +300,17 @@ impl GraphqlCapabilities {
         for batch in batches {
             for (name, input) in batch.inputs() {
                 let Some(input) = input else {
+                    tracing::warn!(
+                        filter_type = name,
+                        "NetBox GraphQL filter type missing from introspection; filtered searches for this branch may be skipped"
+                    );
                     continue;
                 };
                 let Some(fields) = input.input_fields else {
+                    tracing::warn!(
+                        filter_type = name,
+                        "NetBox GraphQL filter type has no inputFields; filtered searches for this branch may be skipped"
+                    );
                     continue;
                 };
                 filters.insert(

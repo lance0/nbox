@@ -98,8 +98,14 @@ Consolidated future scope:
   list/preview split.
 - ☐ VRF-pivoted navigation in the TUI (a dedicated VRF view) — the `--vrf` filter, VRF-scoped prefix
   sections, and exact VRF-by-RD lookup already ship; this is the navigation layer on top.
-- ☐ Device detail via a read-only GraphQL query as an alternative to the REST fan-out (currently REST;
-  only pursue if the fan-out becomes a latency problem — don't build both).
+- ☐ GraphQL detail views after the TUI detail experience settles — start with device detail as a
+  read-only GraphQL query alternative to the REST fan-out; only pursue if the fan-out becomes a
+  latency problem, and don't build both surfaces indefinitely.
+- ☐ GraphQL backend cleanup once PR #11 has review miles: table-driven search descriptors for the
+  repeated search branches, shared kind→web-path mapping, and less boilerplate around row IDs.
+- ☐ GraphQL capability probing v2 if schema churn demands it: dynamic `*Filter` discovery and/or a
+  short TTL cache keyed by instance/profile to avoid re-probing when users bounce between profiles
+  pointing at the same NetBox.
 - ☐ Batch queries from a file (audits).
 - ☐ Configurable client concurrency for very large instances — `search` is a bounded fan-out and
   `list_all` is `max`-capped today; expose tuning only if a real instance needs it.
