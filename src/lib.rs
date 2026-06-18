@@ -598,10 +598,12 @@ async fn run_tui(ctx: &Ctx) -> Result<()> {
     // fast.)
     let status = client.verify_compatible().await?;
 
-    // All configured profiles the running session can cycle between (in config
-    // order — the BTreeMap iterates by name) without restarting. The switcher
-    // (`P` / `Ctrl+P`, or the palette `profile <name>` verb) reconnects + re-probes
-    // each one live; see `tui::state::App::cycle_profile`.
+    // All configured profiles the running session can cycle between without
+    // restarting. Order is alphabetical-by-name (the `BTreeMap` iterates sorted),
+    // not TOML document order — making cycling follow the config file would mean
+    // an order-preserving map across config (de)serialization, deferred for now.
+    // The switcher (`P` / `Ctrl+P`, or the palette `profile <name>` verb)
+    // reconnects + re-probes each one live; see `tui::state::App::cycle_profile`.
     let profiles: Vec<tui::state::ProfileEntry> = cfg
         .profiles
         .iter()

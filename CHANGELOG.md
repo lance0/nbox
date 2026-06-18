@@ -261,6 +261,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `nbox serve --http`: the `MCP-Protocol-Version` response header was missing from
   the `401`/`403` auth-challenge and `429` rate-limit responses (it was only added
   on the success path). Every response from the `/mcp` gate now carries it.
+- TUI: the profile switcher (`P` / `Ctrl+P`, palette `profile <name>`) could query
+  the wrong instance and leave a phantom header. The header flipped to the target
+  profile/URL *before* the reconnect finished while searches/details still hit the
+  old client, and on a failed reconnect the header was left pointing at the
+  unreachable profile while the client stayed on the old one — the UI claimed a
+  server it wasn't talking to. The header now flips only when the switch
+  **succeeds** (the client swap, header/URL/version update, stale-data clear and
+  request-generation bump all apply atomically), new search/detail/preview fetches
+  are **fenced** while a switch is in flight (so the old client is never queried
+  mid-switch), and a failed switch is a no-op + error toast that keeps the previous
+  profile + client. The header now always matches the instance the client is
+  connected to — in pending, success, and failure.
+- TUI: the command palette `:theme <name>` bypassed the `NO_COLOR` guard that the
+  `t` theme-cycle already honored, so it could re-enable color under `NO_COLOR` and
+  then persist a colored theme on exit. Both theme paths now share one guard, so
+  `:theme` respects `NO_COLOR` consistently and no colored theme is written back.
 
 ### Security
 - `nbox serve --http` (OIDC mode, `http` feature): the IdP issuer, the JWKS URL

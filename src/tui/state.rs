@@ -563,18 +563,30 @@ impl App {
                 self.pending_profile = None;
                 match result {
                     Ok((client, version)) => {
+                        // Atomically adopt the new instance: swap in its client and
+                        // flip the header/`base_url`/index/version to the target
+                        // profile together, then drop the old instance's data and
+                        // bump the request generations so any straggler response
+                        // from the previous instance lands stale. This is the ONLY
+                        // place the header moves, so it always matches `client`.
                         self.client = client;
                         self.netbox_version = version;
+                        if let Some(idx) = self.profiles.iter().position(|p| p.name == name) {
+                            self.profile_index = idx;
+                            self.base_url.clone_from(&self.profiles[idx].config.url);
+                        }
+                        self.profile_name.clone_from(&name);
+                        self.clear_for_profile_switch();
                         self.set_status(
                             format!("switched to '{name}' (NetBox v{})", self.netbox_version),
                             Severity::Success,
                         );
                     }
-                    // The new instance was unreachable/incompatible: leave the UI
-                    // usable, keep the header pointed at the requested profile, and
-                    // surface the failure. The version shows as the probe failed.
+                    // The new instance was unreachable/incompatible: the old client
+                    // is still valid, so a failed switch is a no-op + error toast.
+                    // The header was never flipped, so it still matches the connected
+                    // instance — no phantom. The UI stays fully usable on the old one.
                     Err(e) => {
-                        self.netbox_version = "?".to_string();
                         self.set_status(format!("profile '{name}' error: {e:#}"), Severity::Error);
                     }
                 }
@@ -705,6 +717,10 @@ impl App {
                 if self.screen == Screen::Home
                     && let Some((kind, id)) = self.home_target()
                 {
+                    // Don't open a detail against the old client mid-switch.
+                    if self.fence_during_switch() {
+                        return Vec::new();
+                    }
                     self.set_status("loading…", Severity::Info);
                     return vec![AppCommand::LoadDetail { kind, id, req: 0 }];
                 }
@@ -735,6 +751,10 @@ impl App {
                 let query = self.search_input.value().trim().to_string();
                 self.mode = Mode::Normal;
                 if !query.is_empty() {
+                    // Don't search the old client mid-switch.
+                    if self.fence_during_switch() {
+                        return Vec::new();
+                    }
                     self.last_query = Some(query.clone());
                     self.set_status(format!("searching {query}…"), Severity::Info);
                     return vec![AppCommand::Search { query, req: 0 }];
@@ -774,8 +794,14 @@ impl App {
 
     /// Map a parsed palette command onto state changes / commands.
     fn apply_palette(&mut self, cmd: PaletteCommand) -> Vec<AppCommand> {
+        // Fence palette fetches mid-switch so they don't hit the old client; the
+        // theme/open/copy/profile verbs below are unaffected (no fetch, or the
+        // switch itself).
         match cmd {
             PaletteCommand::Lookup { kind, value } => {
+                if self.fence_during_switch() {
+                    return Vec::new();
+                }
                 self.set_status(format!("loading {value}…"), Severity::Info);
                 vec![AppCommand::LoadByRef {
                     kind,
@@ -784,6 +810,9 @@ impl App {
                 }]
             }
             PaletteCommand::Search(query) => {
+                if self.fence_during_switch() {
+                    return Vec::new();
+                }
                 self.last_query = Some(query.clone());
                 self.set_status(format!("searching {query}…"), Severity::Info);
                 vec![AppCommand::Search { query, req: 0 }]
@@ -807,16 +836,21 @@ impl App {
                 Vec::new()
             }
             PaletteCommand::Profile(name) => self.select_profile(&name),
-            PaletteCommand::Refresh => match self.last_query.clone() {
-                Some(query) => {
-                    self.set_status(format!("refreshing {query}…"), Severity::Info);
-                    vec![AppCommand::Search { query, req: 0 }]
+            PaletteCommand::Refresh => {
+                if self.fence_during_switch() {
+                    return Vec::new();
                 }
-                None => {
-                    self.set_status("nothing to refresh", Severity::Warning);
-                    Vec::new()
+                match self.last_query.clone() {
+                    Some(query) => {
+                        self.set_status(format!("refreshing {query}…"), Severity::Info);
+                        vec![AppCommand::Search { query, req: 0 }]
+                    }
+                    None => {
+                        self.set_status("nothing to refresh", Severity::Warning);
+                        Vec::new()
+                    }
                 }
-            },
+            }
         }
     }
 
@@ -891,8 +925,14 @@ impl App {
     /// no movement (or no change) issues nothing.
     fn on_preview_tick(&mut self) -> Vec<AppCommand> {
         // Only reconcile the preview while it's on screen and we're not mid-typing
-        // a search/command (a fuzzy filter marks dirty; let the cursor settle).
-        if self.screen != Screen::Home || self.mode != Mode::Normal || !self.preview_dirty {
+        // a search/command (a fuzzy filter marks dirty; let the cursor settle), and
+        // never while a profile switch is in flight (the preview would hit the old
+        // client; it'll reconcile once the switch settles on the new instance).
+        if self.screen != Screen::Home
+            || self.mode != Mode::Normal
+            || !self.preview_dirty
+            || self.switch_in_flight()
+        {
             return Vec::new();
         }
         self.preview_dirty = false;
@@ -914,8 +954,11 @@ impl App {
     /// On an auto-refresh tick, re-run the last query (preserving the cursor)
     /// only when idle on the home screen — so it never fights user input.
     fn on_tick(&mut self) -> Vec<AppCommand> {
+        // Skip the auto-refresh while a profile switch is in flight: it would
+        // re-search the old client. The next tick after the switch settles picks up.
         if self.mode == Mode::Normal
             && self.screen == Screen::Home
+            && !self.switch_in_flight()
             && let Some(query) = self.last_query.clone()
         {
             self.pending_reselect = self.selected_result().map(|r| (r.kind, r.id));
@@ -932,6 +975,10 @@ impl App {
     /// or an empty home with no prior query) it's a safe no-op with a gentle
     /// status, never a stray fetch.
     fn refresh_current_view(&mut self) -> Vec<AppCommand> {
+        // Don't reload against the old client mid-switch.
+        if self.fence_during_switch() {
+            return Vec::new();
+        }
         match self.screen {
             Screen::Detail => match &self.detail {
                 Some(d) => {
@@ -960,8 +1007,7 @@ impl App {
     /// colored theme would override the user's `NO_COLOR` request, so the no-color
     /// theme is left in place and a brief status explains why.
     pub fn cycle_theme(&mut self) {
-        if self.theme.is_no_color() {
-            self.set_status("NO_COLOR is set — theme cycling disabled", Severity::Info);
+        if self.no_color_blocks_theme_change() {
             return;
         }
         let list = Theme::list();
@@ -971,29 +1017,52 @@ impl App {
     }
 
     fn set_theme_by_name(&mut self, name: &str) {
+        // Same NO_COLOR guard as the `t` cycle path: the palette `:theme <name>`
+        // must not re-enable color under NO_COLOR (and so can't persist a colored
+        // theme on exit). Reuses the one guard so the two paths can't diverge.
+        if self.no_color_blocks_theme_change() {
+            return;
+        }
         self.theme = Theme::by_name(name);
         self.theme_index = Theme::index_of(name);
         self.set_status(format!("theme: {}", self.theme.name()), Severity::Info);
     }
 
+    /// Shared NO_COLOR guard for both theme-change paths (`t` cycle and the
+    /// palette `:theme <name>`). When the app was started in no-color mode (see
+    /// [`Self::set_no_color`]) changing to a colored theme would override the
+    /// user's `NO_COLOR` request — and would then persist a colored theme on exit
+    /// — so we leave the no-color theme in place and explain why. Returns `true`
+    /// when the change is blocked.
+    fn no_color_blocks_theme_change(&mut self) -> bool {
+        if self.theme.is_no_color() {
+            self.set_status("NO_COLOR is set — theme change disabled", Severity::Info);
+            true
+        } else {
+            false
+        }
+    }
+
     /// Cycle the active profile by `delta` (+1 forward, -1 backward), wrapping at
     /// both ends, and kick off a reconnect to it. A no-op with a brief status when
-    /// fewer than two profiles are configured (nothing to cycle to). Otherwise the
-    /// header flips to the new profile immediately (so the user sees which instance
-    /// they asked for) and a [`AppCommand::SwitchProfile`] re-probes it off the
-    /// render thread; the version/url land when [`AppEvent::ProfileSwitched`]
-    /// returns. The whole profile change is pure here — the network is spawned.
+    /// fewer than two profiles are configured (nothing to cycle to). The header is
+    /// NOT flipped here — it keeps pointing at the connected instance until the
+    /// reconnect succeeds (see [`Self::switch_to_index`]), so the UI never lies
+    /// about which server `client` is talking to. The network is spawned via
+    /// [`AppCommand::SwitchProfile`]; the swap lands on [`AppEvent::ProfileSwitched`].
     fn cycle_profile(&mut self, forward: bool) -> Vec<AppCommand> {
         let len = self.profiles.len();
         if len < 2 {
             self.set_status("only one profile configured", Severity::Info);
             return Vec::new();
         }
-        // Wrap with usize modular arithmetic: forward is +1 mod len; backward adds
-        // (len - 1) mod len, so index 0 lands on the last profile without ever
-        // going negative.
+        // Step from the pending target if a switch is in flight (so rapid cycling
+        // advances as the user sees it), else from the connected profile. Wrap with
+        // usize modular arithmetic: forward is +1 mod len; backward adds (len - 1)
+        // mod len, so index 0 lands on the last profile without ever going negative.
+        let from = self.pending_target_index().unwrap_or(self.profile_index);
         let step = if forward { 1 } else { len - 1 };
-        let next = (self.profile_index + step) % len;
+        let next = (from + step) % len;
         self.switch_to_index(next)
     }
 
@@ -1010,27 +1079,53 @@ impl App {
         }
     }
 
-    /// Common path for cycling and named selection: point the session at
-    /// `profiles[idx]`, reflect it in the header immediately, drop the previous
-    /// profile's loaded data so a stale in-flight response can't repaint it, and
-    /// return the reconnect command. `idx` must be in range (callers guarantee it).
+    /// Common path for cycling and named selection: kick off a reconnect to
+    /// `profiles[idx]` WITHOUT touching the header — the header/`base_url`/client
+    /// keep pointing at the currently connected instance until the switch
+    /// succeeds (see the [`AppEvent::ProfileSwitched`] handler), so the UI can
+    /// never claim to be on a server `client` isn't actually talking to. We only
+    /// record the pending target (latest-switch-wins) and show a "switching…"
+    /// status; the atomic swap (+ data clear + request-gen bump) happens on
+    /// success. `idx` must be in range (callers guarantee it).
     fn switch_to_index(&mut self, idx: usize) -> Vec<AppCommand> {
         let entry = self.profiles[idx].clone();
-        self.profile_index = idx;
-        self.profile_name.clone_from(&entry.name);
-        self.base_url.clone_from(&entry.config.url);
-        // Tag this as the latest switch so a slower, superseded one is dropped.
+        // Tag this as the latest switch so a slower, superseded one is dropped on
+        // arrival, and so in-flight fetches are fenced until it settles.
         self.pending_profile = Some(entry.name.clone());
-        // Drop the previous instance's data + invalidate in-flight search/detail
-        // responses so old-profile results can't clobber the new instance. Bumping
-        // the per-channel high-water marks makes any outstanding SearchComplete /
-        // DetailLoaded land as stale (the request-id guard then drops them).
-        self.clear_for_profile_switch();
         self.set_status(format!("switching to '{}'…", entry.name), Severity::Info);
         vec![AppCommand::SwitchProfile {
             name: entry.name,
             config: entry.config,
         }]
+    }
+
+    /// True while a profile switch is in flight: the reconnect to a new instance
+    /// has been dispatched but not yet settled. New search/detail/preview fetches
+    /// are fenced during this window so they can't be issued against the old
+    /// client mid-switch (see [`Self::fence_during_switch`]).
+    fn switch_in_flight(&self) -> bool {
+        self.pending_profile.is_some()
+    }
+
+    /// The `profiles` index of the in-flight switch's target, if any. Used so
+    /// rapid cycling steps from the pending target rather than the (unchanged)
+    /// connected profile.
+    fn pending_target_index(&self) -> Option<usize> {
+        let name = self.pending_profile.as_deref()?;
+        self.profiles.iter().position(|p| p.name == name)
+    }
+
+    /// Guard for user-initiated fetches while a profile switch is in flight:
+    /// returns `true` (and shows a brief status) when a fetch must be suppressed,
+    /// so it isn't dispatched against the old client mid-switch. Returns `false`
+    /// when no switch is pending and the caller should proceed normally.
+    fn fence_during_switch(&mut self) -> bool {
+        if self.switch_in_flight() {
+            self.set_status("switching profile — try again in a moment", Severity::Info);
+            true
+        } else {
+            false
+        }
     }
 
     /// Wipe the data tied to the instance we're leaving and advance the search /
@@ -2107,6 +2202,45 @@ mod tests {
     }
 
     #[test]
+    fn palette_theme_respects_no_color_and_cannot_reenable_color() {
+        // M1: the palette `:theme <name>` path must honour NO_COLOR the same way
+        // the `t` cycle does — it cannot re-enable color, and so cannot persist a
+        // colored theme on exit (the persist guard keys off theme.name()).
+        let mut a = app();
+        a.set_no_color();
+        assert!(a.theme.is_no_color());
+
+        a.handle_event(press(KeyCode::Char(':')));
+        for c in "theme nord".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(cmds.is_empty());
+        assert!(
+            a.theme.is_no_color(),
+            "still no-color: :theme can't override NO_COLOR"
+        );
+        assert_eq!(a.theme.name(), "no_color");
+        // The exit-time persist guard (theme.name() != initial_theme) stays a
+        // no-op, so no colored theme can be written back under NO_COLOR.
+        assert_eq!(a.theme.name(), a.initial_theme);
+        assert_eq!(a.status, "NO_COLOR is set — theme change disabled");
+
+        // Control: without NO_COLOR the palette path still changes the theme.
+        let mut b = app();
+        b.handle_event(press(KeyCode::Char(':')));
+        for c in "theme nord".chars() {
+            b.handle_event(press(KeyCode::Char(c)));
+        }
+        b.handle_event(press(KeyCode::Enter));
+        assert_eq!(
+            b.theme.name(),
+            "nord",
+            "palette theme works without NO_COLOR"
+        );
+    }
+
+    #[test]
     fn o_and_y_emit_open_and_copy() {
         let mut a = app();
         set_results(&mut a, vec![result(1, "edge01")]);
@@ -2171,7 +2305,7 @@ mod tests {
         // explains why, instead of overriding the user's NO_COLOR request.
         assert!(a.theme.is_no_color(), "still no-color after cycle");
         assert_eq!(a.theme.name(), name_before);
-        assert_eq!(a.status, "NO_COLOR is set — theme cycling disabled");
+        assert_eq!(a.status, "NO_COLOR is set — theme change disabled");
 
         // Control: a normal (colored) theme still cycles to a different one.
         let mut b = app();
@@ -3174,9 +3308,12 @@ mod tests {
                 },
             })
             .collect();
-        // Point the active profile at the first entry so set_profiles indexes it.
-        if let Some(first) = names.first() {
-            a.profile_name = (*first).to_string();
+        // Point the active profile (name + url) at the first entry so the fixture
+        // starts with the header matching the connected instance — the invariant
+        // these tests guard. set_profiles then indexes to it.
+        if let Some(first) = profiles.first() {
+            a.profile_name.clone_from(&first.name);
+            a.base_url.clone_from(&first.config.url);
         }
         a.set_profiles(profiles);
         a
@@ -3203,24 +3340,34 @@ mod tests {
         assert_eq!(a.profile_index, 0);
         assert_eq!(a.profile_name, "alpha");
 
-        // P advances to the next profile and dispatches a reconnect to it.
+        // P dispatches a reconnect to the next profile but does NOT flip the
+        // header — that waits for success, so the UI never lies about the client.
         let cmds = a.handle_event(press(KeyCode::Char('P')));
         assert!(matches!(
             cmds.as_slice(),
             [AppCommand::SwitchProfile { name, .. }] if name == "beta"
         ));
-        assert_eq!(a.profile_index, 1);
-        assert_eq!(a.profile_name, "beta", "header flips immediately");
+        assert_eq!(a.profile_index, 0, "header stays on the connected profile");
+        assert_eq!(a.profile_name, "alpha", "header doesn't flip until success");
+        assert_eq!(a.pending_profile.as_deref(), Some("beta"));
         assert!(a.loading(), "a reconnect is a tracked fetch");
 
-        // Continue forward to the last, then wrap to the first.
+        // The switch settles → the header flips atomically to the new profile.
+        profile_switched_ok(&mut a, "4.5.0");
+        assert_eq!(a.profile_index, 1);
+        assert_eq!(a.profile_name, "beta");
+        assert_eq!(a.base_url, "http://beta.example");
+
+        // Continue forward to the last, then wrap to the first (each settles).
         a.handle_event(press(KeyCode::Char('P')));
+        profile_switched_ok(&mut a, "4.5.0");
         assert_eq!(a.profile_name, "gamma");
         let cmds = a.handle_event(press(KeyCode::Char('P')));
         assert!(matches!(
             cmds.as_slice(),
             [AppCommand::SwitchProfile { name, .. }] if name == "alpha"
         ));
+        profile_switched_ok(&mut a, "4.5.0");
         assert_eq!(a.profile_index, 0, "wraps past the end to the first");
         assert_eq!(a.profile_name, "alpha");
     }
@@ -3237,8 +3384,30 @@ mod tests {
             cmds.as_slice(),
             [AppCommand::SwitchProfile { name, .. }] if name == "gamma"
         ));
+        assert_eq!(a.pending_profile.as_deref(), Some("gamma"));
+        // Still on the connected profile until the reconnect succeeds.
+        assert_eq!(a.profile_index, 0);
+        assert_eq!(a.profile_name, "alpha");
+        profile_switched_ok(&mut a, "4.5.0");
         assert_eq!(a.profile_index, 2);
         assert_eq!(a.profile_name, "gamma");
+    }
+
+    #[test]
+    fn cycle_profile_steps_from_pending_target_when_switch_in_flight() {
+        // Rapid cycling before the first reconnect settles must advance from the
+        // pending target, not the (still-connected) profile, so the user's sense
+        // of "where am I cycling" matches.
+        let mut a = app_with_profiles(&["alpha", "beta", "gamma"]);
+        a.handle_event(press(KeyCode::Char('P'))); // → beta (pending)
+        assert_eq!(a.pending_profile.as_deref(), Some("beta"));
+        assert_eq!(a.profile_name, "alpha", "header still on alpha");
+        let cmds = a.handle_event(press(KeyCode::Char('P'))); // step from beta → gamma
+        assert!(matches!(
+            cmds.as_slice(),
+            [AppCommand::SwitchProfile { name, .. }] if name == "gamma"
+        ));
+        assert_eq!(a.pending_profile.as_deref(), Some("gamma"));
     }
 
     #[test]
@@ -3274,6 +3443,10 @@ mod tests {
             cmds.as_slice(),
             [AppCommand::SwitchProfile { name, .. }] if name == "gamma"
         ));
+        // Header waits for the reconnect; the switch is pending meanwhile.
+        assert_eq!(a.pending_profile.as_deref(), Some("gamma"));
+        assert_eq!(a.profile_name, "alpha");
+        profile_switched_ok(&mut a, "4.5.0");
         assert_eq!(a.profile_index, 2);
         assert_eq!(a.profile_name, "gamma");
     }
@@ -3299,9 +3472,15 @@ mod tests {
         a.handle_event(press(KeyCode::Char('P'))); // switching to beta
         assert!(a.loading());
         assert_eq!(a.pending_profile.as_deref(), Some("beta"));
+        // Until it settles the header stays on the connected profile (alpha).
+        assert_eq!(a.profile_name, "alpha");
+        assert_eq!(a.base_url, "http://alpha.example");
         profile_switched_ok(&mut a, "4.7.0");
+        // On success the whole header flips atomically to match the new client.
         assert_eq!(a.netbox_version, "4.7.0");
         assert_eq!(a.profile_name, "beta");
+        assert_eq!(a.profile_index, 1);
+        assert_eq!(a.base_url, "http://beta.example");
         assert!(a.pending_profile.is_none(), "the switch settled");
         assert!(!a.loading());
         assert_eq!(a.status_severity, Severity::Success);
@@ -3309,23 +3488,43 @@ mod tests {
     }
 
     #[test]
-    fn profile_switch_failure_surfaces_error_but_keeps_ui_usable() {
+    fn profile_switch_failure_leaves_no_phantom_and_keeps_ui_usable() {
+        // The invariant under test: a FAILED switch is a no-op + error toast. The
+        // header must still match the instance `client` is connected to (alpha),
+        // never the requested-but-unreachable one — no phantom.
         let mut a = app_with_profiles(&["alpha", "beta"]);
         a.handle_event(press(KeyCode::Char('P')));
+        assert_eq!(a.pending_profile.as_deref(), Some("beta"));
         let name = a.pending_profile.clone().unwrap();
         a.handle_event(AppEvent::ProfileSwitched {
             name,
             result: Err(anyhow::anyhow!("connection refused")),
         });
-        assert_eq!(a.profile_name, "beta", "header stays on the requested one");
-        assert_eq!(a.netbox_version, "?");
+        // Header + url + index + version all stay on the still-connected alpha.
+        assert_eq!(a.profile_name, "alpha", "header stays on the connected one");
+        assert_eq!(a.profile_index, 0);
+        assert_eq!(a.base_url, "http://alpha.example");
+        assert_eq!(
+            a.netbox_version, "4.5.5",
+            "unchanged: the old client is intact"
+        );
+        assert!(
+            a.pending_profile.is_none(),
+            "the switch is no longer pending"
+        );
         assert_eq!(a.status_severity, Severity::Error);
         assert!(a.status.contains("connection refused"));
         assert!(!a.loading(), "a failed switch still settles the fetch");
-        // The UI is usable: a search still dispatches normally.
-        let cmds = a.handle_event(press(KeyCode::Char('/')));
-        assert!(cmds.is_empty());
-        assert_eq!(a.mode, Mode::Search);
+        // The UI is usable again on the old instance: fetches are no longer fenced.
+        a.handle_event(press(KeyCode::Char('/')));
+        for c in "edge".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(
+            matches!(cmds.as_slice(), [AppCommand::Search { query, .. }] if query == "edge"),
+            "a search dispatches normally after a failed switch"
+        );
     }
 
     #[test]
@@ -3339,8 +3538,16 @@ mod tests {
         assert!(!a.results.is_empty());
         assert!(!a.recent.is_empty());
 
-        a.handle_event(press(KeyCode::Char('P'))); // switch to beta
-        assert!(a.results.is_empty(), "old results dropped");
+        a.handle_event(press(KeyCode::Char('P'))); // switch to beta (pending)
+        // The old instance's data is still shown while the switch is in flight (we
+        // remain connected to it); it's dropped atomically only once the new
+        // instance is adopted, so a failed switch wouldn't have wiped a live UI.
+        assert!(
+            !a.results.is_empty(),
+            "old data kept until the switch succeeds"
+        );
+        profile_switched_ok(&mut a, "4.5.0");
+        assert!(a.results.is_empty(), "old results dropped on success");
         assert!(a.view.is_empty());
         assert!(a.recent.is_empty(), "old recents dropped");
         assert!(a.detail.is_none(), "old detail dropped");
@@ -3352,15 +3559,17 @@ mod tests {
     #[test]
     fn switching_profile_drops_stale_old_profile_search_response() {
         // A search dispatched against the OLD profile is still in flight when the
-        // user switches. Its result must be dropped (the request-id guard, whose
-        // high-water mark the switch advances), not painted onto the new instance.
+        // switch SUCCEEDS. After the switch lands, that old-instance result must be
+        // dropped (the success path bumps the search high-water mark past it), not
+        // painted onto the new instance.
         let mut a = app_with_profiles(&["alpha", "beta"]);
         let stale = dispatch_search(&mut a, "edge"); // in flight on alpha
         assert!(a.loading());
 
-        // Switch to beta: this bumps the search high-water mark past `stale`.
+        // Switch to beta and let it succeed: success bumps the gen past `stale`.
         a.handle_event(press(KeyCode::Char('P')));
-        assert!(a.search_gen > stale, "the switch advanced the search gen");
+        profile_switched_ok(&mut a, "4.5.0");
+        assert!(a.search_gen > stale, "success advanced the search gen");
 
         // The old-profile search finally lands — it must be dropped as stale.
         a.handle_event(AppEvent::SearchComplete {
@@ -3386,6 +3595,7 @@ mod tests {
             other => panic!("expected LoadDetail, got {other:?}"),
         };
         a.handle_event(press(KeyCode::Char('P'))); // switch to beta
+        profile_switched_ok(&mut a, "4.5.0"); // success bumps the detail gen
         assert!(a.detail_gen > stale);
         a.handle_event(AppEvent::DetailLoaded {
             req: stale,
@@ -3396,6 +3606,59 @@ mod tests {
             "a stale old-profile detail must not navigate the new instance"
         );
         assert_eq!(a.screen, Screen::Home);
+    }
+
+    #[test]
+    fn fetches_are_fenced_while_a_switch_is_in_flight() {
+        // While a switch is pending the old client must not be queried: a search
+        // submit / Enter / refresh / palette fetch is suppressed (not dispatched),
+        // with a brief status, until the switch settles.
+        let mut a = app_with_profiles(&["alpha", "beta"]);
+        set_results(&mut a, vec![result(1, "edge01")]);
+        a.handle_event(press(KeyCode::Char('P'))); // switch to beta (pending)
+        assert!(a.switch_in_flight());
+
+        // A search submit is fenced.
+        a.handle_event(press(KeyCode::Char('/')));
+        for c in "edge".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(cmds.is_empty(), "search is fenced mid-switch");
+        assert!(a.status.contains("switching profile"));
+
+        // Enter to open a detail is fenced.
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(cmds.is_empty(), "open-detail is fenced mid-switch");
+
+        // Manual refresh (r) is fenced.
+        let cmds = a.handle_event(press(KeyCode::Char('r')));
+        assert!(cmds.is_empty(), "refresh is fenced mid-switch");
+
+        // The background preview/auto-refresh ticks are fenced silently.
+        a.mark_preview_dirty_for_test();
+        assert!(
+            a.handle_event(AppEvent::PreviewTick).is_empty(),
+            "preview tick is fenced mid-switch"
+        );
+        a.last_query = Some("edge".into());
+        assert!(
+            a.handle_event(AppEvent::Tick).is_empty(),
+            "auto-refresh tick is fenced mid-switch"
+        );
+
+        // After the switch settles, fetches flow again.
+        profile_switched_ok(&mut a, "4.5.0");
+        assert!(!a.switch_in_flight());
+        a.handle_event(press(KeyCode::Char('/')));
+        for c in "core".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(
+            matches!(cmds.as_slice(), [AppCommand::Search { query, .. }] if query == "core"),
+            "searches dispatch again once the switch settles"
+        );
     }
 
     #[test]
@@ -3460,8 +3723,13 @@ mod tests {
             },
         ]);
         assert_eq!(a.profile_index, 1, "indexed to the active profile");
-        // Forward from beta lands on gamma.
-        a.handle_event(press(KeyCode::Char('P')));
+        // Forward from beta targets gamma; the header flips once it succeeds.
+        let cmds = a.handle_event(press(KeyCode::Char('P')));
+        assert!(matches!(
+            cmds.as_slice(),
+            [AppCommand::SwitchProfile { name, .. }] if name == "gamma"
+        ));
+        profile_switched_ok(&mut a, "4.5.0");
         assert_eq!(a.profile_name, "gamma");
     }
 }
