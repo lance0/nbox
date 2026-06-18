@@ -3,7 +3,8 @@
 //! Parses the CLI and dispatches into [`nbox::run`]. Command handlers are built
 //! out across Phase 1–3 (see `ROADMAP.md`).
 
-#![warn(clippy::pedantic)]
+// Pedantic is a project gate, configured package-wide in `[lints.clippy]` in
+// Cargo.toml (covers the lib, bin, and every test crate uniformly).
 
 use clap::Parser;
 use nbox::cli::Cli;

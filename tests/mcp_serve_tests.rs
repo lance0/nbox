@@ -262,7 +262,7 @@ fn serve_handshake_lists_all_tools_with_clean_stdout() {
         .collect();
     got.sort();
 
-    let mut want: Vec<String> = EXPECTED_TOOLS.iter().map(|s| s.to_string()).collect();
+    let mut want: Vec<String> = EXPECTED_TOOLS.iter().map(ToString::to_string).collect();
     want.sort();
 
     assert_eq!(got, want, "tools/list returned an unexpected tool set");

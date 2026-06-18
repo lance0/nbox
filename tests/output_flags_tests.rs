@@ -42,7 +42,7 @@ fn shaped<T: Serialize>(value: &T, opts: &JsonOptions) -> Value {
 
 fn fields(list: &[&str]) -> JsonOptions {
     JsonOptions {
-        fields: Some(list.iter().map(|s| s.to_string()).collect()),
+        fields: Some(list.iter().map(ToString::to_string).collect()),
         ..Default::default()
     }
 }
@@ -96,7 +96,7 @@ fn assert_object_flags(value: &impl Serialize, keep: &[&str], expected_drop: &st
     let composed_raw = render_with(
         value,
         &JsonOptions {
-            fields: Some(keep.iter().map(|s| s.to_string()).collect()),
+            fields: Some(keep.iter().map(ToString::to_string).collect()),
             raw: true,
             envelope: true,
         },
@@ -226,7 +226,7 @@ async fn search_results_json_honors_all_flags() {
         .search(nbox::netbox::search::SearchRequest {
             query: "edge01".into(),
             limit: 25,
-            filters: Default::default(),
+            filters: nbox::netbox::search::SearchFilters::default(),
         })
         .await
         .unwrap()

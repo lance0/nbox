@@ -148,6 +148,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WorkerGuard` is held for the process lifetime so buffered lines flush on exit.
 
 ### Changed
+- `clippy::pedantic` is now enforced across all crates incl. tests via a
+  `[lints]` table. The pedantic gate + curated allow-list moved from the
+  `src/lib.rs` / `src/main.rs` inner attributes into `[lints.clippy]` in
+  `Cargo.toml`, so it covers the lib, bin, AND the integration test crates in
+  `tests/` uniformly (inner attributes reached only the lib/bin). The standing
+  `cargo clippy --all-targets --all-features -- -D warnings` CI step is now a
+  true whole-project pedantic gate.
 - The TUI help is now a centered modal overlay drawn over the live screen
   (ttl/xfr style), replacing the old full-screen Help screen. `?`/`F1` toggle it;
   any key or `Esc` closes it (consumed — no underlying action fires). The `cheese`

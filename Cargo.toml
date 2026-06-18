@@ -126,6 +126,42 @@ rsa = { version = "0.9", features = ["pem"] }
 rand = "0.8"
 base64 = "0.22"
 
+# Lints apply to every target of the package — lib, bin, AND the integration
+# test crates in tests/ (each its own crate). A `[lints]` table is the only way
+# to make `clippy::pedantic` a true whole-project gate; inner `#![warn(...)]`
+# attributes on the crate root reach the lib/bin only. Pedantic is a project gate
+# (every change is linted against it); the allows below are the lints judged to be
+# pure noise or stylistic churn for this codebase, silenced package-wide rather
+# than chased. Everything else pedantic flags is fixed. Keep this list tight —
+# prefer fixing. The negative `priority` lets the specific allows override the
+# group warn.
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+module_name_repetitions = "allow"
+must_use_candidate = "allow"
+module_inception = "allow"
+needless_pass_by_value = "allow"
+redundant_else = "allow"
+too_many_lines = "allow"
+used_underscore_binding = "allow"
+# Backtick nags on proper nouns (NetBox, JSON-RPC, IPAM, …) in doc comments.
+doc_markdown = "allow"
+# Benign u16/usize/f64 math in the TUI (scroll offsets, terminal coordinates,
+# a percent bar): the casts are intentional and bounded.
+cast_possible_truncation = "allow"
+cast_sign_loss = "allow"
+cast_precision_loss = "allow"
+# Stylistic: `if let … else` vs a two-arm `match`, and merging identical arms.
+# Mixing the two styles inside one `match` hurts readability more than it helps.
+single_match_else = "allow"
+match_same_arms = "allow"
+items_after_statements = "allow"
+# The CLI flags struct legitimately carries many bool options; collapsing them
+# would be an API change, not a cleanup.
+struct_excessive_bools = "allow"
+
 [profile.release]
 lto = true
 codegen-units = 1
