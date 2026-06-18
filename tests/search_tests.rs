@@ -121,6 +121,15 @@ async fn mount_graphql_device_result(server: &MockServer) {
         .await;
 }
 
+fn graphql_request_query(request: &wiremock::Request) -> Option<String> {
+    request
+        .body_json::<serde_json::Value>()
+        .ok()?
+        .get("query")?
+        .as_str()
+        .map(str::to_string)
+}
+
 #[tokio::test]
 async fn search_merges_ranks_and_dedups_across_endpoints() {
     let server = MockServer::start().await;
@@ -233,6 +242,45 @@ async fn graphql_backend_search_shapes_lookup_filters_and_synthesizes_urls() {
         device_query["variables"]["filters"]["status"],
         json!({"exact": "STATUS_ACTIVE"})
     );
+}
+
+#[tokio::test]
+async fn graphql_backend_caches_capabilities_across_client_clones() {
+    let server = MockServer::start().await;
+    mount_graphql_device_schema(&server).await;
+    mount_graphql_device_result(&server).await;
+
+    let client = graphql_client(&server);
+    let cloned = client.clone();
+    for client in [client, cloned] {
+        let results = client
+            .search(SearchRequest {
+                query: "edge".into(),
+                limit: 10,
+                filters: SearchFilters::default(),
+            })
+            .await
+            .unwrap()
+            .results;
+        assert_eq!(results.len(), 1);
+    }
+
+    let requests = server.received_requests().await.unwrap();
+    let queries: Vec<String> = requests.iter().filter_map(graphql_request_query).collect();
+    let introspection_queries = queries
+        .iter()
+        .filter(|query| query.contains("__schema") || query.contains("__type"))
+        .count();
+    let data_queries = queries
+        .iter()
+        .filter(|query| query.contains("device_list") && !query.contains("__schema"))
+        .count();
+
+    assert_eq!(
+        introspection_queries, 3,
+        "capability probes should run once and be shared by cloned clients: {queries:#?}"
+    );
+    assert_eq!(data_queries, 2, "each search still sends its data query");
 }
 
 #[tokio::test]
