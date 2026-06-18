@@ -31,3 +31,16 @@ exclude_config_context = true   # drop the large config_context on devices/VMs
 url = "https://netbox.lab.example.com"
 token_env = "NETBOX_LAB_TOKEN"
 verify_tls = false           # labs with self-signed certs; never use in prod
+
+# MCP server defaults for `nbox serve` (optional; absent = stdio, no HTTP).
+# CLI flags (--http, --http-token, --oidc-issuer, …) override these. See docs/MCP.md.
+# [serve]
+# http = "127.0.0.1:8080"        # loopback HTTP transport; absent = stdio
+# http_token is a SECRET — prefer the NBOX_SERVE_TOKEN env var over the file.
+# http_token = ""                # static bearer required on /mcp
+# OIDC resource-server mode (routable deployments):
+# oidc_issuer   = "https://idp.example.com"
+# audience      = "https://nbox.example.com"   # required with oidc_issuer
+# jwks_url      = "https://idp.example.com/keys"  # absent = discover from issuer
+# allowed_hosts = ["nbox.example.com"]         # extra DNS-rebinding allow-list hosts
+# rate_limit    = 120                          # per-caller requests/min (0/absent = off)

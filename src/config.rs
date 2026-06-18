@@ -564,6 +564,19 @@ pub fn save_ui_field(path: &Path, field: &UiField) -> Result<()> {
     Ok(())
 }
 
+/// Persist several `[ui]` fields in ONE format-preserving write (M8): all the
+/// given changes are applied to a single [`DocumentMut`] and written once, so a
+/// failure can't leave the file with the first field updated and the rest stale.
+/// Order within `fields` is the write order; comments/other keys survive.
+pub fn save_ui_fields(path: &Path, fields: &[UiField]) -> Result<()> {
+    let mut doc = load_doc_or_new(path)?;
+    for field in fields {
+        set_ui_field(&mut doc, field);
+    }
+    write_doc(path, &doc)?;
+    Ok(())
+}
+
 /// Build the argv for a custom browser-open command, or `None` to fall back to the
 /// OS default. PURE + testable: when `command` is blank, returns `None` (the
 /// caller uses `open::that`); otherwise splits the command on whitespace into
@@ -1385,6 +1398,32 @@ url = \"https://a\"
         set_ui_field(&mut doc2, &UiField::RefreshSecs(None));
         let cfg: Config = toml::from_str(&doc2.to_string()).unwrap();
         assert_eq!(cfg.ui.refresh_secs, None, "None clears refresh_secs");
+    }
+
+    #[test]
+    fn save_ui_fields_writes_all_changes_in_one_pass() {
+        // M8: a batched save applies every field in one write (all-or-nothing).
+        let dir = std::env::temp_dir().join(format!("nbox-uifields-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(&path, "# notes\n[ui]\ntheme = \"default\"\nwide = false\n").unwrap();
+        save_ui_fields(
+            &path,
+            &[
+                UiField::Theme("nord".into()),
+                UiField::RefreshSecs(Some(20)),
+                UiField::OpenBrowserCommand("firefox".into()),
+            ],
+        )
+        .unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(out.contains("# notes"), "comment preserved");
+        assert!(out.contains("wide = false"), "other key preserved");
+        let cfg: Config = toml::from_str(&out).unwrap();
+        assert_eq!(cfg.ui.theme, "nord");
+        assert_eq!(cfg.ui.refresh_secs, Some(20));
+        assert_eq!(cfg.ui.open_browser_command, "firefox");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

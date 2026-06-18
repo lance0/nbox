@@ -193,7 +193,9 @@ fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent
 /// errors. The token is moved straight into the client; it is never logged.
 async fn test_connect(req: &crate::tui::state::ConnectRequest) -> Result<String> {
     let profile = req.to_profile();
-    let client = NetBoxClient::new(&profile, req.token.clone())?;
+    // Resolve the token here, inside the spawned task, so the keyring read (the
+    // last tier) never blocks the render thread (M9).
+    let client = NetBoxClient::new(&profile, req.resolved_token())?;
     let status = client.verify_compatible().await?;
     Ok(status.netbox_version)
 }

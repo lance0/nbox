@@ -281,12 +281,12 @@ impl ProfileForm {
     /// *edit* the form's own original name is allowed (renaming to a *different*
     /// existing name is still rejected). Save runs this; test-connect uses the
     /// plain `validate` (a probe doesn't care about name collisions).
-    pub fn validate_for_save(&self, existing: &[String]) -> Result<(), String> {
+    pub fn validate_for_save(&self, existing: &[&str]) -> Result<(), String> {
         self.validate()?;
         let name = self.name();
         let collides = existing
             .iter()
-            .any(|n| n == &name && self.editing.as_deref() != Some(n.as_str()));
+            .any(|n| *n == name && self.editing.as_deref() != Some(*n));
         if collides {
             return Err(format!("a profile named '{name}' already exists"));
         }
@@ -496,8 +496,10 @@ impl ConfigModal {
     ///
     /// `profiles` is the live profile-name list (for list movement/selection) and
     /// `active` the active profile name (so the list can mark it and guard the
-    /// delete of the active/last profile).
-    pub fn handle_key(&mut self, key: KeyEvent, profiles: &[String], active: &str) -> ModalOutcome {
+    /// delete of the active/last profile). Borrowed (`&[&str]`) so the caller can
+    /// pass names that point straight into its own state without cloning each one
+    /// per keystroke (M11).
+    pub fn handle_key(&mut self, key: KeyEvent, profiles: &[&str], active: &str) -> ModalOutcome {
         // Tab switches sections only at the list level (never mid-form, where Tab
         // moves field focus). Esc/`q` close from the list; the form/confirm
         // handle their own Esc (back to the list).
@@ -581,7 +583,7 @@ impl ConfigModal {
     fn handle_profiles_key(
         &mut self,
         key: KeyEvent,
-        profiles: &[String],
+        profiles: &[&str],
         active: &str,
     ) -> ModalOutcome {
         // Take the mode out so we can match it by value and rebuild it; this keeps
@@ -593,12 +595,7 @@ impl ConfigModal {
         }
     }
 
-    fn handle_list_key(
-        &mut self,
-        key: KeyEvent,
-        profiles: &[String],
-        active: &str,
-    ) -> ModalOutcome {
+    fn handle_list_key(&mut self, key: KeyEvent, profiles: &[&str], active: &str) -> ModalOutcome {
         let len = profiles.len();
         // Clear the transient guidance line on any list key; specific arms re-set
         // it (a blocked delete) below.
@@ -635,17 +632,17 @@ impl ConfigModal {
                 let sel = *selected;
                 profiles.get(sel).map_or(ModalOutcome::None, |name| {
                     self.profiles.last_selected = sel;
-                    ModalOutcome::Edit(name.clone())
+                    ModalOutcome::Edit((*name).to_string())
                 })
             }
             KeyCode::Enter | KeyCode::Char('s') => {
                 profiles.get(*selected).map_or(ModalOutcome::None, |name| {
-                    ModalOutcome::Select(name.clone())
+                    ModalOutcome::Select((*name).to_string())
                 })
             }
             KeyCode::Char('d') => {
                 let sel = *selected;
-                let Some(name) = profiles.get(sel).cloned() else {
+                let Some(name) = profiles.get(sel).map(|n| (*n).to_string()) else {
                     return ModalOutcome::None;
                 };
                 // Guard: don't delete the last remaining profile, nor the active
@@ -669,7 +666,7 @@ impl ConfigModal {
         }
     }
 
-    fn handle_form_key(&mut self, key: KeyEvent, profiles: &[String]) -> ModalOutcome {
+    fn handle_form_key(&mut self, key: KeyEvent, profiles: &[&str]) -> ModalOutcome {
         let ProfilesMode::Form(form) = &mut self.profiles.mode else {
             return ModalOutcome::None;
         };
@@ -852,7 +849,7 @@ mod tests {
     #[test]
     fn list_movement_clamps_to_bounds() {
         let mut m = ConfigModal::default();
-        let names = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let names = vec!["a", "b", "c"];
         m.handle_key(key(KeyCode::Char('j')), &names, "a");
         assert!(matches!(
             m.profiles.mode,
@@ -900,7 +897,7 @@ mod tests {
     #[test]
     fn enter_on_list_selects_the_highlighted_profile() {
         let mut m = ConfigModal::default();
-        let names = vec!["a".to_string(), "b".to_string()];
+        let names = vec!["a", "b"];
         m.handle_key(key(KeyCode::Char('j')), &names, "a"); // → b
         let out = m.handle_key(key(KeyCode::Enter), &names, "a");
         assert_eq!(out, ModalOutcome::Select("b".to_string()));
@@ -1059,7 +1056,7 @@ mod tests {
     #[test]
     fn add_rejects_a_duplicate_name_but_edit_keeps_its_own() {
         // M5: adding a profile whose name already exists is rejected on save.
-        let names = vec!["work".to_string(), "lab".to_string()];
+        let names = vec!["work", "lab"];
         let mut m = ConfigModal::default();
         m.handle_key(key(KeyCode::Char('a')), &names, "work"); // add form
         type_into(&mut m, "work"); // name collides with an existing profile
@@ -1097,7 +1094,7 @@ mod tests {
     #[test]
     fn esc_from_form_restores_the_prior_list_selection() {
         // M6: cancelling an add/edit returns to the row the form was opened from.
-        let names = vec!["a".to_string(), "b".to_string(), "c".to_string()];
+        let names = vec!["a", "b", "c"];
         let mut m = ConfigModal::default();
         m.handle_key(key(KeyCode::Char('j')), &names, "a"); // → 1
         m.handle_key(key(KeyCode::Char('j')), &names, "a"); // → 2
@@ -1113,7 +1110,7 @@ mod tests {
     #[test]
     fn delete_confirm_then_y_deletes_a_non_active_profile() {
         let mut m = ConfigModal::default();
-        let names = vec!["a".to_string(), "b".to_string()];
+        let names = vec!["a", "b"];
         // Highlight b (not active), press d → confirm.
         m.handle_key(key(KeyCode::Char('j')), &names, "a"); // → b
         m.handle_key(key(KeyCode::Char('d')), &names, "a");
@@ -1130,7 +1127,7 @@ mod tests {
     fn delete_is_blocked_for_active_and_last_profile() {
         // Active profile: d is a no-op (no confirm).
         let mut m = ConfigModal::default();
-        let names = vec!["a".to_string(), "b".to_string()];
+        let names = vec!["a", "b"];
         m.handle_key(key(KeyCode::Char('d')), &names, "a"); // a is active
         assert!(
             matches!(m.profiles.mode, ProfilesMode::List { .. }),
@@ -1138,7 +1135,7 @@ mod tests {
         );
         // Last/only profile: d is a no-op too.
         let mut m2 = ConfigModal::default();
-        let one = vec!["only".to_string()];
+        let one = vec!["only"];
         m2.handle_key(key(KeyCode::Char('d')), &one, "other");
         assert!(matches!(m2.profiles.mode, ProfilesMode::List { .. }));
     }
@@ -1146,7 +1143,7 @@ mod tests {
     #[test]
     fn confirm_delete_n_cancels_back_to_list() {
         let mut m = ConfigModal::default();
-        let names = vec!["a".to_string(), "b".to_string()];
+        let names = vec!["a", "b"];
         m.handle_key(key(KeyCode::Char('j')), &names, "a");
         m.handle_key(key(KeyCode::Char('d')), &names, "a");
         let out = m.handle_key(key(KeyCode::Char('n')), &names, "a");
@@ -1162,7 +1159,7 @@ mod tests {
         // `e` surfaces the edit request encoded for the app, which then opens the
         // prefilled form (it owns the ProfileConfig).
         let mut m = ConfigModal::default();
-        let names = vec!["a".to_string(), "b".to_string()];
+        let names = vec!["a", "b"];
         m.handle_key(key(KeyCode::Char('j')), &names, "a"); // → b
         let out = m.handle_key(key(KeyCode::Char('e')), &names, "a");
         assert_eq!(out, ModalOutcome::Edit("b".to_string()));

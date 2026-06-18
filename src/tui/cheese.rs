@@ -202,21 +202,24 @@ impl TextInput {
                 self.state.delete_at();
                 true
             }
+            // Cursor moves are consumed but are NOT edits: they don't change the
+            // value, so they must return `false` (M12) — a `true` here would make
+            // the caller needlessly refilter a search or invalidate a test result.
             KeyCode::Left => {
                 self.state.move_left();
-                true
+                false
             }
             KeyCode::Right => {
                 self.state.move_right();
-                true
+                false
             }
             KeyCode::Home => {
                 self.state.home();
-                true
+                false
             }
             KeyCode::End => {
                 self.state.end();
-                true
+                false
             }
             // Enter, Esc, and anything else aren't edits — the caller decides.
             _ => false,
@@ -567,6 +570,26 @@ mod tests {
         assert!(!input.handle_key(key(KeyCode::Esc)));
         // The buffer is untouched by the pass-through keys.
         assert_eq!(input.value(), "a");
+    }
+
+    #[test]
+    fn cursor_moves_are_consumed_but_not_reported_as_edits() {
+        // M12: Left/Right/Home/End move the cursor without changing the value, so
+        // they must return false — the caller shouldn't refilter / invalidate a
+        // test on a bare cursor move. Edits (chars, backspace, delete) return true.
+        let mut input = TextInput::new("");
+        type_str(&mut input, "abc");
+        assert!(!input.handle_key(key(KeyCode::Left)), "Left is not an edit");
+        assert!(
+            !input.handle_key(key(KeyCode::Right)),
+            "Right is not an edit"
+        );
+        assert!(!input.handle_key(key(KeyCode::Home)), "Home is not an edit");
+        assert!(!input.handle_key(key(KeyCode::End)), "End is not an edit");
+        // The value is unchanged, and a real edit still reports true.
+        assert_eq!(input.value(), "abc");
+        assert!(input.handle_key(key(KeyCode::Char('d'))));
+        assert!(input.handle_key(key(KeyCode::Backspace)));
     }
 
     #[test]

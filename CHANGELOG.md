@@ -440,6 +440,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   string (which produced a confusing `401` instead of a clean "no token").
 - `--no-tui` now also refuses the first-run onboarding wizard (exit `2` with setup
   guidance), matching its refusal of the interactive TUI.
+- TUI/config: the Settings save batches all changed `[ui]` fields into a single
+  format-preserving write, so a mid-save failure can't leave the file with one
+  field updated and the rest stale.
+- TUI: a bare cursor move (Left/Right/Home/End) in a text input no longer counts
+  as an edit, so it doesn't needlessly refilter a search or invalidate a
+  test-connect result.
+- TUI: the right-pane preview body is fetched once per frame and borrows the
+  loaded detail instead of cloning the whole string twice; the Config-modal key
+  path no longer clones every profile name per keystroke.
+- TUI: the test-connect keyring lookup runs inside the spawned probe task instead
+  of on the render/event thread, so the UI never blocks on the keychain.
+- docs: `docs/CONFIG.md` and `examples/config.toml` now document the `[serve]`
+  section (http / http_token / oidc_issuer / audience / jwks_url / allowed_hosts /
+  rate_limit), noting `http_token` is a secret (prefer the env var).
 
 ### Security
 - `nbox config show` no longer prints `serve.http_token` — the one secret that can

@@ -207,16 +207,14 @@ fn render_home_preview(frame: &mut Frame, area: Rect, app: &mut App) {
         .borders(Borders::ALL)
         .title(format!(" {title} "))
         .border_style(border);
+    // Fetch the body once (M10: it borrows the loaded detail rather than cloning)
+    // and reuse it for both the scroll hint's line count and the rendered lines.
+    let body = app.preview_body();
     // Same scroll-position hint as the detail pane when the peek overflows.
-    if let Some(hint) = scroll_hint(
-        app.preview_scroll,
-        app.preview_content_lines(),
-        inner_height,
-    ) {
+    if let Some(hint) = scroll_hint(app.preview_scroll, body.lines().count(), inner_height) {
         block = block.title(Line::from(hint).right_aligned().style(theme.text_dim));
     }
 
-    let body = app.preview_body();
     let lines = body_lines(&body, theme);
     frame.render_widget(
         Paragraph::new(lines)

@@ -120,9 +120,15 @@ pub struct ConnectRequest {
     pub auth_scheme: AuthScheme,
     pub verify_tls: bool,
     /// The token to authenticate the probe with: the form's typed token, else the
-    /// resolved env/keyring token for the (possibly existing) profile. `None` ⇒
-    /// the probe runs unauthenticated and likely 401s — surfaced as a failure.
+    /// resolved env token (token_env / `NBOX_TOKEN`). `None` here ⇒ try
+    /// [`keyring_account`](Self::keyring_account) in the spawned probe. If both are
+    /// absent the probe runs unauthenticated and likely 401s (surfaced as failure).
     pub token: Option<String>,
+    /// The OS-keyring account to read as the *last* token tier, resolved inside the
+    /// spawned test-connect task — NOT on the render/event thread (M9). Only set
+    /// when editing an existing profile (a fresh add / onboarding has no keyring
+    /// entry yet). Ignored when `token` is already `Some`.
+    pub keyring_account: Option<String>,
 }
 
 impl std::fmt::Debug for ConnectRequest {
@@ -133,7 +139,23 @@ impl std::fmt::Debug for ConnectRequest {
             .field("auth_scheme", &self.auth_scheme)
             .field("verify_tls", &self.verify_tls)
             .field("token", &self.token.as_ref().map(|_| "<redacted>"))
+            .field("keyring_account", &self.keyring_account)
             .finish()
+    }
+}
+
+impl ConnectRequest {
+    /// Resolve the token to probe with: the already-resolved `token`, else the
+    /// keyring entry named by `keyring_account`. Called inside the spawned probe so
+    /// the (potentially blocking) keyring read never runs on the render thread (M9).
+    #[must_use]
+    pub fn resolved_token(&self) -> Option<String> {
+        if self.token.is_some() {
+            return self.token.clone();
+        }
+        self.keyring_account
+            .as_deref()
+            .and_then(crate::secret::keyring_get)
     }
 }
 
@@ -964,7 +986,9 @@ impl App {
     /// Drive the Config modal: feed it the key with the live profile list + active
     /// name, then act on its [`ModalOutcome`].
     fn handle_config_modal_key(&mut self, key: KeyEvent) -> Vec<AppCommand> {
-        let names: Vec<String> = self.profiles.iter().map(|p| p.name.clone()).collect();
+        // Borrow the names (no per-keystroke String clones, M11). `active` is a
+        // short owned copy so the `&mut self.modal` borrow below is clean.
+        let names: Vec<&str> = self.profiles.iter().map(|p| p.name.as_str()).collect();
         let active = self.profile_name.clone();
         let Some(Modal::Config(modal)) = &mut self.modal else {
             return Vec::new();
@@ -1038,30 +1062,20 @@ impl App {
 
         let refresh_changed = new_refresh != self.refresh_secs;
 
-        // Persist each field (format-preserving). The token is never involved here.
+        // Persist the changed fields in ONE format-preserving write (M8), so a
+        // failure can't leave the file with theme updated but the rest stale. The
+        // token is never involved here. Theme is skipped under NO_COLOR so we never
+        // write a colored theme into the user's config (exit-time persist guard).
         if let Some(path) = self.config_path.clone() {
-            // Theme: skip persistence under NO_COLOR so we never write a colored
-            // theme into the user's config (mirrors the exit-time persist guard).
-            if !self.theme.is_no_color()
-                && let Err(e) = crate::config::save_ui_field(
-                    &path,
-                    &crate::config::UiField::Theme(theme_name.clone()),
-                )
-            {
-                self.set_status(format!("save failed: {e:#}"), Severity::Error);
-                return Vec::new();
+            let mut fields = Vec::with_capacity(3);
+            if !self.theme.is_no_color() {
+                fields.push(crate::config::UiField::Theme(theme_name.clone()));
             }
-            if let Err(e) = crate::config::save_ui_field(
-                &path,
-                &crate::config::UiField::RefreshSecs(new_refresh),
-            ) {
-                self.set_status(format!("save failed: {e:#}"), Severity::Error);
-                return Vec::new();
-            }
-            if let Err(e) = crate::config::save_ui_field(
-                &path,
-                &crate::config::UiField::OpenBrowserCommand(new_browser.clone()),
-            ) {
+            fields.push(crate::config::UiField::RefreshSecs(new_refresh));
+            fields.push(crate::config::UiField::OpenBrowserCommand(
+                new_browser.clone(),
+            ));
+            if let Err(e) = crate::config::save_ui_fields(&path, &fields) {
                 self.set_status(format!("save failed: {e:#}"), Severity::Error);
                 return Vec::new();
             }
@@ -1096,25 +1110,29 @@ impl App {
             .config_path
             .clone()
             .unwrap_or_else(|| PathBuf::from(""));
-        // The token to probe with, in resolve-order: a typed token wins; else the
-        // form's token_env (as it would be used at launch); else NBOX_TOKEN; else
-        // the keyring entry for the profile being edited.
+        // The cheap (non-blocking) env tiers are resolved here: typed token wins,
+        // else the form's token_env, else NBOX_TOKEN. The keyring tier (potentially
+        // blocking) is deferred to the spawned probe via `keyring_account` (M9).
         let token = form.token().or_else(|| {
             form.token_env()
                 .and_then(|name| std::env::var(&name).ok())
                 .filter(|t| !t.is_empty())
                 .or_else(|| std::env::var("NBOX_TOKEN").ok().filter(|t| !t.is_empty()))
-                .or_else(|| {
-                    let name = form.editing.as_deref()?;
-                    let account = crate::secret::account_key(&path.display().to_string(), name);
-                    crate::secret::keyring_get(&account)
-                })
         });
+        // Only an edit of an existing profile has a keyring entry to fall back to.
+        let keyring_account = if token.is_none() {
+            form.editing
+                .as_deref()
+                .map(|name| crate::secret::account_key(&path.display().to_string(), name))
+        } else {
+            None
+        };
         Some(ConnectRequest {
             url: form.url(),
             auth_scheme: form.auth_scheme,
             verify_tls: form.verify_tls,
             token,
+            keyring_account,
         })
     }
 
@@ -2052,10 +2070,17 @@ impl App {
     /// it matches the highlighted row, otherwise a built-from-the-result
     /// lightweight peek (shown instantly while a full load is in flight, so the
     /// pane never displays a stale object's body under a moved cursor).
-    pub fn preview_body(&self) -> String {
+    ///
+    /// Returns a [`Cow`] so the common case (a current detail) borrows `d.body`
+    /// rather than cloning the whole string each frame (M10); only the placeholder
+    /// path allocates. The render path fetches this once and reuses it for both
+    /// line-counting and drawing.
+    pub fn preview_body(&self) -> std::borrow::Cow<'_, str> {
         match &self.preview {
-            Some(d) if self.preview_for == self.preview_selection() => d.body.clone(),
-            _ => self.preview_placeholder(),
+            Some(d) if self.preview_for == self.preview_selection() => {
+                std::borrow::Cow::Borrowed(d.body.as_str())
+            }
+            _ => std::borrow::Cow::Owned(self.preview_placeholder()),
         }
     }
 

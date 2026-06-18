@@ -154,6 +154,8 @@ impl OnboardingWizard {
             auth_scheme: self.form.auth_scheme,
             verify_tls: self.form.verify_tls,
             token,
+            // Onboarding has no saved profile yet, so there's no keyring tier.
+            keyring_account: None,
         }
     }
 }
@@ -302,7 +304,7 @@ pub async fn run(
 /// the client; it is never logged.
 async fn probe(req: &ConnectRequest) -> Result<String> {
     let profile = req.to_profile();
-    let client = NetBoxClient::new(&profile, req.token.clone())?;
+    let client = NetBoxClient::new(&profile, req.resolved_token())?;
     let status = client.verify_compatible().await?;
     Ok(status.netbox_version)
 }

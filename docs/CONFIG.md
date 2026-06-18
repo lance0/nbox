@@ -109,6 +109,36 @@ nbox profile show [name]
 Pick a profile per-invocation with `--profile <name>`, or point at an alternate
 file with `--config <path>`.
 
+## MCP server (`[serve]`)
+
+The optional `[serve]` table holds defaults for `nbox serve` (the MCP server).
+Absent ⇒ stdio (no HTTP). The matching CLI flags always override these keys.
+
+| Key | Effect | Flag |
+|-----|--------|------|
+| `http` | Loopback address to serve HTTP on, e.g. `127.0.0.1:8080`. Absent ⇒ stdio. | `--http` |
+| `http_token` | Static bearer token required on `/mcp`. **A secret** — prefer the env var over storing it here; `nbox config show` redacts it. | `--http-token` / `NBOX_SERVE_TOKEN` |
+| `oidc_issuer` | OIDC issuer URL. Its presence switches HTTP into OAuth 2.1 resource-server mode (inbound IdP JWTs validated on `/mcp`). | `--oidc-issuer` |
+| `audience` | Expected token audience (nbox's canonical resource URI). Required when `oidc_issuer` is set. | `--audience` |
+| `jwks_url` | JWKS URL override; absent ⇒ discover from the issuer. | `--oidc-jwks-url` |
+| `allowed_hosts` | Extra hostnames for the DNS-rebinding allow-list (OIDC/routable mode only), on top of the audience host + loopback. | `--allowed-host` |
+| `rate_limit` | Per-caller request cap on `/mcp`, in requests per minute. Absent / `0` ⇒ disabled. | `--rate-limit` |
+
+```toml
+[serve]
+http = "127.0.0.1:8080"
+# http_token is a SECRET — prefer NBOX_SERVE_TOKEN over storing it in the file.
+# http_token = "..."
+# OIDC resource-server mode (routable deployments):
+# oidc_issuer   = "https://idp.example.com"
+# audience      = "https://nbox.example.com"
+# jwks_url      = "https://idp.example.com/keys"
+# allowed_hosts = ["nbox.example.com"]
+# rate_limit    = 120
+```
+
+See [docs/MCP.md](MCP.md) for the full server story.
+
 ## Logging
 
 Two top-level, optional keys control logging:
