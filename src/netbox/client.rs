@@ -4,6 +4,7 @@
 //! the per-profile config-context optimization. Tokens are never logged — debug
 //! logging emits a redacted scheme marker only (see [`NetBoxClient::masked_authorization`]).
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
@@ -17,6 +18,7 @@ use crate::config::{BackendKind, ProfileConfig};
 use crate::error::NboxError;
 use crate::netbox::auth::AuthScheme;
 use crate::netbox::endpoints::Endpoint;
+use crate::netbox::graphql::GraphqlCapabilities;
 use crate::netbox::pagination::Page;
 
 /// NetBox's default list page size when no `limit` is sent.
@@ -37,6 +39,7 @@ pub struct NetBoxClient {
     page_size: usize,
     exclude_config_context: bool,
     backend: BackendKind,
+    graphql_capabilities: Arc<tokio::sync::OnceCell<GraphqlCapabilities>>,
 }
 
 impl NetBoxClient {
@@ -78,12 +81,17 @@ impl NetBoxClient {
             page_size,
             exclude_config_context: profile.exclude_config_context.unwrap_or(true),
             backend: profile.backend(),
+            graphql_capabilities: Arc::new(tokio::sync::OnceCell::new()),
         })
     }
 
     /// The preferred read backend for this client/profile.
     pub fn backend(&self) -> BackendKind {
         self.backend
+    }
+
+    pub(crate) fn graphql_capability_cache(&self) -> &tokio::sync::OnceCell<GraphqlCapabilities> {
+        &self.graphql_capabilities
     }
 
     /// The effective page size sent as `limit` (clamped into `1..=MAX_PAGE_SIZE`).

@@ -123,6 +123,14 @@ struct FilterField {
 
 impl NetBoxClient {
     pub async fn graphql_capabilities(&self) -> Result<GraphqlCapabilities> {
+        let capabilities = self
+            .graphql_capability_cache()
+            .get_or_try_init(|| async { self.load_graphql_capabilities().await })
+            .await?;
+        Ok(capabilities.clone())
+    }
+
+    async fn load_graphql_capabilities(&self) -> Result<GraphqlCapabilities> {
         let schema: SchemaResponse = self.graphql(QUERY_INTROSPECTION, json!({})).await?;
         let first: FilterResponse = self.graphql(FILTER_INTROSPECTION_A, json!({})).await?;
         let second: FilterResponse = self.graphql(FILTER_INTROSPECTION_B, json!({})).await?;

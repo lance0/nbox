@@ -13,7 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the default and as the backend for detail lookups, journals, raw reads, and
   available-IP/prefix commands. The GraphQL path probes the schema at runtime and
   adapts to NetBox 4.2 unpaginated list fields, NetBox 4.3+ offset pagination,
-  and NetBox 4.5+ lookup-wrapper filters for IDs/enums.
+  and NetBox 4.5+ lookup-wrapper filters for IDs/enums. Probed capabilities are
+  cached per client and shared across clones, so repeated TUI searches do not
+  re-run introspection.
 
 ## [0.2.0] - 2026-06-18
 
