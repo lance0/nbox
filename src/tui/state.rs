@@ -523,6 +523,14 @@ impl App {
         self.open_browser_command = open_browser_command;
     }
 
+    /// Seed the footer status line + its severity at launch. Used by first-run
+    /// onboarding to carry env-var guidance into the freshly-launched app (e.g.
+    /// "keyring unavailable — set NBOX_TOKEN") so the message isn't lost on the
+    /// hand-off from the wizard to the app.
+    pub fn set_initial_status(&mut self, message: impl Into<String>, severity: Severity) {
+        self.set_status(message, severity);
+    }
+
     /// Attach the configured profiles the session can switch between, and point
     /// [`Self::profile_index`] at whichever matches the active [`Self::profile_name`]
     /// (falling back to 0). Called once at launch (see `tui::run_tui`). With zero

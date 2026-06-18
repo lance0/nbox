@@ -215,6 +215,51 @@ pub fn load(path: &Path) -> Result<Config> {
     Ok(cfg)
 }
 
+/// Whether the TUI should run first-run onboarding instead of connecting.
+///
+/// PURE + unit-testable: it decides purely from the on-disk state and the
+/// `--profile` flag, doing no network or keyring I/O. Onboarding is needed when:
+/// - there is **no config file** at `path` (a brand-new install), OR
+/// - the config parses but has **no profiles**, OR
+/// - **no active profile is resolvable** — neither a `--profile` override nor a
+///   configured `active_profile` that names an existing profile.
+///
+/// A `--profile X` that names an existing profile (or a configured, existing
+/// `active_profile`) means a normal launch — onboarding is skipped. An
+/// unparseable config is *not* treated as first-run (the user has a file to fix;
+/// `load` surfaces the parse error), so a typo never silently triggers the wizard.
+#[must_use]
+pub fn needs_onboarding(path: &Path, explicit_profile: Option<&str>) -> bool {
+    // No file ⇒ brand-new install ⇒ onboard.
+    let Ok(text) = fs::read_to_string(path) else {
+        return true;
+    };
+    // A file that doesn't parse is the user's to fix — `load` reports the error;
+    // don't mask it behind the wizard.
+    let Ok(cfg) = toml::from_str::<Config>(&text) else {
+        return false;
+    };
+    needs_onboarding_for(&cfg, explicit_profile)
+}
+
+/// The pure core of [`needs_onboarding`], over an already-parsed [`Config`]: true
+/// when there are no profiles, or when no resolvable active profile exists.
+#[must_use]
+pub fn needs_onboarding_for(cfg: &Config, explicit_profile: Option<&str>) -> bool {
+    if cfg.profiles.is_empty() {
+        return true;
+    }
+    // A `--profile` that names a real profile is a normal launch.
+    if let Some(name) = explicit_profile {
+        return !cfg.profiles.contains_key(name);
+    }
+    // Otherwise the configured active profile must exist.
+    match &cfg.active_profile {
+        Some(name) => !cfg.profiles.contains_key(name),
+        None => true,
+    }
+}
+
 /// The logging-relevant config fields (`log_file`, `log_level`), read
 /// best-effort so logging can be set up before — and independently of —
 /// the command's own config handling.
@@ -1067,6 +1112,58 @@ page_size = 250
         );
         unsafe { std::env::remove_var(var) };
         assert_eq!(src, TokenSource::TokenEnv(var.to_string()));
+    }
+
+    #[test]
+    fn needs_onboarding_truth_table() {
+        // No config file at the path ⇒ first-run.
+        let missing = Path::new("/nbox/test/onboarding/definitely-no-such-file.toml");
+        assert!(needs_onboarding(missing, None));
+        assert!(needs_onboarding(missing, Some("anything")));
+
+        // Parsed config with no profiles ⇒ first-run (regardless of --profile).
+        let empty: Config = toml::from_str("config_version = 1\n").unwrap();
+        assert!(needs_onboarding_for(&empty, None));
+        assert!(needs_onboarding_for(&empty, Some("work")));
+
+        // Profiles exist but no active profile and no --profile ⇒ first-run.
+        let no_active: Config =
+            toml::from_str("[profiles.work]\nurl = \"https://nb.example\"\n").unwrap();
+        assert!(no_active.active_profile.is_none());
+        assert!(!no_active.profiles.is_empty());
+        assert!(needs_onboarding_for(&no_active, None));
+
+        // …but `--profile work` names an existing profile ⇒ normal launch.
+        assert!(!needs_onboarding_for(&no_active, Some("work")));
+        // `--profile bogus` names a missing profile ⇒ first-run.
+        assert!(needs_onboarding_for(&no_active, Some("bogus")));
+
+        // A valid active profile that exists ⇒ normal launch.
+        let valid: Config = toml::from_str(SAMPLE).unwrap();
+        assert_eq!(valid.active_profile.as_deref(), Some("work"));
+        assert!(valid.profiles.contains_key("work"));
+        assert!(!needs_onboarding_for(&valid, None));
+        // An explicit, existing --profile also short-circuits to normal launch.
+        assert!(!needs_onboarding_for(&valid, Some("work")));
+
+        // An active_profile naming a profile that doesn't exist ⇒ first-run.
+        let dangling: Config = toml::from_str(
+            "active_profile = \"gone\"\n\n[profiles.work]\nurl = \"https://nb.example\"\n",
+        )
+        .unwrap();
+        assert!(needs_onboarding_for(&dangling, None));
+    }
+
+    #[test]
+    fn needs_onboarding_ignores_an_unparseable_file() {
+        // A file that exists but doesn't parse is the user's to fix — `load`
+        // surfaces the parse error — so it must NOT silently trigger the wizard.
+        let dir = std::env::temp_dir().join(format!("nbox-onboard-test-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("bad-config.toml");
+        std::fs::write(&path, "this is = = not valid toml [[[").unwrap();
+        assert!(!needs_onboarding(&path, None));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

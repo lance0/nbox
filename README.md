@@ -20,21 +20,25 @@ server for AI agents.
 
 ## Quick Start
 
+First run? Just launch the TUI — with no config it opens a first-run wizard that
+captures a profile (url + token), test-connects, and drops you into the app:
+
 ```bash
-# Configure a profile
-nbox config init
+nbox                              # first run: guided onboarding, then the TUI
+```
+
+Prefer the shell? Configure a profile by hand:
+
+```bash
 nbox profile add work https://netbox.example.com --token-env NETBOX_TOKEN
 nbox profile use work
-export NETBOX_TOKEN=...           # or NBOX_TOKEN to override
+export NETBOX_TOKEN=...           # or store the token: nbox config token set
 
 # Look things up from the shell
 nbox search edge01
 nbox device edge01
 nbox ip 10.44.208.55
 nbox prefix 10.44.208.0/24
-
-# Or launch the interactive TUI
-nbox
 ```
 
 See [Installation](#installation) below for setup instructions.
@@ -358,7 +362,11 @@ TUI renders without color and marks the selection with a `>` cursor.
 
 ## Configuration
 
-Config lives at:
+First-time setup needs no hand-edited TOML: launch `nbox` with no config and the
+TUI runs a first-run wizard that captures a profile (url, token or `token_env`,
+`auth_scheme`, `verify_tls`), test-connects, writes it, and continues into the
+app. The same wizard appears when a config exists but has no resolvable active
+profile. You can still configure by hand — the file lives at:
 
 | OS | Path |
 |----|------|

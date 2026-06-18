@@ -158,8 +158,21 @@ impl ProfileForm {
         if v.is_empty() { None } else { Some(v) }
     }
 
-    /// Advance the auth-scheme control: auto → bearer → token → auto.
-    fn cycle_auth_scheme(&mut self) {
+    /// Read-only access to the form's text inputs (for the onboarding wizard,
+    /// which reuses this form standalone before the `App` exists).
+    pub fn form_input(&self) -> &FormInput {
+        &self.inputs
+    }
+
+    /// Mutable access to the form's text inputs — used by the onboarding wizard to
+    /// prefill / route keys through the same `FormInput` the editor uses.
+    pub fn form_input_mut(&mut self) -> &mut FormInput {
+        &mut self.inputs
+    }
+
+    /// Advance the auth-scheme control: auto → bearer → token → auto. Public so
+    /// the onboarding wizard can drive the same control.
+    pub fn cycle_auth_scheme(&mut self) {
         self.auth_scheme = match self.auth_scheme {
             AuthScheme::Auto => AuthScheme::Bearer,
             AuthScheme::Bearer => AuthScheme::Token,
@@ -168,9 +181,16 @@ impl ProfileForm {
         self.invalidate_test();
     }
 
-    /// Flip the verify-tls toggle.
-    fn toggle_verify_tls(&mut self) {
+    /// Flip the verify-tls toggle. Public so the onboarding wizard can drive it.
+    pub fn toggle_verify_tls(&mut self) {
         self.verify_tls = !self.verify_tls;
+        self.invalidate_test();
+    }
+
+    /// Public wrapper for [`Self::invalidate_test`], for the onboarding wizard
+    /// (which routes edits through `FormInput` directly and must invalidate a
+    /// prior test result the same way the editor form does).
+    pub fn invalidate_test_public(&mut self) {
         self.invalidate_test();
     }
 

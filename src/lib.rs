@@ -658,12 +658,87 @@ fn connect(ctx: &Ctx) -> Result<NetBoxClient> {
 }
 
 /// `nbox` / `nbox tui` — launch the interactive TUI.
+///
+/// First-run path: when there's no usable config (no file, no profiles, or no
+/// resolvable active profile and no `--profile`) we don't hard-fail with "run
+/// `nbox config init`" — we run a guided in-TUI onboarding wizard that captures a
+/// profile, writes it (active), then drops into the normal TUI. The wizard and the
+/// app loop share one terminal so there's no re-init flicker between them.
 async fn run_tui(ctx: &Ctx) -> Result<()> {
     let path = match &ctx.config_path {
         Some(p) => p.clone(),
         None => config::default_path()?,
     };
+
+    // Onboard before `config::load` can error on a missing/empty config. Drive the
+    // wizard and the app loop on a single terminal (init once, restore once).
+    if config::needs_onboarding(&path, ctx.profile.as_deref()) {
+        let mut terminal = ratatui::init();
+        let result = run_tui_onboarding(ctx, &path, &mut terminal).await;
+        ratatui::restore();
+        return result;
+    }
+
+    // Normal launch: build the app, then run it on its own terminal.
     let cfg = config::load(&path)?;
+    let app = build_tui_app(ctx, &path, &cfg).await?;
+    tui::app::run(app, cfg.ui.refresh_secs).await
+}
+
+/// The first-run flow on an already-initialized terminal: run the onboarding
+/// wizard, and on a successful save reload the config + connect + run the normal
+/// app loop on the same terminal. A clean quit (Esc/Ctrl+C) writes nothing and
+/// returns without launching the app.
+async fn run_tui_onboarding(
+    ctx: &Ctx,
+    path: &std::path::Path,
+    terminal: &mut ratatui::DefaultTerminal,
+) -> Result<()> {
+    // The wizard renders with the configured (or default) theme, honoring NO_COLOR.
+    let theme_name = config::load(path)
+        .ok()
+        .map_or_else(|| "default".to_string(), |c| c.ui.theme);
+    let theme = if tui::term::no_color() {
+        tui::theme::Theme::no_color()
+    } else {
+        tui::theme::Theme::by_name(&theme_name)
+    };
+
+    let Some(outcome) = tui::onboarding::run(terminal, path, &theme).await? else {
+        // Clean quit — nothing was written.
+        return Ok(());
+    };
+
+    // The wizard wrote + activated the profile. Connect as if `--profile name` was
+    // passed (its own active_profile is already set, but be explicit), then run.
+    let cfg = config::load(path)?;
+    let onboarded = Ctx {
+        config_path: ctx.config_path.clone(),
+        profile: Some(outcome.name.clone()),
+        format: ctx.format,
+        json_opts: ctx.json_opts.clone(),
+    };
+    let mut app = build_tui_app(&onboarded, path, &cfg).await?;
+    // When no token landed anywhere (no keyring entry, no token_env), steer the
+    // user toward an env var so the freshly-launched app's first requests succeed.
+    if outcome.needs_env_guidance {
+        app.set_initial_status(
+            "profile saved — set NBOX_TOKEN or a token_env to authenticate",
+            tui::theme::Severity::Warning,
+        );
+    }
+    tui::app::run_on(terminal, &mut app, cfg.ui.refresh_secs).await
+}
+
+/// Build a connected [`tui::state::App`] from a loaded config: resolve the active
+/// (or `--profile`) profile, build + probe the client (the 4.2 floor + version
+/// for the status line), and seed the session profiles + live UI settings. Shared
+/// by the normal launch and the post-onboarding launch. Does no terminal I/O.
+async fn build_tui_app(
+    ctx: &Ctx,
+    path: &std::path::Path,
+    cfg: &config::Config,
+) -> Result<tui::state::App> {
     let name = ctx
         .profile
         .clone()
@@ -677,7 +752,7 @@ async fn run_tui(ctx: &Ctx) -> Result<()> {
     let base_url = profile.url.clone();
     let theme_name = cfg.ui.theme.clone();
     let refresh_secs = cfg.ui.refresh_secs;
-    let token = config::resolve_token(profile, &path, &name);
+    let token = config::resolve_token(profile, path, &name);
     let client = NetBoxClient::new(profile, token)?;
 
     // Probe the instance on connect: confirms reachability + the 4.2 floor, and
@@ -706,7 +781,7 @@ async fn run_tui(ctx: &Ctx) -> Result<()> {
         name,
         base_url,
         status.netbox_version,
-        Some(path),
+        Some(path.to_path_buf()),
     );
     app.set_profiles(profiles);
     // Seed the live UI settings the Settings section edits and the `o` open path
@@ -719,7 +794,7 @@ async fn run_tui(ctx: &Ctx) -> Result<()> {
     if tui::term::no_color() {
         app.set_no_color();
     }
-    tui::app::run(app, refresh_secs).await
+    Ok(app)
 }
 
 /// `nbox status` — show NetBox connection + version info.

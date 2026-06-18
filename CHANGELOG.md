@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- First-run onboarding wizard (TUI). Launching `nbox` with no usable config — no
+  config file, no profiles, or no resolvable active profile — no longer dies with
+  "run `nbox config init`"; it opens a guided wizard that captures one profile
+  (name, url, token or `token_env`, `auth_scheme`, `verify_tls`), reusing the same
+  add-form and `Ctrl+T` test-connect (`verify_compatible`) as the Config modal's
+  profile editor. `Enter` saves the profile (written + made active in
+  `config.toml`, format-preserving) and drops straight into the normal TUI; `Esc`
+  (or `Ctrl+C`) quits cleanly without writing anything. A pasted token is stored
+  in the OS keyring (never in TOML); when the keyring is unavailable the profile
+  still saves and the app opens with a "set NBOX_TOKEN or a token_env" note. The
+  wizard and the app share one terminal, so there's no re-init flicker.
 - In-app Config modal with a profile editor (TUI). Press `S` (or run `config` in
   the command palette) to open a floating Config modal on its Profiles section:
   list the configured profiles (the active one marked), and add / edit / select /

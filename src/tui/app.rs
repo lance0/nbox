@@ -15,8 +15,21 @@ use crate::tui::ui;
 /// `ratatui::init`'s panic hook).
 pub async fn run(mut app: App, refresh_secs: Option<u64>) -> Result<()> {
     let mut terminal = ratatui::init();
-    let result = event_loop(&mut terminal, &mut app, refresh_secs).await;
+    let result = run_on(&mut terminal, &mut app, refresh_secs).await;
     ratatui::restore();
+    result
+}
+
+/// Run the event loop on an already-initialized `terminal`, persisting the theme
+/// on exit. Split from [`run`] so the first-run onboarding wizard can share one
+/// terminal with the app loop (no flicker from a re-init between them): the caller
+/// owns `ratatui::init`/`restore`, runs the wizard, then hands the terminal here.
+pub async fn run_on(
+    terminal: &mut DefaultTerminal,
+    app: &mut App,
+    refresh_secs: Option<u64>,
+) -> Result<()> {
+    let result = event_loop(terminal, app, refresh_secs).await;
 
     // Persist the theme if it changed during the session.
     if app.theme.name() != app.initial_theme
