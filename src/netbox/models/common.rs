@@ -6,6 +6,9 @@ use serde::{Deserialize, Serialize};
 ///
 /// NetBox embeds related objects as `{id, url, display, ...}`; depending on the
 /// object type one of `name`/`slug` (or, for IPs, `address`) carries the label.
+/// A VRF brief additionally carries `rd` (its route distinguisher), so a
+/// `--vrf <rd>` reference can resolve by that dedicated field rather than by a
+/// loose substring of `display`.
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct BriefObject {
     pub id: u64,
@@ -17,6 +20,9 @@ pub struct BriefObject {
     pub name: Option<String>,
     #[serde(default)]
     pub slug: Option<String>,
+    /// Route distinguisher — present on VRF briefs (`None` otherwise).
+    #[serde(default)]
+    pub rd: Option<String>,
 }
 
 impl BriefObject {
@@ -30,8 +36,10 @@ impl BriefObject {
     }
 
     /// Whether this object matches a user-supplied scope reference, case-insensitively.
-    /// Matches `name` or `slug` exactly, or `display` exactly or by substring (the
-    /// latter catches values embedded in a label, e.g. a VRF's RD in its display).
+    /// Matches `name`/`slug`/`rd` exactly, or `display` exactly or by substring
+    /// (the substring is a last-resort catch for values embedded in a label).
+    /// A VRF's RD now matches via the dedicated `rd` field; the display-substring
+    /// path remains only as a fallback.
     pub fn matches(&self, query: &str) -> bool {
         let q = query.trim().to_lowercase();
         if q.is_empty() {
@@ -40,6 +48,7 @@ impl BriefObject {
         let eq = |s: &Option<String>| s.as_deref().is_some_and(|x| x.to_lowercase() == q);
         eq(&self.name)
             || eq(&self.slug)
+            || eq(&self.rd)
             || self
                 .display
                 .as_deref()
@@ -47,20 +56,23 @@ impl BriefObject {
                 .is_some_and(|d| d == q || d.contains(&q))
     }
 
-    /// A strict, identity-level match: case-insensitive equality on `name` or
-    /// `slug`, or `id` equality when `query` parses to a number. Unlike
+    /// A strict, identity-level match: case-insensitive equality on `name`,
+    /// `slug`, or `rd`, or `id` equality when `query` parses to a number. Unlike
     /// [`matches`](Self::matches) it never substring-matches `display`, so a
     /// reference like `ci-site` won't match a prefix sibling such as `ci-site2`.
     /// Scope disambiguation prefers this and only falls back to the looser
-    /// [`matches`](Self::matches) when nothing matches exactly (keeping
-    /// `--vrf <rd>`, which relies on the display substring, working).
+    /// [`matches`](Self::matches) when nothing matches exactly. `--vrf <rd>` now
+    /// resolves here, exactly, via the dedicated `rd` field.
     pub fn matches_exact(&self, query: &str) -> bool {
         let q = query.trim().to_lowercase();
         if q.is_empty() {
             return false;
         }
         let eq = |s: &Option<String>| s.as_deref().is_some_and(|x| x.to_lowercase() == q);
-        eq(&self.name) || eq(&self.slug) || q.parse::<u64>().is_ok_and(|n| n == self.id)
+        eq(&self.name)
+            || eq(&self.slug)
+            || eq(&self.rd)
+            || q.parse::<u64>().is_ok_and(|n| n == self.id)
     }
 }
 
@@ -116,6 +128,39 @@ mod tests {
     }
 
     #[test]
+    fn brief_object_deserializes_rd() {
+        // NetBox's VRF brief serializer includes `rd`.
+        let vrf: BriefObject = serde_json::from_value(
+            json!({"id": 1, "name": "blue", "rd": "65000:1", "display": "blue (65000:1)"}),
+        )
+        .unwrap();
+        assert_eq!(vrf.rd.as_deref(), Some("65000:1"));
+
+        // A non-VRF brief carries no `rd`.
+        let site: BriefObject =
+            serde_json::from_value(json!({"id": 2, "name": "IAD1", "slug": "iad1"})).unwrap();
+        assert!(site.rd.is_none());
+    }
+
+    #[test]
+    fn matches_vrf_by_exact_rd_field_not_display_substring() {
+        // The RD lives in its own field now: `--vrf 65000:1` matches it exactly
+        // via `rd`, and the looser `matches` agrees.
+        let vrf: BriefObject = serde_json::from_value(
+            json!({"id": 1, "name": "blue", "rd": "65000:1", "display": "blue (65000:1)"}),
+        )
+        .unwrap();
+        assert!(vrf.matches_exact("65000:1")); // exact via the `rd` field
+        assert!(vrf.matches_exact("65000:1".to_uppercase().as_str())); // case-insensitive
+        assert!(vrf.matches("65000:1")); // loose path agrees too
+        assert!(vrf.matches_exact("blue")); // name still matches
+
+        // A different RD must not match.
+        assert!(!vrf.matches_exact("65000:2"));
+        assert!(!vrf.matches("65000:2"));
+    }
+
+    #[test]
     fn matches_exact_is_strict_no_display_substring() {
         let site: BriefObject = serde_json::from_value(
             json!({"id": 2, "name": "CI Site", "slug": "ci-site", "display": "CI Site"}),
@@ -137,13 +182,15 @@ mod tests {
         assert!(!sibling.matches_exact("ci-site"));
         assert!(sibling.matches_exact("ci-site2"));
 
-        // A VRF's RD lives only in `display`, so exact does NOT match it — that
-        // case relies on the looser `matches` fallback in `retain_scope`.
+        // When a VRF brief carries no `rd` field, its RD lives only in `display`,
+        // so an RD reference does NOT match exactly (the display substring is a
+        // `matches`-only fallback). The proper RD-via-`rd`-field match is covered
+        // by `matches_vrf_by_exact_rd_field_not_display_substring`.
         let vrf: BriefObject =
             serde_json::from_value(json!({"id": 1, "name": "blue", "display": "blue (65000:1)"}))
                 .unwrap();
         assert!(vrf.matches_exact("blue")); // name still matches exactly
-        assert!(!vrf.matches_exact("65000:1")); // RD substring does not
+        assert!(!vrf.matches_exact("65000:1")); // RD substring of display does not
     }
 
     #[test]

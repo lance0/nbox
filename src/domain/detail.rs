@@ -67,11 +67,11 @@ pub async fn journal_rows(
 /// handlers and the MCP tools so both filter candidate sets identically.
 ///
 /// An exact match wins: if any candidate's scope matches `query` exactly (by
-/// name/slug/id), only those are kept. Only when nothing matches exactly do we
-/// fall back to the looser [`BriefObject::matches`] (display substring) — that
-/// fallback is what resolves `--vrf <rd>` (the RD lives in the VRF's display).
-/// Without the exact-wins step, `--site ci-site` would also retain `ci-site2`
-/// whose display contains the substring `ci-site`.
+/// name/slug/rd/id), only those are kept. A `--vrf <rd>` reference now resolves
+/// exactly via the VRF brief's dedicated `rd` field. Only when nothing matches
+/// exactly do we fall back to the looser [`BriefObject::matches`] (display
+/// substring). Without the exact-wins step, `--site ci-site` would also retain
+/// `ci-site2` whose display contains the substring `ci-site`.
 pub(crate) fn retain_scope<T>(
     items: &mut Vec<T>,
     query: Option<&str>,
@@ -823,6 +823,7 @@ mod tests {
                 display: Some(name.to_string()),
                 name: Some(name.to_string()),
                 slug: None,
+                rd: None,
             }),
             tenant: None,
             assigned_object_type: None,

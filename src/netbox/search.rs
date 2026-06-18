@@ -908,15 +908,30 @@ impl NetBoxClient {
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
     ) -> Result<Vec<SearchResult>> {
-        // Clusters honor `--site` directly (allowlist) but have no clean
-        // region/site-group/location filter — skip them for an id-based scope.
-        if skip_for_id_scope(scope) {
-            return Ok(Vec::new());
-        }
-        // Clusters accept `status`/`site`/`tenant`/`tag` (no `role`).
-        let Some(params) = endpoint_params(q, f, &["status", "site", "tenant", "tag"]) else {
+        // NetBox 4.2+ scopes a cluster polymorphically (same `scope_type`/
+        // `scope_id` filter as prefixes), so honor a region/site-group/location
+        // scope the way `search_prefixes` does: clear the scope refs from the
+        // allowlist (so `--site` doesn't skip the endpoint) and re-express the
+        // single active scope as `scope_type`+`scope_id`. `--site` flows through
+        // here too (as `dcim.site`), since clusters honor it via the polymorphic
+        // scope as well.
+        let without_scope = SearchFilters {
+            site: None,
+            region: None,
+            site_group: None,
+            location: None,
+            ..f.clone()
+        };
+        // Clusters accept `status`/`tenant`/`tag` (no `role`); scope is applied
+        // out-of-band below.
+        let Some(mut params) = endpoint_params(q, &without_scope, &["status", "tenant", "tag"])
+        else {
             return Ok(Vec::new());
         };
+        if let Some(s) = scope {
+            params.push(("scope_type", s.content_type.to_string()));
+            params.push(("scope_id", s.id.to_string()));
+        }
         let page: Page<Cluster> = self.list(Endpoint::Clusters, params).await?;
         Ok(page
             .results

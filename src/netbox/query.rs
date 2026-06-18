@@ -349,8 +349,15 @@ impl NetBoxClient {
         .await
     }
 
-    /// Resolve a site by slug, then exact name, then name-contains.
+    /// Resolve a site by numeric id, then slug, then exact name, then
+    /// name-contains. The id fast-path hits the detail endpoint directly (404 →
+    /// `None`), so `--site 5` resolves; mirrors [`tenant_by_ref`](Self::tenant_by_ref).
     pub async fn site_by_ref(&self, value: &str) -> Result<Option<Site>> {
+        if let Ok(id) = value.parse::<u64>() {
+            return self
+                .get_optional(&format!("/api/dcim/sites/{id}/"), &[])
+                .await;
+        }
         let by_slug: Page<Site> = self
             .list(Endpoint::Sites, vec![("slug", value.to_string())])
             .await?;
@@ -369,10 +376,17 @@ impl NetBoxClient {
         ambiguous_or_first("site", value, contains.results, |s| s.name.clone())
     }
 
-    /// Resolve a region by slug, then exact name, then name-contains. Mirrors
-    /// [`site_by_ref`](Self::site_by_ref); used to translate `--region` into a
-    /// numeric id for prefix `scope_type=dcim.region` filtering.
+    /// Resolve a region by numeric id, then slug, then exact name, then
+    /// name-contains. Mirrors [`site_by_ref`](Self::site_by_ref); used to
+    /// translate `--region` into a numeric id for prefix `scope_type=dcim.region`
+    /// filtering. The id fast-path hits the detail endpoint (404 → `None`), so
+    /// `--region 5` resolves.
     pub async fn region_by_ref(&self, value: &str) -> Result<Option<Region>> {
+        if let Ok(id) = value.parse::<u64>() {
+            return self
+                .get_optional(&format!("/api/dcim/regions/{id}/"), &[])
+                .await;
+        }
         let by_slug: Page<Region> = self
             .list(Endpoint::Regions, vec![("slug", value.to_string())])
             .await?;
@@ -391,10 +405,17 @@ impl NetBoxClient {
         ambiguous_or_first("region", value, contains.results, |r| r.name.clone())
     }
 
-    /// Resolve a site group by slug, then exact name, then name-contains. Mirrors
-    /// [`site_by_ref`](Self::site_by_ref); used to translate `--site-group` into a
-    /// numeric id for prefix `scope_type=dcim.sitegroup` filtering.
+    /// Resolve a site group by numeric id, then slug, then exact name, then
+    /// name-contains. Mirrors [`site_by_ref`](Self::site_by_ref); used to
+    /// translate `--site-group` into a numeric id for prefix
+    /// `scope_type=dcim.sitegroup` filtering. The id fast-path hits the detail
+    /// endpoint (404 → `None`), so `--site-group 5` resolves.
     pub async fn site_group_by_ref(&self, value: &str) -> Result<Option<SiteGroup>> {
+        if let Ok(id) = value.parse::<u64>() {
+            return self
+                .get_optional(&format!("/api/dcim/site-groups/{id}/"), &[])
+                .await;
+        }
         let by_slug: Page<SiteGroup> = self
             .list(Endpoint::SiteGroups, vec![("slug", value.to_string())])
             .await?;
@@ -413,10 +434,17 @@ impl NetBoxClient {
         ambiguous_or_first("site group", value, contains.results, |g| g.name.clone())
     }
 
-    /// Resolve a location by slug, then exact name, then name-contains. Mirrors
-    /// [`site_by_ref`](Self::site_by_ref); used to translate `--location` into a
-    /// numeric id for prefix `scope_type=dcim.location` filtering.
+    /// Resolve a location by numeric id, then slug, then exact name, then
+    /// name-contains. Mirrors [`site_by_ref`](Self::site_by_ref); used to
+    /// translate `--location` into a numeric id for prefix
+    /// `scope_type=dcim.location` filtering. The id fast-path hits the detail
+    /// endpoint (404 → `None`), so `--location 5` resolves.
     pub async fn location_by_ref(&self, value: &str) -> Result<Option<Location>> {
+        if let Ok(id) = value.parse::<u64>() {
+            return self
+                .get_optional(&format!("/api/dcim/locations/{id}/"), &[])
+                .await;
+        }
         let by_slug: Page<Location> = self
             .list(Endpoint::Locations, vec![("slug", value.to_string())])
             .await?;

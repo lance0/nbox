@@ -711,9 +711,10 @@ async fn assert_scope_filters_prefixes(endpoint: &str, content_type: &str, filte
         .mount(&server)
         .await;
 
-    // Devices honor region/site-group/location via id-based filters; give them an
-    // empty page so the fan-out doesn't 404. Other endpoints are skipped.
+    // Devices + clusters honor region/site-group/location scopes; give them empty
+    // pages so the fan-out doesn't 404. Other endpoints are skipped.
     mount_empty(&server, "/api/dcim/devices/").await;
+    mount_empty(&server, "/api/virtualization/clusters/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -827,6 +828,102 @@ async fn search_with_unknown_location_errors_not_found() {
         "location",
         SearchFilters {
             location: Some("nope".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+}
+
+/// Shared helper: a scope flag also filters CLUSTERS by `scope_type`+`scope_id`
+/// (NetBox 4.2+ scopes a cluster polymorphically, same as a prefix).
+async fn assert_scope_filters_clusters(endpoint: &str, content_type: &str, filters: SearchFilters) {
+    let server = MockServer::start().await;
+
+    // Scope resolution: `*_by_ref` looks the slug up first; return id 7.
+    Mock::given(method("GET"))
+        .and(path(endpoint))
+        .and(query_param("slug", "scope-ref"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 7, "url": "http://nb/api/.../7/", "name": "Scope Ref", "slug": "scope-ref"
+            }]
+        })))
+        .mount(&server)
+        .await;
+    mount_empty(&server, endpoint).await;
+
+    // The cluster endpoint must carry the translated scope params, and a matching
+    // cluster comes back (proving it's queried, not skipped).
+    Mock::given(method("GET"))
+        .and(path("/api/virtualization/clusters/"))
+        .and(query_param("scope_type", content_type))
+        .and(query_param("scope_id", "7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 12, "url": "http://nb/api/virtualization/clusters/12/", "name": "prod",
+                "scope_type": content_type, "scope": {"id": 7, "display": "Scope Ref"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    // Prefixes + devices also honor the scope; give them empty pages so the
+    // fan-out doesn't 404. Everything else is skipped.
+    mount_empty(&server, "/api/ipam/prefixes/").await;
+    mount_empty(&server, "/api/dcim/devices/").await;
+
+    let results = client(&server)
+        .search(SearchRequest {
+            query: "prod".into(),
+            limit: 25,
+            filters,
+        })
+        .await
+        .unwrap()
+        .results;
+
+    let cluster = results
+        .iter()
+        .find(|r| r.kind == ObjectKind::Cluster)
+        .expect("scope-filtered cluster surfaced");
+    assert_eq!(cluster.display, "prod");
+}
+
+#[tokio::test]
+async fn search_with_region_scopes_clusters_by_scope_type_and_id() {
+    assert_scope_filters_clusters(
+        "/api/dcim/regions/",
+        "dcim.region",
+        SearchFilters {
+            region: Some("scope-ref".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn search_with_site_group_scopes_clusters_by_scope_type_and_id() {
+    assert_scope_filters_clusters(
+        "/api/dcim/site-groups/",
+        "dcim.sitegroup",
+        SearchFilters {
+            site_group: Some("scope-ref".into()),
+            ..Default::default()
+        },
+    )
+    .await;
+}
+
+#[tokio::test]
+async fn search_with_location_scopes_clusters_by_scope_type_and_id() {
+    assert_scope_filters_clusters(
+        "/api/dcim/locations/",
+        "dcim.location",
+        SearchFilters {
+            location: Some("scope-ref".into()),
             ..Default::default()
         },
     )
@@ -1142,11 +1239,12 @@ async fn search_combines_vrf_and_site_scope_on_prefixes() {
 }
 
 #[tokio::test]
-async fn search_region_scope_skips_non_prefix_non_device_endpoints() {
+async fn search_region_scope_skips_non_prefix_non_device_non_cluster_endpoints() {
     // An id-based scope (region) has no clean filter on IPs/sites/circuits/…, so
     // those endpoints are skipped (never hit). Only the region lookup, the prefix
-    // endpoint, and the device endpoint are mounted; an unexpected request to a
-    // skipped endpoint would 404 and surface as a partial failure.
+    // endpoint, the device endpoint, and the cluster endpoint are mounted (the
+    // latter three honor the region scope); an unexpected request to a skipped
+    // endpoint would 404 and surface as a partial failure.
     let server = MockServer::start().await;
 
     Mock::given(method("GET"))
@@ -1162,6 +1260,7 @@ async fn search_region_scope_skips_non_prefix_non_device_endpoints() {
         .await;
     mount_empty(&server, "/api/ipam/prefixes/").await; // scope-filtered
     mount_empty(&server, "/api/dcim/devices/").await; // region_id-filtered
+    mount_empty(&server, "/api/virtualization/clusters/").await; // scope-filtered
 
     let outcome = client(&server)
         .search(SearchRequest {

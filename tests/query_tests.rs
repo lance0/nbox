@@ -351,6 +351,90 @@ async fn site_by_ref_tries_slug_first() {
 }
 
 #[tokio::test]
+async fn site_by_id_hits_detail_endpoint() {
+    // A numeric `--site 5` ref hits the detail endpoint directly (no list filter),
+    // mirroring tenant/device. clap docs promise the scope filters accept ids.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/sites/5/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 5, "url": "http://nb/api/dcim/sites/5/", "name": "iad1", "slug": "iad1"
+        })))
+        .mount(&server)
+        .await;
+
+    let site = client(&server).site_by_ref("5").await.unwrap().unwrap();
+    assert_eq!(site.id, 5);
+}
+
+#[tokio::test]
+async fn region_by_id_hits_detail_endpoint() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/regions/5/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 5, "url": "http://nb/api/dcim/regions/5/", "name": "US East", "slug": "us-east"
+        })))
+        .mount(&server)
+        .await;
+
+    let region = client(&server).region_by_ref("5").await.unwrap().unwrap();
+    assert_eq!(region.id, 5);
+    assert_eq!(region.slug, "us-east");
+}
+
+#[tokio::test]
+async fn region_by_unknown_id_returns_none() {
+    // A numeric ref that 404s on the detail endpoint is unresolved (None), not an
+    // error — search maps that to a not-found (exit 4) up the stack.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/regions/999/"))
+        .respond_with(ResponseTemplate::new(404).set_body_json(json!({"detail": "Not found."})))
+        .mount(&server)
+        .await;
+
+    let resolved = client(&server).region_by_ref("999").await.unwrap();
+    assert!(resolved.is_none());
+}
+
+#[tokio::test]
+async fn site_group_by_id_hits_detail_endpoint() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/site-groups/5/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 5, "url": "http://nb/api/dcim/site-groups/5/", "name": "Campus", "slug": "campus"
+        })))
+        .mount(&server)
+        .await;
+
+    let group = client(&server)
+        .site_group_by_ref("5")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(group.id, 5);
+    assert_eq!(group.slug, "campus");
+}
+
+#[tokio::test]
+async fn location_by_id_hits_detail_endpoint() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/locations/5/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 5, "url": "http://nb/api/dcim/locations/5/", "name": "Row A", "slug": "row-a"
+        })))
+        .mount(&server)
+        .await;
+
+    let loc = client(&server).location_by_ref("5").await.unwrap().unwrap();
+    assert_eq!(loc.id, 5);
+    assert_eq!(loc.slug, "row-a");
+}
+
+#[tokio::test]
 async fn circuit_by_cid_uses_cid_filter() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

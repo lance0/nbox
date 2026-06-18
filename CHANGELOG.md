@@ -188,7 +188,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ci-site`) and stayed ambiguous instead of resolving. `retain_scope` now keeps
   candidates whose scope matches the reference exactly (name/slug/id) when any
   do, and only falls back to the loose substring match when none do — so
-  `--vrf <rd>` (the RD lives in the VRF's display) still resolves.
+  `--vrf <rd>` still resolves.
+- `--vrf <rd>` now resolves a VRF by route distinguisher *exactly*, via a real
+  field. The `BriefObject` brief gained an `rd` field (NetBox's VRF serializer
+  includes it), so `BriefObject::matches`/`matches_exact` compare the RD against
+  the dedicated `rd` rather than substring-matching the `display` (e.g.
+  `blue (65000:1)`) — the old path only worked by accident and could match a
+  display that merely contained the string. `--vrf 65000:1` now matches the RD
+  exactly; a non-matching RD no longer slips through, and `matches_exact` stays
+  strict (name/slug/id/rd, never a display substring).
+- `nbox search --region/--site-group/--location <ref>` now accepts a numeric id,
+  not just a slug/name. The clap/CLI help promised ids, but `region_by_ref`/
+  `site_group_by_ref`/`location_by_ref` (and `site_by_ref`) resolved by slug/name
+  only, so `--region 5` fell through to a name lookup. Each now tries the by-id
+  detail endpoint first (404 → unresolved), mirroring `device_by_ref`/`vrf_by_ref`.
+- `nbox search --region/--site-group/--location <ref>` now also includes scoped
+  clusters. Clusters carry NetBox 4.2+'s polymorphic `scope` (the same as
+  prefixes), but cluster search was skipped for the id-based scope filters. It now
+  filters by `scope_type=dcim.region|dcim.sitegroup|dcim.location` + `scope_id`,
+  the same way prefixes do (and `--site` flows through the same scope path).
 - `nbox serve --http` (OIDC/routable mode, `http` feature): a real proxied request
   with the deployment's `Host` (e.g. `nbox.example.com`) was `403`'d because rmcp's
   Streamable HTTP server kept its loopback-only `Host` allow-list even when a
