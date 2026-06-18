@@ -207,6 +207,9 @@ const PAGE_JUMP_FALLBACK: usize = 10;
 /// preview path's `(kind, id)` stale-response suppression, scoped per channel).
 pub type RequestId = u64;
 
+/// A short footer-notice expiry, driven by the 180ms `PreviewTick`.
+const TRANSIENT_STATUS_TICKS: u8 = 10;
+
 /// Side-effecting work the loop should spawn off the render thread.
 #[derive(Debug, Clone)]
 pub enum AppCommand {
@@ -375,6 +378,9 @@ pub struct App {
     /// [`Theme::message_style`]. Set in lockstep with `status` (see
     /// [`App::set_status`]); resets to `Info` whenever the status is cleared.
     pub status_severity: Severity,
+    /// Remaining fast UI ticks before the current status clears itself. `None`
+    /// means the message is sticky until another action replaces or clears it.
+    status_ttl: Option<u8>,
 
     /// The `/` search line editor. Text entry, backspace/delete, cursor
     /// movement and the visible cursor are delegated to the cheese-backed
@@ -503,6 +509,7 @@ impl App {
             history: Vec::new(),
             status: String::new(),
             status_severity: Severity::Info,
+            status_ttl: None,
             search_input: TextInput::new("search NetBox…"),
             command_input: TextInput::new("command (e.g. device edge01)"),
             last_query: None,
@@ -647,7 +654,9 @@ impl App {
                 if self.loading() {
                     self.spinner.tick();
                 }
-                self.on_preview_tick()
+                let commands = self.on_preview_tick();
+                self.tick_status_ttl();
+                commands
             }
             AppEvent::SearchComplete { req, result } => {
                 // A search result settles its in-flight fetch (clean or error),
@@ -952,16 +961,16 @@ impl App {
                 }
             }
             KeyCode::Char('o') => {
-                if let Some(r) = self.selected_result() {
+                if let Some(target) = self.action_target() {
                     return vec![AppCommand::OpenBrowser {
-                        url: r.url.clone(),
+                        url: target.url,
                         command: self.open_browser_command.clone(),
                     }];
                 }
             }
             KeyCode::Char('y') => {
-                if let Some(r) = self.selected_result() {
-                    return vec![AppCommand::Copy(r.display.clone())];
+                if let Some(target) = self.action_target() {
+                    return vec![AppCommand::Copy(target.label)];
                 }
             }
             KeyCode::Char(c @ ('i' | 'p' | 'c' | 'v' | 's')) if !ctrl => self.select_detail_tab(c),
@@ -1641,12 +1650,33 @@ impl App {
     fn set_status(&mut self, message: impl Into<String>, severity: Severity) {
         self.status = message.into();
         self.status_severity = severity;
+        self.status_ttl = None;
+    }
+
+    /// Set a status message that clears itself after a short run of UI ticks.
+    fn set_transient_status(&mut self, message: impl Into<String>, severity: Severity) {
+        self.status = message.into();
+        self.status_severity = severity;
+        self.status_ttl = Some(TRANSIENT_STATUS_TICKS);
     }
 
     /// Clear the status line back to its neutral resting state.
     fn clear_status(&mut self) {
         self.status.clear();
         self.status_severity = Severity::Info;
+        self.status_ttl = None;
+    }
+
+    /// Age a transient status by one fast UI tick, clearing it when its TTL ends.
+    fn tick_status_ttl(&mut self) {
+        let Some(remaining) = self.status_ttl else {
+            return;
+        };
+        if remaining <= 1 {
+            self.clear_status();
+        } else {
+            self.status_ttl = Some(remaining - 1);
+        }
     }
 
     /// Flip focus between the home split's list and preview panes. Switching to
@@ -1781,7 +1811,7 @@ impl App {
         let list = Theme::list();
         self.theme_index = (self.theme_index + 1) % list.len();
         self.theme = Theme::by_name(list[self.theme_index]);
-        self.set_status(format!("theme: {}", list[self.theme_index]), Severity::Info);
+        self.set_transient_status(format!("theme: {}", self.theme.name()), Severity::Info);
     }
 
     fn set_theme_by_name(&mut self, name: &str) {
@@ -1793,7 +1823,7 @@ impl App {
         }
         self.theme = Theme::by_name(name);
         self.theme_index = Theme::index_of(name);
-        self.set_status(format!("theme: {}", self.theme.name()), Severity::Info);
+        self.set_transient_status(format!("theme: {}", self.theme.name()), Severity::Info);
     }
 
     /// Shared NO_COLOR guard for both theme-change paths (`t` cycle and the
@@ -1957,6 +1987,22 @@ impl App {
         self.view
             .get(self.selected)
             .and_then(|&i| self.results.get(i))
+    }
+
+    /// The object that visible actions (`o` browser, `y` copy) should target. On
+    /// Home this is the highlighted result; on Detail it is the loaded detail
+    /// object, so actions never fall through to the hidden Home selection.
+    fn action_target(&self) -> Option<ActionTarget> {
+        match self.screen {
+            Screen::Home => self.selected_result().map(|r| ActionTarget {
+                label: r.display.clone(),
+                url: r.url.clone(),
+            }),
+            Screen::Detail => self.detail.as_ref().map(|d| ActionTarget {
+                label: d.title.clone(),
+                url: object_web_url(&self.base_url, d.kind, d.id),
+            }),
+        }
     }
 
     /// Switch the active detail tab by its key (`i`/`p`/`c`/`v`); pressing the
@@ -2323,6 +2369,44 @@ struct PreviewStub<'a> {
     display: &'a str,
     subtitle: Option<&'a str>,
     url: Option<&'a str>,
+}
+
+struct ActionTarget {
+    label: String,
+    url: String,
+}
+
+/// Build the NetBox web URL for a detail object from the active profile base URL.
+/// The base may itself live under a subpath (`https://host/netbox/`), matching the
+/// client URL-join behavior.
+fn object_web_url(base_url: &str, kind: ObjectKind, id: u64) -> String {
+    let path = match kind {
+        ObjectKind::Device => format!("dcim/devices/{id}/"),
+        ObjectKind::Site => format!("dcim/sites/{id}/"),
+        ObjectKind::IpAddress => format!("ipam/ip-addresses/{id}/"),
+        ObjectKind::Prefix => format!("ipam/prefixes/{id}/"),
+        ObjectKind::Vlan => format!("ipam/vlans/{id}/"),
+        ObjectKind::Circuit => format!("circuits/circuits/{id}/"),
+        ObjectKind::Aggregate => format!("ipam/aggregates/{id}/"),
+        ObjectKind::Asn => format!("ipam/asns/{id}/"),
+        ObjectKind::IpRange => format!("ipam/ip-ranges/{id}/"),
+        ObjectKind::Tenant => format!("tenancy/tenants/{id}/"),
+        ObjectKind::Contact => format!("tenancy/contacts/{id}/"),
+        ObjectKind::Provider => format!("circuits/providers/{id}/"),
+        ObjectKind::Vm => format!("virtualization/virtual-machines/{id}/"),
+        ObjectKind::Cluster => format!("virtualization/clusters/{id}/"),
+    };
+
+    let mut base = base_url.to_string();
+    if !base.ends_with('/') {
+        base.push('/');
+    }
+    reqwest::Url::parse(&base)
+        .and_then(|url| url.join(&path))
+        .map_or_else(
+            |_| format!("{}/{path}", base_url.trim_end_matches('/')),
+            |url| url.to_string(),
+        )
 }
 
 /// Classify a free-form status message (typically pushed from an async task,
@@ -2997,6 +3081,8 @@ mod tests {
         let cmds = a.handle_event(press(KeyCode::Enter));
         assert!(cmds.is_empty());
         assert_eq!(a.theme.name(), "nord");
+        assert_eq!(a.status, "theme: nord");
+        assert_eq!(a.status_ttl, Some(TRANSIENT_STATUS_TICKS));
     }
 
     #[test]
@@ -3051,6 +3137,42 @@ mod tests {
     }
 
     #[test]
+    fn detail_o_and_y_target_the_loaded_detail_not_the_home_selection() {
+        let mut a = app();
+        set_results(&mut a, vec![result(1, "edge01")]);
+        detail_loaded(
+            &mut a,
+            Ok(DetailView {
+                kind: ObjectKind::Device,
+                id: 99,
+                title: "device edge99".into(),
+                body: String::new(),
+                tabs: Vec::new(),
+            }),
+        );
+        assert_eq!(a.screen, Screen::Detail);
+
+        let open = a.handle_event(press(KeyCode::Char('o')));
+        assert!(
+            matches!(open.as_slice(), [AppCommand::OpenBrowser { url, .. }] if url == "http://localhost/dcim/devices/99/")
+        );
+        let copy = a.handle_event(press(KeyCode::Char('y')));
+        assert!(matches!(copy.as_slice(), [AppCommand::Copy(v)] if v == "device edge99"));
+    }
+
+    #[test]
+    fn detail_web_url_preserves_netbox_base_subpaths() {
+        assert_eq!(
+            object_web_url("https://nb.example/netbox", ObjectKind::Vm, 7),
+            "https://nb.example/netbox/virtualization/virtual-machines/7/"
+        );
+        assert_eq!(
+            object_web_url("not a url", ObjectKind::IpRange, 3),
+            "not a url/ipam/ip-ranges/3/"
+        );
+    }
+
+    #[test]
     fn ctrl_w_deletes_last_word() {
         // Word-delete is delegated to the cheese-backed input, but it must still
         // work through the pure search handler: type a two-word query, Ctrl+W
@@ -3075,6 +3197,45 @@ mod tests {
         let before = a.theme_index;
         a.handle_event(press(KeyCode::Char('t')));
         assert_ne!(a.theme_index, before);
+        assert_eq!(a.status, format!("theme: {}", a.theme.name()));
+        assert_eq!(a.status_ttl, Some(TRANSIENT_STATUS_TICKS));
+    }
+
+    #[test]
+    fn transient_theme_status_clears_on_preview_ticks() {
+        let mut a = app();
+        a.handle_event(press(KeyCode::Char('t')));
+        assert_eq!(a.status, format!("theme: {}", a.theme.name()));
+
+        for _ in 0..TRANSIENT_STATUS_TICKS - 1 {
+            a.handle_event(AppEvent::PreviewTick);
+            assert!(
+                !a.status.is_empty(),
+                "theme status should survive until its TTL expires"
+            );
+        }
+
+        a.handle_event(AppEvent::PreviewTick);
+        assert!(a.status.is_empty());
+        assert_eq!(a.status_severity, Severity::Info);
+        assert_eq!(a.status_ttl, None);
+    }
+
+    #[test]
+    fn sticky_status_replaces_and_cancels_transient_status() {
+        let mut a = app();
+        a.handle_event(press(KeyCode::Char('t')));
+        assert!(a.status_ttl.is_some());
+
+        detail_loaded(&mut a, Err(anyhow::anyhow!("boom")));
+
+        assert_eq!(a.status, "error: boom");
+        assert_eq!(a.status_severity, Severity::Error);
+        assert_eq!(a.status_ttl, None);
+        for _ in 0..TRANSIENT_STATUS_TICKS {
+            a.handle_event(AppEvent::PreviewTick);
+        }
+        assert_eq!(a.status, "error: boom");
     }
 
     #[test]
@@ -5198,7 +5359,8 @@ mod tests {
         // Right on the theme row cycles + hot-applies live to App.theme.
         a.handle_event(press(KeyCode::Right));
         assert_eq!(a.theme.name(), Theme::list()[1]);
-        assert!(a.status.starts_with("theme:"), "status reflects the change");
+        assert_eq!(a.status, format!("theme: {}", a.theme.name()));
+        assert_eq!(a.status_ttl, Some(TRANSIENT_STATUS_TICKS));
     }
 
     #[test]

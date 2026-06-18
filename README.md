@@ -304,7 +304,7 @@ auth/permission (401/403), `4` not found, `5` ambiguous reference. See
 | `PgUp` / `PgDn` | page up / down |
 | `Enter` | open selected object |
 | `o` | open in browser |
-| `y` | copy selected field |
+| `y` | copy current item label |
 | `t` | cycle theme |
 | `r` | refresh |
 | `P` / `Ctrl+P` | switch profile (cycle forward / backward) |

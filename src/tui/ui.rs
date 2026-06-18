@@ -877,38 +877,67 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &mut App) {
         Mode::Normal => {}
     }
 
+    let line = footer_line(app);
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().fg(app.theme.text)),
+        area,
+    );
+}
+
+/// Context-sensitive normal-mode footer. Live state (spinner, result count,
+/// errors, transient theme notices) gets the left edge; persistent navigation
+/// follows so controls stay visible without burying the thing that just changed.
+fn footer_line(app: &App) -> Line<'static> {
     let theme = &app.theme;
     let mut spans: Vec<Span> = Vec::new();
-    // While a request is in flight, lead the status line with the loading
-    // spinner glyph (styled via the cheese palette). When idle the footer is
-    // exactly as before — no spinner cell.
+    let mut has_state = false;
+
     if app.loading() {
-        spans.push(Span::raw(" "));
         spans.push(app.spinner.span(theme));
+        spans.push(Span::raw(" "));
+        has_state = true;
     }
     if !app.status.is_empty() {
-        // A live status message is colored by its severity: errors red, partial
-        // results yellow, confirmations green, ordinary chatter dim.
         spans.push(Span::styled(
-            format!(" {} ", app.status),
+            app.status.clone(),
             theme.message_style(app.status_severity),
         ));
     } else if app.loading() {
-        // Loading with no specific status: a neutral hint beside the spinner.
         spans.push(Span::styled(
-            " loading… ",
+            "loading…",
+            Style::default().fg(theme.text_dim),
+        ));
+    } else {
+        has_state = false;
+    }
+
+    if has_state || !app.status.is_empty() {
+        spans.push(Span::raw("    "));
+        spans.push(Span::styled(
+            footer_nav(app).trim_start().to_string(),
             Style::default().fg(theme.text_dim),
         ));
     } else {
         spans.push(Span::styled(
-            " / search   Tab pane   Enter open   o browser   y copy   b back   t theme   ? help   q quit ",
+            footer_nav(app),
             Style::default().fg(theme.text_dim),
         ));
     }
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().fg(theme.text)),
-        area,
-    );
+    Line::from(spans)
+}
+
+fn footer_nav(app: &App) -> &'static str {
+    match app.screen {
+        Screen::Home if app.focus == Focus::Preview => {
+            " / search · j/k scroll · g/G top/bottom · Tab results · Enter open · o/y open/copy · r refresh · ? help · q quit "
+        }
+        Screen::Home => {
+            " / search · j/k move · Enter open · Tab preview · o/y open/copy · r refresh · t theme · ? help · q quit "
+        }
+        Screen::Detail => {
+            " j/k scroll · g/G top/bottom · i/p/c/v/s tabs · o/y open/copy · b back · r refresh · t theme · ? help · q quit "
+        }
+    }
 }
 
 fn mode_label(mode: Mode) -> &'static str {
@@ -922,6 +951,31 @@ fn mode_label(mode: Mode) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ProfileConfig;
+    use crate::netbox::client::NetBoxClient;
+
+    fn app() -> App {
+        let profile = ProfileConfig {
+            url: "http://localhost".into(),
+            ..Default::default()
+        };
+        let client = NetBoxClient::new(&profile, None).unwrap();
+        App::new(
+            client,
+            "default",
+            "test".into(),
+            "http://localhost".into(),
+            "4.5.5".into(),
+            None,
+        )
+    }
+
+    fn line_text(line: &Line) -> String {
+        line.spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+    }
 
     /// Pull the foreground color the line's last span renders in.
     fn last_fg(line: &Line) -> Option<ratatui::style::Color> {
@@ -1165,6 +1219,60 @@ mod tests {
                 "help must not advertise unbound key {bogus}"
             );
         }
+    }
+
+    #[test]
+    fn footer_nav_is_contextual() {
+        let mut a = app();
+        let home = footer_nav(&a);
+        assert!(home.contains("j/k move"));
+        assert!(home.contains("Enter open"));
+
+        a.focus = Focus::Preview;
+        let preview = footer_nav(&a);
+        assert!(preview.contains("j/k scroll"));
+        assert!(preview.contains("Tab results"));
+
+        a.screen = Screen::Detail;
+        let detail = footer_nav(&a);
+        assert!(detail.contains("b back"));
+        assert!(detail.contains("i/p/c/v/s tabs"));
+        assert!(!detail.contains("Enter open"));
+    }
+
+    #[test]
+    fn footer_status_does_not_replace_navigation() {
+        let mut a = app();
+        a.status = "theme: nord".into();
+
+        let text = line_text(&footer_line(&a));
+
+        assert!(
+            text.starts_with("theme: nord"),
+            "status owns the left edge: {text}"
+        );
+        assert!(text.contains("/ search"), "nav remains present: {text}");
+        let status_idx = text.find("theme: nord").expect("status present");
+        let nav_idx = text.find("/ search").expect("nav present");
+        assert!(status_idx < nav_idx, "status precedes navigation: {text}");
+    }
+
+    #[test]
+    fn footer_loading_state_precedes_navigation() {
+        let mut a = app();
+        a.pending = 1;
+        a.status = "searching edge…".into();
+
+        let text = line_text(&footer_line(&a));
+
+        assert!(text.contains("searching edge"), "status present: {text}");
+        assert!(text.contains("/ search"), "nav remains present: {text}");
+        let status_idx = text.find("searching edge").expect("status present");
+        let nav_idx = text.find("/ search").expect("nav present");
+        assert!(
+            status_idx < nav_idx,
+            "loading state precedes navigation: {text}"
+        );
     }
 
     #[test]
