@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- TUI profile switcher: cycle between the profiles in your config without
+  restarting. `P` switches to the next profile, `Ctrl+P` the previous (wrapping
+  at both ends), and the palette `profile <name>` (alias `prof`) verb jumps to a
+  named one. Switching rebuilds the NetBox client for that instance and re-probes
+  `/api/status/` off the render thread — reusing the same connect + version-floor
+  check the TUI runs at launch — so the header flips to the new profile and its
+  NetBox version; an unreachable/unsupported instance surfaces a clear error and
+  leaves the UI usable. The old instance's results/recents/detail are dropped on
+  switch and any in-flight old-profile search/detail responses are suppressed by
+  the request-id guard, so a slow straggler can't repaint the new instance. With
+  a single configured profile the hotkey is a graceful no-op. Session-only: it
+  does not rewrite `active_profile` in the config (use `nbox profile use <name>`).
 - Virtualization lookups: `nbox vm <name|id>` and `nbox cluster <name|id>`,
   read-only and additive. VM surfaces its status, role/cluster/device/platform
   (brief), vcpus, memory, disk, primary IPv4/IPv6, tenant, site, description,

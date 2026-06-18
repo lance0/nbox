@@ -292,16 +292,25 @@ auth/permission (401/403), `4` not found, `5` ambiguous reference. See
 | `y` | copy selected field |
 | `t` | cycle theme |
 | `r` | refresh |
+| `P` / `Ctrl+P` | switch profile (cycle forward / backward) |
 | `b` / `Esc` | back |
 | `i p c v s` | device tabs (interfaces / IPs / cables / VLANs / services) |
 | `?` / `F1` | help |
 | `q` / `Ctrl+c` | quit |
 
 The command palette (`:`) accepts `device`/`ip`/`prefix`/`vlan`/`site <ref>`,
-`find <q>` (or bare text), `open`, `copy`, `theme <name>`, and `refresh`. The home
-screen lists recently opened objects (deduped, most-recent-first) when there are
-no search results — press `Enter` to reopen one. Set `[ui].refresh_secs` to
-auto-refresh the current search on an interval (off by default).
+`find <q>` (or bare text), `open`, `copy`, `theme <name>`, `profile <name>`, and
+`refresh`. The home screen lists recently opened objects (deduped,
+most-recent-first) when there are no search results — press `Enter` to reopen one.
+Set `[ui].refresh_secs` to auto-refresh the current search on an interval (off by
+default).
+
+`P` / `Ctrl+P` (or `profile <name>` in the palette) switches between the profiles
+in your config without restarting: it rebuilds the client for that instance and
+re-probes `/api/status/`, so the header flips to the new profile and its NetBox
+version. With a single profile the hotkey is a no-op. The change is session-only —
+it does not rewrite `active_profile` in your config (use `nbox profile use <name>`
+for that).
 
 ## Themes
 

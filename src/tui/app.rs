@@ -111,7 +111,29 @@ fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent
                 let _ = tx.send(AppEvent::Status(message)).await;
             });
         }
+        AppCommand::SwitchProfile { name, config } => {
+            tokio::spawn(async move {
+                // Reconnect the TUI way: rebuild the client from the target
+                // profile and re-probe `/api/status/` — the same connect/probe
+                // code paths launch uses — off the render thread. Token resolution
+                // reads the env here (not in the pure handler).
+                let result = reconnect(&config).await;
+                let _ = tx.send(AppEvent::ProfileSwitched { name, result }).await;
+            });
+        }
     }
+}
+
+/// Build a fresh client for `profile` and re-probe the instance, returning the
+/// client paired with its NetBox version on success. Reuses
+/// [`NetBoxClient::new`] + [`NetBoxClient::verify_compatible`] — the exact pair
+/// `run_tui` calls at launch — so a switch enforces the same version floor and
+/// surfaces the same errors (unreachable / unsupported) as a fresh start.
+async fn reconnect(profile: &crate::config::ProfileConfig) -> Result<(NetBoxClient, String)> {
+    let token = crate::config::resolve_token(profile);
+    let client = NetBoxClient::new(profile, token)?;
+    let status = client.verify_compatible().await?;
+    Ok((client, status.netbox_version))
 }
 
 #[cfg(feature = "clipboard")]

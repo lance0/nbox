@@ -598,6 +598,19 @@ async fn run_tui(ctx: &Ctx) -> Result<()> {
     // fast.)
     let status = client.verify_compatible().await?;
 
+    // All configured profiles the running session can cycle between (in config
+    // order — the BTreeMap iterates by name) without restarting. The switcher
+    // (`P` / `Ctrl+P`, or the palette `profile <name>` verb) reconnects + re-probes
+    // each one live; see `tui::state::App::cycle_profile`.
+    let profiles: Vec<tui::state::ProfileEntry> = cfg
+        .profiles
+        .iter()
+        .map(|(name, config)| tui::state::ProfileEntry {
+            name: name.clone(),
+            config: config.clone(),
+        })
+        .collect();
+
     let mut app = tui::state::App::new(
         client,
         &theme_name,
@@ -606,6 +619,7 @@ async fn run_tui(ctx: &Ctx) -> Result<()> {
         status.netbox_version,
         Some(path),
     );
+    app.set_profiles(profiles);
     // Honor NO_COLOR: render the TUI monochrome regardless of the configured
     // theme. The TUI is always a TTY when interactive, so the color decision here
     // keys on NO_COLOR (truecolor vs ANSI is moot when no color is emitted). See

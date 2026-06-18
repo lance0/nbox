@@ -15,6 +15,8 @@ pub enum PaletteCommand {
     Copy,
     /// Switch theme by name.
     Theme(String),
+    /// Switch the active NetBox profile by name.
+    Profile(String),
     /// Re-run the last search.
     Refresh,
 }
@@ -62,6 +64,13 @@ pub fn parse(input: &str) -> Result<PaletteCommand, String> {
                 Err("usage: theme <name>".into())
             } else {
                 Ok(PaletteCommand::Theme(rest.to_string()))
+            }
+        }
+        "profile" | "prof" => {
+            if rest.is_empty() {
+                Err("usage: profile <name>".into())
+            } else {
+                Ok(PaletteCommand::Profile(rest.to_string()))
             }
         }
         "refresh" | "r" => Ok(PaletteCommand::Refresh),
@@ -112,9 +121,30 @@ mod tests {
     }
 
     #[test]
+    fn parses_profile_verb_and_alias() {
+        // `profile <name>` (and the `prof` alias) jump to a named profile. The
+        // name is kept verbatim; resolution against the configured set happens in
+        // the app handler, not the parser.
+        assert_eq!(
+            parse("profile lab").unwrap(),
+            PaletteCommand::Profile("lab".into())
+        );
+        assert_eq!(
+            parse("prof prod").unwrap(),
+            PaletteCommand::Profile("prod".into())
+        );
+        // A name with surrounding whitespace is trimmed like the other verbs.
+        assert_eq!(
+            parse("profile   work  ").unwrap(),
+            PaletteCommand::Profile("work".into())
+        );
+    }
+
+    #[test]
     fn missing_args_and_empty_are_errors() {
         assert!(parse("device").is_err());
         assert!(parse("theme").is_err());
+        assert!(parse("profile").is_err());
         assert!(parse("   ").is_err());
     }
 }
