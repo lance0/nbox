@@ -404,10 +404,12 @@ pub async fn run(cli: Cli) -> Result<()> {
 ///
 /// With no `out_dir`, write the single top-level page to stdout (the original
 /// `nbox man > nbox.1` contract). Given a directory, write the full set there:
-/// the top-level `nbox.1` plus one `nbox-<subcommand>.1` per subcommand, so
-/// `man nbox-device` resolves once installed. `clap_mangen` renders one page per
-/// `clap::Command`, and per-subcommand flags only appear on their own pages, so
-/// the directory form is what a real man-page install wants.
+/// the top-level `nbox.1` plus one page per (sub)command, named for the full
+/// invocation — `nbox-device.1`, `nbox-config.1`, and the nested
+/// `nbox-config-init.1`, `nbox-profile-add.1`, … — so `man nbox-<sub>` resolves
+/// once installed. `clap_mangen` renders one page per `clap::Command`, and
+/// per-subcommand flags only appear on their own pages, so the directory form is
+/// what a real man-page install wants.
 fn run_man(out_dir: Option<&std::path::Path>) -> Result<()> {
     let cmd = Cli::command();
 
@@ -420,26 +422,67 @@ fn run_man(out_dir: Option<&std::path::Path>) -> Result<()> {
     std::fs::create_dir_all(dir)
         .with_context(|| format!("creating man-page output dir {}", dir.display()))?;
 
-    // Top-level page first, then one page per subcommand. `clap_mangen::Man`
-    // names the file from the command; for subcommands we prefix `nbox-` so the
-    // filenames match the `man nbox-<sub>` lookup convention.
+    // The top-level `nbox.1` renders as-is: its name *is* `nbox`, so the title,
+    // NAME, and SYNOPSIS already read correctly. Then walk the tree, writing one
+    // page per (sub)command with the right title + invocation (see
+    // `write_subcommand_pages`).
     let bin = cmd.get_name().to_string();
-    write_man_page(dir, &format!("{bin}.1"), &cmd)?;
-
-    for sub in cmd.get_subcommands() {
-        let file = format!("{bin}-{}.1", sub.get_name());
-        write_man_page(dir, &file, sub)?;
-    }
+    write_man_page(dir, &format!("{bin}.1"), cmd.clone())?;
+    write_subcommand_pages(dir, &cmd, &bin)?;
 
     Ok(())
 }
 
-/// Render one `clap` command to `<dir>/<file>` as roff.
-fn write_man_page(dir: &std::path::Path, file: &str, cmd: &clap::Command) -> Result<()> {
+/// Recursively write a man page per subcommand under `parent`.
+///
+/// `prefix` is the full invocation path of `parent` (`nbox`, then `nbox config`,
+/// …). For each child, the page is titled for the dashed lookup name
+/// (`nbox-config-init`) while its SYNOPSIS shows the real space-separated
+/// invocation (`nbox config init …`) — see [`write_man_page`] for how the two are
+/// set. Nested-subcommand parents (`config`, `profile`) recurse so their children
+/// get pages too, leaving no `SEE ALSO`/cross-reference dangling at a page that
+/// was never generated. The auto-`help` subcommand is dropped (it carries no man
+/// content of its own and would otherwise be referenced but never written).
+fn write_subcommand_pages(
+    dir: &std::path::Path,
+    parent: &clap::Command,
+    prefix: &str,
+) -> Result<()> {
+    for sub in parent.get_subcommands() {
+        if sub.get_name() == "help" {
+            continue;
+        }
+        let invocation = format!("{prefix} {}", sub.get_name()); // e.g. `nbox config init`
+        let dashed = invocation.replace(' ', "-"); // e.g. `nbox-config-init`
+        // Prepare the command so the rendered roff reads correctly:
+        // - `display_name` drives the `.TH` title + NAME section → `nbox-config-init`
+        // - `bin_name` drives the SYNOPSIS usage line → `nbox config init …`
+        // - dropping the help subcommand keeps the SUBCOMMANDS cross-refs pointing
+        //   only at pages we actually generate.
+        let prepared = sub
+            .clone()
+            .display_name(dashed.clone())
+            .bin_name(invocation.clone())
+            .disable_help_subcommand(true);
+        write_man_page(dir, &format!("{dashed}.1"), prepared)?;
+
+        // Recurse into nested-subcommand parents (config/profile) so their
+        // children (`nbox-config-init.1`, `nbox-profile-add.1`, …) exist.
+        if sub.get_subcommands().next().is_some() {
+            write_subcommand_pages(dir, sub, &invocation)?;
+        }
+    }
+    Ok(())
+}
+
+/// Render one `clap` command to `<dir>/<file>` as roff. The command is taken by
+/// value already configured with its `display_name`/`bin_name` (see
+/// [`write_subcommand_pages`]), so the rendered title and SYNOPSIS are correct.
+fn write_man_page(dir: &std::path::Path, file: &str, cmd: clap::Command) -> Result<()> {
     let path = dir.join(file);
     let mut out = std::fs::File::create(&path)
         .with_context(|| format!("creating man page {}", path.display()))?;
-    clap_mangen::Man::new(cmd.clone())
+    clap_mangen::Man::new(cmd)
         .render(&mut out)
         .with_context(|| format!("rendering man page {}", path.display()))?;
     Ok(())
@@ -1514,11 +1557,32 @@ mod tests {
         assert!(parse_object_ref("/edge01").is_err());
     }
 
+    /// Walk the clap tree the way `write_subcommand_pages` does, collecting the
+    /// expected page basenames (sans `.1`): the top-level `nbox`, every
+    /// subcommand (`nbox-device`), and every nested subcommand
+    /// (`nbox-config-init`, `nbox-profile-add`, …) — dropping the auto-`help`
+    /// command, which we never emit. This is the single source of truth the
+    /// parity assertion compares the produced files against.
+    fn expected_man_pages(cmd: &clap::Command, prefix: &str, out: &mut Vec<String>) {
+        for sub in cmd.get_subcommands() {
+            if sub.get_name() == "help" {
+                continue;
+            }
+            let invocation = format!("{prefix} {}", sub.get_name());
+            out.push(invocation.replace(' ', "-"));
+            if sub.get_subcommands().next().is_some() {
+                expected_man_pages(sub, &invocation, out);
+            }
+        }
+    }
+
     #[test]
-    fn man_out_dir_writes_top_level_plus_one_page_per_subcommand() {
+    fn man_out_dir_writes_a_page_per_command_with_correct_titles_and_no_dangling_refs() {
         // `nbox man <dir>` must emit the full set the release packages: the
-        // top-level `nbox.1` plus one `nbox-<sub>.1` per subcommand. Anything
-        // less leaves a referenced-but-missing page; anything extra leaves a
+        // top-level `nbox.1` plus one page per (sub)command, named for the full
+        // invocation (`nbox-device.1`, `nbox-config.1`, and the nested
+        // `nbox-config-init.1`, `nbox-profile-add.1`, …). Anything less leaves a
+        // referenced-but-missing page; anything extra leaves a
         // generated-but-unpackaged page. Assert exact parity with the clap tree.
         let dir = tempfile::tempdir().unwrap();
         run_man(Some(dir.path())).unwrap();
@@ -1526,29 +1590,77 @@ mod tests {
         let cmd = Cli::command();
         let bin = cmd.get_name().to_string();
 
-        let top = dir.path().join(format!("{bin}.1"));
-        assert!(top.is_file(), "missing top-level {bin}.1");
+        // The expected basenames: the top-level page + the walked tree.
+        let mut expected = vec![bin.clone()];
+        expected_man_pages(&cmd, &bin, &mut expected);
 
-        for sub in cmd.get_subcommands() {
-            let page = dir.path().join(format!("{bin}-{}.1", sub.get_name()));
+        for name in &expected {
+            let page = dir.path().join(format!("{name}.1"));
+            assert!(page.is_file(), "missing man page {name}.1");
+        }
+
+        // No stray pages: exactly the expected set, all `.1`.
+        let produced = std::fs::read_dir(dir.path()).unwrap().count();
+        assert_eq!(produced, expected.len(), "unexpected man-page count");
+
+        // The nested pages exist (config/profile subcommands), proving there are
+        // no dangling SUBCOMMANDS cross-references.
+        for nested in [
+            "nbox-config-init",
+            "nbox-config-path",
+            "nbox-config-show",
+            "nbox-profile-add",
+            "nbox-profile-use",
+            "nbox-profile-list",
+            "nbox-profile-show",
+        ] {
             assert!(
-                page.is_file(),
-                "missing per-subcommand page nbox-{}.1",
-                sub.get_name()
+                dir.path().join(format!("{nested}.1")).is_file(),
+                "missing nested page {nested}.1"
             );
         }
 
-        // No stray pages: exactly 1 (top-level) + subcommand count, all `.1`.
-        let produced = std::fs::read_dir(dir.path()).unwrap().count();
-        let expected = 1 + cmd.get_subcommands().count();
-        assert_eq!(produced, expected, "unexpected man-page count");
+        // A subcommand page must be titled `nbox-<sub>` but show the real
+        // `nbox <sub>` invocation in its SYNOPSIS. The `.TH` title is a raw macro
+        // argument (no roff hyphen-escaping); the NAME section escapes hyphens as
+        // `nbox\-device`; the SYNOPSIS bolds the program name as `\fBnbox device\fR`.
+        let device = std::fs::read_to_string(dir.path().join("nbox-device.1")).unwrap();
+        assert!(
+            device.contains(".TH nbox-device "),
+            "nbox-device.1 title is not `nbox-device`"
+        );
+        assert!(
+            device.contains(r"nbox\-device \-"),
+            "nbox-device.1 NAME section is not `nbox-device`"
+        );
+        assert!(
+            device.contains(r"\fBnbox device\fR"),
+            "nbox-device.1 SYNOPSIS should read `nbox device …`, not the bare subcommand"
+        );
 
         // The serve flags live only on the per-subcommand page; confirm the
-        // generated `nbox-serve.1` actually carries one (roff-escaped).
-        let serve = std::fs::read_to_string(dir.path().join(format!("{bin}-serve.1"))).unwrap();
+        // generated `nbox-serve.1` carries `--http` (roff-escaped) and the right
+        // invocation.
+        let serve = std::fs::read_to_string(dir.path().join("nbox-serve.1")).unwrap();
         assert!(
             serve.contains(r"\-\-http"),
             "nbox-serve.1 missing the --http flag"
+        );
+        assert!(
+            serve.contains(r"\fBnbox serve\fR"),
+            "nbox-serve.1 SYNOPSIS should read `nbox serve …`"
+        );
+
+        // The `config` page's SUBCOMMANDS cross-refs must point at pages we
+        // generate (`nbox-config-init(1)`), not the old dangling `config-init(1)`.
+        let config = std::fs::read_to_string(dir.path().join("nbox-config.1")).unwrap();
+        assert!(
+            config.contains(r"nbox\-config\-init(1)"),
+            "nbox-config.1 should cross-reference nbox-config-init(1)"
+        );
+        assert!(
+            !config.contains("\nconfig\\-init(1)"),
+            "nbox-config.1 still has a dangling `config-init(1)` reference"
         );
     }
 

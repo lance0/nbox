@@ -152,8 +152,9 @@ jobs:
           ./target/release/nbox completions fish > completions/nbox.fish
           ./target/release/nbox completions powershell > completions/_nbox.ps1
           ./target/release/nbox completions elvish > completions/nbox.elv
-          # Full man-page set: top-level nbox.1 plus one nbox-<sub>.1 per
-          # subcommand, so `man nbox-device` resolves after install.
+          # Full man-page set: top-level nbox.1 plus one page per (sub)command
+          # named for the full invocation (nbox-device.1, nbox-config-init.1,
+          # nbox-profile-add.1, …), so `man nbox-device` resolves after install.
           ./target/release/nbox man completions/man
           ls -1 completions/man
           tar czvf nbox-completions.tar.gz completions/

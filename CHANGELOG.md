@@ -327,6 +327,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   site slug `"5"`) could never resolve once the id lookup missed. The by-id 404
   case now FALLS THROUGH to the slug/name (and RD for VRF) lookups; a genuine id
   hit still short-circuits.
+- Install-quality subcommand man pages. `nbox man <dir>` rendered each
+  subcommand page from the bare subcommand `Command`, so `nbox-device.1` was
+  titled `device(1)` and its SYNOPSIS read `device …` rather than `nbox
+  device …`; the `nbox-config.1`/`nbox-profile.1` pages also cross-referenced
+  `config-init(1)`/`profile-add(1)` pages that were never generated (dangling
+  refs). Each page is now titled for its dashed lookup name (`nbox-device`,
+  `nbox-config-init`) while its SYNOPSIS shows the real space-separated
+  invocation (`nbox device …`, `nbox config init …`), and the nested
+  `config`/`profile` subcommands get their own pages
+  (`nbox-config-init.1`, `nbox-profile-add.1`, …) so no cross-reference dangles.
+- `nbox search --help` (and the clap-derived `nbox-search.1`) listed `racks`,
+  which search has never covered, and omitted the kinds it does — now the
+  accurate set: devices, sites, IPs, prefixes, VLANs, circuits, aggregates,
+  ASNs, IP ranges, tenants, contacts, providers, VMs, and clusters.
 
 ### Security
 - `nbox serve --http` (OIDC mode, `http` feature): the HTTPS-only rule for the IdP

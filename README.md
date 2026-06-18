@@ -45,7 +45,7 @@ See [Installation](#installation) below for setup instructions.
 - **Agent-ready** — `nbox serve` is a read-only MCP server: the same lookups exposed as eight tools (plus the objects as `nbox://{kind}/{ref}` resources), returning the exact JSON view models the CLI does, so AI agents (Claude Code, Claude Desktop, …) query NetBox safely. Stdio for a local subprocess, or a loopback HTTP transport — with OIDC resource-server auth for a network-reachable, read-only deployment. See [docs/MCP.md](docs/MCP.md).
 - **Normalized search** — one `search` query runs in parallel across devices, sites, IPs, prefixes, VLANs, circuits, providers, aggregates, ASNs, IP ranges, tenants, contacts, VMs, and clusters and returns ranked, deduped hits.
 - **IPAM-aware** — IP → most-specific parent prefix → VLAN → scope resolution, prefix utilization and children, `next-ip` / `next-prefix` for available addresses and free blocks (computed locally with `ipnet`).
-- **Polymorphic scope** — `--site`/`--region`/`--site-group`/`--location` on `search` resolve the reference once and filter prefixes by NetBox 4.2's `scope_type` + `scope_id` (exact scope, one flag at a time); views expose `scope`/`scope_type` (site, location, region, site-group, …).
+- **Polymorphic scope** — `--site`/`--region`/`--site-group`/`--location` on `search` resolve the reference once and filter by NetBox 4.2's `scope_type` + `scope_id` (exact scope, one flag at a time); `prefix`, `vlan`, and `ip` views expose `scope`/`scope_type` (site, location, region, site-group, …) — `prefix` and `vlan` carry their own scope, `ip` inherits it from its parent prefix.
 - **Interactive TUI** — list/preview split, scrolling, command palette, recents, twelve themes (including a light theme), `NO_COLOR` honored.
 - **Scriptable** — `-o plain|json|csv`, `--fields`, `--raw`, versioned `--envelope`, and stable exit codes; stdout stays clean for piping, logs go to stderr (see [AGENTS.md](AGENTS.md)).
 - **Open and copy** — open any object in the browser or copy a field straight from results.
@@ -447,5 +447,3 @@ raw escape-hatch tool come later.
 
 Licensed under either of [MIT](LICENSE-MIT) or [Apache-2.0](LICENSE-APACHE) at
 your option.
-</content>
-</invoke>
