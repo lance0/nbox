@@ -358,12 +358,75 @@ fn bearer_token(header: Option<&str>) -> Option<&str> {
     }
 }
 
+/// Reject a non-HTTPS OIDC URL unless its host is loopback.
+///
+/// An IdP issuer / JWKS / discovered endpoint MUST be reached over HTTPS in a
+/// routable deployment — a plain-`http://` IdP URL lets a network attacker swap
+/// the signing keys and mint any token. The single exception is a loopback host
+/// (`127.0.0.0/8` or `::1`, or `localhost`), for local development against a
+/// throwaway IdP. `label` names the URL in the error (`issuer` / `JWKS URL` / …).
+///
+/// Returns a [`NboxError::Usage`] (exit 2) so a misconfiguration fails fast at
+/// startup with a clear message rather than fetching keys over plaintext.
+pub fn require_https_or_loopback(url: &str, label: &str) -> Result<(), crate::error::NboxError> {
+    // Parse just enough to read the scheme + host. We don't pull a URL crate in
+    // for this — split the scheme, then the authority, then the host.
+    let (scheme, rest) = match url.split_once("://") {
+        Some((s, r)) => (s.to_ascii_lowercase(), r),
+        None => {
+            return Err(crate::error::NboxError::Usage(format!(
+                "the OIDC {label} ({url}) is not an absolute http(s) URL"
+            )));
+        }
+    };
+    if scheme == "https" {
+        return Ok(());
+    }
+    if scheme != "http" {
+        return Err(crate::error::NboxError::Usage(format!(
+            "the OIDC {label} ({url}) must use https (got scheme \"{scheme}\")"
+        )));
+    }
+    // Plain http:// — allowed only for a loopback host (local dev).
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    // Drop any userinfo before the host.
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
+    if host_is_loopback(host_port) {
+        return Ok(());
+    }
+    Err(crate::error::NboxError::Usage(format!(
+        "the OIDC {label} ({url}) uses plain http:// for a non-loopback host. Use https \
+         (TLS is mandatory for an IdP reachable over the network); plain http:// is \
+         accepted only for a loopback host (127.0.0.0/8 or ::1) in local development."
+    )))
+}
+
+/// Whether `host_port` (`host`, `host:port`, `[v6]`, or `[v6]:port`) is a
+/// loopback host: any `127.0.0.0/8` / `::1` literal, or the name `localhost`.
+fn host_is_loopback(host_port: &str) -> bool {
+    let host = if let Some(rest) = host_port.strip_prefix('[') {
+        // IPv6 literal: `[::1]` or `[::1]:8080`.
+        rest.split_once(']').map_or(rest, |(h, _)| h)
+    } else {
+        host_port
+            .rsplit_once(':')
+            .filter(|(_, port)| !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()))
+            .map_or(host_port, |(h, _)| h)
+    };
+    match host.parse::<std::net::IpAddr>() {
+        Ok(ip) => ip.is_loopback(),
+        Err(_) => host.eq_ignore_ascii_case("localhost"),
+    }
+}
+
 /// Discover the JWKS URI for `issuer`.
 ///
 /// Tries the OpenID Connect discovery document first
 /// (`<issuer>/.well-known/openid-configuration`), then the OAuth 2.0
 /// authorization-server metadata (`<issuer>/.well-known/oauth-authorization-server`).
-/// The first to yield a `jwks_uri` wins.
+/// The first to yield a `jwks_uri` wins. A discovered `jwks_uri` is held to the
+/// same https-or-loopback rule as a configured one (an attacker controlling the
+/// discovery document must not be able to point nbox at a plaintext JWKS).
 pub async fn discover_jwks_uri(http: &reqwest::Client, issuer: &str) -> anyhow::Result<String> {
     /// The one field of the discovery document we need.
     #[derive(Deserialize)]
@@ -388,6 +451,10 @@ pub async fn discover_jwks_uri(http: &reqwest::Client, issuer: &str) -> anyhow::
             Ok(resp) => match resp.json::<Discovery>().await {
                 Ok(doc) => {
                     if let Some(uri) = doc.jwks_uri.filter(|u| !u.is_empty()) {
+                        // A discovered JWKS URL is held to the same https-or-loopback
+                        // rule as a configured one — don't fetch keys over plaintext
+                        // just because the discovery doc said so.
+                        require_https_or_loopback(&uri, "discovered JWKS URL")?;
                         return Ok(uri);
                     }
                     last_err = Some(anyhow::anyhow!("{url} has no jwks_uri"));
@@ -441,6 +508,57 @@ mod tests {
         assert!(!id.has_scope("nbox:write"));
         assert_eq!(id.sub.as_deref(), Some("user-1"));
         assert_eq!(id.jti.as_deref(), Some("jti-1"));
+    }
+
+    #[test]
+    fn https_urls_are_always_accepted() {
+        assert!(require_https_or_loopback("https://idp.example.com", "issuer").is_ok());
+        assert!(
+            require_https_or_loopback("https://idp.example.com/.well-known/jwks", "JWKS URL")
+                .is_ok()
+        );
+        // Scheme is matched case-insensitively.
+        assert!(require_https_or_loopback("HTTPS://idp.example.com", "issuer").is_ok());
+    }
+
+    #[test]
+    fn plain_http_non_loopback_is_rejected_as_usage() {
+        for url in [
+            "http://idp.example.com",
+            "http://idp.example.com:8080/jwks",
+            "http://192.168.1.10/keys",
+            "http://[2001:db8::1]:8080/jwks",
+        ] {
+            let err = require_https_or_loopback(url, "issuer").unwrap_err();
+            assert!(
+                matches!(err, crate::error::NboxError::Usage(_)),
+                "{url} should be a Usage error"
+            );
+            assert_eq!(err.exit_code(), 2, "{url} should exit 2");
+        }
+    }
+
+    #[test]
+    fn plain_http_loopback_is_allowed_for_dev() {
+        for url in [
+            "http://127.0.0.1:8080",
+            "http://127.0.0.5/jwks",
+            "http://localhost:9000/.well-known/openid-configuration",
+            "http://[::1]:8080/keys",
+            "http://localhost",
+        ] {
+            assert!(
+                require_https_or_loopback(url, "JWKS URL").is_ok(),
+                "{url} (loopback) should be allowed"
+            );
+        }
+    }
+
+    #[test]
+    fn non_http_schemes_and_garbage_are_rejected() {
+        assert!(require_https_or_loopback("ftp://idp.example.com", "issuer").is_err());
+        assert!(require_https_or_loopback("idp.example.com", "issuer").is_err());
+        assert!(require_https_or_loopback("", "issuer").is_err());
     }
 
     #[test]

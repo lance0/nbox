@@ -448,6 +448,12 @@ pub enum Command {
         #[arg(long, value_name = "URL")]
         oidc_jwks_url: Option<String>,
 
+        /// Extra hostname to accept in the DNS-rebinding allow-list, on top of
+        /// the `--audience` host and loopback. Repeatable. Only applies in
+        /// OIDC/routable mode (a loopback bind stays loopback-only).
+        #[arg(long = "allowed-host", value_name = "HOST")]
+        allowed_host: Vec<String>,
+
         /// Per-caller request cap, in requests per minute, on the HTTP `/mcp`
         /// endpoint. Keyed on the caller (`sub`, else `client_id`, else peer IP).
         /// Over the limit → `429` with `Retry-After`. `0` (the default) disables
@@ -749,8 +755,9 @@ mod tests {
                 oidc_issuer: None,
                 audience: None,
                 oidc_jwks_url: None,
+                ref allowed_host,
                 rate_limit: None,
-            })
+            }) if allowed_host.is_empty()
         ));
         // `--http` (and the optional `--http-token`) parse onto the variant.
         let http = Cli::try_parse_from([
@@ -796,6 +803,36 @@ mod tests {
                 && iss == "https://idp.example.com"
                 && aud == "https://nbox.example.com"
                 && jwks == "https://idp.example.com/keys"
+        ));
+    }
+
+    #[test]
+    fn serve_parses_repeatable_allowed_host_flag() {
+        let parsed = Cli::try_parse_from([
+            "nbox",
+            "serve",
+            "--http",
+            "0.0.0.0:8080",
+            "--oidc-issuer",
+            "https://idp.example.com",
+            "--audience",
+            "https://nbox.example.com",
+            "--allowed-host",
+            "nbox.example.com",
+            "--allowed-host",
+            "alt.example.com",
+        ])
+        .unwrap();
+        let Some(Command::Serve { allowed_host, .. }) = parsed.command else {
+            panic!("expected a serve command");
+        };
+        assert_eq!(allowed_host, vec!["nbox.example.com", "alt.example.com"]);
+
+        // Absent → empty (loopback-only allow-list by default).
+        let none = Cli::try_parse_from(["nbox", "serve", "--http", "127.0.0.1:8080"]).unwrap();
+        assert!(matches!(
+            none.command,
+            Some(Command::Serve { ref allowed_host, .. }) if allowed_host.is_empty()
         ));
     }
 

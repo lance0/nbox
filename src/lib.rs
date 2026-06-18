@@ -404,6 +404,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             oidc_issuer,
             audience,
             oidc_jwks_url,
+            allowed_host,
             rate_limit,
         }) => {
             run_serve(
@@ -414,6 +415,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                     oidc_issuer,
                     audience,
                     oidc_jwks_url,
+                    allowed_host,
                     rate_limit,
                 },
             )
@@ -430,6 +432,9 @@ struct ServeFlags {
     oidc_issuer: Option<String>,
     audience: Option<String>,
     oidc_jwks_url: Option<String>,
+    /// Extra DNS-rebinding allow-list hosts (repeatable `--allowed-host`); merged
+    /// with `[serve].allowed_hosts`. Only honored in OIDC/routable mode.
+    allowed_host: Vec<String>,
     /// Per-caller requests-per-minute cap; `None` ⇒ fall back to config / off.
     rate_limit: Option<u32>,
 }
@@ -451,6 +456,11 @@ async fn run_serve(ctx: &Ctx, flags: ServeFlags) -> Result<()> {
     let oidc_issuer = flags.oidc_issuer.or(serve_cfg.oidc_issuer);
     let audience = flags.audience.or(serve_cfg.audience);
     let jwks_url = flags.oidc_jwks_url.or(serve_cfg.jwks_url);
+    // DNS-rebinding allow-list extras: union of `--allowed-host` and the config's
+    // `allowed_hosts` (additive, not override — both are explicit grants). Only
+    // honored in OIDC/routable mode; the transport warns if set in loopback mode.
+    let mut allowed_hosts = flags.allowed_host;
+    allowed_hosts.extend(serve_cfg.allowed_hosts);
     // Per-caller rate limit: flag wins, then config, then off (0). Absent / 0 =
     // disabled, so existing behavior is unchanged unless the operator opts in.
     let rate_limit = flags.rate_limit.or(serve_cfg.rate_limit).unwrap_or(0);
@@ -477,7 +487,16 @@ async fn run_serve(ctx: &Ctx, flags: ServeFlags) -> Result<()> {
     match http {
         None => mcp::serve(client).await,
         Some(addr) => {
-            serve_http_or_explain(client, &addr, http_token, oidc, jwks_url, rate_limit).await
+            serve_http_or_explain(
+                client,
+                &addr,
+                http_token,
+                oidc,
+                jwks_url,
+                allowed_hosts,
+                rate_limit,
+            )
+            .await
         }
     }
 }
@@ -506,6 +525,7 @@ async fn serve_http_or_explain(
     token: Option<String>,
     oidc: Option<(String, String)>,
     jwks_url: Option<String>,
+    allowed_hosts: Vec<String>,
     rate_limit: u32,
 ) -> Result<()> {
     let oidc = oidc.map(|(issuer, audience)| mcp::OidcArgs {
@@ -519,6 +539,7 @@ async fn serve_http_or_explain(
         mcp::ServeOptions {
             token,
             oidc,
+            allowed_hosts,
             rate_limit,
         },
     )
@@ -536,6 +557,7 @@ async fn serve_http_or_explain(
     _token: Option<String>,
     _oidc: Option<(String, String)>,
     _jwks_url: Option<String>,
+    _allowed_hosts: Vec<String>,
     _rate_limit: u32,
 ) -> Result<()> {
     Err(error::NboxError::Usage(

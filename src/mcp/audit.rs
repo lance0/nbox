@@ -109,6 +109,28 @@ pub fn caller_key(identity: Option<&Identity>, peer: Option<IpAddr>) -> String {
     }
 }
 
+/// Hash a raw `Mcp-Session-Id` into a short, stable hex digest for the audit log.
+///
+/// The raw session id is a bearer-ish correlation token — logging it verbatim
+/// would put a reusable handle in the log. A SHA-256 prefix (16 hex chars / the
+/// first 8 bytes) stays *correlatable* — the same session id always hashes to the
+/// same value, so a session's requests group together — without exposing the
+/// token itself. Truncation only weakens preimage resistance, which doesn't
+/// matter here: we want a stable opaque label, not a commitment.
+pub fn session_hash(session_id: &str) -> String {
+    use std::fmt::Write as _;
+
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(session_id.as_bytes());
+    // First 8 bytes → 16 hex chars: enough to disambiguate sessions in a log
+    // without being a full 64-char wall of hex.
+    let mut out = String::with_capacity(16);
+    for byte in &digest[..8] {
+        let _ = write!(out, "{byte:02x}");
+    }
+    out
+}
+
 /// One audit event, emitted once per request to `/mcp` after the response is
 /// known. Built by the middleware; [`Self::emit`] writes the single structured
 /// `tracing` event. Holds only safe fields — never a token or secret.
@@ -135,8 +157,10 @@ pub struct AuditEvent<'a> {
     /// Request path (no query string — a token could ride a query string, and
     /// the spec rejects query tokens anyway, so the path is logged bare).
     pub path: &'a str,
-    /// `Mcp-Session-Id` if the client sent one.
-    pub session_id: Option<&'a str>,
+    /// A short SHA-256 prefix of the `Mcp-Session-Id` if the client sent one
+    /// (see [`session_hash`]). Correlatable across a session's requests, but the
+    /// raw session token never lands in the log.
+    pub session: Option<&'a str>,
     /// Response status code.
     pub status: u16,
     /// Coarse outcome.
@@ -163,7 +187,7 @@ impl AuditEvent<'_> {
             iss = self.iss,
             method = self.method,
             path = self.path,
-            session_id = self.session_id,
+            session = self.session,
             status = self.status,
             outcome = self.outcome.as_str(),
             latency_ms = self.latency_ms,
@@ -301,6 +325,27 @@ mod tests {
         );
         // No identity and no peer → a stable sentinel.
         assert_eq!(caller_key(None, None), "ip:unknown");
+    }
+
+    #[test]
+    fn session_hash_is_stable_short_hex_and_not_the_raw_id() {
+        let raw = "mcp-session-0123456789abcdef-secret";
+        let h = session_hash(raw);
+        // 16 lowercase hex chars (first 8 bytes of SHA-256).
+        assert_eq!(h.len(), 16, "got {h}");
+        assert!(
+            h.chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "non-hex digest: {h}"
+        );
+        // Stable: the same session id always hashes the same (so a session's
+        // requests correlate in the log).
+        assert_eq!(session_hash(raw), h);
+        // A different session id hashes differently.
+        assert_ne!(session_hash("a-different-session"), h);
+        // Crucially, the digest is NOT the raw id (no token leak).
+        assert_ne!(h, raw);
+        assert!(!raw.contains(&h));
     }
 
     #[test]
@@ -531,7 +576,7 @@ mod tests {
                 iss: Some("https://idp.example.com"),
                 method: "POST",
                 path: "/mcp",
-                session_id: Some("sess-9"),
+                session: Some("0123456789abcdef"),
                 status: 200,
                 outcome: Outcome::Ok,
                 latency_ms: 12,
@@ -555,7 +600,7 @@ mod tests {
             "iss",
             "method",
             "path",
-            "session_id",
+            "session",
             "status",
             "outcome",
             "latency_ms",

@@ -20,15 +20,22 @@
 //! Security (DESIGN §24, mandatory):
 //! - Loopback-only bind unless OIDC auth is configured; a non-loopback bind
 //!   without `--oidc-issuer` is a usage error.
-//! - Validate the `Origin` header on every request → 403 on a non-loopback
-//!   origin (DNS-rebinding defense). rmcp additionally validates the `Host`
-//!   header against the loopback allow-list (loopback mode only).
+//! - DNS-rebinding defense via an allowed-host set. In loopback mode it is the
+//!   strict loopback set (`localhost`, `127.0.0.1`, `::1`); in OIDC/routable mode
+//!   it is the `--audience` host (nbox's own identity) plus loopback plus any
+//!   `--allowed-host` the operator adds. rmcp validates the `Host` header against
+//!   this set, and our gate validates the `Origin` header (when present) against
+//!   the same set — in both modes.
+//! - The IdP issuer / JWKS / discovered endpoints must be HTTPS unless their host
+//!   is loopback (local dev); a plain-`http://` non-loopback IdP URL is a startup
+//!   usage error (no fetching signing keys over plaintext).
 //! - In OIDC mode, JWT validation on `/mcp`: alg allowlist, `iss`/`aud`/`exp`,
 //!   `nbox:read` scope; 401/403 with the right `WWW-Authenticate` challenge.
-//! - Advertise `MCP-Protocol-Version: 2025-11-25` on every response.
+//! - Advertise `MCP-Protocol-Version: 2025-11-25` on *every* response — including
+//!   the 401/403 challenge and 429 rate-limit paths.
 //! - stdout stays clean: the protocol travels over the HTTP body, and all logs
 //!   go to stderr/file exactly as the stdio path does. Nothing here writes to
-//!   stdout. The token is never logged.
+//!   stdout. The token is never logged; the raw `Mcp-Session-Id` is hashed.
 
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
@@ -50,7 +57,10 @@ use tokio_util::sync::CancellationToken;
 
 use super::NboxMcp;
 use super::audit::{self, AuditEvent, AuthMode, Outcome, RateDecision, RateLimiter};
-use super::oidc::{self, AuthError, Identity, JwksCache, OidcConfig, SCOPE_READ, SCOPE_WRITE};
+use super::oidc::{
+    self, AuthError, Identity, JwksCache, OidcConfig, SCOPE_READ, SCOPE_WRITE,
+    require_https_or_loopback,
+};
 use crate::error::NboxError;
 use crate::netbox::client::NetBoxClient;
 
@@ -87,12 +97,48 @@ enum Guard {
     Oidc(OidcConfig),
 }
 
-/// The full state the `/mcp` gate middleware rides on: the auth [`Guard`] plus
-/// the optional per-caller [`RateLimiter`] (`None` ⇒ rate limiting disabled).
-/// Cheap to clone (an `Arc` + an `Option<Arc>`).
+/// The allowed-host set for the DNS-rebinding defense, shared by rmcp's `Host`
+/// check and our `Origin` check so the two never diverge.
+///
+/// A request whose `Host`/`Origin` host is loopback always passes (loopback is
+/// trusted regardless of mode); otherwise the host must appear in `extra`. In
+/// loopback mode `extra` is empty, so only loopback passes (the strict default).
+/// In OIDC/routable mode `extra` carries the `--audience` host plus any operator
+/// `--allowed-host` entries.
+#[derive(Clone, Debug, Default)]
+struct AllowedHosts {
+    /// Non-loopback hostnames that are allowed (lowercased, port stripped).
+    extra: Vec<String>,
+}
+
+impl AllowedHosts {
+    /// Whether `host` (a bare hostname or IP literal, no port) is allowed. A
+    /// loopback host is always allowed; anything else must be in `extra`.
+    fn allows(&self, host: &str) -> bool {
+        if host_is_loopback(host) {
+            return true;
+        }
+        let host = host.to_ascii_lowercase();
+        self.extra.contains(&host)
+    }
+
+    /// The list rmcp's `with_allowed_hosts` wants: the loopback names plus the
+    /// `extra` entries. (rmcp matches `host`/`host:port`; bare hostnames match
+    /// any port.) Empty `extra` ⇒ exactly rmcp's strict loopback default.
+    fn for_rmcp(&self) -> Vec<String> {
+        let mut hosts: Vec<String> = vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
+        hosts.extend(self.extra.iter().cloned());
+        hosts
+    }
+}
+
+/// The full state the `/mcp` gate middleware rides on: the auth [`Guard`], the
+/// [`AllowedHosts`] set for the `Origin` check, plus the optional per-caller
+/// [`RateLimiter`] (`None` ⇒ rate limiting disabled). Cheap to clone.
 #[derive(Clone)]
 struct GateState {
     guard: Guard,
+    allowed_hosts: Arc<AllowedHosts>,
     rate_limiter: Option<Arc<RateLimiter>>,
 }
 
@@ -104,6 +150,11 @@ pub struct ServeOptions {
     pub token: Option<String>,
     /// OIDC resource-server inputs; `Some` ⇒ rung 3 (validate IdP JWTs).
     pub oidc: Option<OidcArgs>,
+    /// Extra hostnames to add to the DNS-rebinding allow-list, on top of the
+    /// `--audience` host and loopback. Only honored in OIDC/routable mode (a
+    /// loopback bind keeps the strict loopback-only default). Repeatable
+    /// (`--allowed-host` / `[serve].allowed_hosts`).
+    pub allowed_hosts: Vec<String>,
     /// Per-caller requests-per-minute cap; `0` ⇒ disabled (default).
     pub rate_limit: u32,
 }
@@ -120,6 +171,7 @@ pub async fn serve_http(client: NetBoxClient, addr: &str, opts: ServeOptions) ->
     let ServeOptions {
         token,
         oidc,
+        allowed_hosts: extra_hosts,
         rate_limit,
     } = opts;
     let oidc_on = oidc.is_some();
@@ -131,6 +183,40 @@ pub async fn serve_http(client: NetBoxClient, addr: &str, opts: ServeOptions) ->
              nbox serves plain HTTP and validates inbound IdP JWTs but does not do TLS"
         );
     }
+
+    // Build the allowed-host set for the DNS-rebinding defense. Loopback mode is
+    // strict (loopback-only — operator `--allowed-host` is ignored there, by
+    // design). OIDC mode adds the `--audience` host (nbox's own identity) plus any
+    // `--allowed-host` entries, so a real proxied request with the deployment's
+    // `Host` passes both rmcp's check and our `Origin` check.
+    let allowed_hosts = if oidc_on {
+        let mut extra: Vec<String> = Vec::new();
+        if let Some(args) = &oidc
+            && let Some(host) = host_of_url(&args.audience)
+        {
+            extra.push(host);
+        }
+        extra.extend(
+            extra_hosts
+                .iter()
+                .map(|h| normalize_host_entry(h))
+                .filter(|h| !h.is_empty()),
+        );
+        extra.sort();
+        extra.dedup();
+        if !extra.is_empty() {
+            tracing::info!(allowed_hosts = ?extra, "DNS-rebinding allow-list (plus loopback)");
+        }
+        AllowedHosts { extra }
+    } else {
+        if !extra_hosts.is_empty() {
+            tracing::warn!(
+                "--allowed-host is ignored in loopback mode (the allow-list stays loopback-only); \
+                 it applies only with --oidc-issuer"
+            );
+        }
+        AllowedHosts::default()
+    };
 
     // Build the OIDC config (discovering the JWKS URI if no override was given)
     // before we stand up the listener, so a misconfiguration fails at startup.
@@ -145,8 +231,10 @@ pub async fn serve_http(client: NetBoxClient, addr: &str, opts: ServeOptions) ->
     if rate_limiter.is_some() {
         tracing::info!(per_minute = rate_limit, "per-caller rate limit enabled");
     }
+    let allowed_hosts = Arc::new(allowed_hosts);
     let state = GateState {
         guard: guard.clone(),
+        allowed_hosts: allowed_hosts.clone(),
         rate_limiter,
     };
 
@@ -156,12 +244,16 @@ pub async fn serve_http(client: NetBoxClient, addr: &str, opts: ServeOptions) ->
 
     let cancel = CancellationToken::new();
     // `StreamableHttpServerConfig` is `#[non_exhaustive]`, so build from the
-    // default and adjust via the builder. Origin validation is enforced by our
-    // own middleware (full control over the loopback decision + 403 body); the
-    // rmcp default still validates the `Host` header against the loopback
-    // allow-list for DNS-rebinding defense.
-    let config =
-        StreamableHttpServerConfig::default().with_cancellation_token(cancel.child_token());
+    // default and adjust via the builder. rmcp validates the `Host` header
+    // against `allowed_hosts` (DNS-rebinding defense); we hand it the same set
+    // our `Origin` check uses. In loopback mode that is exactly rmcp's strict
+    // loopback default; in OIDC mode it additionally allows the `--audience` host
+    // (+ operator extras) so a legitimate proxied request is not 403'd. Origin
+    // validation is enforced by our own middleware (full control over the 403
+    // body) consistently with the Host set.
+    let config = StreamableHttpServerConfig::default()
+        .with_cancellation_token(cancel.child_token())
+        .with_allowed_hosts(allowed_hosts.for_rmcp());
     let mcp = StreamableHttpService::new(
         move || Ok(server.clone()),
         LocalSessionManager::default().into(),
@@ -205,6 +297,14 @@ pub async fn serve_http(client: NetBoxClient, addr: &str, opts: ServeOptions) ->
 /// from the issuer if no override was given, then build the by-`kid` cache. The
 /// JWKS itself is fetched lazily on the first token validation.
 async fn build_oidc_config(args: OidcArgs) -> Result<OidcConfig> {
+    // HTTPS is mandatory for the IdP issuer (and any JWKS URL) unless the host is
+    // loopback — a plain-`http://` non-loopback IdP lets a network attacker swap
+    // the signing keys. Fail fast at startup (exit 2) before any fetch.
+    require_https_or_loopback(&args.issuer, "issuer")?;
+    if let Some(url) = &args.jwks_url {
+        require_https_or_loopback(url, "JWKS URL")?;
+    }
+
     // A dedicated client for IdP calls (discovery + JWKS). Same reqwest/rustls
     // style as the NetBox client; default TLS verification (an IdP is public).
     let http = reqwest::Client::builder()
@@ -214,6 +314,8 @@ async fn build_oidc_config(args: OidcArgs) -> Result<OidcConfig> {
 
     let jwks_uri = match args.jwks_url {
         Some(url) => url,
+        // `discover_jwks_uri` applies the same https-or-loopback rule to the URL
+        // the discovery document returns.
         None => oidc::discover_jwks_uri(&http, &args.issuer)
             .await
             .with_context(|| {
@@ -262,6 +364,41 @@ fn is_loopback(ip: IpAddr) -> bool {
     ip.is_loopback()
 }
 
+/// Whether `host` (a bare hostname or IP literal, no port) is loopback: any
+/// `127.0.0.0/8` / `::1` literal, or the name `localhost`.
+fn host_is_loopback(host: &str) -> bool {
+    match host.parse::<IpAddr>() {
+        Ok(ip) => ip.is_loopback(),
+        Err(_) => host.eq_ignore_ascii_case("localhost"),
+    }
+}
+
+/// Extract the host (lowercased, port and brackets stripped) from a URL like
+/// the `--audience` canonical URI. `None` if it isn't an absolute `http(s)` URL
+/// with a host (e.g. an opaque audience identifier — no host to allow).
+fn host_of_url(url: &str) -> Option<String> {
+    let rest = url.split_once("://")?.1;
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    // Drop any userinfo.
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
+    let host = strip_port(host_port);
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_ascii_lowercase())
+    }
+}
+
+/// Normalize an operator-supplied `--allowed-host` entry to a bare lowercased
+/// host (tolerating a `scheme://` prefix or a trailing `:port`).
+fn normalize_host_entry(entry: &str) -> String {
+    let entry = entry.trim();
+    let rest = entry.split_once("://").map_or(entry, |(_, r)| r);
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
+    strip_port(host_port).to_ascii_lowercase()
+}
+
 /// Axum middleware on `/mcp`: enforce auth, validate the `Origin` header,
 /// rate-limit per caller, advertise the MCP protocol version, and emit one
 /// structured audit event for the request.
@@ -269,10 +406,15 @@ fn is_loopback(ip: IpAddr) -> bool {
 /// Loopback mode: optional static bearer (401) → origin (403) → rate (429) → inner.
 /// OIDC mode: validate the JWT + scope (401/403) → origin (403) → rate (429) →
 /// inner, and plumb the validated [`Identity`] into request extensions for
-/// downstream. Every path fails closed, and every path emits exactly one audit
+/// downstream. Every path fails closed.
+///
+/// This is a thin shell over [`gate_inner`]: it runs the gate, then *uniformly*
+/// — on every path, including the 401/403 challenge and 429 rate-limit paths —
+/// stamps `MCP-Protocol-Version` on the response and emits exactly one audit
 /// event (target [`audit::AUDIT_TARGET`]) recording WHO/WHAT/WHEN/OUTCOME. The
-/// token, the `Authorization` header, and any secret are never logged.
-async fn gate(State(state): State<GateState>, mut request: Request<Body>, next: Next) -> Response {
+/// token, the `Authorization` header, and the raw `Mcp-Session-Id` are never
+/// logged (the session id is hashed).
+async fn gate(State(state): State<GateState>, request: Request<Body>, next: Next) -> Response {
     let start = Instant::now();
     // WHAT/WHEN, captured up front (the request body is never read — request-line
     // fields only, so the rmcp stream is untouched). The JSON-RPC method / tool
@@ -281,20 +423,67 @@ async fn gate(State(state): State<GateState>, mut request: Request<Body>, next: 
     // and cheap (see docs/MCP.md).
     let method = request.method().as_str().to_string();
     let path = request.uri().path().to_string();
-    let session_id = request
+    let session = request
         .headers()
         .get("mcp-session-id")
         .and_then(|v| v.to_str().ok())
-        .map(str::to_string);
+        .map(audit::session_hash);
     let peer = request
         .extensions()
         .get::<ConnectInfo<SocketAddr>>()
         .map(|ci| ci.0.ip());
     let request_id = new_request_id();
 
+    // Run the gate. `auth_mode` / `identity` are the resolved attribution (an auth
+    // failure yields `None` identity); `response` is whatever the gate decided —
+    // a challenge/forbidden/429, or the inner service's response.
+    let GateOutcome {
+        auth_mode,
+        identity,
+        mut response,
+    } = gate_inner(&state, request, next).await;
+
+    // Uniform tail, taken by EVERY path (success and every error/challenge):
+    // stamp the protocol version, then emit the single audit event.
+    response.headers_mut().insert(
+        "mcp-protocol-version",
+        header::HeaderValue::from_static(MCP_PROTOCOL_VERSION),
+    );
+    audit(
+        &request_id,
+        auth_mode,
+        identity.as_ref(),
+        peer,
+        &method,
+        &path,
+        session.as_deref(),
+        &response,
+        start,
+    );
+    response
+}
+
+/// What [`gate_inner`] resolved: the attribution for the audit event plus the
+/// response to return. Keeping the attribution out of the response lets the
+/// [`gate`] tail audit + stamp the protocol header uniformly on every path.
+struct GateOutcome {
+    auth_mode: AuthMode,
+    identity: Option<Identity>,
+    response: Response,
+}
+
+/// The gate's decision logic: auth → origin → rate limit → inner service. Returns
+/// the response *and* the attribution so the caller can apply the protocol header
+/// and audit on a single, uniform path (no early return skips either).
+async fn gate_inner(state: &GateState, mut request: Request<Body>, next: Next) -> GateOutcome {
+    let peer = request
+        .extensions()
+        .get::<ConnectInfo<SocketAddr>>()
+        .map(|ci| ci.0.ip());
+
     // 1) Authenticate by mode. The auth check runs first; only an authenticated
-    //    (or auth-not-required) request proceeds to the Origin check. An auth
-    //    failure emits an `auth-failed` audit event before the challenge.
+    //    (or auth-not-required) request proceeds. An auth failure short-circuits
+    //    with the challenge response and no identity.
     let (auth_mode, identity) = match &state.guard {
         Guard::Loopback { token } => {
             if let Some(expected) = token.as_deref() {
@@ -305,19 +494,11 @@ async fn gate(State(state): State<GateState>, mut request: Request<Body>, next: 
                     .and_then(|v| v.strip_prefix("Bearer "));
                 let ok = presented.is_some_and(|got| ct_eq(got.as_bytes(), expected.as_bytes()));
                 if !ok {
-                    let resp = loopback_unauthorized();
-                    audit(
-                        &request_id,
-                        AuthMode::StaticBearer,
-                        None,
-                        peer,
-                        &method,
-                        &path,
-                        session_id.as_deref(),
-                        &resp,
-                        start,
-                    );
-                    return resp;
+                    return GateOutcome {
+                        auth_mode: AuthMode::StaticBearer,
+                        identity: None,
+                        response: loopback_unauthorized(),
+                    };
                 }
                 (AuthMode::StaticBearer, None)
             } else {
@@ -334,87 +515,57 @@ async fn gate(State(state): State<GateState>, mut request: Request<Body>, next: 
                     // All eight current tools are reads → require `nbox:read`.
                     // (`nbox:write` gating is wired below for future write tools.)
                     if let Err(scope_err) = require_scope(&identity, SCOPE_READ) {
-                        let resp = oidc_challenge(cfg, &scope_err);
-                        audit(
-                            &request_id,
-                            AuthMode::Oidc,
-                            Some(&identity),
-                            peer,
-                            &method,
-                            &path,
-                            session_id.as_deref(),
-                            &resp,
-                            start,
-                        );
-                        return resp;
+                        return GateOutcome {
+                            auth_mode: AuthMode::Oidc,
+                            identity: Some(identity),
+                            response: oidc_challenge(cfg, &scope_err),
+                        };
                     }
                     (AuthMode::Oidc, Some(identity))
                 }
                 Err(e) => {
-                    let resp = oidc_challenge(cfg, &e);
-                    audit(
-                        &request_id,
-                        AuthMode::Oidc,
-                        None,
-                        peer,
-                        &method,
-                        &path,
-                        session_id.as_deref(),
-                        &resp,
-                        start,
-                    );
-                    return resp;
+                    return GateOutcome {
+                        auth_mode: AuthMode::Oidc,
+                        identity: None,
+                        response: oidc_challenge(cfg, &e),
+                    };
                 }
             }
         }
     };
 
-    // 2) Origin validation (DNS-rebinding defense). A request *with* an Origin
-    //    must carry a loopback origin in loopback mode; in OIDC mode the bearer
-    //    is the auth boundary, but we still reject a cross-origin browser request
-    //    that lacks a loopback origin only when bound to loopback. To keep the
-    //    defense simple and uniform, the loopback-origin rule applies whenever an
-    //    Origin header is present *and* we are in loopback mode.
-    if matches!(state.guard, Guard::Loopback { .. })
-        && let Some(origin) = request.headers().get(header::ORIGIN)
-    {
-        let allowed = origin.to_str().ok().is_some_and(origin_is_loopback);
+    // 2) Origin validation (DNS-rebinding defense), in BOTH modes. A request that
+    //    carries an `Origin` header must have an allowed host — the SAME set
+    //    rmcp's `Host` check uses. In loopback mode that is loopback-only; in
+    //    OIDC mode it is the `--audience` host (+ loopback + operator extras). A
+    //    request with no `Origin` (a non-browser API client) is unaffected — the
+    //    bearer/Host checks are its boundary.
+    if let Some(origin) = request.headers().get(header::ORIGIN) {
+        let allowed = origin
+            .to_str()
+            .ok()
+            .and_then(origin_host)
+            .is_some_and(|host| state.allowed_hosts.allows(&host));
         if !allowed {
-            let resp = forbidden();
-            audit(
-                &request_id,
+            return GateOutcome {
                 auth_mode,
-                identity.as_ref(),
-                peer,
-                &method,
-                &path,
-                session_id.as_deref(),
-                &resp,
-                start,
-            );
-            return resp;
+                identity,
+                response: forbidden(),
+            };
         }
     }
 
     // 3) Per-caller rate limit (keyed sub → client_id → peer IP). Disabled when no
-    //    limiter is configured. Over the limit → 429 + Retry-After, audited.
+    //    limiter is configured. Over the limit → 429 + Retry-After.
     let caller = audit::caller_key(identity.as_ref(), peer);
     if let Some(rl) = &state.rate_limiter
         && let RateDecision::Limited { retry_after_secs } = rl.check(&caller)
     {
-        let resp = too_many_requests(retry_after_secs);
-        audit(
-            &request_id,
+        return GateOutcome {
             auth_mode,
-            identity.as_ref(),
-            peer,
-            &method,
-            &path,
-            session_id.as_deref(),
-            &resp,
-            start,
-        );
-        return resp;
+            identity,
+            response: too_many_requests(retry_after_secs),
+        };
     }
 
     // Plumb the validated identity through for the NetBox bridge (v2). rmcp
@@ -423,23 +574,12 @@ async fn gate(State(state): State<GateState>, mut request: Request<Body>, next: 
         request.extensions_mut().insert(id.clone());
     }
 
-    let mut response = next.run(request).await;
-    response.headers_mut().insert(
-        "mcp-protocol-version",
-        header::HeaderValue::from_static(MCP_PROTOCOL_VERSION),
-    );
-    audit(
-        &request_id,
+    let response = next.run(request).await;
+    GateOutcome {
         auth_mode,
-        identity.as_ref(),
-        peer,
-        &method,
-        &path,
-        session_id.as_deref(),
-        &response,
-        start,
-    );
-    response
+        identity,
+        response,
+    }
 }
 
 /// A short random request id for correlating the audit event with the response.
@@ -468,7 +608,7 @@ fn audit(
     peer: Option<IpAddr>,
     method: &str,
     path: &str,
-    session_id: Option<&str>,
+    session: Option<&str>,
     response: &Response,
     start: Instant,
 ) {
@@ -493,7 +633,7 @@ fn audit(
         iss: identity.and_then(|id| id.iss.as_deref()),
         method,
         path,
-        session_id,
+        session,
         status,
         outcome: Outcome::from_status(status),
         latency_ms: start.elapsed().as_millis(),
@@ -578,18 +718,23 @@ fn challenge(status: StatusCode, header_value: &str, description: &str) -> Respo
     response
 }
 
-/// True if `origin` (an RFC 6454 origin, e.g. `http://127.0.0.1:8080`) has a
-/// loopback host. The scheme and port are not constrained — only the host must
-/// be loopback, which is what the DNS-rebinding threat turns on.
-fn origin_is_loopback(origin: &str) -> bool {
-    // Strip the scheme, then any path, then the optional port, leaving the host.
+/// Extract the host (lowercased, port stripped) from an RFC 6454 origin string
+/// (e.g. `http://127.0.0.1:8080` → `127.0.0.1`). The scheme and port are not
+/// constrained — only the host matters for the DNS-rebinding decision, which the
+/// caller makes against the allowed-host set. Returns `None` for a malformed
+/// origin or `Origin: null` (no host ⇒ not allowable).
+fn origin_host(origin: &str) -> Option<String> {
+    let origin = origin.trim();
+    if origin.is_empty() || origin.eq_ignore_ascii_case("null") {
+        return None;
+    }
     let after_scheme = origin.split_once("://").map_or(origin, |(_, rest)| rest);
     let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
     let host = strip_port(authority);
-    match host.parse::<IpAddr>() {
-        Ok(ip) => ip.is_loopback(),
-        // Bare hostnames: only `localhost` counts as loopback here.
-        Err(_) => host.eq_ignore_ascii_case("localhost"),
+    if host.is_empty() {
+        None
+    } else {
+        Some(host.to_ascii_lowercase())
     }
 }
 
@@ -706,16 +851,104 @@ mod tests {
     }
 
     #[test]
-    fn origin_loopback_classification() {
-        assert!(origin_is_loopback("http://127.0.0.1:8080"));
-        assert!(origin_is_loopback("http://localhost:8080"));
-        assert!(origin_is_loopback("https://localhost"));
-        assert!(origin_is_loopback("http://[::1]:8080"));
-        assert!(origin_is_loopback("http://127.0.0.5"));
+    fn origin_host_extracts_the_host() {
+        assert_eq!(
+            origin_host("http://127.0.0.1:8080").as_deref(),
+            Some("127.0.0.1")
+        );
+        assert_eq!(
+            origin_host("http://localhost:8080").as_deref(),
+            Some("localhost")
+        );
+        assert_eq!(
+            origin_host("https://localhost").as_deref(),
+            Some("localhost")
+        );
+        assert_eq!(origin_host("http://[::1]:8080").as_deref(), Some("::1"));
+        assert_eq!(
+            origin_host("http://127.0.0.5").as_deref(),
+            Some("127.0.0.5")
+        );
+        // Case-folded.
+        assert_eq!(
+            origin_host("https://NBOX.Example.COM").as_deref(),
+            Some("nbox.example.com")
+        );
+        // `Origin: null` and garbage have no host.
+        assert_eq!(origin_host("null"), None);
+        assert_eq!(origin_host(""), None);
+    }
 
-        assert!(!origin_is_loopback("http://evil.example.com"));
-        assert!(!origin_is_loopback("http://192.168.1.10:8080"));
-        assert!(!origin_is_loopback("https://attacker.test:443"));
+    #[test]
+    fn loopback_allowed_hosts_is_strict_loopback_only() {
+        // The default (loopback-mode) set: loopback always passes; nothing else.
+        let allowed = AllowedHosts::default();
+        assert!(allowed.allows("127.0.0.1"));
+        assert!(allowed.allows("127.0.0.5"));
+        assert!(allowed.allows("::1"));
+        assert!(allowed.allows("localhost"));
+        assert!(!allowed.allows("evil.example.com"));
+        assert!(!allowed.allows("192.168.1.10"));
+        assert!(!allowed.allows("nbox.example.com"));
+        // rmcp gets exactly the strict loopback default (no extras).
+        assert_eq!(allowed.for_rmcp(), vec!["localhost", "127.0.0.1", "::1"]);
+    }
+
+    #[test]
+    fn oidc_allowed_hosts_adds_the_audience_host_plus_loopback() {
+        // OIDC mode: audience host + an operator extra, with loopback still free.
+        let allowed = AllowedHosts {
+            extra: vec!["nbox.example.com".into(), "alt.example.com".into()],
+        };
+        assert!(allowed.allows("nbox.example.com"));
+        assert!(allowed.allows("alt.example.com"));
+        // Case-insensitive match.
+        assert!(allowed.allows("NBOX.example.com"));
+        // Loopback is always allowed regardless of mode.
+        assert!(allowed.allows("127.0.0.1"));
+        assert!(allowed.allows("localhost"));
+        // A mismatched host is still rejected.
+        assert!(!allowed.allows("attacker.test"));
+        // rmcp gets loopback + the extras.
+        assert_eq!(
+            allowed.for_rmcp(),
+            vec![
+                "localhost",
+                "127.0.0.1",
+                "::1",
+                "nbox.example.com",
+                "alt.example.com"
+            ]
+        );
+    }
+
+    #[test]
+    fn host_of_url_and_normalize_host_entry() {
+        assert_eq!(
+            host_of_url("https://nbox.example.com").as_deref(),
+            Some("nbox.example.com")
+        );
+        assert_eq!(
+            host_of_url("https://nbox.example.com:8443/mcp").as_deref(),
+            Some("nbox.example.com")
+        );
+        assert_eq!(
+            host_of_url("https://[2001:db8::1]:8080").as_deref(),
+            Some("2001:db8::1")
+        );
+        // An opaque (non-URL) audience has no host.
+        assert_eq!(host_of_url("nbox"), None);
+
+        // `--allowed-host` entries tolerate a scheme or port.
+        assert_eq!(normalize_host_entry("nbox.example.com"), "nbox.example.com");
+        assert_eq!(
+            normalize_host_entry("https://nbox.example.com:8443"),
+            "nbox.example.com"
+        );
+        assert_eq!(
+            normalize_host_entry("  HOST.example.com  "),
+            "host.example.com"
+        );
     }
 
     #[test]
@@ -913,19 +1146,36 @@ mod rs_tests {
 
     /// The gated router under test: the real `gate` + PRM route over a stub `/mcp`.
     /// Rate limiting off (the default); see [`router_rl`] for the limited variant.
+    /// The allowed-host set is loopback-only (the strict default), matching the
+    /// gate's loopback mode; [`router_hosts`] supplies a custom set.
     fn router(guard: Guard) -> Router {
-        router_with(guard, None)
+        router_full(guard, None, AllowedHosts::default())
     }
 
     /// As [`router`], but with `per_minute` requests-per-caller rate limiting on.
     fn router_rl(guard: Guard, per_minute: u32) -> Router {
-        router_with(guard, RateLimiter::new(per_minute).map(Arc::new))
+        router_full(
+            guard,
+            RateLimiter::new(per_minute).map(Arc::new),
+            AllowedHosts::default(),
+        )
     }
 
-    /// Build the gated router with an explicit (possibly absent) rate limiter.
-    fn router_with(guard: Guard, rate_limiter: Option<Arc<RateLimiter>>) -> Router {
+    /// As [`router`], but with a custom allowed-host set (for the Origin/Host
+    /// DNS-rebinding tests in OIDC/routable mode).
+    fn router_hosts(guard: Guard, allowed: AllowedHosts) -> Router {
+        router_full(guard, None, allowed)
+    }
+
+    /// Build the gated router with an explicit rate limiter and allowed-host set.
+    fn router_full(
+        guard: Guard,
+        rate_limiter: Option<Arc<RateLimiter>>,
+        allowed_hosts: AllowedHosts,
+    ) -> Router {
         let state = GateState {
             guard: guard.clone(),
+            allowed_hosts: Arc::new(allowed_hosts),
             rate_limiter,
         };
         let mut router = Router::new()
@@ -1126,6 +1376,56 @@ mod rs_tests {
         assert_eq!(status, StatusCode::UNAUTHORIZED);
     }
 
+    // --- (b): https-or-loopback for the IdP issuer / JWKS at startup ----------
+
+    /// Build the OIDC config and assert it failed with a `NboxError::Usage`
+    /// (exit 2). A match, not `unwrap_err`, because `OidcConfig` isn't `Debug`.
+    async fn assert_oidc_config_usage_error(args: OidcArgs) {
+        match build_oidc_config(args).await {
+            Ok(_) => panic!("expected a Usage error, got Ok"),
+            Err(e) => assert_eq!(NboxError::exit_code_for(&e), 2, "{e:#}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn http_issuer_non_loopback_is_a_startup_usage_error() {
+        // A plain-http:// non-loopback issuer fails fast at startup, exit 2, with
+        // no network fetch attempted.
+        assert_oidc_config_usage_error(OidcArgs {
+            issuer: "http://idp.example.com".to_string(),
+            audience: "https://nbox.example.com".to_string(),
+            jwks_url: None,
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn http_jwks_url_non_loopback_is_a_startup_usage_error() {
+        // The issuer is https, but the JWKS override is plain http:// — rejected.
+        assert_oidc_config_usage_error(OidcArgs {
+            issuer: "https://idp.example.com".to_string(),
+            audience: "https://nbox.example.com".to_string(),
+            jwks_url: Some("http://idp.example.com/keys".to_string()),
+        })
+        .await;
+    }
+
+    #[tokio::test]
+    async fn http_loopback_issuer_and_jwks_are_allowed_for_dev() {
+        // A loopback http:// issuer + JWKS override is accepted (local dev). The
+        // JWKS itself is fetched lazily, so no server is needed here — the config
+        // builds without a network call.
+        let args = OidcArgs {
+            issuer: "http://127.0.0.1:9000".to_string(),
+            audience: "https://nbox.example.com".to_string(),
+            jwks_url: Some("http://127.0.0.1:9000/keys".to_string()),
+        };
+        let cfg = build_oidc_config(args)
+            .await
+            .expect("loopback http:// is allowed");
+        assert_eq!(cfg.jwks_uri.as_ref(), "http://127.0.0.1:9000/keys");
+    }
+
     #[tokio::test]
     async fn discovery_resolves_jwks_uri() {
         // No JWKS override: the URI is discovered from the issuer's well-known.
@@ -1173,6 +1473,94 @@ mod rs_tests {
             .unwrap();
         let (status, _www, _) = send(router(guard), req).await;
         assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn loopback_mode_accepts_loopback_origin() {
+        // A loopback Origin still passes in loopback mode (the documented default).
+        let guard = Guard::Loopback { token: None };
+        let req = Request::builder()
+            .uri("/mcp")
+            .method("GET")
+            .header(header::ORIGIN, "http://localhost:8080")
+            .body(Body::empty())
+            .unwrap();
+        let (status, _www, _) = send(router(guard), req).await;
+        assert_eq!(status, StatusCode::OK);
+    }
+
+    // --- (a)/(c): Host/Origin DNS-rebinding defense in OIDC/routable mode ------
+
+    /// A `GET /mcp` request with a bearer and an explicit `Origin` header.
+    fn mcp_request_origin(bearer: Option<&str>, origin: &str) -> Request<Body> {
+        let mut builder = Request::builder()
+            .uri("/mcp")
+            .method("GET")
+            .header(header::ORIGIN, origin);
+        if let Some(token) = bearer {
+            builder = builder.header(header::AUTHORIZATION, format!("Bearer {token}"));
+        }
+        builder.body(Body::empty()).unwrap()
+    }
+
+    #[tokio::test]
+    async fn oidc_origin_matching_audience_host_passes() {
+        // OIDC/routable mode: an Origin whose host is the configured allow-list
+        // host (here AUDIENCE = https://nbox.test) is accepted.
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+        let token = idp.mint(&good_claims());
+
+        let allowed = AllowedHosts {
+            extra: vec!["nbox.test".into()],
+        };
+        let app = router_hosts(Guard::Oidc(cfg), allowed);
+        let (status, _www, body) =
+            send(app, mcp_request_origin(Some(&token), "https://nbox.test")).await;
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "matching Origin should pass: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn oidc_origin_mismatched_host_is_403() {
+        // An Origin whose host is NOT in the allow-list is rejected even with a
+        // valid bearer — the DNS-rebinding defense applies in OIDC mode too.
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+        let token = idp.mint(&good_claims());
+
+        let allowed = AllowedHosts {
+            extra: vec!["nbox.test".into()],
+        };
+        let app = router_hosts(Guard::Oidc(cfg), allowed);
+        let (status, _www, _) = send(
+            app,
+            mcp_request_origin(Some(&token), "https://attacker.test"),
+        )
+        .await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn oidc_no_origin_header_passes() {
+        // A non-browser API client sends no Origin — the bearer/Host checks are
+        // its boundary, so it is not 403'd for the absent Origin.
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+        let token = idp.mint(&good_claims());
+
+        let allowed = AllowedHosts {
+            extra: vec!["nbox.test".into()],
+        };
+        let app = router_hosts(Guard::Oidc(cfg), allowed);
+        let (status, _www, _) = send(app, mcp_request(Some(&token))).await;
+        assert_eq!(status, StatusCode::OK);
     }
 
     // --- Unit 3: structured audit log + per-caller rate limit -----------------
@@ -1474,5 +1862,141 @@ mod rs_tests {
         assert_eq!(last.get("status"), Some("429"));
         assert_eq!(last.get("outcome"), Some("rate-limited"));
         assert_eq!(last.get("caller"), Some("sub:user-42"));
+    }
+
+    // --- (d): MCP-Protocol-Version on EVERY response, including errors ---------
+
+    /// The `MCP-Protocol-Version` header value on the response to `req`, if any.
+    async fn protocol_header(router: Router, req: Request<Body>) -> (StatusCode, Option<String>) {
+        let resp = router.oneshot(req).await.unwrap();
+        let status = resp.status();
+        let ver = resp
+            .headers()
+            .get("mcp-protocol-version")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        (status, ver)
+    }
+
+    #[tokio::test]
+    async fn protocol_header_present_on_401_invalid_token() {
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+        let mut claims = good_claims();
+        claims["aud"] = json!("https://someone-else.test");
+        let token = idp.mint(&claims);
+
+        let (status, ver) =
+            protocol_header(router(Guard::Oidc(cfg)), mcp_request(Some(&token))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(ver.as_deref(), Some(MCP_PROTOCOL_VERSION));
+    }
+
+    #[tokio::test]
+    async fn protocol_header_present_on_401_missing_token() {
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+
+        let (status, ver) = protocol_header(router(Guard::Oidc(cfg)), mcp_request(None)).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(ver.as_deref(), Some(MCP_PROTOCOL_VERSION));
+    }
+
+    #[tokio::test]
+    async fn protocol_header_present_on_403_insufficient_scope() {
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+        let mut claims = good_claims();
+        claims["scope"] = json!("nbox:write");
+        let token = idp.mint(&claims);
+
+        let (status, ver) =
+            protocol_header(router(Guard::Oidc(cfg)), mcp_request(Some(&token))).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(ver.as_deref(), Some(MCP_PROTOCOL_VERSION));
+    }
+
+    #[tokio::test]
+    async fn protocol_header_present_on_403_forbidden_origin() {
+        let guard = Guard::Loopback { token: None };
+        let req = Request::builder()
+            .uri("/mcp")
+            .method("GET")
+            .header(header::ORIGIN, "http://evil.example.com")
+            .body(Body::empty())
+            .unwrap();
+        let (status, ver) = protocol_header(router(guard), req).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert_eq!(ver.as_deref(), Some(MCP_PROTOCOL_VERSION));
+    }
+
+    #[tokio::test]
+    async fn protocol_header_present_on_429_rate_limited() {
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+        let token = idp.mint(&good_claims());
+
+        let app = router_rl(Guard::Oidc(cfg), 1);
+        // Spend the one allowance, then the next is 429.
+        let _ = app
+            .clone()
+            .oneshot(mcp_request(Some(&token)))
+            .await
+            .unwrap();
+        let (status, ver) = protocol_header(app, mcp_request(Some(&token))).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(ver.as_deref(), Some(MCP_PROTOCOL_VERSION));
+    }
+
+    #[tokio::test]
+    async fn protocol_header_present_on_401_loopback_static_bearer() {
+        let guard = Guard::Loopback {
+            token: Some(Arc::from("s3cret")),
+        };
+        let (status, ver) = protocol_header(router(guard), mcp_request(Some("wrong"))).await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+        assert_eq!(ver.as_deref(), Some(MCP_PROTOCOL_VERSION));
+    }
+
+    // --- (e): the audit `session` field is a hash, never the raw id -----------
+
+    #[tokio::test]
+    async fn audit_session_field_is_hashed_not_the_raw_id() {
+        let (events, _guard) = capture();
+
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+        let token = idp.mint(&good_claims());
+
+        let raw_session = "mcp-session-deadbeef-secret-handle";
+        let mut req = mcp_request(Some(&token));
+        req.headers_mut().insert(
+            "mcp-session-id",
+            header::HeaderValue::from_static("mcp-session-deadbeef-secret-handle"),
+        );
+        let (status, _www, _) = send(router(Guard::Oidc(cfg)), req).await;
+        assert_eq!(status, StatusCode::OK);
+
+        let events = events.lock().unwrap();
+        assert_eq!(events.len(), 1);
+        let e = &events[0];
+        // The `session` field is the SHA-256 prefix, NOT the raw id.
+        let logged = e.get("session").expect("a session field");
+        assert_eq!(logged, super::super::audit::session_hash(raw_session));
+        assert_ne!(logged, raw_session, "raw session id must not be logged");
+        // No field anywhere leaks the raw session token.
+        for (name, value) in &e.fields {
+            assert!(
+                !value.contains(raw_session),
+                "audit field {name} leaked the raw session id: {value}"
+            );
+        }
+        // The old field name is gone (it's now `session`).
+        assert_eq!(e.get("session_id"), None);
     }
 }

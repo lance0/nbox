@@ -109,6 +109,12 @@ pub struct ServeConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub jwks_url: Option<String>,
 
+    /// Extra hostnames to accept in the DNS-rebinding allow-list, on top of the
+    /// `--audience` host and loopback. Only applies in OIDC/routable mode (a
+    /// loopback bind stays loopback-only). Merged with any `--allowed-host`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allowed_hosts: Vec<String>,
+
     /// Per-caller request cap on the HTTP `/mcp` endpoint, in requests per
     /// minute. Absent / `0` ⇒ disabled (default). Overridden by `--rate-limit`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -470,6 +476,7 @@ page_size = 250
         assert_eq!(bare.serve.oidc_issuer, None);
         assert_eq!(bare.serve.audience, None);
         assert_eq!(bare.serve.jwks_url, None);
+        assert!(bare.serve.allowed_hosts.is_empty());
         assert_eq!(bare.serve.rate_limit, None);
 
         // A present `[serve]` populates the fields.
@@ -498,6 +505,7 @@ page_size = 250
              oidc_issuer = \"https://idp.example.com\"\n\
              audience = \"https://nbox.example.com\"\n\
              jwks_url = \"https://idp.example.com/keys\"\n\
+             allowed_hosts = [\"nbox.example.com\", \"alt.example.com\"]\n\
              \n\
              [profiles.work]\n\
              url = \"https://netbox.example.com\"\n",
@@ -514,6 +522,13 @@ page_size = 250
         assert_eq!(
             oidc.serve.jwks_url.as_deref(),
             Some("https://idp.example.com/keys")
+        );
+        assert_eq!(
+            oidc.serve.allowed_hosts,
+            vec![
+                "nbox.example.com".to_string(),
+                "alt.example.com".to_string()
+            ]
         );
     }
 

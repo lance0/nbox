@@ -168,6 +168,32 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   candidates whose scope matches the reference exactly (name/slug/id) when any
   do, and only falls back to the loose substring match when none do — so
   `--vrf <rd>` (the RD lives in the VRF's display) still resolves.
+- `nbox serve --http` (OIDC/routable mode, `http` feature): a real proxied request
+  with the deployment's `Host` (e.g. `nbox.example.com`) was `403`'d because rmcp's
+  Streamable HTTP server kept its loopback-only `Host` allow-list even when a
+  routable bind was permitted. The allow-list is now widened in OIDC mode to the
+  `--audience` host (nbox's own identity) plus loopback, with `--allowed-host`
+  (repeatable) / `[serve].allowed_hosts` to add more; loopback mode keeps the
+  strict loopback-only default.
+- `nbox serve --http`: the `MCP-Protocol-Version` response header was missing from
+  the `401`/`403` auth-challenge and `429` rate-limit responses (it was only added
+  on the success path). Every response from the `/mcp` gate now carries it.
+
+### Security
+- `nbox serve --http` (OIDC mode, `http` feature): the IdP issuer, the JWKS URL
+  (override or discovered), and any discovered endpoint must now use `https://`
+  unless the host is loopback (local dev). A plain-`http://` non-loopback IdP URL
+  is rejected at startup (`exit 2`) instead of nbox fetching signing keys over
+  plaintext — closing a key-substitution vector.
+- `nbox serve --http`: `Origin` validation now runs in **both** loopback and OIDC
+  modes against the same allowed-host set used for the `Host` check (a real
+  DNS-rebinding defense in routable mode, not just loopback). The docs previously
+  claimed Origin was validated on every request while the code only enforced it in
+  loopback mode; code and docs are now consistent.
+- `nbox serve --http`: the raw `Mcp-Session-Id` is no longer written to the audit
+  log. The audit event now records `session` — a short SHA-256 prefix of the
+  session id — which stays correlatable across a session's requests without
+  putting the raw session handle in the log.
 
 ## [0.1.1] - 2026-06-17
 

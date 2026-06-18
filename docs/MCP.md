@@ -85,10 +85,15 @@ resolution and `-p`/`--config` flags apply.
 
 Security on the HTTP path:
 
-- The `Origin` header is validated on every request — a non-loopback origin is
-  rejected with `403` (DNS-rebinding defense). The `Host` header is validated
-  against the loopback allow-list too.
-- `MCP-Protocol-Version: 2025-11-25` is advertised on every response.
+- DNS-rebinding defense via an allowed-host set. In loopback mode that set is
+  loopback-only (`localhost`, `127.0.0.1`, `::1`). The `Host` header is validated
+  against it on every request, and an `Origin` header — when the client sends one
+  — must resolve to a host in the same set, else `403`. A request with no `Origin`
+  (a non-browser client) is not rejected for the absent header; the loopback bind
+  and Host check are its boundary. (See the OIDC section for how the set grows in
+  routable mode.)
+- `MCP-Protocol-Version: 2025-11-25` is advertised on every response — including
+  the `401`/`403` auth challenges and the `429` rate-limit response.
 - stdout stays clean (the protocol travels over the HTTP body); all logs go to
   stderr/file, exactly as in stdio mode.
 
@@ -134,6 +139,23 @@ non-loopback bind. By default the JWKS URL is discovered from the issuer's
 `/.well-known/oauth-authorization-server`); pass `--oidc-jwks-url` to set it
 explicitly.
 
+**HTTPS is required for the IdP.** The issuer, the JWKS URL (override or
+discovered), and any discovered endpoint must use `https://` — a plain-`http://`
+IdP URL lets a network attacker swap the signing keys and mint any token. The one
+exception is a **loopback** host (`127.0.0.0/8`, `::1`, `localhost`), for local
+development against a throwaway IdP. A plain-`http://` non-loopback IdP URL is a
+startup error (exit `2`) and nbox never fetches keys over plaintext.
+
+**Allowed hosts (DNS-rebinding defense in routable mode).** Because the bind is
+routable, the allowed-host set is widened from loopback-only to also include the
+**host of `--audience`** (nbox's own identity) plus loopback. A real proxied
+request whose `Host` (and `Origin`, when present) is that host passes; a
+mismatched host is `403`. Add more accepted hosts — e.g. an alternate vhost in
+front of the proxy — with `--allowed-host <HOST>` (repeatable) or
+`[serve].allowed_hosts`; they are additive on top of the audience host and
+loopback. (In loopback mode `--allowed-host` is ignored — the set stays
+loopback-only.)
+
 What nbox validates on each `/mcp` request: the bearer from the `Authorization`
 header (tokens in the query string are rejected); the JWT signature against the
 issuer's JWKS, selected by `kid`, with an explicit algorithm allowlist
@@ -155,6 +177,7 @@ http = "0.0.0.0:8080"
 oidc_issuer = "https://idp.example.com"
 audience = "https://nbox.example.com"
 jwks_url = "https://idp.example.com/keys"   # optional override
+allowed_hosts = ["nbox.example.com"]        # optional; audience host is allowed already
 ```
 
 **#1 misconfiguration:** the IdP must be configured to mint the `aud` that
@@ -216,8 +239,10 @@ under the target `nbox::audit`, recording:
   **not** surfaced: extracting it would mean buffering the request body and would
   break the streaming transport, so the audit is request-level (method + path),
   which is honest and cheap.
-- **WHEN / correlate** — a per-request `request_id`, plus `session_id`
-  (`Mcp-Session-Id`) when the client sends one.
+- **WHEN / correlate** — a per-request `request_id`, plus `session` (a short
+  SHA-256 prefix of the `Mcp-Session-Id`) when the client sends one. The session
+  id is **hashed**, not logged raw — it stays correlatable across a session's
+  requests without putting the raw session handle in the log.
 - **OUTCOME** — the response `status`, a coarse `outcome`
   (`ok` / `auth-failed` / `rate-limited` / `error`), and `latency_ms`.
 
