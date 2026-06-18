@@ -61,8 +61,8 @@ Polish the read experience. No writes here.
 - ☐ **Profile cycle order** — cycle profiles in config-file order (an order-preserving map) rather than
   alphabetical.
 - ☐ **Demo recording** — an asciinema/VHS cast for the README.
-- ☐ **Release `0.1.2`** — bank the large read surface accumulated since `0.1.1` (MCP HTTP/OAuth, the new
-  read commands, MCP resources, the in-app config layer, two hardening rounds).
+- ☑ **Release `0.2.0`** — banked the large read surface accumulated since `0.1.1` (MCP HTTP/OAuth, the new
+  read commands, MCP resources, the in-app config layer, three hardening rounds).
 
 ---
 
@@ -147,7 +147,7 @@ Consolidated future scope:
 - ☑ Read-only `raw GET`; `config_version` + forward-compat; `clap_mangen` man pages
   (`nbox man` top-level, `nbox man <dir>` full set).
 
-### Shipped since v0.1.1 (toward `0.1.2`)
+### v0.2.0 — shipped since v0.1.1
 
 - ☑ **MCP server** (`nbox serve`) — stdio + HTTP transport, OIDC resource-server auth, audit + rate
   limit, 8 read tools, `nbox://{kind}/{ref}` resources.

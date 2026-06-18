@@ -1,6 +1,6 @@
 # Features
 
-nbox is a read-only NetBox client (v0.1) — a CLI and a TUI over the same core.
+nbox is a read-only NetBox client — a CLI and a TUI over the same core.
 
 ## Lookups
 

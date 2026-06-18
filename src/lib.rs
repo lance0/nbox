@@ -1417,13 +1417,13 @@ async fn run_raw(ctx: &Ctx, method: &str, path: &str) -> Result<()> {
 }
 
 /// Allow only `GET` for `nbox raw` until write support lands. Write verbs are a
-/// deliberate v0.2+ feature behind the safe-write engine.
+/// deliberate later feature behind the safe-write engine.
 fn check_raw_method(method: &str) -> Result<()> {
     if method.eq_ignore_ascii_case("GET") {
         Ok(())
     } else {
         anyhow::bail!(
-            "`nbox raw` only supports GET today; write verbs land with safe writes (v0.2+)"
+            "`nbox raw` only supports GET today; write verbs land with safe writes in a later release"
         )
     }
 }

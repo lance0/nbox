@@ -136,7 +136,7 @@ nbox device edge01 --json | jq '.primary_ip4'
 
 ## Notes
 
-- Read-only today (v0.1). Safe, diff-confirmed writes are planned for v0.2.
+- Read-only today. Safe, diff-confirmed writes are planned for a later release.
 - Filters that an object type can't satisfy cause that type to be skipped in
   `search` (nbox does not send NetBox unknown query params).
 - Scope fields (NetBox 4.2+ polymorphic scope): `prefix` and `vlan` carry

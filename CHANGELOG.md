@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-06-18
+
 ### Added
 - First-run onboarding wizard (TUI). Launching `nbox` with no usable config — no
   config file, no profiles, or no resolvable active profile — no longer dies with
@@ -632,4 +634,5 @@ The first real release. (`0.1.0` was a name reservation on crates.io.)
 - TUI command palette (`:`, `src/tui/palette.rs`): `device`/`ip`/`prefix`/`vlan`/`site <ref>` (open detail), `find <q>` or bare text (search), `open`/`copy`, `theme <name>`, `refresh`; parser is pure and unit-tested.
 - TUI fuzzy filtering (`src/tui/fuzzy.rs`, `nucleo`): typing in search mode live-filters and ranks the in-memory results (a `view` index list); server `q=` still does the fetch on Enter. **Completes Phase 3 (TUI v0).**
 
+[0.2.0]: https://github.com/lance0/nbox/releases/tag/v0.2.0
 [0.1.1]: https://github.com/lance0/nbox/releases/tag/v0.1.1

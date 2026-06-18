@@ -5,12 +5,12 @@ for where they're headed.
 
 ### Read-only (no writes yet)
 
-**Issue:** v0.1 is read-only. There is no way to create, edit, or delete objects.
+**Issue:** nbox is read-only. There is no way to create, edit, or delete objects.
 
 **Impact:** Allocation (`next-ip`/`next-prefix`) shows candidates but doesn't
 claim them; `tags`/`journal` are list-only.
 
-**Mitigation:** Safe, diff-confirmed `PATCH` writes are planned for v0.2.
+**Mitigation:** Safe, diff-confirmed `PATCH` writes are planned for a later release.
 
 ---
 
