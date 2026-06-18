@@ -168,6 +168,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WorkerGuard` is held for the process lifetime so buffered lines flush on exit.
 
 ### Changed
+- `nbox man` can now generate the full man-page set, not just the top-level page.
+  Bare `nbox man` still streams `nbox.1` to stdout (unchanged — `nbox man >
+  nbox.1` keeps working), but `nbox man <dir>` writes the top-level `nbox.1` plus
+  one `nbox-<subcommand>.1` per subcommand into that directory, so `man
+  nbox-device` resolves once installed. Per-subcommand flags (e.g. the `serve`
+  and `search` options) only ever appeared on the per-subcommand pages, which
+  nothing emitted before; the release artifact now packages the whole set under
+  `completions/man/` in `nbox-completions.tar.gz`.
+- CI now gates the lean build: `--no-default-features` clippy/build/test run
+  alongside the existing `--all-features` steps, so the no-default-features path
+  can't silently regress.
 - Docs reconciled with this session's features and hardening: ROADMAP ticks
   (virtualization/tenancy detail views, TUI profile switcher, MCP resources;
   VRF-aware navigation marked in-progress), README usage/search/MCP coverage of

@@ -144,7 +144,7 @@ jobs:
       - name: Build
         run: cargo build --release --locked --features updates
 
-      - name: Generate completions and man page
+      - name: Generate completions and man pages
         run: |
           mkdir -p completions
           ./target/release/nbox completions bash > completions/nbox.bash
@@ -152,7 +152,10 @@ jobs:
           ./target/release/nbox completions fish > completions/nbox.fish
           ./target/release/nbox completions powershell > completions/_nbox.ps1
           ./target/release/nbox completions elvish > completions/nbox.elv
-          ./target/release/nbox man > completions/nbox.1
+          # Full man-page set: top-level nbox.1 plus one nbox-<sub>.1 per
+          # subcommand, so `man nbox-device` resolves after install.
+          ./target/release/nbox man completions/man
+          ls -1 completions/man
           tar czvf nbox-completions.tar.gz completions/
 
       - name: Upload completions

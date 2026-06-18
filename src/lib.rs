@@ -371,10 +371,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             clap_complete::generate(shell.to_clap(), &mut cmd, bin, &mut std::io::stdout());
             Ok(())
         }
-        Some(Command::Man) => {
-            clap_mangen::Man::new(Cli::command()).render(&mut std::io::stdout())?;
-            Ok(())
-        }
+        Some(Command::Man { out_dir }) => run_man(out_dir.as_deref()),
         // stdout is reserved for the JSON-RPC stream — connect() and the
         // server itself print nothing, and logging already goes to stderr.
         Some(Command::Serve {
@@ -401,6 +398,51 @@ pub async fn run(cli: Cli) -> Result<()> {
             .await
         }
     }
+}
+
+/// `nbox man` — generate man pages (roff) for the CLI.
+///
+/// With no `out_dir`, write the single top-level page to stdout (the original
+/// `nbox man > nbox.1` contract). Given a directory, write the full set there:
+/// the top-level `nbox.1` plus one `nbox-<subcommand>.1` per subcommand, so
+/// `man nbox-device` resolves once installed. `clap_mangen` renders one page per
+/// `clap::Command`, and per-subcommand flags only appear on their own pages, so
+/// the directory form is what a real man-page install wants.
+fn run_man(out_dir: Option<&std::path::Path>) -> Result<()> {
+    let cmd = Cli::command();
+
+    let Some(dir) = out_dir else {
+        // Back-compat: bare `nbox man` streams the top-level page to stdout.
+        clap_mangen::Man::new(cmd).render(&mut std::io::stdout())?;
+        return Ok(());
+    };
+
+    std::fs::create_dir_all(dir)
+        .with_context(|| format!("creating man-page output dir {}", dir.display()))?;
+
+    // Top-level page first, then one page per subcommand. `clap_mangen::Man`
+    // names the file from the command; for subcommands we prefix `nbox-` so the
+    // filenames match the `man nbox-<sub>` lookup convention.
+    let bin = cmd.get_name().to_string();
+    write_man_page(dir, &format!("{bin}.1"), &cmd)?;
+
+    for sub in cmd.get_subcommands() {
+        let file = format!("{bin}-{}.1", sub.get_name());
+        write_man_page(dir, &file, sub)?;
+    }
+
+    Ok(())
+}
+
+/// Render one `clap` command to `<dir>/<file>` as roff.
+fn write_man_page(dir: &std::path::Path, file: &str, cmd: &clap::Command) -> Result<()> {
+    let path = dir.join(file);
+    let mut out = std::fs::File::create(&path)
+        .with_context(|| format!("creating man page {}", path.display()))?;
+    clap_mangen::Man::new(cmd.clone())
+        .render(&mut out)
+        .with_context(|| format!("rendering man page {}", path.display()))?;
+    Ok(())
 }
 
 /// The `nbox serve` flags, resolved from the CLI before layering in the config's
@@ -1254,8 +1296,8 @@ fn not_found(noun: &str, value: &str) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::{
-        check_raw_method, error, first_subnet_of_length, init_logging, no_tui_refusal, not_found,
-        parse_object_ref, resolve_logging, wants_journal,
+        Cli, CommandFactory, check_raw_method, error, first_subnet_of_length, init_logging,
+        no_tui_refusal, not_found, parse_object_ref, resolve_logging, run_man, wants_journal,
     };
     use crate::domain::detail::resolve_unique;
     use crate::netbox::models::ipam::AvailablePrefix;
@@ -1470,6 +1512,44 @@ mod tests {
         assert!(parse_object_ref("garbage").is_err());
         assert!(parse_object_ref("device/").is_err());
         assert!(parse_object_ref("/edge01").is_err());
+    }
+
+    #[test]
+    fn man_out_dir_writes_top_level_plus_one_page_per_subcommand() {
+        // `nbox man <dir>` must emit the full set the release packages: the
+        // top-level `nbox.1` plus one `nbox-<sub>.1` per subcommand. Anything
+        // less leaves a referenced-but-missing page; anything extra leaves a
+        // generated-but-unpackaged page. Assert exact parity with the clap tree.
+        let dir = tempfile::tempdir().unwrap();
+        run_man(Some(dir.path())).unwrap();
+
+        let cmd = Cli::command();
+        let bin = cmd.get_name().to_string();
+
+        let top = dir.path().join(format!("{bin}.1"));
+        assert!(top.is_file(), "missing top-level {bin}.1");
+
+        for sub in cmd.get_subcommands() {
+            let page = dir.path().join(format!("{bin}-{}.1", sub.get_name()));
+            assert!(
+                page.is_file(),
+                "missing per-subcommand page nbox-{}.1",
+                sub.get_name()
+            );
+        }
+
+        // No stray pages: exactly 1 (top-level) + subcommand count, all `.1`.
+        let produced = std::fs::read_dir(dir.path()).unwrap().count();
+        let expected = 1 + cmd.get_subcommands().count();
+        assert_eq!(produced, expected, "unexpected man-page count");
+
+        // The serve flags live only on the per-subcommand page; confirm the
+        // generated `nbox-serve.1` actually carries one (roff-escaped).
+        let serve = std::fs::read_to_string(dir.path().join(format!("{bin}-serve.1"))).unwrap();
+        assert!(
+            serve.contains(r"\-\-http"),
+            "nbox-serve.1 missing the --http flag"
+        );
     }
 
     // --- `nbox open` URL resolution ----------------------------------------

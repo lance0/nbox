@@ -402,8 +402,18 @@ pub enum Command {
         shell: CompletionShell,
     },
 
-    /// Generate a man page (roff) for nbox, e.g. `nbox man > nbox.1`.
-    Man,
+    /// Generate man pages (roff) for nbox.
+    ///
+    /// With no argument, writes the top-level `nbox.1` to stdout, e.g.
+    /// `nbox man > nbox.1`. Given a directory, writes the full set instead:
+    /// `nbox.1` plus one `nbox-<subcommand>.1` per subcommand, so `man
+    /// nbox-device` works after install.
+    Man {
+        /// Directory to write the full man-page set into (created if needed).
+        /// Omit to write the single top-level page to stdout.
+        #[arg(value_name = "OUT_DIR")]
+        out_dir: Option<PathBuf>,
+    },
 
     /// Run the read-only MCP server (for AI agents / MCP clients).
     ///

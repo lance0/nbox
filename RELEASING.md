@@ -75,8 +75,9 @@ On a `v*` tag, `release.yml` runs five jobs:
    - `aarch64-unknown-linux-gnu`
    - `x86_64-apple-darwin`, `aarch64-apple-darwin`
    - `x86_64-pc-windows-msvc` (`.zip`)
-3. **completions** — bash/zsh/fish/powershell/elvish completions + the man page,
-   packaged as `nbox-completions.tar.gz`.
+3. **completions** — bash/zsh/fish/powershell/elvish completions + the full
+   man-page set (top-level `nbox.1` plus one `nbox-<subcommand>.1` per
+   subcommand, under `completions/man/`), packaged as `nbox-completions.tar.gz`.
 4. **docker** — multi-arch (amd64/arm64) image built from the musl binaries via
    `Dockerfile.release`, pushed to GHCR (`ghcr.io/<owner>/nbox`).
 5. **release** — gathers every archive into one GitHub Release, generates a

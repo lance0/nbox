@@ -206,7 +206,9 @@ nbox completions powershell >> $PROFILE
 nbox completions elvish > ~/.elvish/lib/nbox.elv
 ```
 
-A man page is available too: `nbox man > nbox.1`.
+Man pages are available too. `nbox man > nbox.1` writes the top-level page; pass
+a directory — `nbox man man/` — to write the full set instead (`nbox.1` plus one
+`nbox-<subcommand>.1` per subcommand, so `man nbox-device` works once installed).
 
 ## Usage
 
@@ -250,7 +252,8 @@ nbox serve [--http <addr>]        # read-only MCP server for AI agents (stdio, o
 nbox config <init|path|show>
 nbox profile <add|use|list|show>
 nbox completions <bash|zsh|fish|powershell|elvish>
-nbox man                          # generate a man page: nbox man > nbox.1
+nbox man [DIR]                    # man pages: `nbox man > nbox.1` (top-level),
+                                  # or `nbox man man/` for the full per-subcommand set
 ```
 
 ### Global flags

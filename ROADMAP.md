@@ -136,7 +136,7 @@ v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implemen
 - ☑ CI against a real NetBox — netbox-docker (pin 4.x ≥ 4.2), seeded fixture + legacy v1 token, run the binary against the live API. Catches serializer drift wiremock can't. (`netbox-integration.yml`.)
 - ☑ Read-only `nbox raw GET <path>` escape hatch; write verbs rejected until v0.2+.
 - ☑ `config_version` field + forward-compat (a newer version warns but still loads), before v0.2 touches the schema.
-- ☑ `clap_mangen` man page via `nbox man` (`nbox man > nbox.1`).
+- ☑ `clap_mangen` man pages via `nbox man` — `nbox man > nbox.1` (top-level) or `nbox man <dir>` for the full per-subcommand set.
 - ☑ Reconcile DESIGN.md with reality — flagged the doc as partly aspirational (ROADMAP authoritative) and annotated the §6 layout (`prefs.rs`, `graphql.rs`, `schema.rs`, `cache/`, `docs/`, `tui/views`+`widgets` not built).
 
 ## v0.2 — Nested views, IPAM power, first writes
@@ -196,7 +196,7 @@ Ported from ttl/xfr where they paid off. Already have: release workflow, `instal
 - ☑ Pre-commit hooks (`.pre-commit-config.yaml`) — fmt/clippy on commit, test on push; prek with a Python fallback.
 - ☑ musl Linux targets in the release matrix (static `x86_64`/`aarch64` binaries; gnu `aarch64` also kept).
 - ☑ `Dockerfile.release` (wraps the prebuilt musl binaries); multi-arch (amd64/arm64) GHCR publish runs as the `docker` job in `release.yml`.
-- ☑ Ship completions + man page as a release artifact (`nbox-completions.tar.gz`), not just the subcommand.
+- ☑ Ship completions + the full man-page set (top-level + per-subcommand) as a release artifact (`nbox-completions.tar.gz`), not just the subcommand.
 - ☑ MSRV CI job pinning `rust-version` (1.95 — the `cache` feature's `libsqlite3-sys` needs `cfg_select!`; `ci.yml` `msrv` job runs `cargo check --all-features --locked` on 1.95.0).
 - ☑ CI against a real NetBox — `netbox-integration.yml` boots netbox-docker 4.2.x with a seeded fixture and runs the `#[ignore]` integration tests against the live API.
 - ☑ `dependabot.yml` — grouped Cargo + GitHub Actions.
