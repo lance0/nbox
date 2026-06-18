@@ -265,17 +265,37 @@ impl NetBoxClient {
         .await
     }
 
-    /// Prefixes nested within `cidr` (up to `max`).
-    pub async fn prefix_children(&self, cidr: &str, max: usize) -> Result<Vec<Prefix>> {
-        self.list_all(Endpoint::Prefixes, vec![("within", cidr.to_string())], max)
-            .await
+    /// Prefixes nested within `cidr` (up to `max`), scoped to a VRF so children
+    /// don't cross VRFs that share the CIDR. `vrf_id = Some(id)` restricts to that
+    /// VRF; `None` restricts to the global table (`vrf_id=null`).
+    pub async fn prefix_children(
+        &self,
+        cidr: &str,
+        vrf_id: Option<u64>,
+        max: usize,
+    ) -> Result<Vec<Prefix>> {
+        let vrf = vrf_id.map_or_else(|| "null".to_string(), |id| id.to_string());
+        self.list_all(
+            Endpoint::Prefixes,
+            vec![("within", cidr.to_string()), ("vrf_id", vrf)],
+            max,
+        )
+        .await
     }
 
-    /// IP addresses within `cidr` (up to `max`).
-    pub async fn prefix_ips(&self, cidr: &str, max: usize) -> Result<Vec<IpAddress>> {
+    /// IP addresses within `cidr` (up to `max`), scoped to a VRF so members don't
+    /// cross VRFs that share the CIDR. `vrf_id = Some(id)` restricts to that VRF;
+    /// `None` restricts to the global table (`vrf_id=null`).
+    pub async fn prefix_ips(
+        &self,
+        cidr: &str,
+        vrf_id: Option<u64>,
+        max: usize,
+    ) -> Result<Vec<IpAddress>> {
+        let vrf = vrf_id.map_or_else(|| "null".to_string(), |id| id.to_string());
         self.list_all(
             Endpoint::IpAddresses,
-            vec![("parent", cidr.to_string())],
+            vec![("parent", cidr.to_string()), ("vrf_id", vrf)],
             max,
         )
         .await

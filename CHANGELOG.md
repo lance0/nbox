@@ -154,6 +154,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Help wrapper was dropped; the layout helpers are pure and unit-tested.
 
 ### Fixed
+- `nbox prefix <cidr> --vrf <ref>` now scopes its child-prefix and contained-IP
+  sections to the resolved prefix's VRF. The prefix itself was VRF-aware, but its
+  children (`within`) and member IPs (`parent`) were filtered by CIDR only, so a
+  CIDR that exists in more than one VRF could show another VRF's children/IPs.
+  `prefix_children`/`prefix_ips` now take a `vrf_id` (the prefix's VRF, or `null`
+  for the global table) — mirroring the VRF-scoped `prefixes_containing` used by
+  `nbox ip` — and the CLI, MCP, and TUI prefix-detail paths all pass it through.
 - Scope disambiguation now prefers an exact match. `--site`/`--vrf`/`--group`
   matched the scope's `display` by substring, so `nbox vlan 1234 --site ci-site`
   also matched a prefix sibling like `ci-site2` (whose display contains

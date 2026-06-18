@@ -94,6 +94,125 @@ async fn prefix_surfaces_each_scope_type() {
     }
 }
 
+/// The same CIDR in two different VRFs must not bleed children/member IPs across
+/// VRFs: `prefix <cidr> --vrf <ref>` resolves the right prefix AND scopes its
+/// child-prefix (`within`) and contained-IP (`parent`) sections to that prefix's
+/// VRF (`vrf_id=<id>`). The mock keys `within`/`parent` by `vrf_id`, so a leak
+/// (an unscoped or wrong-VRF section query) would 404/miss instead of matching.
+#[tokio::test]
+async fn prefix_scopes_children_and_ips_to_resolved_vrf() {
+    let cidr = "10.0.0.0/24";
+    // (vrf reference, vrf id, the child + member IP that live in that VRF).
+    for (vrf_ref, vrf_id, child, ip) in [
+        ("blue", 7u64, "10.0.0.0/26", "10.0.0.1/24"),
+        ("red", 8u64, "10.0.0.128/26", "10.0.0.129/24"),
+    ] {
+        let server = MockServer::start().await;
+        // Both VRFs' prefixes share the CIDR; `--vrf` retains exactly one.
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/prefixes/"))
+            .and(query_param("prefix", cidr))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 2, "next": null, "previous": null,
+                "results": [
+                    {
+                        "id": 7, "url": "u", "prefix": cidr,
+                        "status": {"value": "active", "label": "Active"},
+                        "vrf": {"id": 7, "url": "u", "name": "blue", "rd": "65000:7"}
+                    },
+                    {
+                        "id": 8, "url": "u", "prefix": cidr,
+                        "status": {"value": "active", "label": "Active"},
+                        "vrf": {"id": 8, "url": "u", "name": "red", "rd": "65000:8"}
+                    }
+                ]
+            })))
+            .mount(&server)
+            .await;
+        // Children (`within`) are keyed by the resolved prefix's VRF id.
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/prefixes/"))
+            .and(query_param("within", cidr))
+            .and(query_param("vrf_id", vrf_id.to_string()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{"id": 99, "url": "u", "prefix": child}]
+            })))
+            .mount(&server)
+            .await;
+        // Member IPs (`parent`) are likewise keyed by that VRF id.
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/ip-addresses/"))
+            .and(query_param("parent", cidr))
+            .and(query_param("vrf_id", vrf_id.to_string()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{"id": 99, "url": "u", "address": ip}]
+            })))
+            .mount(&server)
+            .await;
+
+        let view = detail::prefix_view_by_ref(&client(&server), cidr, Some(vrf_ref), &not_found)
+            .await
+            .unwrap();
+
+        assert_eq!(view.vrf.as_deref(), Some(vrf_ref));
+        // Only the resolved VRF's child + IP — never the other VRF's.
+        assert_eq!(view.child_prefixes, vec![child.to_string()]);
+        assert_eq!(view.ip_addresses.len(), 1);
+        assert_eq!(view.ip_addresses[0].address, ip);
+    }
+}
+
+/// A global/no-VRF prefix scopes its child/contained sections to the global table
+/// (`vrf_id=null`), so it can't pick up rows from any VRF that shares the CIDR.
+#[tokio::test]
+async fn global_prefix_scopes_children_and_ips_to_global_table() {
+    let server = MockServer::start().await;
+    let cidr = "10.0.0.0/24";
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .and(query_param("prefix", cidr))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 1, "url": "u", "prefix": cidr,
+                "status": {"value": "active", "label": "Active"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .and(query_param("within", cidr))
+        .and(query_param("vrf_id", "null"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 2, "url": "u", "prefix": "10.0.0.0/26"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/ip-addresses/"))
+        .and(query_param("parent", cidr))
+        .and(query_param("vrf_id", "null"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 3, "url": "u", "address": "10.0.0.1/24"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let view = detail::prefix_view_by_ref(&client(&server), cidr, None, &not_found)
+        .await
+        .unwrap();
+
+    assert!(view.vrf.is_none());
+    assert_eq!(view.child_prefixes, vec!["10.0.0.0/26".to_string()]);
+    assert_eq!(view.ip_addresses.len(), 1);
+    assert_eq!(view.ip_addresses[0].address, "10.0.0.1/24");
+}
+
 /// A VLAN with a non-site polymorphic scope surfaces `scope` + a friendly
 /// `scope_type` and carries no `site` field.
 #[tokio::test]

@@ -223,8 +223,11 @@ pub async fn prefix_view_by_ref(
     not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
 ) -> Result<PrefixView> {
     let prefix = resolve_prefix(client, cidr, vrf, not_found).await?;
-    let children = client.prefix_children(cidr, SECTION_CAP).await?;
-    let ips = client.prefix_ips(cidr, SECTION_CAP).await?;
+    // Scope children/member IPs to the resolved prefix's VRF (or the global table
+    // when it has none), so a CIDR shared across VRFs can't pull the wrong VRF's.
+    let vrf_id = prefix.vrf.as_ref().map(|v| v.id);
+    let children = client.prefix_children(cidr, vrf_id, SECTION_CAP).await?;
+    let ips = client.prefix_ips(cidr, vrf_id, SECTION_CAP).await?;
     Ok(PrefixView::build(prefix, children, ips))
 }
 
@@ -517,8 +520,9 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
                 .get(&format!("/api/ipam/prefixes/{id}/"), &[])
                 .await?;
             let cidr = p.prefix.clone();
-            let children = client.prefix_children(&cidr, SECTION_CAP).await?;
-            let ips = client.prefix_ips(&cidr, SECTION_CAP).await?;
+            let vrf_id = p.vrf.as_ref().map(|v| v.id);
+            let children = client.prefix_children(&cidr, vrf_id, SECTION_CAP).await?;
+            let ips = client.prefix_ips(&cidr, vrf_id, SECTION_CAP).await?;
             let v = PrefixView::build(p, children, ips);
             (format!("prefix {}", v.prefix), v.to_plain())
         }
@@ -657,8 +661,9 @@ pub async fn load_detail_by_ref(
                 .with_context(|| format!("no prefix matched \"{value}\""))?;
             let id = p.id;
             let cidr = p.prefix.clone();
-            let children = client.prefix_children(&cidr, SECTION_CAP).await?;
-            let ips = client.prefix_ips(&cidr, SECTION_CAP).await?;
+            let vrf_id = p.vrf.as_ref().map(|v| v.id);
+            let children = client.prefix_children(&cidr, vrf_id, SECTION_CAP).await?;
+            let ips = client.prefix_ips(&cidr, vrf_id, SECTION_CAP).await?;
             let v = PrefixView::build(p, children, ips);
             (id, format!("prefix {}", v.prefix), v.to_plain())
         }

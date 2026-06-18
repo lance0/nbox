@@ -218,9 +218,11 @@ async fn prefix_by_cidr_uses_prefix_filter() {
 #[tokio::test]
 async fn prefix_children_and_ips_use_within_and_parent() {
     let server = MockServer::start().await;
+    // No VRF → children/member IPs are scoped to the global table (vrf_id=null).
     Mock::given(method("GET"))
         .and(path("/api/ipam/prefixes/"))
         .and(query_param("within", "10.44.208.0/24"))
+        .and(query_param("vrf_id", "null"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "count": 1, "next": null, "previous": null,
             "results": [{"id": 6, "url": "u", "prefix": "10.44.208.0/26"}]
@@ -230,6 +232,7 @@ async fn prefix_children_and_ips_use_within_and_parent() {
     Mock::given(method("GET"))
         .and(path("/api/ipam/ip-addresses/"))
         .and(query_param("parent", "10.44.208.0/24"))
+        .and(query_param("vrf_id", "null"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "count": 1, "next": null, "previous": null,
             "results": [{"id": 7, "url": "u", "address": "10.44.208.1/24"}]
@@ -238,8 +241,47 @@ async fn prefix_children_and_ips_use_within_and_parent() {
         .await;
 
     let cli = client(&server);
-    let children = cli.prefix_children("10.44.208.0/24", 50).await.unwrap();
-    let ips = cli.prefix_ips("10.44.208.0/24", 50).await.unwrap();
+    let children = cli
+        .prefix_children("10.44.208.0/24", None, 50)
+        .await
+        .unwrap();
+    let ips = cli.prefix_ips("10.44.208.0/24", None, 50).await.unwrap();
+    assert_eq!(children.len(), 1);
+    assert_eq!(ips.len(), 1);
+}
+
+#[tokio::test]
+async fn prefix_children_and_ips_scope_to_vrf() {
+    let server = MockServer::start().await;
+    // A VRF id is threaded into both the `within` (children) and `parent` (IPs)
+    // queries so a CIDR shared across VRFs can't pull the wrong VRF's rows.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .and(query_param("within", "10.0.0.0/24"))
+        .and(query_param("vrf_id", "7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 6, "url": "u", "prefix": "10.0.0.0/26"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/ip-addresses/"))
+        .and(query_param("parent", "10.0.0.0/24"))
+        .and(query_param("vrf_id", "7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 7, "url": "u", "address": "10.0.0.1/24"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let cli = client(&server);
+    let children = cli
+        .prefix_children("10.0.0.0/24", Some(7), 50)
+        .await
+        .unwrap();
+    let ips = cli.prefix_ips("10.0.0.0/24", Some(7), 50).await.unwrap();
     assert_eq!(children.len(), 1);
     assert_eq!(ips.len(), 1);
 }
