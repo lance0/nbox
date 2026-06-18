@@ -12,7 +12,7 @@ use anyhow::{Context, Result, bail};
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, Table, value};
 
-use crate::cli::{ConfigCommand, ProfileCommand};
+use crate::cli::{ConfigCommand, ProfileCommand, TokenCommand};
 use crate::netbox::auth::AuthScheme;
 
 /// Starter config written by `nbox config init`.
@@ -245,21 +245,74 @@ pub fn load_logging(explicit: Option<&Path>) -> LoggingConfig {
     }
 }
 
-/// Resolve the API token for `profile`, preferring `NBOX_TOKEN`.
-pub fn resolve_token(profile: &ProfileConfig) -> Option<String> {
-    let nbox = std::env::var("NBOX_TOKEN").ok();
-    let from_env = profile
+/// Where a resolved API token came from, in precedence order. Reported by
+/// `nbox config token status` — the token *value* is never exposed, only its
+/// source.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TokenSource {
+    /// The profile's `token_env` variable (highest precedence).
+    TokenEnv(String),
+    /// The `NBOX_TOKEN` environment variable.
+    NboxToken,
+    /// The OS keyring entry for this profile.
+    Keyring,
+    /// No token from any source.
+    None,
+}
+
+/// Resolve the API token for `profile`, keyed by `config_path`/`profile_name` for
+/// the keyring lookup.
+///
+/// Precedence (highest first): the profile's `token_env` (if set & present), then
+/// `NBOX_TOKEN`, then the OS keyring entry for this profile, then `None`. Env
+/// always overrides the keyring — CI/SSH/break-glass paths set an env var; the
+/// keyring is for interactive human onboarding.
+pub fn resolve_token(
+    profile: &ProfileConfig,
+    config_path: &Path,
+    profile_name: &str,
+) -> Option<String> {
+    let token_env = profile
         .token_env
         .as_ref()
         .and_then(|name| std::env::var(name).ok());
-    select_token(nbox, from_env)
+    let nbox = std::env::var("NBOX_TOKEN").ok();
+    if let Some(t) = select_env_token(token_env, nbox) {
+        return Some(t);
+    }
+    let account = crate::secret::account_key(&config_path.display().to_string(), profile_name);
+    crate::secret::keyring_get(&account)
 }
 
-/// Pure token-priority logic: `NBOX_TOKEN` wins, then the profile's env var.
-fn select_token(nbox_token: Option<String>, env_token: Option<String>) -> Option<String> {
-    nbox_token
+/// Report the *source* of the resolved token for `profile` without exposing the
+/// value, for `nbox config token status`. Mirrors [`resolve_token`]'s precedence.
+pub fn resolve_token_source(
+    profile: &ProfileConfig,
+    config_path: &Path,
+    profile_name: &str,
+) -> TokenSource {
+    if let Some(name) = &profile.token_env
+        && std::env::var(name).is_ok_and(|t| !t.is_empty())
+    {
+        return TokenSource::TokenEnv(name.clone());
+    }
+    if std::env::var("NBOX_TOKEN").is_ok_and(|t| !t.is_empty()) {
+        return TokenSource::NboxToken;
+    }
+    let account = crate::secret::account_key(&config_path.display().to_string(), profile_name);
+    if crate::secret::keyring_get(&account).is_some() {
+        return TokenSource::Keyring;
+    }
+    TokenSource::None
+}
+
+/// Pure env-token precedence: the profile's `token_env` value wins over
+/// `NBOX_TOKEN`; empty values are skipped. Keyring (the next tier) is layered on
+/// in [`resolve_token`] after this returns `None`.
+fn select_env_token(token_env: Option<String>, nbox_token: Option<String>) -> Option<String> {
+    token_env
         .filter(|t| !t.is_empty())
-        .or_else(|| env_token.filter(|t| !t.is_empty()))
+        .or_else(|| nbox_token.filter(|t| !t.is_empty()))
 }
 
 /// Insert or update `profiles.<name>` in a format-preserving document.
@@ -337,11 +390,15 @@ fn write_doc(path: &Path, doc: &DocumentMut) -> Result<()> {
 pub fn run_config(
     cmd: ConfigCommand,
     config_path: Option<&Path>,
+    profile: Option<&str>,
     format: crate::output::Format,
     json_opts: &crate::output::json::JsonOptions,
 ) -> Result<()> {
     let path = resolve_path(config_path)?;
     match cmd {
+        ConfigCommand::Token { command } => {
+            run_config_token(command, &path, profile, format, json_opts)
+        }
         ConfigCommand::Init => {
             if path.exists() {
                 eprintln!("config already exists at {}", path.display());
@@ -367,6 +424,156 @@ pub fn run_config(
             })
         }
     }
+}
+
+/// Resolve the active (or `--profile`) profile name for a token command. The
+/// profile need not exist in the config yet — the keyring is keyed purely by the
+/// name + config path — so this only requires *a* name, falling back to the
+/// config's `active_profile`, then `"default"`.
+fn token_profile_name(path: &Path, profile: Option<&str>) -> String {
+    if let Some(name) = profile {
+        return name.to_string();
+    }
+    load(path)
+        .ok()
+        .and_then(|cfg| cfg.active_profile)
+        .unwrap_or_else(|| "default".to_string())
+}
+
+/// Handle `nbox config token {set,clear,status}`. The token value is never
+/// printed, echoed, or logged.
+fn run_config_token(
+    cmd: TokenCommand,
+    path: &Path,
+    profile: Option<&str>,
+    format: crate::output::Format,
+    json_opts: &crate::output::json::JsonOptions,
+) -> Result<()> {
+    let name = token_profile_name(path, profile);
+    let account = crate::secret::account_key(&path.display().to_string(), &name);
+    match cmd {
+        TokenCommand::Set => {
+            if !crate::secret::keyring_available() {
+                bail!(
+                    "keyring not available on this system — set NBOX_TOKEN or a \
+                     profile `token_env` instead (build with the \
+                     `keyring-secret-service` feature for the Linux Secret Service \
+                     backend)"
+                );
+            }
+            let token = read_token_no_echo()?;
+            if token.is_empty() {
+                bail!("no token entered");
+            }
+            crate::secret::keyring_set(&account, &token)?;
+            eprintln!("stored token for profile '{name}' in the OS keyring");
+            Ok(())
+        }
+        TokenCommand::Clear => {
+            if !crate::secret::keyring_available() {
+                bail!(
+                    "keyring not available on this system — nothing to clear (set \
+                     NBOX_TOKEN or a profile `token_env` instead)"
+                );
+            }
+            crate::secret::keyring_delete(&account)?;
+            eprintln!("cleared keyring token for profile '{name}'");
+            Ok(())
+        }
+        TokenCommand::Status => {
+            // Only the *source* is reported, never the token value. An unknown
+            // profile is fine: token_env/NBOX_TOKEN are env-only, and the keyring
+            // is keyed by name regardless of whether the profile is configured.
+            let prof = load(path)
+                .ok()
+                .and_then(|cfg| cfg.profiles.get(&name).cloned())
+                .unwrap_or_default();
+            let source = resolve_token_source(&prof, path, &name);
+            let label = match &source {
+                TokenSource::TokenEnv(var) => format!("token_env {var}"),
+                TokenSource::NboxToken => "NBOX_TOKEN".to_string(),
+                TokenSource::Keyring => "keyring".to_string(),
+                TokenSource::None => "none".to_string(),
+            };
+            let report = serde_json::json!({
+                "profile": name,
+                "source": match &source {
+                    TokenSource::TokenEnv(_) => "token_env",
+                    TokenSource::NboxToken => "NBOX_TOKEN",
+                    TokenSource::Keyring => "keyring",
+                    TokenSource::None => "none",
+                },
+                "token_env": match &source {
+                    TokenSource::TokenEnv(var) => Some(var.clone()),
+                    _ => None,
+                },
+            });
+            crate::output::emit(format, json_opts, &report, || {
+                println!("{label}");
+            })
+        }
+    }
+}
+
+/// Read a token from the user without echoing it.
+///
+/// On a TTY: enable crossterm raw mode, read characters until Enter (honoring
+/// Backspace), then restore — nothing is printed back. When stdin is piped / not
+/// a TTY (scripting), read a single trimmed line instead. The token is never
+/// logged or echoed; the returned `String` is the caller's responsibility to
+/// pass straight to the keyring.
+fn read_token_no_echo() -> Result<String> {
+    use std::io::IsTerminal;
+    if std::io::stdin().is_terminal() {
+        read_token_raw_tty()
+    } else {
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line)?;
+        Ok(line.trim_end_matches(['\r', '\n']).to_string())
+    }
+}
+
+/// TTY no-echo read via crossterm raw mode. Raw mode is disabled again on every
+/// exit path (including the `?` early returns below, via the guard).
+fn read_token_raw_tty() -> Result<String> {
+    use crossterm::event::{Event, KeyCode, KeyEventKind, KeyModifiers, read};
+    use crossterm::terminal::{disable_raw_mode, enable_raw_mode};
+
+    eprint!("NetBox API token (input hidden): ");
+    // RAII so raw mode is always restored, even on an error/early return.
+    struct RawGuard;
+    impl Drop for RawGuard {
+        fn drop(&mut self) {
+            let _ = disable_raw_mode();
+        }
+    }
+    enable_raw_mode()?;
+    let _guard = RawGuard;
+
+    let mut token = String::new();
+    loop {
+        let Event::Key(key) = read()? else { continue };
+        // Only react to presses (Windows also emits Release/Repeat).
+        if key.kind != KeyEventKind::Press {
+            continue;
+        }
+        match key.code {
+            KeyCode::Enter => break,
+            KeyCode::Backspace => {
+                token.pop();
+            }
+            KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                drop(_guard);
+                eprintln!();
+                bail!("cancelled");
+            }
+            KeyCode::Char(c) => token.push(c),
+            _ => {}
+        }
+    }
+    drop(_guard);
+    eprintln!();
+    Ok(token)
 }
 
 /// Handle the `nbox profile` subcommands.
@@ -545,17 +752,140 @@ page_size = 250
     }
 
     #[test]
-    fn token_priority_prefers_nbox_token() {
+    fn env_token_prefers_token_env_over_nbox_token() {
+        // Reversed precedence (Phase A): the profile's `token_env` wins over
+        // `NBOX_TOKEN`. Env always still beats the keyring (layered on later).
         assert_eq!(
-            select_token(Some("override".into()), Some("env".into())),
-            Some("override".into())
+            select_env_token(Some("from-token-env".into()), Some("from-nbox".into())),
+            Some("from-token-env".into())
         );
-        assert_eq!(select_token(None, Some("env".into())), Some("env".into()));
+        // Falls back to NBOX_TOKEN when token_env is absent.
         assert_eq!(
-            select_token(Some(String::new()), Some("env".into())),
-            Some("env".into())
+            select_env_token(None, Some("from-nbox".into())),
+            Some("from-nbox".into())
         );
-        assert_eq!(select_token(None, None), None);
+        // An empty token_env value is skipped, falling through to NBOX_TOKEN.
+        assert_eq!(
+            select_env_token(Some(String::new()), Some("from-nbox".into())),
+            Some("from-nbox".into())
+        );
+        // An empty NBOX_TOKEN with no token_env yields None (→ keyring tier).
+        assert_eq!(select_env_token(None, Some(String::new())), None);
+        // Neither env source set → None (→ keyring tier, then no token).
+        assert_eq!(select_env_token(None, None), None);
+    }
+
+    #[test]
+    fn resolve_token_falls_through_to_keyring_then_none() {
+        // With no env vars set and a profile whose token_env names a guaranteed-
+        // unset variable, resolution drops past env to the keyring tier. In the
+        // mock/CI keystore (no persistent backend) the keyring miss yields None —
+        // exercising the full env→keyring→None chain without touching real env
+        // vars the test runner might have. (Avoids mutating process env, which is
+        // racy across parallel tests.)
+        let profile = ProfileConfig {
+            url: "https://nb.example".into(),
+            token_env: Some("NBOX_TEST_DEFINITELY_UNSET_VAR_XYZ".into()),
+            ..Default::default()
+        };
+        // Only assert the None outcome when no real backend could hold a token and
+        // NBOX_TOKEN isn't set in this environment, so the test is hermetic.
+        if !crate::secret::keyring_available() && std::env::var("NBOX_TOKEN").is_err() {
+            let path = Path::new("/nbox/test/resolve-fallthrough/config.toml");
+            assert_eq!(resolve_token(&profile, path, "default"), None);
+            assert_eq!(
+                resolve_token_source(&profile, path, "default"),
+                TokenSource::None
+            );
+        }
+    }
+
+    #[test]
+    fn token_status_label_maps_each_source() {
+        // The CLI's `status` label is a pure mapping over TokenSource; assert each
+        // arm produces the documented, token-free label. (Mirrors the match in
+        // `run_config_token`.)
+        let label = |s: &TokenSource| match s {
+            TokenSource::TokenEnv(var) => format!("token_env {var}"),
+            TokenSource::NboxToken => "NBOX_TOKEN".to_string(),
+            TokenSource::Keyring => "keyring".to_string(),
+            TokenSource::None => "none".to_string(),
+        };
+        assert_eq!(
+            label(&TokenSource::TokenEnv("NETBOX_TOKEN".into())),
+            "token_env NETBOX_TOKEN"
+        );
+        assert_eq!(label(&TokenSource::NboxToken), "NBOX_TOKEN");
+        assert_eq!(label(&TokenSource::Keyring), "keyring");
+        assert_eq!(label(&TokenSource::None), "none");
+        // No label ever contains a token value — only the source / env-var name.
+        for s in [
+            TokenSource::TokenEnv("X".into()),
+            TokenSource::NboxToken,
+            TokenSource::Keyring,
+            TokenSource::None,
+        ] {
+            assert!(!label(&s).contains("secret"));
+        }
+    }
+
+    #[test]
+    fn token_set_status_clear_round_trip_when_keyring_available() {
+        // The full keyring round-trip only runs where a real persistent backend is
+        // both compiled in AND usable at runtime. `keyring_available()` is a
+        // compile-time check; the actual OS keystore can still be locked or absent
+        // at runtime (headless CI with a D-Bus backend, a locked login keyring,
+        // …), so a `set` failure here is environmental, not a logic bug — skip
+        // rather than fail. The source-reporting logic itself is covered by the
+        // pure tests above.
+        if !crate::secret::keyring_available() {
+            return;
+        }
+        // Use a unique account so a real shared keystore on a dev box stays clean.
+        let path = Path::new("/nbox/test/round-trip/config.toml");
+        let name = format!("rt-{}", std::process::id());
+        let account = crate::secret::account_key(&path.display().to_string(), &name);
+        // Clean slate, then store. If the runtime keystore can't be written
+        // (locked/headless), bail out — this isn't a logic failure.
+        let _ = crate::secret::keyring_delete(&account);
+        if crate::secret::keyring_set(&account, "round-trip-secret").is_err() {
+            return;
+        }
+
+        let prof = ProfileConfig::default();
+        // With no env vars overriding, the source is the keyring entry we just set.
+        if std::env::var("NBOX_TOKEN").is_err() {
+            assert_eq!(
+                resolve_token_source(&prof, path, &name),
+                TokenSource::Keyring
+            );
+        }
+        // Clear, then it should fall through to None (absent env).
+        crate::secret::keyring_delete(&account).unwrap();
+        if std::env::var("NBOX_TOKEN").is_err() {
+            assert_eq!(resolve_token_source(&prof, path, &name), TokenSource::None);
+        }
+    }
+
+    #[test]
+    fn resolve_token_source_reports_token_env_when_present() {
+        // Set a uniquely-named var so we don't collide with the ambient env or
+        // other parallel tests; restore it after.
+        let var = "NBOX_TEST_TOKENENV_SOURCE_VAR";
+        // SAFETY: single-threaded within this test; the var name is unique to it.
+        unsafe { std::env::set_var(var, "secret-value") };
+        let profile = ProfileConfig {
+            url: "https://nb.example".into(),
+            token_env: Some(var.to_string()),
+            ..Default::default()
+        };
+        let src = resolve_token_source(
+            &profile,
+            Path::new("/nbox/test/source/config.toml"),
+            "default",
+        );
+        unsafe { std::env::remove_var(var) };
+        assert_eq!(src, TokenSource::TokenEnv(var.to_string()));
     }
 
     #[test]

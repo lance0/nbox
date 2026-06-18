@@ -111,14 +111,20 @@ fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent
                 let _ = tx.send(AppEvent::Status(message)).await;
             });
         }
-        AppCommand::SwitchProfile { id, name, config } => {
+        AppCommand::SwitchProfile {
+            id,
+            name,
+            config,
+            config_path,
+        } => {
             tokio::spawn(async move {
                 // Reconnect the TUI way: rebuild the client from the target
                 // profile and re-probe `/api/status/` — the same connect/probe
                 // code paths launch uses — off the render thread. Token resolution
-                // reads the env here (not in the pure handler). The switch `id` is
-                // echoed back so a superseded switch is dropped on arrival.
-                let result = reconnect(&config).await;
+                // reads the env + keyring here (not in the pure handler). The
+                // switch `id` is echoed back so a superseded switch is dropped on
+                // arrival.
+                let result = reconnect(&config, config_path.as_deref(), &name).await;
                 let _ = tx
                     .send(AppEvent::ProfileSwitched { id, name, result })
                     .await;
@@ -132,8 +138,16 @@ fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent
 /// [`NetBoxClient::new`] + [`NetBoxClient::verify_compatible`] — the exact pair
 /// `run_tui` calls at launch — so a switch enforces the same version floor and
 /// surfaces the same errors (unreachable / unsupported) as a fresh start.
-async fn reconnect(profile: &crate::config::ProfileConfig) -> Result<(NetBoxClient, String)> {
-    let token = crate::config::resolve_token(profile);
+async fn reconnect(
+    profile: &crate::config::ProfileConfig,
+    config_path: Option<&std::path::Path>,
+    profile_name: &str,
+) -> Result<(NetBoxClient, String)> {
+    // Token resolution needs the config path + profile name to key the keyring.
+    // With no backing file (config_path None), fall back to env-only resolution
+    // by keying off an empty path — the keyring lookup just misses.
+    let path = config_path.unwrap_or_else(|| std::path::Path::new(""));
+    let token = crate::config::resolve_token(profile, path, profile_name);
     let client = NetBoxClient::new(profile, token)?;
     let status = client.verify_compatible().await?;
     Ok((client, status.netbox_version))

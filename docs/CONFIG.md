@@ -38,8 +38,37 @@ mishandle a newer schema.
 
 Tokens are **never written to config**. nbox resolves them in order:
 
-1. `NBOX_TOKEN` (direct override)
-2. the env var named by the profile's `token_env`
+1. the env var named by the profile's `token_env` (if set & present)
+2. `NBOX_TOKEN`
+3. the OS keyring entry for the profile (`nbox config token set`)
+4. none — nbox reports a clear "no token" error
+
+Env always overrides the keyring: CI/SSH/break-glass paths set an env var, while
+the keyring is for interactive human onboarding. Inspect the active source with
+`nbox config token status` (it prints the source — `token_env`/`NBOX_TOKEN`/
+`keyring`/`none` — never the token).
+
+### OS keyring
+
+Store the token in your OS keyring instead of an env var:
+
+```bash
+nbox config token set      # prompts, input hidden (or reads a piped line)
+nbox config token status   # shows the resolved source, never the token
+nbox config token clear    # removes the stored token
+```
+
+`set`/`clear` act on the active profile (or `--profile <name>`). The token is read
+without echo from a TTY prompt, or as a single line from stdin when piped
+(scripting) — there is no positional token argument, so it can't leak into shell
+history. The entry is keyed by config path + profile name (service `nbox`).
+
+Backends: macOS Keychain and Windows Credential Manager are built in. On Linux
+the Secret Service (D-Bus) backend is **off by default** — build with
+`--features keyring-secret-service` to enable it; otherwise `nbox config token`
+reports the keyring as unavailable and you should use `NBOX_TOKEN` or a
+`token_env` instead. (This keeps static/musl builds free of a D-Bus link
+dependency.)
 
 `auth_scheme = "auto"` detects NetBox 4.5+ v2 tokens (`nbt_…` → `Authorization:
 Bearer`) versus legacy v1 tokens (`Authorization: Token`). Force one with

@@ -361,9 +361,11 @@ page_size = 100
 exclude_config_context = true
 ```
 
-Tokens are **never written to config**. nbox resolves them in order: `NBOX_TOKEN`
-(direct override), then the env var named by the profile's `token_env`. See
-[docs/CONFIG.md](docs/CONFIG.md) for the full reference.
+Tokens are **never written to config**. nbox resolves them in order: the profile's
+`token_env` variable (if set & present), then `NBOX_TOKEN`, then the OS keyring
+entry for the profile (`nbox config token set` — input hidden, never echoed). Env
+always overrides the keyring. `nbox config token status` shows the active source
+(never the token). See [docs/CONFIG.md](docs/CONFIG.md) for the full reference.
 
 ## MCP Server
 

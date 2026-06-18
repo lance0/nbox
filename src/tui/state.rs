@@ -158,6 +158,11 @@ pub enum AppCommand {
         id: RequestId,
         name: String,
         config: ProfileConfig,
+        /// The active config file path, for keying the keyring token lookup during
+        /// reconnect (token resolution is `token_env` → `NBOX_TOKEN` → keyring).
+        /// `None` when the session has no backing file (token then comes from env
+        /// only).
+        config_path: Option<PathBuf>,
     },
 }
 
@@ -1136,6 +1141,7 @@ impl App {
             id: self.switch_seq,
             name: entry.name,
             config: entry.config,
+            config_path: self.config_path.clone(),
         }]
     }
 

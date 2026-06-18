@@ -8,6 +8,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- OS keyring token storage + `nbox config token set|clear|status`. `set` stores
+  the active (or `--profile`) profile's NetBox API token in the OS keyring,
+  reading it without echo from a TTY prompt — or as a single line from stdin when
+  piped, for scripting. There is no positional token argument, so the token can't
+  leak into shell history; it is never echoed, logged, or written to the config
+  file. `clear` removes the stored token; `status` reports the resolved token
+  *source* (`token_env`/`NBOX_TOKEN`/`keyring`/`none`) without ever printing the
+  token. The keyring entry is keyed by config path + profile name (service
+  `nbox`). macOS Keychain and Windows Credential Manager are built in; the Linux
+  Secret Service (D-Bus) backend is opt-in via `--features keyring-secret-service`
+  (keeping static/musl builds free of a D-Bus link dependency) — without it,
+  `config token` reports the keyring as unavailable and steers you to an env var.
 - `tags` on the remaining detail views, for consistency with the newer ones.
   `nbox device`/`site`/`rack`/`circuit`/`ip`/`prefix`/`vlan`/`interface`/
   `aggregate`/`asn`/`ip-range` now surface the object's tags — joined slugs as a
@@ -168,6 +180,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WorkerGuard` is held for the process lifetime so buffered lines flush on exit.
 
 ### Changed
+- **Token resolution precedence reversed.** The order is now the profile's
+  `token_env` variable (if set & present) → `NBOX_TOKEN` → the OS keyring entry
+  for the profile → none. Previously `NBOX_TOKEN` took precedence over the
+  profile's `token_env`. Env still always overrides the keyring (CI/SSH/break-glass
+  paths set an env var; the keyring is for interactive onboarding). If you relied
+  on `NBOX_TOKEN` to override a `token_env` per invocation, unset `token_env` for
+  that profile or use `--profile`. `nbox config token status` shows the active
+  source so the precedence is visible.
 - `nbox man` can now generate the full man-page set, not just the top-level page.
   Bare `nbox man` still streams `nbox.1` to stdout (unchanged — `nbox man >
   nbox.1` keeps working), but `nbox man <dir>` writes the top-level `nbox.1` plus

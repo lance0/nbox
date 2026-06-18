@@ -66,6 +66,14 @@ open = "5"
 # IP/network handling
 ipnet = "2"
 
+# OS keyring for the API token (`nbox config token set`). Pinned to v3 (=3.6.3):
+# v4 is a restructured "sample" crate, not an upgrade path. The real D-Bus
+# backend is its own off-by-default feature (`keyring-secret-service`); with no
+# backend selected (the default, and on musl) keyring v3 compiles to its built-in
+# mock keystore — runtime Err, no D-Bus/C deps — so static builds link cleanly and
+# degrade gracefully. The apple/windows backends are cfg(target_os)-inert off-OS.
+keyring = { version = "=3.6.3", optional = true }
+
 # Caching, later
 rusqlite = { version = "0.40", features = ["bundled"], optional = true }
 
@@ -103,10 +111,24 @@ sha2 = { version = "0.10", optional = true }
 libc = "0.2"
 
 [features]
-default = ["clipboard", "http"]
+default = ["clipboard", "http", "keyring"]
 clipboard = ["dep:arboard"]
 cache = ["dep:rusqlite"]
 updates = ["dep:update-informer"]
+# OS keyring token storage (`nbox config token`). Default-on like `http`. Selects
+# the apple/windows native backends, which are cfg(target_os)-inert off their OS,
+# so on Linux with no further backend feature this resolves to keyring v3's mock
+# keystore (no D-Bus/C link dep) — keeping the static musl build identical.
+keyring = ["dep:keyring", "keyring/apple-native", "keyring/windows-native"]
+# The real Linux D-Bus (Secret Service) backend — OFF by default; desktop
+# packagers opt in. `vendored` builds libdbus from source so `--all-features` CI
+# needs no `libdbus-1-dev`; `crypto-rust` keeps the encrypted transport pure-Rust.
+keyring-secret-service = [
+    "keyring",
+    "keyring/sync-secret-service",
+    "keyring/crypto-rust",
+    "keyring/vendored",
+]
 # Loopback HTTP transport for `nbox serve --http` (rung 2 of the MCP transport
 # ladder, DESIGN §24). In `default` — HTTP/MCP is the agent-first headline
 # feature, so it ships out of the box; drop it with `--no-default-features` for

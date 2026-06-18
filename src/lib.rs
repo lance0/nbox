@@ -32,6 +32,7 @@ pub mod error;
 pub mod mcp;
 pub mod netbox;
 pub mod output;
+pub mod secret;
 pub mod tui;
 pub mod util;
 
@@ -356,6 +357,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Config { command }) => config::run_config(
             command,
             ctx.config_path.as_deref(),
+            ctx.profile.as_deref(),
             ctx.format,
             &ctx.json_opts,
         ),
@@ -651,7 +653,7 @@ fn connect(ctx: &Ctx) -> Result<NetBoxClient> {
         .get(&name)
         .with_context(|| format!("no profile named '{name}'"))?;
 
-    let token = config::resolve_token(profile);
+    let token = config::resolve_token(profile, &path, &name);
     NetBoxClient::new(profile, token)
 }
 
@@ -675,7 +677,7 @@ async fn run_tui(ctx: &Ctx) -> Result<()> {
     let base_url = profile.url.clone();
     let theme_name = cfg.ui.theme.clone();
     let refresh_secs = cfg.ui.refresh_secs;
-    let token = config::resolve_token(profile);
+    let token = config::resolve_token(profile, &path, &name);
     let client = NetBoxClient::new(profile, token)?;
 
     // Probe the instance on connect: confirms reachability + the 4.2 floor, and
