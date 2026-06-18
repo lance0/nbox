@@ -163,7 +163,10 @@ An entry (or the `--audience` host) with an **explicit port** matches only that
 `host:port` — e.g. `nbox.example.com:8443` accepts that host on `8443` and
 rejects it on any other port. An entry with **no port** matches the host on any
 port (the default). Loopback always passes on any port. The same port rule
-applies to both the `Host` check and the `Origin` check, so they agree.
+applies to both the `Host` check and the `Origin` check, so they agree. An entry
+whose port is malformed — out of range (`host:99999`), non-numeric (`host:abc`),
+or empty (`host:`) — is rejected at startup (`exit 2`, naming the entry) rather
+than dropped to an any-port match, so a typo can't silently widen the allow-list.
 
 What nbox validates on each `/mcp` request: the bearer from the `Authorization`
 header (tokens in the query string are rejected); the JWT signature against the

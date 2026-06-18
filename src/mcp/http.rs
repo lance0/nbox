@@ -242,20 +242,17 @@ pub async fn serve_http(client: NetBoxClient, addr: &str, opts: ServeOptions) ->
     // `--allowed-host` entries, so a real proxied request with the deployment's
     // `Host` passes both rmcp's check and our `Origin` check.
     let allowed_hosts = if oidc_on {
-        let mut extra: Vec<Authority> = Vec::new();
-        if let Some(args) = &oidc
-            && let Some(authority) = host_of_url(&args.audience)
-        {
-            extra.push(authority);
-        }
-        extra.extend(extra_hosts.iter().filter_map(|h| normalize_host_entry(h)));
-        extra.sort();
-        extra.dedup();
-        if !extra.is_empty() {
-            let rendered: Vec<String> = extra.iter().map(Authority::to_rmcp_string).collect();
+        let audience = oidc.as_ref().map(|a| a.audience.as_str());
+        let allowed = build_allowed_hosts(audience, &extra_hosts)?;
+        if !allowed.extra.is_empty() {
+            let rendered: Vec<String> = allowed
+                .extra
+                .iter()
+                .map(Authority::to_rmcp_string)
+                .collect();
             tracing::info!(allowed_hosts = ?rendered, "DNS-rebinding allow-list (plus loopback)");
         }
-        AllowedHosts { extra }
+        allowed
     } else {
         if !extra_hosts.is_empty() {
             tracing::warn!(
@@ -420,60 +417,161 @@ fn host_is_loopback(host: &str) -> bool {
     }
 }
 
+/// Build the OIDC/routable-mode allowed-host set: the `--audience` host (if the
+/// audience is a URL with a host) plus each operator `--allowed-host` /
+/// `[serve].allowed_hosts` entry, deduplicated. Loopback is added implicitly by
+/// [`AllowedHosts`] and isn't stored here.
+///
+/// Fails fast (exit 2) on an entry whose explicit port is invalid (out of range,
+/// non-numeric, or empty after the `:`), naming the offending entry — consistent
+/// with the other startup config rejections (e.g. the `http://` issuer rule).
+/// Dropping the port and matching the host on any port instead would BROADEN the
+/// allow-list past what the operator wrote, so a malformed port fails closed.
+fn build_allowed_hosts(audience: Option<&str>, extra_hosts: &[String]) -> Result<AllowedHosts> {
+    let mut extra: Vec<Authority> = Vec::new();
+    if let Some(aud) = audience {
+        match host_of_url(aud) {
+            Ok(Some(authority)) => extra.push(authority),
+            Ok(None) => {} // opaque/host-less audience — nothing to add.
+            Err(AuthorityError::BadPort) => {
+                return Err(NboxError::Usage(format!(
+                    "--audience {aud} has an invalid port (expected 1-65535)"
+                ))
+                .into());
+            }
+            // `host_of_url` maps a host-less authority to `Ok(None)`.
+            Err(AuthorityError::NoHost) => {}
+        }
+    }
+    for entry in extra_hosts {
+        match normalize_host_entry(entry) {
+            Ok(Some(authority)) => extra.push(authority),
+            Ok(None) => {} // empty/host-less entry — nothing to add.
+            Err(AuthorityError::BadPort) => {
+                return Err(NboxError::Usage(format!(
+                    "--allowed-host \"{entry}\" has an invalid port (expected 1-65535)"
+                ))
+                .into());
+            }
+            Err(AuthorityError::NoHost) => {}
+        }
+    }
+    extra.sort();
+    extra.dedup();
+    Ok(AllowedHosts { extra })
+}
+
 /// Extract the [`Authority`] (lowercased host + explicit port if any) from a URL
-/// like the `--audience` canonical URI. `None` if it isn't an absolute `http(s)`
-/// URL with a host (e.g. an opaque audience identifier — no host to allow). The
+/// like the `--audience` canonical URI. `Ok(None)` if it isn't an absolute URL
+/// with a host (e.g. an opaque audience identifier — no host to allow). The
 /// explicit port is kept so an audience of `https://nbox.example.com:8443` pins
-/// the allow-list to that port.
-fn host_of_url(url: &str) -> Option<Authority> {
-    let rest = url.split_once("://")?.1;
+/// the allow-list to that port. `Err(BadPort)` if the URL carries a port component
+/// that isn't a valid `u16` — the caller fails startup rather than dropping it.
+fn host_of_url(url: &str) -> Result<Option<Authority>, AuthorityError> {
+    let Some((_, rest)) = url.split_once("://") else {
+        return Ok(None);
+    };
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     // Drop any userinfo.
     let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
-    parse_authority(host_port)
+    match parse_authority(host_port) {
+        Ok(auth) => Ok(Some(auth)),
+        // No host ⇒ nothing to add (an opaque/host-less audience is legitimate).
+        Err(AuthorityError::NoHost) => Ok(None),
+        // A present-but-invalid port is a real misconfiguration → propagate.
+        Err(e @ AuthorityError::BadPort) => Err(e),
+    }
 }
 
 /// Normalize an operator-supplied `--allowed-host` entry to an [`Authority`]
 /// (tolerating a `scheme://` prefix). An explicit `:port` is preserved so the
-/// entry matches only that port; without one the host matches any port. `None`
-/// for an entry with no host.
-fn normalize_host_entry(entry: &str) -> Option<Authority> {
+/// entry matches only that port; without one the host matches any port. `Ok(None)`
+/// for an entry with no host (e.g. empty). `Err(BadPort)` if the entry carries a
+/// port component that isn't a valid `u16` — the caller fails startup rather than
+/// silently widening the entry to any port.
+fn normalize_host_entry(entry: &str) -> Result<Option<Authority>, AuthorityError> {
     let entry = entry.trim();
     let rest = entry.split_once("://").map_or(entry, |(_, r)| r);
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
-    parse_authority(host_port)
+    match parse_authority(host_port) {
+        Ok(auth) => Ok(Some(auth)),
+        Err(AuthorityError::NoHost) => Ok(None),
+        Err(e @ AuthorityError::BadPort) => Err(e),
+    }
+}
+
+/// Why [`parse_authority`] rejected an authority string. Lets the operator-facing
+/// callers ([`host_of_url`], [`normalize_host_entry`]) fail startup with a precise
+/// message while the request-side caller ([`origin_host`]) just treats it as
+/// not-allowed (fail closed). `NoHost` is *not* a failure for the config callers
+/// (an opaque, host-less audience is legitimate — there's simply nothing to add to
+/// the allow-list); `BadPort` always is.
+#[derive(Debug, PartialEq, Eq)]
+enum AuthorityError {
+    /// The string had no host (e.g. `""`, `":8080"`).
+    NoHost,
+    /// A port component was present (a `:` with something after it) but didn't
+    /// parse as a valid `u16` (1–65535): non-numeric, out of range, or empty.
+    BadPort,
 }
 
 /// Parse an authority (`host`, `host:port`, `[v6]`, or `[v6]:port`) into an
-/// [`Authority`]: the lowercased host plus the explicit port if a valid one is
-/// present. A trailing `:` with a non-numeric / out-of-range port is treated as
-/// no port (the whole authority is the host). `None` for an empty host.
-fn parse_authority(authority: &str) -> Option<Authority> {
+/// [`Authority`]: the lowercased host plus the explicit port if one was present.
+///
+/// Fails closed on a malformed port: when a port component is present (a `:` with
+/// something after it, outside an IPv6 literal's brackets), it MUST parse as a
+/// valid `u16` (1–65535). A present-but-invalid port — non-numeric (`host:abc`),
+/// out of range (`host:99999`), or empty (`host:`) — is [`AuthorityError::BadPort`],
+/// NOT silently dropped to a bare host (which would widen an allow-list entry to
+/// any port). A genuinely port-less authority (`host`, `[::1]`) keeps `port: None`.
+/// [`AuthorityError::NoHost`] for an empty host.
+fn parse_authority(authority: &str) -> Result<Authority, AuthorityError> {
     let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
-        // IPv6 literal: `[::1]` or `[::1]:8080`.
+        // IPv6 literal: `[::1]` or `[::1]:8080`. The colons inside the brackets are
+        // part of the address, not a port separator.
         match rest.split_once(']') {
-            Some((host, after)) => {
-                let port = after.strip_prefix(':').and_then(|p| p.parse::<u16>().ok());
-                (host, port)
-            }
+            Some((host, after)) => (host, parse_port_suffix(after)?),
+            // No closing bracket: treat the remainder as the host (no port).
             None => (rest, None),
         }
     } else {
         match authority.rsplit_once(':') {
-            Some((host, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
-                (host, port.parse::<u16>().ok())
-            }
-            _ => (authority, None),
+            // A `:` with anything after it is a port component — it must be valid.
+            Some((host, port_str)) => (host, Some(parse_port(port_str)?)),
+            None => (authority, None),
         }
     };
     if host.is_empty() {
-        None
+        Err(AuthorityError::NoHost)
     } else {
-        Some(Authority {
+        Ok(Authority {
             host: host.to_ascii_lowercase(),
             port,
         })
+    }
+}
+
+/// Parse the part of an IPv6 authority that follows the closing `]`: either empty
+/// (no port) or `:port`. A present-but-invalid port is [`AuthorityError::BadPort`].
+/// Anything else after `]` that isn't a `:port` (e.g. stray text) is also rejected.
+fn parse_port_suffix(after: &str) -> Result<Option<u16>, AuthorityError> {
+    if after.is_empty() {
+        Ok(None)
+    } else if let Some(port_str) = after.strip_prefix(':') {
+        Ok(Some(parse_port(port_str)?))
+    } else {
+        Err(AuthorityError::BadPort)
+    }
+}
+
+/// Parse a port component to a valid `u16` (1–65535). Empty, non-numeric, out of
+/// range, or a literal `0` (not a usable listen port for an allow-list entry) ⇒
+/// [`AuthorityError::BadPort`].
+fn parse_port(port_str: &str) -> Result<u16, AuthorityError> {
+    match port_str.parse::<u16>() {
+        Ok(port) if port != 0 => Ok(port),
+        _ => Err(AuthorityError::BadPort),
     }
 }
 
@@ -830,8 +928,9 @@ fn challenge(status: StatusCode, header_value: &str, description: &str) -> Respo
 /// `8080`). The scheme is not constrained — only the host/port matter for the
 /// DNS-rebinding decision the caller makes against the allowed-host set. The port
 /// is kept so a port-pinned allow-list entry can reject a mismatched port.
-/// Returns `None` for a malformed origin or `Origin: null` (no host ⇒ not
-/// allowable).
+/// Returns `None` for a malformed origin (no host, or a present-but-invalid port)
+/// or `Origin: null` (no host ⇒ not allowable) — a `None` host is never allowed,
+/// so a malformed Origin fails closed (`403`).
 fn origin_host(origin: &str) -> Option<Authority> {
     let origin = origin.trim();
     if origin.is_empty() || origin.eq_ignore_ascii_case("null") {
@@ -839,7 +938,8 @@ fn origin_host(origin: &str) -> Option<Authority> {
     }
     let after_scheme = origin.split_once("://").map_or(origin, |(_, rest)| rest);
     let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
-    parse_authority(authority)
+    // Any parse failure (no host, or a present-but-invalid port) ⇒ not allowable.
+    parse_authority(authority).ok()
 }
 
 /// Constant-time byte-slice equality. Avoids leaking the token length-prefix
@@ -1079,35 +1179,212 @@ mod tests {
         // No port in the URL → a port-less authority (matches any port).
         assert_eq!(
             host_of_url("https://nbox.example.com"),
-            Some(host("nbox.example.com"))
+            Ok(Some(host("nbox.example.com")))
         );
         // An explicit port in the audience is PRESERVED (pins to that port).
         assert_eq!(
             host_of_url("https://nbox.example.com:8443/mcp"),
-            Some(host_port("nbox.example.com", 8443))
+            Ok(Some(host_port("nbox.example.com", 8443)))
         );
         assert_eq!(
             host_of_url("https://[2001:db8::1]:8080"),
-            Some(host_port("2001:db8::1", 8080))
+            Ok(Some(host_port("2001:db8::1", 8080)))
         );
-        // An opaque (non-URL) audience has no host.
-        assert_eq!(host_of_url("nbox"), None);
+        // An opaque (non-URL) audience has no host — not an error, nothing to add.
+        assert_eq!(host_of_url("nbox"), Ok(None));
 
         // `--allowed-host` entries tolerate a scheme, and preserve an explicit port.
         assert_eq!(
             normalize_host_entry("nbox.example.com"),
-            Some(host("nbox.example.com"))
+            Ok(Some(host("nbox.example.com")))
         );
         assert_eq!(
             normalize_host_entry("https://nbox.example.com:8443"),
-            Some(host_port("nbox.example.com", 8443))
+            Ok(Some(host_port("nbox.example.com", 8443)))
         );
         assert_eq!(
             normalize_host_entry("  HOST.example.com  "),
-            Some(host("host.example.com"))
+            Ok(Some(host("host.example.com")))
         );
-        // A bare `:port` with no host is rejected.
-        assert_eq!(normalize_host_entry(""), None);
+        // An empty entry has no host — `Ok(None)` (filtered out, not an error).
+        assert_eq!(normalize_host_entry(""), Ok(None));
+    }
+
+    #[test]
+    fn parse_authority_accepts_valid_ports_and_portless_hosts() {
+        // Port-less hosts: any-port semantics, `port: None`.
+        assert_eq!(parse_authority("host"), Ok(host("host")));
+        assert_eq!(parse_authority("[::1]"), Ok(host("::1")));
+        assert_eq!(parse_authority("[2001:db8::1]"), Ok(host("2001:db8::1")));
+        // Valid explicit ports are kept.
+        assert_eq!(parse_authority("host:8443"), Ok(host_port("host", 8443)));
+        assert_eq!(parse_authority("host:1"), Ok(host_port("host", 1)));
+        assert_eq!(parse_authority("host:65535"), Ok(host_port("host", 65535)));
+        assert_eq!(parse_authority("[::1]:8443"), Ok(host_port("::1", 8443)));
+    }
+
+    #[test]
+    fn parse_authority_rejects_invalid_ports_instead_of_dropping_them() {
+        // The fail-open bug: a present-but-invalid port must be rejected, NOT
+        // silently dropped to a bare host (which would widen to any-port).
+        // Out of range.
+        assert_eq!(parse_authority("host:99999"), Err(AuthorityError::BadPort));
+        assert_eq!(parse_authority("host:65536"), Err(AuthorityError::BadPort));
+        // Non-numeric.
+        assert_eq!(parse_authority("host:abc"), Err(AuthorityError::BadPort));
+        assert_eq!(parse_authority("host:80x"), Err(AuthorityError::BadPort));
+        // Empty after the colon.
+        assert_eq!(parse_authority("host:"), Err(AuthorityError::BadPort));
+        // Port 0 is not a usable listen port for an allow-list entry.
+        assert_eq!(parse_authority("host:0"), Err(AuthorityError::BadPort));
+        // IPv6 with a bad port — the colons inside `[...]` are NOT a separator, so
+        // only the suffix port is parsed (and rejected).
+        assert_eq!(parse_authority("[::1]:99999"), Err(AuthorityError::BadPort));
+        assert_eq!(parse_authority("[::1]:abc"), Err(AuthorityError::BadPort));
+        assert_eq!(parse_authority("[::1]:"), Err(AuthorityError::BadPort));
+        // A no-host authority.
+        assert_eq!(parse_authority(""), Err(AuthorityError::NoHost));
+        assert_eq!(parse_authority(":8080"), Err(AuthorityError::NoHost));
+    }
+
+    #[test]
+    fn invalid_port_entries_are_rejected_not_widened() {
+        // `host_of_url` / `normalize_host_entry` surface a `BadPort` for callers to
+        // turn into a startup usage error — they do NOT drop to a bare host.
+        assert_eq!(
+            host_of_url("https://nbox.example.com:99999"),
+            Err(AuthorityError::BadPort)
+        );
+        assert_eq!(
+            host_of_url("https://nbox.example.com:abc"),
+            Err(AuthorityError::BadPort)
+        );
+        assert_eq!(
+            normalize_host_entry("nbox.example.com:99999"),
+            Err(AuthorityError::BadPort)
+        );
+        assert_eq!(
+            normalize_host_entry("nbox.example.com:abc"),
+            Err(AuthorityError::BadPort)
+        );
+        assert_eq!(
+            normalize_host_entry("nbox.example.com:"),
+            Err(AuthorityError::BadPort)
+        );
+        assert_eq!(
+            normalize_host_entry("https://[::1]:99999"),
+            Err(AuthorityError::BadPort)
+        );
+        // An IPv6 entry with a valid port still round-trips.
+        assert_eq!(
+            normalize_host_entry("[2001:db8::1]:8443"),
+            Ok(Some(host_port("2001:db8::1", 8443)))
+        );
+    }
+
+    /// Assert `result` is a `NboxError::Usage` (exit 2) whose message mentions
+    /// `needle` (the offending entry the operator typed).
+    fn assert_usage_naming(result: Result<AllowedHosts>, needle: &str) {
+        let err = result.expect_err("a startup error");
+        let nbox = err
+            .chain()
+            .find_map(|e| e.downcast_ref::<NboxError>())
+            .expect("a typed NboxError");
+        assert!(
+            matches!(nbox, NboxError::Usage(_)),
+            "expected Usage: {nbox}"
+        );
+        assert_eq!(NboxError::exit_code_for(&err), 2);
+        assert!(
+            format!("{nbox}").contains(needle),
+            "message should name {needle:?}: {nbox}"
+        );
+    }
+
+    #[test]
+    fn build_allowed_hosts_accepts_valid_entries() {
+        // The audience host + a ported extra + an any-port extra, deduped + sorted.
+        let allowed = build_allowed_hosts(
+            Some("https://nbox.example.com"),
+            &[
+                "alt.example.com:8443".to_string(),
+                "another.example.com".to_string(),
+            ],
+        )
+        .expect("valid entries build");
+        assert!(allowed.allows(&host("nbox.example.com")));
+        assert!(allowed.allows(&host_port("alt.example.com", 8443)));
+        assert!(!allowed.allows(&host_port("alt.example.com", 443)));
+        assert!(allowed.allows(&host_port("another.example.com", 1)));
+        // An opaque audience contributes no host but isn't an error.
+        let opaque = build_allowed_hosts(Some("nbox"), &[]).expect("opaque audience ok");
+        assert!(opaque.extra.is_empty());
+    }
+
+    #[test]
+    fn build_allowed_hosts_rejects_invalid_audience_port() {
+        // A present-but-invalid port in the audience URL → startup usage error (exit
+        // 2) naming the audience — NOT silently widened to any-port.
+        assert_usage_naming(
+            build_allowed_hosts(Some("https://nbox.example.com:99999"), &[]),
+            "nbox.example.com:99999",
+        );
+        assert_usage_naming(
+            build_allowed_hosts(Some("https://nbox.example.com:abc"), &[]),
+            "nbox.example.com:abc",
+        );
+    }
+
+    #[test]
+    fn build_allowed_hosts_rejects_invalid_allowed_host_port() {
+        // Out of range, non-numeric, and empty-after-colon all reject the entry.
+        assert_usage_naming(
+            build_allowed_hosts(None, &["nbox.example.com:99999".to_string()]),
+            "nbox.example.com:99999",
+        );
+        assert_usage_naming(
+            build_allowed_hosts(None, &["nbox.example.com:abc".to_string()]),
+            "nbox.example.com:abc",
+        );
+        assert_usage_naming(
+            build_allowed_hosts(None, &["nbox.example.com:".to_string()]),
+            "nbox.example.com:",
+        );
+        // IPv6 with a bad port is rejected too (the bracketed colons aren't a port).
+        assert_usage_naming(
+            build_allowed_hosts(None, &["[::1]:99999".to_string()]),
+            "[::1]:99999",
+        );
+    }
+
+    #[test]
+    fn build_allowed_hosts_keeps_valid_ipv6_and_portless() {
+        // A port-less host and a valid IPv6 host:port both build (the no-bug paths).
+        let allowed =
+            build_allowed_hosts(None, &["nbox.example.com".to_string(), "[::1]".to_string()])
+                .expect("valid entries build");
+        assert!(allowed.allows(&host_port("nbox.example.com", 1234)));
+        // `[::1]` is loopback, always allowed regardless of the set.
+        assert!(allowed.allows(&host("::1")));
+        let v6 =
+            build_allowed_hosts(None, &["[2001:db8::1]:8443".to_string()]).expect("v6 port ok");
+        assert!(v6.allows(&host_port("2001:db8::1", 8443)));
+        assert!(!v6.allows(&host_port("2001:db8::1", 443)));
+    }
+
+    #[test]
+    fn origin_with_invalid_port_fails_closed() {
+        // A request Origin with a present-but-invalid port has no usable host →
+        // `None` → not allowed (403). It is never widened to any-port.
+        assert_eq!(origin_host("http://host:99999"), None);
+        assert_eq!(origin_host("http://host:abc"), None);
+        assert_eq!(origin_host("http://host:"), None);
+        assert_eq!(origin_host("http://[::1]:99999"), None);
+        // A valid Origin still parses.
+        assert_eq!(
+            origin_host("http://host:8443"),
+            Some(host_port("host", 8443))
+        );
     }
 
     #[test]

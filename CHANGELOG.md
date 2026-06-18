@@ -347,6 +347,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`sub`/`client_id`) cap as well. The pre-auth `429` carries `Retry-After` and the
   `MCP-Protocol-Version` header and is audited (attributed to the peer IP, no
   identity). `--rate-limit 0` / absent disables both levels (unchanged default).
+- `nbox serve --http` (OIDC mode, `http` feature): an `--allowed-host` /
+  `[serve].allowed_hosts` entry — or the `--audience` host — with a **malformed
+  port** is now rejected at startup (`exit 2`, naming the entry) instead of failing
+  open. The port-aware parser previously dropped a present-but-invalid port (out of
+  range like `nbox.example.com:99999`, non-numeric like `nbox.example.com:abc`, or
+  empty after the `:`), leaving a bare host that matched on **any** port — the
+  opposite of an operator who typed an explicit port intended, *broadening* the
+  allow-list. A port component must now parse as a valid `1`–`65535`; IPv6 literals
+  are handled correctly (`[::1]` is port-less, `[::1]:8443` is valid, `[::1]:99999`
+  is rejected — the colons inside the brackets are not a port separator). A
+  genuinely port-less entry keeps its any-port behavior, and an inbound request
+  `Origin` with a malformed port fails closed (`403`).
 - `nbox serve --http` (OIDC mode): an `--allowed-host` (or `--audience` host) entry
   with an **explicit port** now matches only that `host:port` for the DNS-rebinding
   `Host`/`Origin` checks. Normalization previously stripped the port, so
