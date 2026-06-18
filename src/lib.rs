@@ -709,6 +709,9 @@ async fn run_tui(ctx: &Ctx) -> Result<()> {
         Some(path),
     );
     app.set_profiles(profiles);
+    // Seed the live UI settings the Settings section edits and the `o` open path
+    // reads (auto-refresh interval + custom browser-open command).
+    app.set_ui_settings(refresh_secs, cfg.ui.open_browser_command.clone());
     // Honor NO_COLOR: render the TUI monochrome regardless of the configured
     // theme. The TUI is always a TTY when interactive, so the color decision here
     // keys on NO_COLOR (truecolor vs ANSI is moot when no color is emitted). See
@@ -1111,10 +1114,30 @@ async fn run_open(ctx: &Ctx, object_ref: &str) -> Result<()> {
     let report = serde_json::json!({ "url": web_url });
     emit(ctx, &report, || println!("{web_url}"))?;
 
-    if let Err(e) = open::that(&web_url) {
+    // Honor a configured `open_browser_command` (read best-effort; a missing /
+    // unparseable config just falls back to the OS default). The URL is appended
+    // as a literal final argument, never shell-interpolated.
+    let browser_command = config_browser_command(ctx);
+    if let Err(e) = config::open_url(&browser_command, &web_url) {
         eprintln!("warning: could not launch a browser: {e}");
     }
     Ok(())
+}
+
+/// The configured `[ui].open_browser_command`, read best-effort from the resolved
+/// config path. A missing or unparseable config yields the empty default (the OS
+/// default opener). Used by `nbox open`.
+fn config_browser_command(ctx: &Ctx) -> String {
+    let path = match &ctx.config_path {
+        Some(p) => p.clone(),
+        None => match config::default_path() {
+            Ok(p) => p,
+            Err(_) => return String::new(),
+        },
+    };
+    config::load(&path)
+        .map(|c| c.ui.open_browser_command)
+        .unwrap_or_default()
 }
 
 /// Resolve a `<kind>/<ref>` pair to the object's API URL, or `None` if no match.

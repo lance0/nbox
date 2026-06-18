@@ -290,9 +290,23 @@ impl TextInput {
         sigil: char,
         theme: &Theme,
     ) -> Position {
-        // Focus so cheese draws its cursor cell; this is render-time UI state,
-        // not part of the pure editing model.
-        self.state.set_focused(true);
+        self.render_with_focus(frame, area, sigil, theme, true)
+    }
+
+    /// Like [`render`](Self::render) but with explicit focus: a focused field draws
+    /// cheese's cursor cell, an unfocused one doesn't (so a multi-input screen — the
+    /// Settings form — shows a single cursor). The returned position is still the
+    /// focused cursor cell, for the caller to place a real terminal cursor.
+    pub fn render_with_focus(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        sigil: char,
+        theme: &Theme,
+        focused: bool,
+    ) -> Position {
+        // Focus is render-time UI state, not part of the pure editing model.
+        self.state.set_focused(focused);
 
         let palette = cheese_palette(theme);
         let sigil = sigil.to_string();

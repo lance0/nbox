@@ -18,7 +18,8 @@ active_profile = "work"
 [ui]
 theme = "default"
 confirm_writes = true
-# refresh_secs = 30        # TUI auto-refresh (omit/0 = off)
+# refresh_secs = 30          # TUI auto-refresh interval in seconds (omit/0 = off)
+# open_browser_command = ""  # custom browser-open command (empty = OS default)
 
 [profiles.work]
 url = "https://netbox.example.com"
@@ -74,6 +75,25 @@ dependency.)
 Bearer`) versus legacy v1 tokens (`Authorization: Token`). Force one with
 `bearer` or `token`. The token is never logged — request logging shows only the
 scheme marker.
+
+## UI settings
+
+The `[ui]` table holds TUI preferences. Three are editable in-app from the Config
+modal's **Settings** section (`Tab` to it; `↑`/`↓` move between fields; `Enter` or
+`Ctrl+S` saves) — saving writes them back to `config.toml` format-preserving:
+
+- `theme` — the TUI color theme. Cycle it in the Settings section (`←`/`→`/Space,
+  applied live), with the `t` key, or the palette `:theme <name>` verb. Disabled
+  under `NO_COLOR`.
+- `refresh_secs` — TUI auto-refresh interval in seconds; omit or `0` to disable.
+  Changing it in the Settings section re-arms the refresh without a restart.
+- `open_browser_command` — a custom command to open URLs (`nbox open` and the TUI
+  `o` action). Split into program + args, with the URL appended as a literal final
+  argument (never shell-interpolated); empty uses the OS default opener. The TUI
+  reads the live value, so a change applies to the next `o`.
+
+`confirm_writes` and `wide` are reserved for future features and have no effect
+today, so they are not exposed in the Settings section.
 
 ## Profiles
 

@@ -26,9 +26,10 @@ use crate::tui::theme::{Severity, Theme};
 pub enum Modal {
     /// The `?`/`F1` keybindings overlay — any key (or `Esc`) closes it.
     Help,
-    /// The `S` (or palette `config`) Config modal: an in-app profile editor (and,
-    /// in a later phase, settings). Has its own key handling.
-    Config(ConfigModal),
+    /// The `S` (or palette `config`) Config modal: an in-app profile editor and
+    /// settings form. Has its own key handling. Boxed so the `Modal` enum stays
+    /// small (the Config state is much larger than `Help`).
+    Config(Box<ConfigModal>),
 }
 
 /// Which screen is in the body area.
@@ -213,8 +214,20 @@ pub enum AppCommand {
         /// resolve back through `DetailLoaded`), for stale-response suppression.
         req: RequestId,
     },
-    OpenBrowser(String),
+    /// Open `url` in the browser, honoring the live `open_browser_command`
+    /// (carried so the next `o` uses a just-changed setting). When `command` is
+    /// empty the OS default opener is used. The URL is appended as a literal final
+    /// argument by [`crate::config::open_url`] — never shell-interpolated.
+    OpenBrowser {
+        url: String,
+        command: String,
+    },
     Copy(String),
+    /// Re-arm the auto-refresh ticker with a new interval (the Settings section
+    /// changed `refresh_secs`). Handled by the event loop, which aborts the old
+    /// ticker and spawns one at the new interval (or none when `None`/`0`). Not a
+    /// fetch — it spawns no network and drives no spinner.
+    ArmRefresh(Option<u64>),
     /// Switch the live session to the named profile: rebuild the NetBox client
     /// from its [`ProfileConfig`] and re-probe `/api/status/`, off the render
     /// thread. The result returns as [`AppEvent::ProfileSwitched`]; `id` (the
@@ -272,6 +285,14 @@ pub struct App {
     pub profile_name: String,
     pub base_url: String,
     pub netbox_version: String,
+    /// Live `[ui].refresh_secs`: the TUI auto-refresh interval (0/None = off).
+    /// Mirrors the value the ticker was armed with at launch; the Settings section
+    /// re-arms the ticker through [`AppCommand::ArmRefresh`] when it changes.
+    pub refresh_secs: Option<u64>,
+    /// Live `[ui].open_browser_command`: a custom browser-open command (empty =
+    /// the OS default). Carried on each [`AppCommand::OpenBrowser`] so `o` uses the
+    /// just-changed value without a restart. Never holds a token or a URL.
+    pub open_browser_command: String,
     /// All configured profiles, in config order, that the session can switch
     /// between without restarting. Empty/one-element ⇒ cycling is a graceful
     /// no-op. Populated at launch via [`App::set_profiles`].
@@ -437,6 +458,8 @@ impl App {
             profile_name,
             base_url,
             netbox_version,
+            refresh_secs: None,
+            open_browser_command: String::new(),
             profiles: Vec::new(),
             profile_index: 0,
             pending_profile: None,
@@ -492,6 +515,14 @@ impl App {
         self.initial_theme = self.theme.name().to_string();
     }
 
+    /// Seed the live UI settings (`refresh_secs`, `open_browser_command`) from the
+    /// loaded config at launch, so the Settings section edits — and the `o` open
+    /// path — start from the configured values. Called once in `tui::run_tui`.
+    pub fn set_ui_settings(&mut self, refresh_secs: Option<u64>, open_browser_command: String) {
+        self.refresh_secs = refresh_secs;
+        self.open_browser_command = open_browser_command;
+    }
+
     /// Attach the configured profiles the session can switch between, and point
     /// [`Self::profile_index`] at whichever matches the active [`Self::profile_name`]
     /// (falling back to 0). Called once at launch (see `tui::run_tui`). With zero
@@ -542,8 +573,9 @@ impl App {
                 // (it also sets the pending/high-water state). Neither rides the
                 // per-channel search/detail request-id guard.
                 AppCommand::LoadPreview { .. }
-                | AppCommand::OpenBrowser(_)
+                | AppCommand::OpenBrowser { .. }
                 | AppCommand::Copy(_)
+                | AppCommand::ArmRefresh(_)
                 | AppCommand::SwitchProfile { .. }
                 | AppCommand::TestConnect { .. } => {}
             }
@@ -877,7 +909,10 @@ impl App {
             }
             KeyCode::Char('o') => {
                 if let Some(r) = self.selected_result() {
-                    return vec![AppCommand::OpenBrowser(r.url.clone())];
+                    return vec![AppCommand::OpenBrowser {
+                        url: r.url.clone(),
+                        command: self.open_browser_command.clone(),
+                    }];
                 }
             }
             KeyCode::Char('y') => {
@@ -895,7 +930,11 @@ impl App {
     /// `config`). A no-op while one is already open.
     fn open_config_modal(&mut self) {
         if self.modal.is_none() {
-            self.modal = Some(Modal::Config(ConfigModal::new()));
+            self.modal = Some(Modal::Config(Box::new(ConfigModal::new(
+                self.theme.name(),
+                self.refresh_secs,
+                &self.open_browser_command,
+            ))));
         }
     }
 
@@ -945,6 +984,75 @@ impl App {
                 Vec::new()
             }
             ModalOutcome::Delete(name) => self.modal_delete(&name),
+            ModalOutcome::ChangeTheme(name) => {
+                // Hot-apply live through the same path as the `t` cycle / palette
+                // `:theme` — including the NO_COLOR guard — so the Settings theme
+                // change is previewed immediately and can't re-enable color under
+                // NO_COLOR. Persistence happens on save.
+                self.set_theme_by_name(&name);
+                Vec::new()
+            }
+            ModalOutcome::SaveSettings => self.modal_save_settings(),
+        }
+    }
+
+    /// Persist the Settings form and hot-apply each setting: write the changed
+    /// `[ui]` fields (theme/refresh_secs/open_browser_command) format-preserving,
+    /// re-arm the auto-refresh ticker at the new interval, and adopt the live
+    /// browser command. Theme is only persisted when not in NO_COLOR mode (so a
+    /// NO_COLOR session never writes a colored theme back). Returns an
+    /// [`AppCommand::ArmRefresh`] when the interval changed, else nothing.
+    fn modal_save_settings(&mut self) -> Vec<AppCommand> {
+        // Snapshot the form values (ends the borrow of `self.modal`).
+        let Some(Modal::Config(modal)) = &self.modal else {
+            return Vec::new();
+        };
+        let theme_name = modal.settings.theme_name().to_string();
+        let new_refresh = modal.settings.refresh_secs();
+        let new_browser = modal.settings.browser_command();
+
+        let refresh_changed = new_refresh != self.refresh_secs;
+
+        // Persist each field (format-preserving). The token is never involved here.
+        if let Some(path) = self.config_path.clone() {
+            // Theme: skip persistence under NO_COLOR so we never write a colored
+            // theme into the user's config (mirrors the exit-time persist guard).
+            if !self.theme.is_no_color()
+                && let Err(e) = crate::config::save_ui_field(
+                    &path,
+                    &crate::config::UiField::Theme(theme_name.clone()),
+                )
+            {
+                self.set_status(format!("save failed: {e:#}"), Severity::Error);
+                return Vec::new();
+            }
+            if let Err(e) = crate::config::save_ui_field(
+                &path,
+                &crate::config::UiField::RefreshSecs(new_refresh),
+            ) {
+                self.set_status(format!("save failed: {e:#}"), Severity::Error);
+                return Vec::new();
+            }
+            if let Err(e) = crate::config::save_ui_field(
+                &path,
+                &crate::config::UiField::OpenBrowserCommand(new_browser.clone()),
+            ) {
+                self.set_status(format!("save failed: {e:#}"), Severity::Error);
+                return Vec::new();
+            }
+        }
+
+        // Adopt the live values: the browser command applies to the next `o`; the
+        // refresh interval re-arms the ticker. Theme already hot-applied on cycle.
+        self.open_browser_command = new_browser;
+        self.refresh_secs = new_refresh;
+
+        self.set_status("settings saved", Severity::Success);
+        self.modal = None;
+        if refresh_changed {
+            vec![AppCommand::ArmRefresh(new_refresh)]
+        } else {
+            Vec::new()
         }
     }
 
@@ -1289,7 +1397,10 @@ impl App {
                 vec![AppCommand::Search { query, req: 0 }]
             }
             PaletteCommand::Open => match self.selected_result() {
-                Some(r) => vec![AppCommand::OpenBrowser(r.url.clone())],
+                Some(r) => vec![AppCommand::OpenBrowser {
+                    url: r.url.clone(),
+                    command: self.open_browser_command.clone(),
+                }],
                 None => {
                     self.set_status("no selection", Severity::Warning);
                     Vec::new()
@@ -2743,7 +2854,7 @@ mod tests {
         set_results(&mut a, vec![result(1, "edge01")]);
         let open = a.handle_event(press(KeyCode::Char('o')));
         assert!(
-            matches!(open.as_slice(), [AppCommand::OpenBrowser(u)] if u == "http://nb/dcim/devices/1/")
+            matches!(open.as_slice(), [AppCommand::OpenBrowser { url, .. }] if url == "http://nb/dcim/devices/1/")
         );
         let copy = a.handle_event(press(KeyCode::Char('y')));
         assert!(matches!(copy.as_slice(), [AppCommand::Copy(v)] if v == "edge01"));
@@ -4768,7 +4879,7 @@ mod tests {
         let mut f = ProfileForm::add();
         f.test = TestState::Ok("4.5.0".into());
         // Reuse the modal's key path: typing into the focused field invalidates.
-        let mut m = ConfigModal::new();
+        let mut m = ConfigModal::default();
         m.profiles.mode = ProfilesMode::Form(f);
         m.handle_key(
             KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE),
@@ -4776,5 +4887,134 @@ mod tests {
             "",
         );
         assert_eq!(m.form().unwrap().test, TestState::Idle);
+    }
+
+    // --- Phase C: Config modal Settings section -----------------------------
+
+    fn ctrl_press(c: char) -> AppEvent {
+        AppEvent::Key(KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL))
+    }
+
+    /// Open the Config modal on the Settings section (S, then Tab).
+    fn open_settings(a: &mut App) {
+        a.handle_event(press(KeyCode::Char('S')));
+        a.handle_event(press(KeyCode::Tab)); // Profiles list → Settings
+        assert!(matches!(
+            &a.modal,
+            Some(Modal::Config(m)) if m.section == ConfigSection::Settings
+        ));
+    }
+
+    #[test]
+    fn settings_theme_cycle_hot_applies_to_the_live_theme() {
+        let mut a = app_with_profiles(&["a"]);
+        assert_eq!(a.theme.name(), "default");
+        open_settings(&mut a);
+        // Right on the theme row cycles + hot-applies live to App.theme.
+        a.handle_event(press(KeyCode::Right));
+        assert_eq!(a.theme.name(), Theme::list()[1]);
+        assert!(a.status.starts_with("theme:"), "status reflects the change");
+    }
+
+    #[test]
+    fn no_color_blocks_the_settings_theme_change() {
+        // The NO_COLOR guard (shared with the `t` cycle / `:theme`) also gates the
+        // Settings theme change: it can't re-enable color, and the live theme stays
+        // no-color.
+        let mut a = app_with_profiles(&["a"]);
+        a.set_no_color();
+        assert!(a.theme.is_no_color());
+        open_settings(&mut a);
+        a.handle_event(press(KeyCode::Right)); // try to cycle the theme
+        assert!(
+            a.theme.is_no_color(),
+            "still no-color after a settings cycle"
+        );
+        assert_eq!(a.status, "NO_COLOR is set — theme change disabled");
+    }
+
+    #[test]
+    fn settings_save_persists_each_ui_field_and_hot_applies() {
+        let (mut a, _dir, path) = app_with_config(&["a"]);
+        a.set_ui_settings(None, String::new());
+        open_settings(&mut a);
+        // theme: cycle once (hot-applies live + will persist on save).
+        a.handle_event(press(KeyCode::Right));
+        let themed = a.theme.name().to_string();
+        // refresh_secs: focus the row and type 30.
+        a.handle_event(press(KeyCode::Down));
+        type_form(&mut a, "30");
+        // open command: focus the row and type a command.
+        a.handle_event(press(KeyCode::Down));
+        type_form(&mut a, "firefox --new-tab");
+        // Save (Enter).
+        let cmds = a.handle_event(press(KeyCode::Enter));
+
+        // The modal closed and the live values were adopted.
+        assert!(a.modal.is_none(), "save closes the modal");
+        assert_eq!(a.refresh_secs, Some(30));
+        assert_eq!(a.open_browser_command, "firefox --new-tab");
+        // Re-arm is emitted because the interval changed (None → 30).
+        assert!(matches!(
+            cmds.as_slice(),
+            [AppCommand::ArmRefresh(Some(30))]
+        ));
+
+        // The file persisted each [ui] field (format-preserving load round-trips).
+        let cfg = crate::config::load(&path).unwrap();
+        assert_eq!(cfg.ui.theme, themed);
+        assert_eq!(cfg.ui.refresh_secs, Some(30));
+        assert_eq!(cfg.ui.open_browser_command, "firefox --new-tab");
+    }
+
+    #[test]
+    fn settings_save_emits_rearm_only_when_the_interval_changed() {
+        let (mut a, _dir, _path) = app_with_config(&["a"]);
+        a.set_ui_settings(Some(15), String::new());
+        open_settings(&mut a);
+        // Change only the browser command (not the interval).
+        a.handle_event(press(KeyCode::Down)); // refresh row
+        a.handle_event(press(KeyCode::Down)); // browser row
+        type_form(&mut a, "xdg-open");
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert_eq!(a.refresh_secs, Some(15), "interval unchanged");
+        assert_eq!(a.open_browser_command, "xdg-open");
+        assert!(cmds.is_empty(), "no re-arm when the interval is the same");
+    }
+
+    #[test]
+    fn settings_ctrl_s_also_saves() {
+        let (mut a, _dir, _path) = app_with_config(&["a"]);
+        a.set_ui_settings(None, String::new());
+        open_settings(&mut a);
+        a.handle_event(press(KeyCode::Down));
+        type_form(&mut a, "5");
+        let cmds = a.handle_event(ctrl_press('s'));
+        assert!(a.modal.is_none());
+        assert_eq!(a.refresh_secs, Some(5));
+        assert!(matches!(cmds.as_slice(), [AppCommand::ArmRefresh(Some(5))]));
+    }
+
+    #[test]
+    fn open_browser_command_rides_the_live_value_on_o() {
+        // `o` carries the live open_browser_command so a just-changed setting
+        // applies to the next open without a restart.
+        let mut a = app_with_profiles(&["a"]);
+        a.open_browser_command = "firefox".into();
+        set_results(&mut a, vec![result(1, "edge01")]);
+        let cmds = a.handle_event(press(KeyCode::Char('o')));
+        assert!(matches!(
+            cmds.as_slice(),
+            [AppCommand::OpenBrowser { url, command }]
+                if url == "http://nb/dcim/devices/1/" && command == "firefox"
+        ));
+        // With no command set, the OS default is used (empty command string).
+        let mut b = app_with_profiles(&["a"]);
+        set_results(&mut b, vec![result(1, "edge01")]);
+        let cmds = b.handle_event(press(KeyCode::Char('o')));
+        assert!(matches!(
+            cmds.as_slice(),
+            [AppCommand::OpenBrowser { command, .. }] if command.is_empty()
+        ));
     }
 }

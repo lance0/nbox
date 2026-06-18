@@ -304,7 +304,7 @@ auth/permission (401/403), `4` not found, `5` ambiguous reference. See
 | `t` | cycle theme |
 | `r` | refresh |
 | `P` / `Ctrl+P` | switch profile (cycle forward / backward) |
-| `S` | open the Config modal (manage profiles) |
+| `S` | open the Config modal (profiles + settings) |
 | `b` / `Esc` | back |
 | `i p c v s` | device tabs (interfaces / IPs / cables / VLANs / services) |
 | `?` / `F1` | help |
@@ -334,6 +334,18 @@ it. Unlike the quick `P` cycle, selecting or adding-and-using a profile here
 **persists** `active_profile` to your config. Deleting the active or last
 profile is blocked.
 
+`Tab` switches the Config modal to its **Settings** section, an in-app editor for
+the real `[ui]` settings: `theme` (cycle with `←`/`→`/Space, applied live),
+`refresh_secs` (auto-refresh interval; empty/`0` = off), and
+`open_browser_command` (a custom browser-open command; empty = OS default). `↑`/`↓`
+move between fields; `Enter` or `Ctrl+S` saves each changed field back to
+`config.toml` (format-preserving), re-arms the auto-refresh without a restart, and
+applies the new browser command to the next open.
+
+`[ui].open_browser_command`, when set, is what `nbox open` and the TUI `o` action
+run to open a URL (the URL is appended as a literal final argument, never
+shell-interpolated); leave it empty to use the OS default opener.
+
 ## Themes
 
 Twelve built-in themes. Set with `[ui].theme` in the config or press `t` to cycle:
@@ -360,7 +372,8 @@ active_profile = "work"
 [ui]
 theme = "default"
 confirm_writes = true
-# refresh_secs = 30        # TUI auto-refresh (omit/0 = off)
+# refresh_secs = 30          # TUI auto-refresh interval in seconds (omit/0 = off)
+# open_browser_command = ""  # custom browser-open command (empty = OS default)
 
 [profiles.work]
 url = "https://netbox.example.com"

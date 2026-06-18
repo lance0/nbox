@@ -531,16 +531,108 @@ fn render_config(
             render_config_profiles(frame, inner, modal, names, active, theme);
         }
         ConfigSection::Settings => {
-            let lines = vec![
-                Line::from(""),
-                Line::from(Span::styled(
-                    "  Settings — coming soon.",
-                    Style::default().fg(theme.text_dim),
-                )),
-            ];
-            frame.render_widget(Paragraph::new(lines), inner);
+            render_config_settings(frame, inner, modal, theme);
         }
     }
+}
+
+/// The Settings section body: the three real `[ui]` settings as a small form —
+/// theme (a cycle), refresh_secs (numeric), open_browser_command (text). The
+/// focused row is marked with `>`; the theme value shows the selection and the
+/// two text rows render their (live) inputs. The no-op `wide`/`confirm_writes`
+/// knobs are intentionally absent.
+fn render_config_settings(frame: &mut Frame, area: Rect, modal: &mut ConfigModal, theme: &Theme) {
+    use crate::tui::config_modal::setting;
+
+    let s = &mut modal.settings;
+    let rows = Layout::vertical([
+        Constraint::Length(1), // theme
+        Constraint::Length(1), // refresh_secs
+        Constraint::Length(1), // open_browser_command
+        Constraint::Length(1), // blank
+        Constraint::Length(1), // message
+        Constraint::Min(1),    // help
+    ])
+    .split(area);
+
+    // A focusable label cell: `> label` when focused, `  label` otherwise.
+    let label = |row: usize, text: &str| {
+        let cursor = if s.focus == row { "> " } else { "  " };
+        Span::styled(
+            format!("{cursor}{text:<14}"),
+            Style::default().fg(if s.focus == row {
+                theme.header
+            } else {
+                theme.text_dim
+            }),
+        )
+    };
+
+    // theme — a cycle; show the selection and the hint.
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            label(setting::THEME, "theme"),
+            Span::styled(s.theme_name(), Style::default().fg(theme.accent)),
+            Span::styled(
+                "  (←/→ or Space cycles)",
+                Style::default().fg(theme.text_dim),
+            ),
+        ])),
+        rows[0],
+    );
+
+    // refresh_secs — a numeric text field.
+    frame.render_widget(
+        Paragraph::new(label(setting::REFRESH, "refresh_secs")),
+        Rect::new(rows[1].x, rows[1].y, 16.min(rows[1].width), 1),
+    );
+    let refresh_area = Rect::new(
+        rows[1].x.saturating_add(16),
+        rows[1].y,
+        rows[1].width.saturating_sub(16),
+        1,
+    );
+    let refresh_cursor =
+        s.refresh
+            .render_with_focus(frame, refresh_area, ' ', theme, s.focus == setting::REFRESH);
+
+    // open_browser_command — a free-text field.
+    frame.render_widget(
+        Paragraph::new(label(setting::BROWSER, "open command")),
+        Rect::new(rows[2].x, rows[2].y, 16.min(rows[2].width), 1),
+    );
+    let browser_area = Rect::new(
+        rows[2].x.saturating_add(16),
+        rows[2].y,
+        rows[2].width.saturating_sub(16),
+        1,
+    );
+    let browser_cursor =
+        s.browser
+            .render_with_focus(frame, browser_area, ' ', theme, s.focus == setting::BROWSER);
+
+    // Place the real terminal cursor on the focused text row (the theme row has
+    // no text cursor).
+    match s.focus {
+        setting::REFRESH => frame.set_cursor_position(refresh_cursor),
+        setting::BROWSER => frame.set_cursor_position(browser_cursor),
+        _ => {}
+    }
+
+    if let Some(msg) = &s.message {
+        frame.render_widget(
+            Paragraph::new(Span::styled(msg.clone(), Style::default().fg(theme.error))),
+            rows[4],
+        );
+    }
+
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "↑/↓: field  Enter/Ctrl+S: save  Tab: section  Esc: close",
+            Style::default().fg(theme.text_dim),
+        )),
+        rows[5],
+    );
 }
 
 /// The Profiles section body: the list, or the add/edit form, or a delete prompt.

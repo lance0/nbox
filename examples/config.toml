@@ -15,7 +15,8 @@ active_profile = "work"
 [ui]
 theme = "default"          # see `nbox` then `t` to cycle; 12 built-in themes
 confirm_writes = true      # reserved for v0.2 writes
-# refresh_secs = 30        # TUI auto-refresh interval (omit/0 = off)
+# refresh_secs = 30          # TUI auto-refresh interval in seconds (omit/0 = off)
+# open_browser_command = ""  # custom browser-open command (empty = OS default)
 
 [profiles.work]
 url = "https://netbox.example.com"

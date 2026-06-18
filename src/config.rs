@@ -447,6 +447,88 @@ pub fn set_ui_theme(doc: &mut DocumentMut, theme: &str) {
     }
 }
 
+/// A `[ui]` field to set, with its new value. The Settings section persists each
+/// changed field through [`set_ui_field`]; this enum carries both the kind and
+/// the value so one setter handles the string and the numeric/optional cases.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UiField {
+    /// `[ui].theme` — a string.
+    Theme(String),
+    /// `[ui].refresh_secs` — an optional `u64`. `None` (or `0`) clears the key
+    /// (auto-refresh off), so the file stays minimal rather than holding a `0`.
+    RefreshSecs(Option<u64>),
+    /// `[ui].open_browser_command` — a string. An empty string is written as `""`
+    /// (the explicit "use the OS default" value), matching the init template.
+    OpenBrowserCommand(String),
+}
+
+/// Set a single `[ui]` field in a format-preserving document, creating the `[ui]`
+/// table if absent. Mirrors [`set_ui_theme`]/[`upsert_profile`]'s toml_edit
+/// pattern: comments and other keys/sections survive. `refresh_secs` of `None`/`0`
+/// removes the key (auto-refresh off); the string fields are written verbatim.
+pub fn set_ui_field(doc: &mut DocumentMut, field: &UiField) {
+    let ui = doc.entry("ui").or_insert_with(|| Item::Table(Table::new()));
+    let Some(table) = ui.as_table_mut() else {
+        return;
+    };
+    match field {
+        UiField::Theme(theme) => table["theme"] = value(theme),
+        UiField::OpenBrowserCommand(command) => {
+            table["open_browser_command"] = value(command);
+        }
+        UiField::RefreshSecs(secs) => match secs.filter(|s| *s > 0) {
+            // toml stores integers as i64; the in-app value is a small interval.
+            Some(s) => table["refresh_secs"] = value(i64::try_from(s).unwrap_or(i64::MAX)),
+            None => {
+                table.remove("refresh_secs");
+            }
+        },
+    }
+}
+
+/// Persist a single `[ui]` field to the config file (format-preserving). The
+/// Settings section calls this for each changed field on save, mirroring
+/// [`save_ui_theme`].
+pub fn save_ui_field(path: &Path, field: &UiField) -> Result<()> {
+    let mut doc = load_doc_or_new(path)?;
+    set_ui_field(&mut doc, field);
+    write_doc(path, &doc)?;
+    Ok(())
+}
+
+/// Build the argv for a custom browser-open command, or `None` to fall back to the
+/// OS default. PURE + testable: when `command` is blank, returns `None` (the
+/// caller uses `open::that`); otherwise splits the command on whitespace into
+/// program + args and **appends the URL as a single final argument** — the URL is
+/// never spliced into the string or shell-interpolated, so a URL with shell
+/// metacharacters can't inject anything. The first token is the program.
+#[must_use]
+pub fn build_open_argv(command: &str, url: &str) -> Option<Vec<String>> {
+    let mut parts = command.split_whitespace().map(str::to_string);
+    let program = parts.next()?; // blank command ⇒ no program ⇒ None (OS default)
+    let mut argv = vec![program];
+    argv.extend(parts);
+    argv.push(url.to_string());
+    Some(argv)
+}
+
+/// Open `url` in the browser, honoring a custom `open_browser_command`.
+///
+/// When `command` is set, it's split into program + args (see [`build_open_argv`])
+/// and run with the URL appended as a final, non-interpolated argument. When it's
+/// blank, falls back to the OS default via `open::that`. Errors propagate so the
+/// caller can surface them. Never logs or interpolates the URL into a shell.
+pub fn open_url(command: &str, url: &str) -> std::io::Result<()> {
+    match build_open_argv(command, url) {
+        Some(argv) => {
+            let (program, rest) = argv.split_first().expect("argv has the program");
+            std::process::Command::new(program).args(rest).status()?;
+            Ok(())
+        }
+        None => open::that(url),
+    }
+}
+
 /// Persist the active UI theme to the config file (format-preserving).
 pub fn save_ui_theme(path: &Path, theme: &str) -> Result<()> {
     let mut doc = load_doc_or_new(path)?;
@@ -1070,6 +1152,108 @@ url = \"https://b\"
         // Removing on a doc with no `profiles` table is also a clean false.
         let mut empty = DocumentMut::new();
         assert!(!remove_profile(&mut empty, "x").unwrap());
+    }
+
+    #[test]
+    fn set_ui_field_round_trips_and_preserves_comments_and_other_keys() {
+        // A realistic file: a top comment, an inline comment, other [ui] keys, and
+        // a profile. Setting each ui field must touch only that key.
+        let original = "\
+# keep me
+active_profile = \"a\"
+
+[ui]
+theme = \"default\"
+wide = false  # kept untouched
+
+[profiles.a]
+url = \"https://a\"
+";
+        let mut doc = original.parse::<DocumentMut>().unwrap();
+        set_ui_field(&mut doc, &UiField::Theme("nord".into()));
+        set_ui_field(&mut doc, &UiField::RefreshSecs(Some(30)));
+        set_ui_field(
+            &mut doc,
+            &UiField::OpenBrowserCommand("firefox --new-tab".into()),
+        );
+        let out = doc.to_string();
+        // Comments and unrelated keys/sections survive. (An inline comment on a key
+        // that *isn't* changed is preserved; overwriting a value replaces its own
+        // line, same as `set_ui_theme`.)
+        assert!(out.contains("# keep me"), "top comment preserved");
+        assert!(
+            out.contains("# kept untouched"),
+            "inline comment on an unchanged key preserved"
+        );
+        assert!(out.contains("wide = false"), "other [ui] key preserved");
+        assert!(out.contains("[profiles.a]"), "profile section preserved");
+        assert!(out.contains("active_profile = \"a\""), "top key preserved");
+
+        let cfg: Config = toml::from_str(&out).unwrap();
+        assert_eq!(cfg.ui.theme, "nord");
+        assert_eq!(cfg.ui.refresh_secs, Some(30));
+        assert_eq!(cfg.ui.open_browser_command, "firefox --new-tab");
+    }
+
+    #[test]
+    fn set_ui_field_refresh_secs_zero_or_none_clears_the_key() {
+        // Start with a refresh interval set, then clear it two ways.
+        let mut doc = "[ui]\nrefresh_secs = 15\n".parse::<DocumentMut>().unwrap();
+        set_ui_field(&mut doc, &UiField::RefreshSecs(Some(0)));
+        assert!(
+            !doc.to_string().contains("refresh_secs"),
+            "0 clears the key (auto-refresh off)"
+        );
+        let mut doc2 = "[ui]\nrefresh_secs = 15\n".parse::<DocumentMut>().unwrap();
+        set_ui_field(&mut doc2, &UiField::RefreshSecs(None));
+        let cfg: Config = toml::from_str(&doc2.to_string()).unwrap();
+        assert_eq!(cfg.ui.refresh_secs, None, "None clears refresh_secs");
+    }
+
+    #[test]
+    fn set_ui_field_creates_ui_table_when_absent() {
+        let mut doc = DocumentMut::new();
+        set_ui_field(&mut doc, &UiField::OpenBrowserCommand("xdg-open".into()));
+        let cfg: Config = toml::from_str(&doc.to_string()).unwrap();
+        assert_eq!(cfg.ui.open_browser_command, "xdg-open");
+    }
+
+    #[test]
+    fn build_open_argv_splits_command_and_appends_url() {
+        // A set command splits into program + args, with the URL as the final arg.
+        let argv = build_open_argv("firefox --new-tab", "https://nb/dcim/devices/1/").unwrap();
+        assert_eq!(
+            argv,
+            vec![
+                "firefox".to_string(),
+                "--new-tab".to_string(),
+                "https://nb/dcim/devices/1/".to_string(),
+            ]
+        );
+        // A bare program still gets the URL appended.
+        assert_eq!(
+            build_open_argv("xdg-open", "https://x").unwrap(),
+            vec!["xdg-open".to_string(), "https://x".to_string()]
+        );
+    }
+
+    #[test]
+    fn build_open_argv_blank_command_is_none_for_os_default() {
+        // Empty / whitespace-only command ⇒ None ⇒ caller falls back to open::that.
+        assert_eq!(build_open_argv("", "https://x"), None);
+        assert_eq!(build_open_argv("   ", "https://x"), None);
+    }
+
+    #[test]
+    fn build_open_argv_does_not_interpolate_the_url() {
+        // A URL with shell metacharacters is passed as a single, literal final
+        // argument — never spliced into the command string — so it can't inject.
+        let nasty = "https://nb/?q=a;rm -rf /&x=`whoami`";
+        let argv = build_open_argv("open -a Safari", nasty).unwrap();
+        assert_eq!(argv.first().unwrap(), "open");
+        assert_eq!(argv.last().unwrap(), nasty, "URL is one literal arg");
+        // The program/args never absorb any part of the URL.
+        assert_eq!(argv.len(), 4); // open, -a, Safari, <url>
     }
 
     #[test]

@@ -38,9 +38,9 @@ async fn event_loop(
     spawn_terminal_events(tx.clone());
     // The preview debounce is always on (independent of the optional auto-refresh).
     spawn_preview_ticks(tx.clone());
-    if let Some(secs) = refresh_secs.filter(|s| *s > 0) {
-        spawn_ticks(tx.clone(), secs);
-    }
+    // The auto-refresh ticker, kept as a handle so the Settings section can re-arm
+    // it (abort + respawn) at a new interval without a restart. `None` ⇒ off.
+    let mut refresh_ticker = arm_refresh(&tx, refresh_secs);
 
     while !app.should_quit {
         terminal.draw(|frame| ui::render(frame, app))?;
@@ -49,10 +49,30 @@ async fn event_loop(
         // Never await network here — dispatch each command on its own task,
         // which posts results back as AppEvents.
         for command in app.handle_event(event) {
-            dispatch(command, app.client.clone(), tx.clone());
+            // `ArmRefresh` re-arms the ticker in place (it owns no client/network):
+            // abort the old task and spawn one at the new interval. Everything else
+            // is side-effecting work spawned off the render thread.
+            if let AppCommand::ArmRefresh(secs) = command {
+                if let Some(handle) = refresh_ticker.take() {
+                    handle.abort();
+                }
+                refresh_ticker = arm_refresh(&tx, secs);
+            } else {
+                dispatch(command, app.client.clone(), tx.clone());
+            }
         }
     }
     Ok(())
+}
+
+/// Spawn the auto-refresh ticker at `secs` (skipping `None`/`0` = off), returning
+/// its [`JoinHandle`](tokio::task::JoinHandle) so it can be aborted on a re-arm.
+fn arm_refresh(
+    tx: &mpsc::Sender<AppEvent>,
+    secs: Option<u64>,
+) -> Option<tokio::task::JoinHandle<()>> {
+    secs.filter(|s| *s > 0)
+        .map(|secs| spawn_ticks(tx.clone(), secs))
 }
 
 fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent>) {
@@ -91,9 +111,15 @@ fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent
                 let _ = tx.send(AppEvent::DetailLoaded { req, result }).await;
             });
         }
-        AppCommand::OpenBrowser(url) => {
+        AppCommand::OpenBrowser { url, command } => {
             tokio::spawn(async move {
-                let opened = tokio::task::spawn_blocking(move || open::that(&url)).await;
+                // Honor the live `open_browser_command` (carried on the command):
+                // a custom opener runs with the URL appended as a literal final
+                // arg; a blank command falls back to the OS default. Never
+                // shell-interpolates the URL (see `config::open_url`).
+                let opened =
+                    tokio::task::spawn_blocking(move || crate::config::open_url(&command, &url))
+                        .await;
                 let message = match opened {
                     Ok(Ok(())) => "opened in browser".to_string(),
                     Ok(Err(e)) => format!("open failed: {e}"),
@@ -141,6 +167,9 @@ fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent
                 let _ = tx.send(AppEvent::ConnectTested { id, result }).await;
             });
         }
+        // Re-arming the auto-refresh ticker is handled in the event loop (it owns
+        // the ticker handle); it never reaches `dispatch`.
+        AppCommand::ArmRefresh(_) => {}
     }
 }
 

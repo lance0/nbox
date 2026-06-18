@@ -22,8 +22,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `Ctrl+U` saves and switches to the profile. An explicit add/select **persists**
   `active_profile` to the file (the quick `P`/`Ctrl+P` cycle stays session-only).
   Delete drops the profile from the file, the keyring, and the live list, and is
-  blocked for the active or last-remaining profile. The modal has a Settings
-  section placeholder for a later phase.
+  blocked for the active or last-remaining profile.
+- Settings section in the Config modal (TUI). `Tab` switches the Config modal
+  between Profiles and Settings; the Settings section is an editable form over the
+  real `[ui]` settings: **theme** (cycle with `←`/`→`/Space — applied live as you
+  cycle), **refresh_secs** (the TUI auto-refresh interval; empty/`0` = off), and
+  **open_browser_command** (a custom browser-open command; empty = the OS
+  default). `↑`/`↓` move between fields; `Enter` or `Ctrl+S` saves. On save each
+  changed field is written to `config.toml` format-preserving (comments and other
+  keys survive), the auto-refresh ticker re-arms at the new interval without a
+  restart, and the new browser command takes effect on the next open. The no-op
+  `wide` / `confirm_writes` knobs are intentionally excluded (both are
+  parsed-but-unused today). `NO_COLOR` still wins: the theme change is disabled
+  under `NO_COLOR`, the same as the `t` cycle and the palette `:theme` verb.
+- `[ui].open_browser_command` is now honored. `nbox open <kind/ref>` and the TUI
+  `o` open action run the configured command (split into program + args, with the
+  URL appended as a literal final argument — never shell-interpolated) instead of
+  the OS default opener; an empty value keeps using the OS default. The TUI reads
+  the live value, so a command just changed in the Settings section applies to the
+  next `o` without a restart.
 - OS keyring token storage + `nbox config token set|clear|status`. `set` stores
   the active (or `--profile`) profile's NetBox API token in the OS keyring,
   reading it without echo from a TTY prompt — or as a single line from stdin when

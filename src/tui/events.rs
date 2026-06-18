@@ -29,8 +29,10 @@ pub fn spawn_terminal_events(tx: Sender<AppEvent>) {
 }
 
 /// Spawn a task that emits [`AppEvent::Tick`] every `secs` seconds. Exits when
-/// the receiver is dropped.
-pub fn spawn_ticks(tx: Sender<AppEvent>, secs: u64) {
+/// the receiver is dropped. Returns the task handle so the caller can abort it to
+/// re-arm the ticker at a new interval (the Settings section changing
+/// `refresh_secs`).
+pub fn spawn_ticks(tx: Sender<AppEvent>, secs: u64) -> tokio::task::JoinHandle<()> {
     tokio::spawn(async move {
         let mut ticker = tokio::time::interval(Duration::from_secs(secs));
         ticker.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -41,7 +43,7 @@ pub fn spawn_ticks(tx: Sender<AppEvent>, secs: u64) {
                 break;
             }
         }
-    });
+    })
 }
 
 /// The preview debounce interval: short enough to feel live, long enough that a

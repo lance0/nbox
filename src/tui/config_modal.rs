@@ -1,10 +1,12 @@
-//! The in-app Config modal: pure state + key handling for the Profiles section.
+//! The in-app Config modal: pure state + key handling for both sections.
 //!
-//! A single modal with two sections (`Profiles` | `Settings`); only **Profiles**
-//! is implemented here — Settings is a placeholder that Phase C fills in. The
-//! Profiles section lists the configured profiles (active marked) with add / edit
-//! / select / delete actions, and an add/edit [`FormInput`] form whose token
-//! field is masked (never written to TOML; stored in the OS keyring on save).
+//! A single modal with two sections (`Profiles` | `Settings`), `Tab` to switch.
+//! The Profiles section lists the configured profiles (active marked) with add /
+//! edit / select / delete actions, and an add/edit [`FormInput`] form whose token
+//! field is masked (never written to TOML; stored in the OS keyring on save). The
+//! Settings section is a small form over the *real* `[ui]` settings — theme (a
+//! cycle), `refresh_secs` (numeric), and `open_browser_command` (text); the no-op
+//! `wide`/`confirm_writes` knobs are deliberately excluded.
 //!
 //! Everything here is PURE: key handling mutates the modal's own state and yields
 //! a [`ModalOutcome`] describing what the app should *do* (test-connect, save,
@@ -16,9 +18,10 @@ use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::netbox::auth::AuthScheme;
 use crate::tui::cheese::{FormInput, TextInput};
+use crate::tui::theme::Theme;
 
 /// Which section of the Config modal is active. `Tab` switches sections at the
-/// list level; `Settings` is a Phase C placeholder for now.
+/// Profiles list level and from the Settings form.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConfigSection {
     Profiles,
@@ -224,26 +227,136 @@ impl ProfilesPane {
     }
 }
 
-/// The whole Config modal: the active section plus the Profiles section state.
-/// (Settings is inert until Phase C.)
+/// The focusable rows of the Settings form, in display order. `theme` is a cycle
+/// (Left/Right or Space), the other two are text fields.
+pub mod setting {
+    pub const THEME: usize = 0;
+    pub const REFRESH: usize = 1;
+    pub const BROWSER: usize = 2;
+    /// Number of settings rows.
+    pub const COUNT: usize = 3;
+}
+
+/// The Settings section: an editable form over the *real* `[ui]` settings.
+///
+/// `theme` is held as an index into [`Theme::list`] and cycled in place (it also
+/// hot-applies live to the running app — see [`ModalOutcome::ChangeTheme`]). The
+/// other two are free-text [`TextInput`]s: `refresh_secs` (numeric; empty/0 =
+/// off) and `open_browser_command` (empty = the OS default). `focus` selects the
+/// row Up/Down move between; typing / cycling routes to the focused row. PURE +
+/// unit-testable — no I/O; the app persists + re-arms on [`ModalOutcome::SaveSettings`].
+pub struct SettingsPane {
+    /// Index into [`Theme::list`] of the working theme selection.
+    pub theme_index: usize,
+    /// `refresh_secs` as typed (digits only; empty = off).
+    pub refresh: TextInput,
+    /// `open_browser_command` as typed (empty = OS default).
+    pub browser: TextInput,
+    /// Focused row: one of [`setting::THEME`] / `REFRESH` / `BROWSER`.
+    pub focus: usize,
+    /// A transient info / validation line shown under the form.
+    pub message: Option<String>,
+}
+
+impl SettingsPane {
+    /// Build the form seeded from the live settings: the current theme name, the
+    /// refresh interval (rendered as digits; `None`/`0` = empty = off), and the
+    /// browser command.
+    fn new(theme_name: &str, refresh_secs: Option<u64>, open_browser_command: &str) -> Self {
+        let mut refresh = TextInput::new("seconds (empty = off)");
+        if let Some(secs) = refresh_secs.filter(|s| *s > 0) {
+            refresh.set_value(secs.to_string());
+        }
+        let mut browser = TextInput::new("custom open command (empty = OS default)");
+        if !open_browser_command.is_empty() {
+            browser.set_value(open_browser_command);
+        }
+        Self {
+            theme_index: Theme::index_of(theme_name),
+            refresh,
+            browser,
+            focus: setting::THEME,
+            message: None,
+        }
+    }
+
+    /// The currently selected theme name (from the working index).
+    pub fn theme_name(&self) -> &'static str {
+        Theme::list()[self.theme_index.min(Theme::list().len() - 1)]
+    }
+
+    /// The typed `refresh_secs` parsed to an optional interval: empty or `0` ⇒
+    /// `None` (off); non-numeric text ⇒ `None` too (validated on save).
+    pub fn refresh_secs(&self) -> Option<u64> {
+        let t = self.refresh.value().trim();
+        if t.is_empty() {
+            return None;
+        }
+        t.parse::<u64>().ok().filter(|s| *s > 0)
+    }
+
+    /// The typed `open_browser_command` (trimmed of surrounding whitespace).
+    pub fn browser_command(&self) -> String {
+        self.browser.value().trim().to_string()
+    }
+
+    /// Move focus to the next row (wrapping).
+    fn focus_next(&mut self) {
+        self.focus = (self.focus + 1) % setting::COUNT;
+    }
+
+    /// Move focus to the previous row (wrapping).
+    fn focus_prev(&mut self) {
+        self.focus = (self.focus + setting::COUNT - 1) % setting::COUNT;
+    }
+
+    /// Cycle the theme selection by `+1`/`-1`, wrapping. The change hot-applies
+    /// live; persistence happens on save.
+    fn cycle_theme(&mut self, forward: bool) {
+        let len = Theme::list().len();
+        self.theme_index = if forward {
+            (self.theme_index + 1) % len
+        } else {
+            (self.theme_index + len - 1) % len
+        };
+        self.message = None;
+    }
+
+    /// Validate the form for save: `refresh_secs`, when non-empty, must be a
+    /// non-negative integer (0 = off is allowed). Returns an error message to show.
+    fn validate(&self) -> Result<(), String> {
+        let t = self.refresh.value().trim();
+        if !t.is_empty() && t.parse::<u64>().is_err() {
+            return Err("refresh_secs must be a whole number of seconds".to_string());
+        }
+        Ok(())
+    }
+}
+
+/// The whole Config modal: the active section plus both section states.
 pub struct ConfigModal {
     pub section: ConfigSection,
     pub profiles: ProfilesPane,
+    pub settings: SettingsPane,
 }
 
 impl ConfigModal {
-    /// Open the modal on the Profiles section.
-    pub fn new() -> Self {
+    /// Open the modal on the Profiles section, seeding the Settings form from the
+    /// live UI settings (so a switch to Settings shows the current values).
+    pub fn new(theme_name: &str, refresh_secs: Option<u64>, open_browser_command: &str) -> Self {
         Self {
             section: ConfigSection::Profiles,
             profiles: ProfilesPane::new(),
+            settings: SettingsPane::new(theme_name, refresh_secs, open_browser_command),
         }
     }
 }
 
 impl Default for ConfigModal {
+    /// A modal seeded with default settings (the `default` theme, no auto-refresh,
+    /// the OS default opener) — used by tests / when no live settings are handy.
     fn default() -> Self {
-        Self::new()
+        Self::new("default", None, "")
     }
 }
 
@@ -266,6 +379,15 @@ pub enum ModalOutcome {
     Edit(String),
     /// Remove the named profile (config + keyring).
     Delete(String),
+    /// Hot-apply the named theme to the running app (the Settings theme cycle).
+    /// The app routes this through the same theme path as the `t` cycle / palette
+    /// `:theme` — including the `NO_COLOR` guard — so it applies live; the value is
+    /// persisted on [`Self::SaveSettings`].
+    ChangeTheme(String),
+    /// Persist the Settings form and hot-apply: write each changed `[ui]` field,
+    /// re-arm the auto-refresh ticker at the new interval, and adopt the live
+    /// browser command. The app reads the values off the modal's [`SettingsPane`].
+    SaveSettings,
 }
 
 impl ConfigModal {
@@ -285,15 +407,74 @@ impl ConfigModal {
         }
     }
 
-    /// Settings is a Phase C placeholder: Tab returns to Profiles; Esc/q close.
+    /// Drive the Settings form. `Tab`/`Shift-Tab` switch back to Profiles (the
+    /// section toggle); `Up`/`Down` move row focus; the theme row cycles with
+    /// `Left`/`Right`/`Space`; the two text rows edit in place. `Enter`/`Ctrl+S`
+    /// save; `Esc` closes. (`q` is a valid command char, so it does *not* close
+    /// from here — only `Esc` does, unlike the Profiles list.)
     fn handle_settings_key(&mut self, key: KeyEvent) -> ModalOutcome {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        // The section toggle and close are handled before the `settings` borrow so
+        // the Tab arm can touch `self.section` cleanly.
         match key.code {
             KeyCode::Tab | KeyCode::BackTab => {
                 self.section = ConfigSection::Profiles;
+                return ModalOutcome::None;
+            }
+            KeyCode::Esc => return ModalOutcome::Close,
+            _ => {}
+        }
+        let s = &mut self.settings;
+        match key.code {
+            KeyCode::Up => {
+                s.focus_prev();
                 ModalOutcome::None
             }
-            KeyCode::Esc | KeyCode::Char('q') => ModalOutcome::Close,
-            _ => ModalOutcome::None,
+            KeyCode::Down => {
+                s.focus_next();
+                ModalOutcome::None
+            }
+            // Enter always saves; Ctrl+S also saves (so a save is reachable while a
+            // text row is focused without leaving it). A bare `s` falls through to
+            // text editing below.
+            KeyCode::Enter => match s.validate() {
+                Ok(()) => ModalOutcome::SaveSettings,
+                Err(e) => {
+                    s.message = Some(e);
+                    ModalOutcome::None
+                }
+            },
+            KeyCode::Char('s') if ctrl => match s.validate() {
+                Ok(()) => ModalOutcome::SaveSettings,
+                Err(e) => {
+                    s.message = Some(e);
+                    ModalOutcome::None
+                }
+            },
+            // The theme row cycles with Left/Right or Space; the change hot-applies.
+            KeyCode::Left if s.focus == setting::THEME => {
+                s.cycle_theme(false);
+                ModalOutcome::ChangeTheme(s.theme_name().to_string())
+            }
+            KeyCode::Right | KeyCode::Char(' ') if s.focus == setting::THEME => {
+                s.cycle_theme(true);
+                ModalOutcome::ChangeTheme(s.theme_name().to_string())
+            }
+            // Otherwise: text editing on the focused text row. The theme row has no
+            // text field, so non-cycle keys there are inert.
+            _ => {
+                let field = match s.focus {
+                    setting::REFRESH => Some(&mut s.refresh),
+                    setting::BROWSER => Some(&mut s.browser),
+                    _ => None, // the theme row: no text field
+                };
+                if let Some(input) = field
+                    && input.handle_key(key)
+                {
+                    s.message = None;
+                }
+                ModalOutcome::None
+            }
         }
     }
 
@@ -530,7 +711,7 @@ mod tests {
 
     #[test]
     fn opens_on_profiles_list() {
-        let m = ConfigModal::new();
+        let m = ConfigModal::default();
         assert_eq!(m.section, ConfigSection::Profiles);
         assert!(matches!(
             m.profiles.mode,
@@ -540,7 +721,7 @@ mod tests {
 
     #[test]
     fn tab_switches_sections_at_list_level() {
-        let mut m = ConfigModal::new();
+        let mut m = ConfigModal::default();
         m.handle_key(key(KeyCode::Tab), &[], "");
         assert_eq!(m.section, ConfigSection::Settings);
         m.handle_key(key(KeyCode::Tab), &[], "");
@@ -549,7 +730,7 @@ mod tests {
 
     #[test]
     fn list_movement_clamps_to_bounds() {
-        let mut m = ConfigModal::new();
+        let mut m = ConfigModal::default();
         let names = vec!["a".to_string(), "b".to_string(), "c".to_string()];
         m.handle_key(key(KeyCode::Char('j')), &names, "a");
         assert!(matches!(
@@ -573,12 +754,12 @@ mod tests {
 
     #[test]
     fn esc_and_q_close_from_list() {
-        let mut m = ConfigModal::new();
+        let mut m = ConfigModal::default();
         assert_eq!(
             m.handle_key(key(KeyCode::Esc), &[], ""),
             ModalOutcome::Close
         );
-        let mut m2 = ConfigModal::new();
+        let mut m2 = ConfigModal::default();
         assert_eq!(
             m2.handle_key(key(KeyCode::Char('q')), &[], ""),
             ModalOutcome::Close
@@ -587,7 +768,7 @@ mod tests {
 
     #[test]
     fn a_opens_add_form_and_esc_returns_to_list() {
-        let mut m = ConfigModal::new();
+        let mut m = ConfigModal::default();
         m.handle_key(key(KeyCode::Char('a')), &[], "");
         assert!(matches!(m.profiles.mode, ProfilesMode::Form(_)));
         assert!(m.form().unwrap().editing.is_none(), "add form, not edit");
@@ -597,7 +778,7 @@ mod tests {
 
     #[test]
     fn enter_on_list_selects_the_highlighted_profile() {
-        let mut m = ConfigModal::new();
+        let mut m = ConfigModal::default();
         let names = vec!["a".to_string(), "b".to_string()];
         m.handle_key(key(KeyCode::Char('j')), &names, "a"); // → b
         let out = m.handle_key(key(KeyCode::Enter), &names, "a");
@@ -606,7 +787,7 @@ mod tests {
 
     #[test]
     fn form_typing_routes_to_focused_field_and_validates() {
-        let mut m = ConfigModal::new();
+        let mut m = ConfigModal::default();
         m.handle_key(key(KeyCode::Char('a')), &[], ""); // open add form
         // name field
         type_into(&mut m, "lab");
@@ -628,7 +809,7 @@ mod tests {
 
     #[test]
     fn form_enter_saves_when_valid() {
-        let mut m = ConfigModal::new();
+        let mut m = ConfigModal::default();
         m.handle_key(key(KeyCode::Char('a')), &[], "");
         type_into(&mut m, "lab");
         m.handle_key(key(KeyCode::Tab), &[], "");
@@ -642,7 +823,7 @@ mod tests {
 
     #[test]
     fn ctrl_t_requests_a_test_when_valid() {
-        let mut m = ConfigModal::new();
+        let mut m = ConfigModal::default();
         m.handle_key(key(KeyCode::Char('a')), &[], "");
         type_into(&mut m, "lab");
         m.handle_key(key(KeyCode::Tab), &[], "");
@@ -654,7 +835,7 @@ mod tests {
 
     #[test]
     fn ctrl_s_cycles_auth_scheme_and_ctrl_l_toggles_tls() {
-        let mut m = ConfigModal::new();
+        let mut m = ConfigModal::default();
         m.handle_key(key(KeyCode::Char('a')), &[], "");
         assert_eq!(m.form().unwrap().auth_scheme, AuthScheme::Auto);
         m.handle_key(ctrl('s'), &[], "");
@@ -670,7 +851,7 @@ mod tests {
 
     #[test]
     fn editing_form_keeps_token_blank_and_records_original_name() {
-        let mut m = ConfigModal::new();
+        let mut m = ConfigModal::default();
         m.open_edit_form(
             "work",
             "https://w",
@@ -691,7 +872,7 @@ mod tests {
 
     #[test]
     fn token_field_is_masked_and_never_exposes_its_value() {
-        let mut m = ConfigModal::new();
+        let mut m = ConfigModal::default();
         m.handle_key(key(KeyCode::Char('a')), &[], "");
         // Tab to the token field (index 3): name→url→token_env→token.
         for _ in 0..field::TOKEN {
@@ -710,7 +891,7 @@ mod tests {
 
     #[test]
     fn delete_confirm_then_y_deletes_a_non_active_profile() {
-        let mut m = ConfigModal::new();
+        let mut m = ConfigModal::default();
         let names = vec!["a".to_string(), "b".to_string()];
         // Highlight b (not active), press d → confirm.
         m.handle_key(key(KeyCode::Char('j')), &names, "a"); // → b
@@ -727,7 +908,7 @@ mod tests {
     #[test]
     fn delete_is_blocked_for_active_and_last_profile() {
         // Active profile: d is a no-op (no confirm).
-        let mut m = ConfigModal::new();
+        let mut m = ConfigModal::default();
         let names = vec!["a".to_string(), "b".to_string()];
         m.handle_key(key(KeyCode::Char('d')), &names, "a"); // a is active
         assert!(
@@ -735,7 +916,7 @@ mod tests {
             "deleting the active profile does not open a confirm"
         );
         // Last/only profile: d is a no-op too.
-        let mut m2 = ConfigModal::new();
+        let mut m2 = ConfigModal::default();
         let one = vec!["only".to_string()];
         m2.handle_key(key(KeyCode::Char('d')), &one, "other");
         assert!(matches!(m2.profiles.mode, ProfilesMode::List { .. }));
@@ -743,7 +924,7 @@ mod tests {
 
     #[test]
     fn confirm_delete_n_cancels_back_to_list() {
-        let mut m = ConfigModal::new();
+        let mut m = ConfigModal::default();
         let names = vec!["a".to_string(), "b".to_string()];
         m.handle_key(key(KeyCode::Char('j')), &names, "a");
         m.handle_key(key(KeyCode::Char('d')), &names, "a");
@@ -759,10 +940,143 @@ mod tests {
     fn edit_request_carries_the_selected_name() {
         // `e` surfaces the edit request encoded for the app, which then opens the
         // prefilled form (it owns the ProfileConfig).
-        let mut m = ConfigModal::new();
+        let mut m = ConfigModal::default();
         let names = vec!["a".to_string(), "b".to_string()];
         m.handle_key(key(KeyCode::Char('j')), &names, "a"); // → b
         let out = m.handle_key(key(KeyCode::Char('e')), &names, "a");
         assert_eq!(out, ModalOutcome::Edit("b".to_string()));
+    }
+
+    // ---- Settings section ----------------------------------------------------
+
+    /// Open a modal and switch it to the Settings section.
+    fn on_settings(theme: &str, refresh: Option<u64>, browser: &str) -> ConfigModal {
+        let mut m = ConfigModal::new(theme, refresh, browser);
+        m.handle_key(key(KeyCode::Tab), &[], ""); // Profiles list → Settings
+        assert_eq!(m.section, ConfigSection::Settings);
+        m
+    }
+
+    #[test]
+    fn settings_form_seeds_from_the_live_values() {
+        let m = on_settings("nord", Some(30), "firefox");
+        assert_eq!(m.settings.theme_name(), "nord");
+        assert_eq!(m.settings.refresh_secs(), Some(30));
+        assert_eq!(m.settings.browser_command(), "firefox");
+        // refresh_secs renders as digits; an absent interval seeds an empty field.
+        let blank = on_settings("default", None, "");
+        assert_eq!(blank.settings.refresh.value(), "");
+        assert_eq!(blank.settings.refresh_secs(), None);
+        assert_eq!(blank.settings.browser_command(), "");
+    }
+
+    #[test]
+    fn settings_tab_switches_back_to_profiles_and_esc_closes() {
+        let mut m = on_settings("default", None, "");
+        m.handle_key(key(KeyCode::Tab), &[], "");
+        assert_eq!(m.section, ConfigSection::Profiles);
+        // Esc from Settings closes the whole modal.
+        let mut m2 = on_settings("default", None, "");
+        assert_eq!(
+            m2.handle_key(key(KeyCode::Esc), &[], ""),
+            ModalOutcome::Close
+        );
+    }
+
+    #[test]
+    fn settings_up_down_move_row_focus_and_wrap() {
+        let mut m = on_settings("default", None, "");
+        assert_eq!(m.settings.focus, setting::THEME);
+        m.handle_key(key(KeyCode::Down), &[], "");
+        assert_eq!(m.settings.focus, setting::REFRESH);
+        m.handle_key(key(KeyCode::Down), &[], "");
+        assert_eq!(m.settings.focus, setting::BROWSER);
+        m.handle_key(key(KeyCode::Down), &[], ""); // wraps to THEME
+        assert_eq!(m.settings.focus, setting::THEME);
+        m.handle_key(key(KeyCode::Up), &[], ""); // wraps to BROWSER
+        assert_eq!(m.settings.focus, setting::BROWSER);
+    }
+
+    #[test]
+    fn settings_theme_cycles_and_emits_change_theme() {
+        let mut m = on_settings("default", None, "");
+        // Right cycles forward to the next theme and emits a hot-apply outcome.
+        let out = m.handle_key(key(KeyCode::Right), &[], "");
+        assert_eq!(m.settings.theme_name(), Theme::list()[1]);
+        assert_eq!(out, ModalOutcome::ChangeTheme(Theme::list()[1].to_string()));
+        // Left cycles back to the first.
+        let out = m.handle_key(key(KeyCode::Left), &[], "");
+        assert_eq!(m.settings.theme_name(), Theme::list()[0]);
+        assert_eq!(out, ModalOutcome::ChangeTheme(Theme::list()[0].to_string()));
+        // Space also cycles forward.
+        let out = m.handle_key(key(KeyCode::Char(' ')), &[], "");
+        assert_eq!(out, ModalOutcome::ChangeTheme(Theme::list()[1].to_string()));
+    }
+
+    #[test]
+    fn settings_typing_routes_to_the_focused_text_row() {
+        let mut m = on_settings("default", None, "");
+        // Move to refresh_secs and type digits.
+        m.handle_key(key(KeyCode::Down), &[], "");
+        for c in "45".chars() {
+            m.handle_key(key(KeyCode::Char(c)), &[], "");
+        }
+        assert_eq!(m.settings.refresh_secs(), Some(45));
+        // The theme row took no text (it's a cycle, not a field).
+        assert_eq!(m.settings.theme_name(), "default");
+        // Move to the browser row and type a command (incl. an 's', which only
+        // means "save" with Ctrl).
+        m.handle_key(key(KeyCode::Down), &[], "");
+        for c in "open -a Safari".chars() {
+            m.handle_key(key(KeyCode::Char(c)), &[], "");
+        }
+        assert_eq!(m.settings.browser_command(), "open -a Safari");
+    }
+
+    #[test]
+    fn settings_enter_and_ctrl_s_save_when_valid() {
+        let mut m = on_settings("default", None, "");
+        assert_eq!(
+            m.handle_key(key(KeyCode::Enter), &[], ""),
+            ModalOutcome::SaveSettings
+        );
+        let mut m2 = on_settings("default", None, "");
+        assert_eq!(
+            m2.handle_key(ctrl('s'), &[], ""),
+            ModalOutcome::SaveSettings
+        );
+    }
+
+    #[test]
+    fn settings_save_rejects_non_numeric_refresh() {
+        let mut m = on_settings("default", None, "");
+        m.handle_key(key(KeyCode::Down), &[], ""); // → refresh row
+        for c in "abc".chars() {
+            m.handle_key(key(KeyCode::Char(c)), &[], "");
+        }
+        let out = m.handle_key(key(KeyCode::Enter), &[], "");
+        assert_eq!(out, ModalOutcome::None, "invalid refresh blocks save");
+        assert!(
+            m.settings
+                .message
+                .as_deref()
+                .unwrap()
+                .contains("whole number"),
+            "a validation message is shown"
+        );
+    }
+
+    #[test]
+    fn settings_refresh_secs_zero_and_empty_are_off() {
+        let mut m = on_settings("default", Some(10), "");
+        // Clear the field (Ctrl+U) → empty → off.
+        m.handle_key(key(KeyCode::Down), &[], "");
+        m.handle_key(ctrl('u'), &[], "");
+        assert_eq!(m.settings.refresh_secs(), None);
+        // An explicit 0 is also off.
+        for c in "0".chars() {
+            m.handle_key(key(KeyCode::Char(c)), &[], "");
+        }
+        assert_eq!(m.settings.refresh_secs(), None);
     }
 }
