@@ -27,7 +27,7 @@ const DEFAULT_PAGE_SIZE: usize = 100;
 /// NetBox caps `limit` at `MAX_PAGE_SIZE` server-side; sending more is silently
 /// reduced to this, so we clamp at construction to keep `limit`/`offset` windows
 /// aligned (see `list_all`).
-const MAX_PAGE_SIZE: usize = 1000;
+pub(crate) const MAX_PAGE_SIZE: usize = 1000;
 
 /// An HTTP client bound to a single NetBox instance/profile.
 #[derive(Clone)]

@@ -245,6 +245,97 @@ async fn graphql_backend_search_shapes_lookup_filters_and_synthesizes_urls() {
 }
 
 #[tokio::test]
+async fn graphql_backend_caps_pagination_limit_to_netbox_max() {
+    let server = MockServer::start().await;
+    mount_graphql_device_schema(&server).await;
+    mount_graphql_device_result(&server).await;
+
+    let results = graphql_client(&server)
+        .search(SearchRequest {
+            query: "edge".into(),
+            limit: 5_000,
+            filters: SearchFilters::default(),
+        })
+        .await
+        .unwrap()
+        .results;
+
+    assert_eq!(results.len(), 1);
+    let requests = server.received_requests().await.unwrap();
+    let device_query = requests
+        .iter()
+        .filter_map(graphql_request_query)
+        .find(|query| query.contains("device_list"))
+        .expect("device_list query was sent");
+    assert!(
+        device_query.contains("pagination: {offset: 0, limit: 1000}"),
+        "GraphQL pagination should be capped to NetBox's max page size: {device_query}"
+    );
+}
+
+#[tokio::test]
+async fn graphql_backend_decode_errors_name_the_list() {
+    let server = MockServer::start().await;
+    mount_graphql_device_schema(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql/"))
+        .and(body_string_contains("device_list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "device_list": {
+                    "id": "7",
+                    "name": "edge01"
+                }
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let err = graphql_client(&server)
+        .search(SearchRequest {
+            query: "edge".into(),
+            limit: 10,
+            filters: SearchFilters::default(),
+        })
+        .await
+        .expect_err("malformed list payload should error");
+
+    assert!(
+        format!("{err:#}").contains("deserializing GraphQL device_list rows"),
+        "got: {err:#}"
+    );
+}
+
+#[tokio::test]
+async fn graphql_backend_propagates_graphql_errors() {
+    let server = MockServer::start().await;
+    mount_graphql_device_schema(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql/"))
+        .and(body_string_contains("device_list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": null,
+            "errors": [{"message": "field exploded"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let err = graphql_client(&server)
+        .search(SearchRequest {
+            query: "edge".into(),
+            limit: 10,
+            filters: SearchFilters::default(),
+        })
+        .await
+        .expect_err("GraphQL errors should fail the search branch");
+
+    assert!(
+        format!("{err:#}").contains("field exploded"),
+        "got: {err:#}"
+    );
+}
+
+#[tokio::test]
 async fn graphql_backend_caches_capabilities_across_client_clones() {
     let server = MockServer::start().await;
     mount_graphql_device_schema(&server).await;
