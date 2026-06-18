@@ -111,14 +111,17 @@ fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent
                 let _ = tx.send(AppEvent::Status(message)).await;
             });
         }
-        AppCommand::SwitchProfile { name, config } => {
+        AppCommand::SwitchProfile { id, name, config } => {
             tokio::spawn(async move {
                 // Reconnect the TUI way: rebuild the client from the target
                 // profile and re-probe `/api/status/` — the same connect/probe
                 // code paths launch uses — off the render thread. Token resolution
-                // reads the env here (not in the pure handler).
+                // reads the env here (not in the pure handler). The switch `id` is
+                // echoed back so a superseded switch is dropped on arrival.
                 let result = reconnect(&config).await;
-                let _ = tx.send(AppEvent::ProfileSwitched { name, result }).await;
+                let _ = tx
+                    .send(AppEvent::ProfileSwitched { id, name, result })
+                    .await;
             });
         }
     }

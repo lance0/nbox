@@ -209,6 +209,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `text_dim`. No keybindings changed; the hint helpers are pure and unit-tested.
 
 ### Fixed
+- TUI: a rapid profile re-switch could settle a stale reconnect. Switch
+  completions were correlated by profile *name*, so a sequence like alpha → beta
+  → gamma → beta again let the OLDER beta's reconnect settle the NEWER beta
+  attempt (same name, so the "is this still current?" check passed for the wrong
+  one) — leaving the client/header reflecting a stale instance. Each initiated
+  switch now carries a monotonic switch id (the same idea as the search/detail
+  per-channel request-id guard); a `ProfileSwitched` whose id is older than the
+  latest initiated switch is dropped on arrival — even one to the same profile
+  name. The name is kept for display, but correctness rides the id. Composes
+  with the existing switch hardening: the deferred header flip, fetch fencing
+  while a switch is pending, no phantom header on failure, and the
+  header-always-matches-connected-client invariant all hold, and a dropped
+  superseded completion can't clear a newer switch's pending state.
 - The `scripts/install.sh` quick-install script could not install a real release.
   It mapped Linux hosts to `*-unknown-linux-gnu` triples, but `release.yml` only
   ships static **musl** archives for Linux x86_64/aarch64 — so the download 404'd

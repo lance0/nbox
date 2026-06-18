@@ -70,11 +70,14 @@ pub enum AppEvent {
     },
     /// A profile switch finished re-probing the new instance: on success carries
     /// the rebuilt client and the new instance's `/api/status/` version; on
-    /// failure carries the error to surface. Tagged with the profile `name` it
-    /// was issued for so a switch superseded by a newer one is dropped on arrival
-    /// (the latest-switch-wins guard, mirroring the search/detail request-id
-    /// guard — see [`App::is_current_profile`]).
+    /// failure carries the error to surface. Tagged with the monotonic switch
+    /// `id` it was issued for so a switch superseded by a newer one — even one to
+    /// the *same* profile name — is dropped on arrival (the latest-switch-wins
+    /// guard, mirroring the search/detail request-id guard — see
+    /// [`App::is_current_switch`]). `name` is carried for display only;
+    /// correctness rides the `id`, never the name.
     ProfileSwitched {
+        id: RequestId,
         name: String,
         result: anyhow::Result<(NetBoxClient, String)>,
     },
@@ -148,9 +151,11 @@ pub enum AppCommand {
     Copy(String),
     /// Switch the live session to the named profile: rebuild the NetBox client
     /// from its [`ProfileConfig`] and re-probe `/api/status/`, off the render
-    /// thread. The result returns as [`AppEvent::ProfileSwitched`]; `name` tags
-    /// it so a superseded switch is dropped on arrival.
+    /// thread. The result returns as [`AppEvent::ProfileSwitched`]; `id` (the
+    /// monotonic switch id, echoed back) is what a superseded switch is dropped
+    /// by on arrival. `name` is carried for display only.
     SwitchProfile {
+        id: RequestId,
         name: String,
         config: ProfileConfig,
     },
@@ -192,11 +197,29 @@ pub struct App {
     /// Index into [`Self::profiles`] of the active profile. Cycling advances /
     /// wraps it; the palette `profile <name>` verb jumps to a named one.
     pub profile_index: usize,
-    /// Monotonic profile-switch generation. Each dispatched [`AppCommand::SwitchProfile`]
-    /// stamps the target name as the latest; a [`AppEvent::ProfileSwitched`] whose
-    /// name no longer matches the active profile is from a superseded switch and
-    /// is dropped (latest-switch-wins; see [`Self::is_current_profile`]).
+    /// The target profile name of the in-flight switch, for *display* ("switching
+    /// to '…'") and for stepping rapid cycles from the pending target. Set when a
+    /// switch is initiated, cleared when the matching (by-id) completion settles.
+    /// Correctness — whether a [`AppEvent::ProfileSwitched`] is current — rides
+    /// [`Self::pending_switch`]/[`Self::switch_gen`], NOT this name: two switches
+    /// to the same name are distinguished only by their id (see
+    /// [`Self::is_current_switch`]).
     pub pending_profile: Option<String>,
+    /// Monotonic profile-switch id source. Each initiated [`AppCommand::SwitchProfile`]
+    /// bumps this and records the new value as both [`Self::pending_switch`] (the
+    /// awaited completion) and [`Self::switch_gen`] (the high-water mark). The
+    /// matching [`AppEvent::ProfileSwitched`] echoes the id back; one whose id is
+    /// older than `switch_gen` is from a superseded switch and is dropped — even a
+    /// switch to the same profile name can never settle a newer attempt. Mirrors
+    /// the search/detail `request_seq`/`*_gen` guard, scoped to switches.
+    pub switch_seq: RequestId,
+    /// The id of the switch awaited by [`Self::pending_profile`], or `None` when no
+    /// switch is in flight. A `ProfileSwitched` settles state only if its id equals
+    /// this (and so also `>= switch_gen`); see [`Self::is_current_switch`].
+    pub pending_switch: Option<RequestId>,
+    /// High-water mark: the id of the latest initiated switch. A `ProfileSwitched`
+    /// with an older id is dropped on arrival (latest-switch-wins).
+    pub switch_gen: RequestId,
 
     pub mode: Mode,
     pub screen: Screen,
@@ -327,6 +350,9 @@ impl App {
             profiles: Vec::new(),
             profile_index: 0,
             pending_profile: None,
+            switch_seq: 0,
+            pending_switch: None,
+            switch_gen: 0,
             mode: Mode::Normal,
             screen: Screen::Home,
             help_open: false,
@@ -419,8 +445,10 @@ impl App {
                     *req = self.request_seq;
                     self.detail_gen = self.request_seq;
                 }
-                // Preview loads carry (kind,id) and profile switches carry their
-                // target name; neither rides the per-channel request-id guard.
+                // Preview loads carry (kind,id); profile switches carry their own
+                // monotonic switch id, stamped at initiation in `switch_to_index`
+                // (it also sets the pending/high-water state). Neither rides the
+                // per-channel search/detail request-id guard.
                 AppCommand::LoadPreview { .. }
                 | AppCommand::OpenBrowser(_)
                 | AppCommand::Copy(_)
@@ -551,16 +579,21 @@ impl App {
                 }
                 Vec::new()
             }
-            AppEvent::ProfileSwitched { name, result } => {
+            AppEvent::ProfileSwitched { id, name, result } => {
                 // The reconnect+re-probe settled — count it down even when dropped
                 // as stale below, so the spinner can't hang on a superseded switch.
                 self.end_request();
-                // Latest-switch-wins: a result for a profile the user has already
-                // cycled away from is dropped (its client/version is moot now).
-                if !self.is_current_profile(&name) {
+                // Latest-switch-wins, correlated by the monotonic switch `id` (not
+                // the name): a result from a switch the user has already superseded
+                // — even an older one to this same profile name — is dropped, since
+                // its client/version is moot now. This must not touch
+                // `pending_switch`/`pending_profile`: dropping a stale completion
+                // can't clear a newer switch's pending state or flip anything.
+                if !self.is_current_switch(id) {
                     return Vec::new();
                 }
                 self.pending_profile = None;
+                self.pending_switch = None;
                 match result {
                     Ok((client, version)) => {
                         // Atomically adopt the new instance: swap in its client and
@@ -1084,16 +1117,23 @@ impl App {
     /// keep pointing at the currently connected instance until the switch
     /// succeeds (see the [`AppEvent::ProfileSwitched`] handler), so the UI can
     /// never claim to be on a server `client` isn't actually talking to. We only
-    /// record the pending target (latest-switch-wins) and show a "switching…"
-    /// status; the atomic swap (+ data clear + request-gen bump) happens on
-    /// success. `idx` must be in range (callers guarantee it).
+    /// mint a switch id (latest-switch-wins, by id) + record the pending target
+    /// and show a "switching…" status; the atomic swap (+ data clear +
+    /// request-gen bump) happens on success. `idx` must be in range (callers
+    /// guarantee it).
     fn switch_to_index(&mut self, idx: usize) -> Vec<AppCommand> {
         let entry = self.profiles[idx].clone();
-        // Tag this as the latest switch so a slower, superseded one is dropped on
-        // arrival, and so in-flight fetches are fenced until it settles.
+        // Mint a fresh switch id and record it as both the awaited completion and
+        // the high-water mark, so a slower, superseded switch — even one to this
+        // same profile name — is dropped on arrival. `pending_profile` keeps the
+        // name for display + rapid-cycle stepping; the id drives correctness.
+        self.switch_seq += 1;
+        self.pending_switch = Some(self.switch_seq);
+        self.switch_gen = self.switch_seq;
         self.pending_profile = Some(entry.name.clone());
         self.set_status(format!("switching to '{}'…", entry.name), Severity::Info);
         vec![AppCommand::SwitchProfile {
+            id: self.switch_seq,
             name: entry.name,
             config: entry.config,
         }]
@@ -1158,11 +1198,12 @@ impl App {
         self.history.clear();
     }
 
-    /// True when `name` is the profile the latest switch targeted. A
-    /// `ProfileSwitched` for any other profile is from a superseded switch (the
-    /// user cycled again before it returned) and is dropped on arrival.
-    fn is_current_profile(&self, name: &str) -> bool {
-        self.pending_profile.as_deref() == Some(name)
+    /// True when `id` is the latest switch initiated (the high-water mark). A
+    /// `ProfileSwitched` with an older id is from a superseded switch (the user
+    /// cycled again before it returned) and is dropped on arrival — by id, so an
+    /// older switch to the *same* profile name can never settle a newer attempt.
+    fn is_current_switch(&self, id: RequestId) -> bool {
+        id >= self.switch_gen
     }
 
     /// Recompute the visible `view` by fuzzy-filtering results on `search_input`.
@@ -3319,16 +3360,19 @@ mod tests {
         a
     }
 
-    /// Deliver a successful profile-switch result tagged as the current pending
-    /// switch (passes the latest-switch-wins guard), with the given version.
+    /// Deliver a successful profile-switch result tagged with the current pending
+    /// switch's id + name (passes the latest-switch-wins guard), with the given
+    /// version.
     fn profile_switched_ok(a: &mut App, version: &str) {
         let name = a.pending_profile.clone().expect("a switch must be pending");
+        let id = a.pending_switch.expect("a switch must be pending");
         let profile = ProfileConfig {
             url: "http://x".into(),
             ..Default::default()
         };
         let client = NetBoxClient::new(&profile, None).unwrap();
         a.handle_event(AppEvent::ProfileSwitched {
+            id,
             name,
             result: Ok((client, version.to_string())),
         });
@@ -3496,7 +3540,9 @@ mod tests {
         a.handle_event(press(KeyCode::Char('P')));
         assert_eq!(a.pending_profile.as_deref(), Some("beta"));
         let name = a.pending_profile.clone().unwrap();
+        let id = a.pending_switch.unwrap();
         a.handle_event(AppEvent::ProfileSwitched {
+            id,
             name,
             result: Err(anyhow::anyhow!("connection refused")),
         });
@@ -3664,13 +3710,20 @@ mod tests {
     #[test]
     fn superseded_profile_switch_result_is_dropped() {
         // Cycling twice quickly: the first switch's reconnect returns LAST. It must
-        // be dropped (latest-switch-wins) so it can't overwrite the second one's
-        // client/version with a superseded profile's.
+        // be dropped (latest-switch-wins, by id) so it can't overwrite the second
+        // one's client/version with a superseded profile's.
         let mut a = app_with_profiles(&["alpha", "beta", "gamma"]);
-        a.handle_event(press(KeyCode::Char('P'))); // → beta
+        let beta_id = match a.handle_event(press(KeyCode::Char('P'))).as_slice() {
+            [AppCommand::SwitchProfile { id, name, .. }] if name == "beta" => *id,
+            other => panic!("expected SwitchProfile beta, got {other:?}"),
+        };
         assert_eq!(a.pending_profile.as_deref(), Some("beta"));
-        a.handle_event(press(KeyCode::Char('P'))); // → gamma (supersedes beta)
+        let gamma_id = match a.handle_event(press(KeyCode::Char('P'))).as_slice() {
+            [AppCommand::SwitchProfile { id, name, .. }] if name == "gamma" => *id,
+            other => panic!("expected SwitchProfile gamma, got {other:?}"),
+        };
         assert_eq!(a.pending_profile.as_deref(), Some("gamma"));
+        assert!(gamma_id > beta_id, "the later switch has a higher id");
         assert_eq!(a.pending, 2, "both reconnects are in flight");
 
         // The newer (gamma) switch resolves first and is adopted.
@@ -3683,14 +3736,16 @@ mod tests {
         )
         .unwrap();
         a.handle_event(AppEvent::ProfileSwitched {
+            id: gamma_id,
             name: "gamma".into(),
             result: Ok((client.clone(), "4.9.0".into())),
         });
         assert_eq!(a.netbox_version, "4.9.0");
         assert!(a.pending_profile.is_none());
 
-        // The stale beta switch lands afterwards: dropped, leaving gamma in place.
+        // The stale beta switch lands afterwards: dropped by id, leaving gamma.
         a.handle_event(AppEvent::ProfileSwitched {
+            id: beta_id,
             name: "beta".into(),
             result: Ok((client, "4.4.0".into())),
         });
@@ -3700,6 +3755,180 @@ mod tests {
         );
         assert_eq!(a.profile_name, "gamma");
         assert_eq!(a.pending, 0, "stale switch still settles its fetch");
+    }
+
+    #[test]
+    fn stale_reswitch_to_same_name_is_dropped_by_id() {
+        // The race the id guard exists for: switch to beta, then gamma, then beta
+        // AGAIN. The FIRST beta's reconnect returns LATE — and shares beta's name
+        // with the now-current (second) beta switch. A name-based guard would let
+        // the stale first beta settle the second; the id guard drops it, since its
+        // id is older than the high-water mark. Only the second beta settles.
+        let mut a = app_with_profiles(&["alpha", "beta", "gamma"]);
+
+        // alpha → beta (first beta switch; capture its id for the late delivery).
+        let beta1_id = match a.handle_event(press(KeyCode::Char('P'))).as_slice() {
+            [AppCommand::SwitchProfile { id, name, .. }] if name == "beta" => *id,
+            other => panic!("expected SwitchProfile beta, got {other:?}"),
+        };
+        assert_eq!(a.pending_profile.as_deref(), Some("beta"));
+
+        // beta → gamma (steps forward from the pending target).
+        assert!(matches!(
+            a.handle_event(press(KeyCode::Char('P'))).as_slice(),
+            [AppCommand::SwitchProfile { name, .. }] if name == "gamma"
+        ));
+        assert_eq!(a.pending_profile.as_deref(), Some("gamma"));
+
+        // gamma → beta AGAIN (the second beta switch; this is the current one).
+        // Jump by name via the palette so the target is unambiguously beta,
+        // whatever the cycle direction would land on, and so it rides the same
+        // `handle_event` accounting (bumping the in-flight fetch counter).
+        a.handle_event(press(KeyCode::Char(':')));
+        for c in "profile beta".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        let beta2_id = match a.handle_event(press(KeyCode::Enter)).as_slice() {
+            [AppCommand::SwitchProfile { id, name, .. }] if name == "beta" => *id,
+            other => panic!("expected SwitchProfile beta (again), got {other:?}"),
+        };
+        assert_eq!(a.pending_profile.as_deref(), Some("beta"));
+        assert!(
+            beta2_id > beta1_id,
+            "the re-switch to the same name has a strictly newer id"
+        );
+        assert_eq!(a.pending_switch, Some(beta2_id), "awaiting the second beta");
+        assert_eq!(a.pending, 3, "all three reconnects are in flight");
+
+        // The connected instance is still alpha — nothing has settled yet.
+        assert_eq!(
+            a.profile_name, "alpha",
+            "header still on the connected alpha"
+        );
+        assert_eq!(a.base_url, "http://alpha.example");
+
+        let client = NetBoxClient::new(
+            &ProfileConfig {
+                url: "http://x".into(),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        // The FIRST beta's reconnect lands LATE — same name as the current pending
+        // switch, but an older id. It MUST be dropped: it can neither flip the
+        // header nor clear the still-pending second beta.
+        a.handle_event(AppEvent::ProfileSwitched {
+            id: beta1_id,
+            name: "beta".into(),
+            result: Ok((client.clone(), "4.1.0".into())),
+        });
+        assert_eq!(
+            a.profile_name, "alpha",
+            "a stale same-name reconnect must not flip the header"
+        );
+        assert_eq!(a.base_url, "http://alpha.example");
+        assert_ne!(
+            a.netbox_version, "4.1.0",
+            "stale version must not be adopted"
+        );
+        assert_eq!(
+            a.pending_profile.as_deref(),
+            Some("beta"),
+            "a dropped stale switch must not clear the newer pending state"
+        );
+        assert_eq!(
+            a.pending_switch,
+            Some(beta2_id),
+            "still awaiting second beta"
+        );
+        assert_eq!(
+            a.pending, 2,
+            "the stale reconnect still settles its own fetch"
+        );
+
+        // The SECOND beta (the current switch) settles: now the header flips.
+        a.handle_event(AppEvent::ProfileSwitched {
+            id: beta2_id,
+            name: "beta".into(),
+            result: Ok((client, "4.9.0".into())),
+        });
+        assert_eq!(
+            a.profile_name, "beta",
+            "the current switch settles the header"
+        );
+        assert_eq!(a.profile_index, 1);
+        assert_eq!(a.base_url, "http://beta.example");
+        assert_eq!(a.netbox_version, "4.9.0");
+        assert!(a.pending_profile.is_none(), "the current switch settled");
+        assert!(a.pending_switch.is_none());
+    }
+
+    #[test]
+    fn single_switch_settles_normally_on_ok_and_err() {
+        // A plain single switch still settles correctly on both paths, with the
+        // header-matches-connected-client invariant held throughout.
+        // Ok path: header flips to the target only on success.
+        let mut a = app_with_profiles(&["alpha", "beta"]);
+        let id = match a.handle_event(press(KeyCode::Char('P'))).as_slice() {
+            [AppCommand::SwitchProfile { id, name, .. }] if name == "beta" => *id,
+            other => panic!("expected SwitchProfile beta, got {other:?}"),
+        };
+        // Pending: header still on the connected alpha (invariant holds).
+        assert_eq!(a.profile_name, "alpha");
+        assert_eq!(a.base_url, "http://alpha.example");
+        assert_eq!(a.pending_switch, Some(id));
+        a.handle_event(AppEvent::ProfileSwitched {
+            id,
+            name: "beta".into(),
+            result: Ok((
+                NetBoxClient::new(
+                    &ProfileConfig {
+                        url: "http://x".into(),
+                        ..Default::default()
+                    },
+                    None,
+                )
+                .unwrap(),
+                "4.8.0".into(),
+            )),
+        });
+        assert_eq!(
+            a.profile_name, "beta",
+            "success flips the header to the target"
+        );
+        assert_eq!(
+            a.base_url, "http://beta.example",
+            "header matches new client"
+        );
+        assert_eq!(a.netbox_version, "4.8.0");
+        assert!(a.pending_switch.is_none());
+        assert!(a.pending_profile.is_none());
+
+        // Err path (from the new connected instance, beta): a failed switch leaves
+        // the header on the connected beta — no phantom.
+        let id = match a.handle_event(press(KeyCode::Char('P'))).as_slice() {
+            [AppCommand::SwitchProfile { id, name, .. }] if name == "alpha" => *id,
+            other => panic!("expected SwitchProfile alpha, got {other:?}"),
+        };
+        assert_eq!(
+            a.profile_name, "beta",
+            "header on the connected beta while pending"
+        );
+        a.handle_event(AppEvent::ProfileSwitched {
+            id,
+            name: "alpha".into(),
+            result: Err(anyhow::anyhow!("unreachable")),
+        });
+        assert_eq!(
+            a.profile_name, "beta",
+            "a failed switch leaves the header put"
+        );
+        assert_eq!(a.base_url, "http://beta.example", "no phantom on failure");
+        assert_eq!(a.netbox_version, "4.8.0", "old client intact");
+        assert!(a.pending_switch.is_none(), "the failed switch settled");
+        assert_eq!(a.status_severity, Severity::Error);
     }
 
     #[test]
