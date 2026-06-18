@@ -209,6 +209,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `text_dim`. No keybindings changed; the hint helpers are pure and unit-tested.
 
 ### Fixed
+- The `scripts/install.sh` quick-install script could not install a real release.
+  It mapped Linux hosts to `*-unknown-linux-gnu` triples, but `release.yml` only
+  ships static **musl** archives for Linux x86_64/aarch64 — so the download 404'd
+  (and even when a target did exist, the install step looked for the binary under
+  a `nbox-<target>/` subdir that the bare-binary tarball never contains). The
+  script now maps Linux x86_64→`x86_64-unknown-linux-musl` and
+  aarch64/arm64→`aarch64-unknown-linux-musl` (macOS unchanged), and locates the
+  extracted `nbox` by search rather than a hardcoded path, matching the actual
+  tarball layout (and what the Homebrew formula's `bin.install "nbox"` expects).
+  Unsupported hosts still fall back to `cargo install nbox`.
 - `--no-tui` is now honored. The flag was defined and documented but ignored in
   dispatch, so a bare `nbox --no-tui` still launched the interactive TUI — bad for
   agents/scripts that pass it to guarantee non-interactive behavior. Any invocation

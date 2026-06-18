@@ -14,9 +14,11 @@ detect_target() {
     arch="$(uname -m)"
     case "$os" in
         Linux)
+            # Release ships static musl archives for Linux (portable across
+            # glibc versions); see .github/workflows/release.yml.
             case "$arch" in
-                x86_64|amd64)  echo "x86_64-unknown-linux-gnu" ;;
-                aarch64|arm64) echo "aarch64-unknown-linux-gnu" ;;
+                x86_64|amd64)  echo "x86_64-unknown-linux-musl" ;;
+                aarch64|arm64) echo "aarch64-unknown-linux-musl" ;;
                 *) return 1 ;;
             esac ;;
         Darwin)
@@ -52,8 +54,13 @@ echo "Downloading ${asset} (${tag})..."
 curl -fsSL "$url" -o "$tmp/$asset" || cargo_fallback
 tar xzf "$tmp/$asset" -C "$tmp"
 
+# The release tarball holds a bare `nbox` binary at its root, but locate it by
+# search so we survive either a flat or a subdir layout.
+bin_path="$(find "$tmp" -type f -name "$BIN" -print 2>/dev/null | head -n1)"
+[ -n "${bin_path:-}" ] || err "could not find ${BIN} in ${asset}"
+
 mkdir -p "$INSTALL_DIR"
-install -m 0755 "$tmp/${BIN}-${target}/${BIN}" "$INSTALL_DIR/${BIN}"
+install -m 0755 "$bin_path" "$INSTALL_DIR/${BIN}"
 
 echo "Installed ${BIN} to ${INSTALL_DIR}/${BIN}"
 case ":$PATH:" in
