@@ -48,8 +48,18 @@ pub enum AppEvent {
     /// preview load (see [`App::on_preview_tick`]). Distinct from `Tick`, which
     /// is the optional auto-refresh and may not be running.
     PreviewTick,
-    SearchComplete(anyhow::Result<SearchOutcome>),
-    DetailLoaded(anyhow::Result<DetailView>),
+    /// A full-search result, tagged with the search channel's request id it was
+    /// issued for so a stale (older-id) response can be dropped on arrival.
+    SearchComplete {
+        req: RequestId,
+        result: anyhow::Result<SearchOutcome>,
+    },
+    /// A full-detail load (from Enter / a palette lookup), tagged with the detail
+    /// channel's request id so a stale (older-id) response can be dropped.
+    DetailLoaded {
+        req: RequestId,
+        result: anyhow::Result<DetailView>,
+    },
     /// A preview-pane detail load, tagged with the (kind, id) it was issued for
     /// so a stale response (the selection moved on) can be dropped.
     PreviewLoaded {
@@ -77,13 +87,27 @@ const RECENT_CAP: usize = 20;
 /// detail/preview panes.
 const PAGE_JUMP_FALLBACK: usize = 10;
 
+/// A monotonic per-channel request id, stamped on a spawned full-search or
+/// full-detail command and echoed back on its result event. The pure handler
+/// drops a result whose id is older than the latest spawned for that channel, so
+/// a slow earlier request can't clobber the UI after a newer one (mirrors the
+/// preview path's `(kind, id)` stale-response suppression, scoped per channel).
+pub type RequestId = u64;
+
 /// Side-effecting work the loop should spawn off the render thread.
 #[derive(Debug, Clone)]
 pub enum AppCommand {
-    Search(String),
+    /// A full search. Carries the search channel's request id (stamped at
+    /// dispatch) so a stale `SearchComplete` can be dropped on arrival.
+    Search {
+        query: String,
+        req: RequestId,
+    },
     LoadDetail {
         kind: ObjectKind,
         id: u64,
+        /// The detail channel's request id, for stale-`DetailLoaded` suppression.
+        req: RequestId,
     },
     /// Load the highlighted result's detail into the live preview pane. Carries
     /// its (kind, id) so the response can be matched against the selection it
@@ -95,6 +119,9 @@ pub enum AppCommand {
     LoadByRef {
         kind: ObjectKind,
         value: String,
+        /// The detail channel's request id (shared with `LoadDetail`, since both
+        /// resolve back through `DetailLoaded`), for stale-response suppression.
+        req: RequestId,
     },
     OpenBrowser(String),
     Copy(String),
@@ -109,7 +136,7 @@ impl AppCommand {
     fn is_fetch(&self) -> bool {
         matches!(
             self,
-            AppCommand::Search(_)
+            AppCommand::Search { .. }
                 | AppCommand::LoadDetail { .. }
                 | AppCommand::LoadPreview { .. }
                 | AppCommand::LoadByRef { .. }
@@ -206,6 +233,20 @@ pub struct App {
     /// the pure scroll handler can clamp at the bottom. 0 until the first render.
     pub preview_viewport: u16,
 
+    /// Monotonic request-id source for the full-search and full-detail channels.
+    /// Each spawned `Search`/`LoadDetail`/`LoadByRef` is stamped with the next id
+    /// here (see [`App::stamp_request_ids`]); the latest stamped id per channel is
+    /// kept in [`Self::search_gen`]/[`Self::detail_gen`] so a stale (older-id)
+    /// result event can be dropped, the same way preview loads drop a stale
+    /// `(kind, id)`.
+    pub request_seq: RequestId,
+    /// The latest request id stamped on a spawned full search. A `SearchComplete`
+    /// older than this is from a superseded request and is dropped on arrival.
+    pub search_gen: RequestId,
+    /// The latest request id stamped on a spawned full-detail load (`LoadDetail`
+    /// or `LoadByRef`). A `DetailLoaded` older than this is dropped on arrival.
+    pub detail_gen: RequestId,
+
     /// Count of fetching async commands currently in flight (Search / LoadDetail
     /// / LoadPreview / LoadByRef / refresh). Bumped when such a command is
     /// dispatched, decremented when its matching result event arrives; clamped at
@@ -266,6 +307,9 @@ impl App {
             preview_dirty: false,
             preview_scroll: 0,
             preview_viewport: 0,
+            request_seq: 0,
+            search_gen: 0,
+            detail_gen: 0,
             pending: 0,
             spinner: Spinner::new(),
             should_quit: false,
@@ -288,9 +332,52 @@ impl App {
     /// back are accounted into the in-flight counter (each fetch bumps it) so the
     /// footer spinner runs until the matching result event lands.
     pub fn handle_event(&mut self, event: AppEvent) -> Vec<AppCommand> {
-        let commands = self.dispatch_event(event);
+        let mut commands = self.dispatch_event(event);
+        self.stamp_request_ids(&mut commands);
         self.track_dispatched(&commands);
         commands
+    }
+
+    /// Stamp the about-to-be-spawned full-search / full-detail commands with a
+    /// fresh per-channel request id, recording the newest in
+    /// [`Self::search_gen`]/[`Self::detail_gen`]. Handlers build these commands
+    /// with a placeholder id (0); the single id source lives here so every
+    /// dispatch site is tagged consistently and the latest-wins guard
+    /// ([`Self::is_current_search`]/[`Self::is_current_detail`]) has an
+    /// authoritative high-water mark. Preview loads carry their own `(kind, id)`
+    /// tag and are untouched. Order is preserved within the (rare) multi-fetch
+    /// batch so the last of a kind sets the high-water mark.
+    fn stamp_request_ids(&mut self, commands: &mut [AppCommand]) {
+        for command in commands.iter_mut() {
+            match command {
+                AppCommand::Search { req, .. } => {
+                    self.request_seq += 1;
+                    *req = self.request_seq;
+                    self.search_gen = self.request_seq;
+                }
+                AppCommand::LoadDetail { req, .. } | AppCommand::LoadByRef { req, .. } => {
+                    self.request_seq += 1;
+                    *req = self.request_seq;
+                    self.detail_gen = self.request_seq;
+                }
+                AppCommand::LoadPreview { .. }
+                | AppCommand::OpenBrowser(_)
+                | AppCommand::Copy(_) => {}
+            }
+        }
+    }
+
+    /// True when `req` is the newest full-search request spawned. A
+    /// `SearchComplete` for an older id is from a superseded request and is
+    /// dropped so a slow earlier search can't overwrite newer results.
+    fn is_current_search(&self, req: RequestId) -> bool {
+        req >= self.search_gen
+    }
+
+    /// True when `req` is the newest full-detail request spawned (the
+    /// `LoadDetail`/`LoadByRef` channel). An older `DetailLoaded` is dropped.
+    fn is_current_detail(&self, req: RequestId) -> bool {
+        req >= self.detail_gen
     }
 
     /// The event→commands transition itself. Result events that settle an
@@ -311,9 +398,16 @@ impl App {
                 }
                 self.on_preview_tick()
             }
-            AppEvent::SearchComplete(result) => {
-                // A search result settles its in-flight fetch (clean or error).
+            AppEvent::SearchComplete { req, result } => {
+                // A search result settles its in-flight fetch (clean or error),
+                // counted down even when dropped as stale below — otherwise the
+                // spinner would hang on a superseded request (mirrors the preview
+                // path). Then drop a stale (older-id) response so a slow earlier
+                // search can't clobber newer results.
                 self.end_request();
+                if !self.is_current_search(req) {
+                    return Vec::new();
+                }
                 match result {
                     Ok(outcome) => {
                         if outcome.errors.is_empty() {
@@ -352,9 +446,15 @@ impl App {
                 }
                 Vec::new()
             }
-            AppEvent::DetailLoaded(result) => {
-                // The full-detail load (from Enter / a palette lookup) settled.
+            AppEvent::DetailLoaded { req, result } => {
+                // The full-detail load (from Enter / a palette lookup) settled —
+                // counted down even if dropped as stale, so the spinner can't hang
+                // on a superseded request. A stale (older-id) response is dropped
+                // so a slow earlier load can't navigate over a newer one.
                 self.end_request();
+                if !self.is_current_detail(req) {
+                    return Vec::new();
+                }
                 match result {
                     Ok(view) => {
                         self.record_recent(view.kind, view.id, view.title.clone());
@@ -509,7 +609,7 @@ impl App {
                     && let Some((kind, id)) = self.home_target()
                 {
                     self.set_status("loading…", Severity::Info);
-                    return vec![AppCommand::LoadDetail { kind, id }];
+                    return vec![AppCommand::LoadDetail { kind, id, req: 0 }];
                 }
             }
             KeyCode::Char('o') => {
@@ -540,7 +640,7 @@ impl App {
                 if !query.is_empty() {
                     self.last_query = Some(query.clone());
                     self.set_status(format!("searching {query}…"), Severity::Info);
-                    return vec![AppCommand::Search(query)];
+                    return vec![AppCommand::Search { query, req: 0 }];
                 }
             }
             _ => {
@@ -580,12 +680,16 @@ impl App {
         match cmd {
             PaletteCommand::Lookup { kind, value } => {
                 self.set_status(format!("loading {value}…"), Severity::Info);
-                vec![AppCommand::LoadByRef { kind, value }]
+                vec![AppCommand::LoadByRef {
+                    kind,
+                    value,
+                    req: 0,
+                }]
             }
             PaletteCommand::Search(query) => {
                 self.last_query = Some(query.clone());
                 self.set_status(format!("searching {query}…"), Severity::Info);
-                vec![AppCommand::Search(query)]
+                vec![AppCommand::Search { query, req: 0 }]
             }
             PaletteCommand::Open => match self.selected_result() {
                 Some(r) => vec![AppCommand::OpenBrowser(r.url.clone())],
@@ -608,7 +712,7 @@ impl App {
             PaletteCommand::Refresh => match self.last_query.clone() {
                 Some(query) => {
                     self.set_status(format!("refreshing {query}…"), Severity::Info);
-                    vec![AppCommand::Search(query)]
+                    vec![AppCommand::Search { query, req: 0 }]
                 }
                 None => {
                     self.set_status("nothing to refresh", Severity::Warning);
@@ -717,7 +821,7 @@ impl App {
             && let Some(query) = self.last_query.clone()
         {
             self.pending_reselect = self.selected_result().map(|r| (r.kind, r.id));
-            return vec![AppCommand::Search(query)];
+            return vec![AppCommand::Search { query, req: 0 }];
         }
         Vec::new()
     }
@@ -735,7 +839,7 @@ impl App {
                 Some(d) => {
                     let (kind, id) = (d.kind, d.id);
                     self.set_status("refreshing…", Severity::Info);
-                    vec![AppCommand::LoadDetail { kind, id }]
+                    vec![AppCommand::LoadDetail { kind, id, req: 0 }]
                 }
                 None => Vec::new(),
             },
@@ -743,7 +847,7 @@ impl App {
                 Some(query) => {
                     self.pending_reselect = self.selected_result().map(|r| (r.kind, r.id));
                     self.set_status(format!("refreshing {query}…"), Severity::Info);
-                    vec![AppCommand::Search(query)]
+                    vec![AppCommand::Search { query, req: 0 }]
                 }
                 None => {
                     self.set_status("nothing to refresh", Severity::Warning);
@@ -1245,11 +1349,32 @@ mod tests {
         AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
     }
 
+    /// Deliver a clean search result as if it were the freshest in-flight one:
+    /// tagged with the app's current `search_gen` so the latest-wins guard
+    /// adopts it (whether or not a search was actually dispatched first).
     fn set_results(a: &mut App, items: Vec<SearchResult>) {
-        a.handle_event(AppEvent::SearchComplete(Ok(SearchOutcome {
-            results: items,
-            errors: Vec::new(),
-        })));
+        let req = a.search_gen;
+        a.handle_event(AppEvent::SearchComplete {
+            req,
+            result: Ok(SearchOutcome {
+                results: items,
+                errors: Vec::new(),
+            }),
+        });
+    }
+
+    /// Deliver `result` on the search channel tagged as the current request, so
+    /// it passes the latest-wins guard. For the stale-drop path a test stamps an
+    /// older `req` explicitly.
+    fn search_complete(a: &mut App, result: anyhow::Result<SearchOutcome>) {
+        let req = a.search_gen;
+        a.handle_event(AppEvent::SearchComplete { req, result });
+    }
+
+    /// Deliver a detail load tagged as the current request (passes the guard).
+    fn detail_loaded(a: &mut App, result: anyhow::Result<DetailView>) {
+        let req = a.detail_gen;
+        a.handle_event(AppEvent::DetailLoaded { req, result });
     }
 
     #[test]
@@ -1277,10 +1402,13 @@ mod tests {
         set_results(&mut a, results_n(2));
         assert_eq!(a.status_severity, Severity::Success);
         // A partial result (some endpoints failed) is warning-colored.
-        a.handle_event(AppEvent::SearchComplete(Ok(SearchOutcome {
-            results: vec![result(1, "edge01")],
-            errors: vec!["dcim/devices: 500".into()],
-        })));
+        search_complete(
+            &mut a,
+            Ok(SearchOutcome {
+                results: vec![result(1, "edge01")],
+                errors: vec!["dcim/devices: 500".into()],
+            }),
+        );
         assert_eq!(a.status_severity, Severity::Warning);
         assert!(a.status.contains("partial"));
     }
@@ -1288,13 +1416,9 @@ mod tests {
     #[test]
     fn request_error_sets_error_severity() {
         let mut a = app();
-        a.handle_event(AppEvent::SearchComplete(Err(anyhow::anyhow!(
-            "403 forbidden"
-        ))));
+        search_complete(&mut a, Err(anyhow::anyhow!("403 forbidden")));
         assert_eq!(a.status_severity, Severity::Error);
-        a.handle_event(AppEvent::DetailLoaded(Err(anyhow::anyhow!(
-            "404 not found"
-        ))));
+        detail_loaded(&mut a, Err(anyhow::anyhow!("404 not found")));
         assert_eq!(a.status_severity, Severity::Error);
     }
 
@@ -1319,7 +1443,7 @@ mod tests {
             a.handle_event(press(KeyCode::Char(c)));
         }
         let cmds = a.handle_event(press(KeyCode::Enter));
-        assert!(matches!(cmds.as_slice(), [AppCommand::Search(_)]));
+        assert!(matches!(cmds.as_slice(), [AppCommand::Search { .. }]));
         assert!(a.loading(), "a dispatched search is in flight");
         assert_eq!(a.pending, 1);
         // The matching result clears it.
@@ -1336,7 +1460,7 @@ mod tests {
         let cmds = a.handle_event(press(KeyCode::Enter));
         assert!(matches!(cmds.as_slice(), [AppCommand::LoadDetail { .. }]));
         assert!(a.loading());
-        a.handle_event(AppEvent::DetailLoaded(Ok(preview_view(1, "body"))));
+        detail_loaded(&mut a, Ok(preview_view(1, "body")));
         assert!(!a.loading());
     }
 
@@ -1382,7 +1506,7 @@ mod tests {
         // A result event with nothing in flight must not underflow the counter.
         let mut a = app();
         assert_eq!(a.pending, 0);
-        a.handle_event(AppEvent::DetailLoaded(Err(anyhow::anyhow!("404"))));
+        detail_loaded(&mut a, Err(anyhow::anyhow!("404")));
         assert_eq!(a.pending, 0, "clamped at zero, no underflow");
         assert!(!a.loading());
     }
@@ -1396,7 +1520,7 @@ mod tests {
         a.last_query = Some("edge".into());
         // A refresh tick dispatches a Search (counts as one).
         let refresh = a.handle_event(AppEvent::Tick);
-        assert!(matches!(refresh.as_slice(), [AppCommand::Search(_)]));
+        assert!(matches!(refresh.as_slice(), [AppCommand::Search { .. }]));
         // The debounce flush dispatches a preview load (counts as a second).
         let preview = preview_tick(&mut a);
         assert!(matches!(
@@ -1528,7 +1652,7 @@ mod tests {
         }
         let cmds = a.handle_event(press(KeyCode::Enter));
         assert_eq!(a.mode, Mode::Normal);
-        assert!(matches!(cmds.as_slice(), [AppCommand::Search(q)] if q == "edge01"));
+        assert!(matches!(cmds.as_slice(), [AppCommand::Search { query: q, .. }] if q == "edge01"));
         assert_eq!(a.last_query.as_deref(), Some("edge01"));
     }
 
@@ -1608,7 +1732,7 @@ mod tests {
         a.handle_event(press(KeyCode::Home));
         a.handle_event(press(KeyCode::Char('x'))); // prepend
         let cmds = a.handle_event(press(KeyCode::Enter));
-        assert!(matches!(cmds.as_slice(), [AppCommand::Search(q)] if q == "xedge1"));
+        assert!(matches!(cmds.as_slice(), [AppCommand::Search { query: q, .. }] if q == "xedge1"));
         assert_eq!(a.last_query.as_deref(), Some("xedge1"));
         assert_eq!(a.mode, Mode::Normal);
     }
@@ -1642,7 +1766,7 @@ mod tests {
         let cmds = a.handle_event(press(KeyCode::Enter));
         assert!(matches!(
             cmds.as_slice(),
-            [AppCommand::LoadByRef { kind: ObjectKind::Device, value }] if value == "edge01"
+            [AppCommand::LoadByRef { kind: ObjectKind::Device, value, .. }] if value == "edge01"
         ));
         assert_eq!(a.mode, Mode::Normal);
     }
@@ -1656,17 +1780,21 @@ mod tests {
             cmds.as_slice(),
             [AppCommand::LoadDetail {
                 kind: ObjectKind::Device,
-                id: 1
+                id: 1,
+                ..
             }]
         ));
 
-        a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
-            kind: ObjectKind::Device,
-            id: 1,
-            title: "device edge01".into(),
-            body: "name: edge01".into(),
-            tabs: Vec::new(),
-        })));
+        detail_loaded(
+            &mut a,
+            Ok(DetailView {
+                kind: ObjectKind::Device,
+                id: 1,
+                title: "device edge01".into(),
+                body: "name: edge01".into(),
+                tabs: Vec::new(),
+            }),
+        );
         assert_eq!(a.screen, Screen::Detail);
         // Opening recorded it in recents.
         assert_eq!(a.recent.len(), 1);
@@ -1691,7 +1819,7 @@ mod tests {
             set_results(&mut a, vec![result_of(kind, 7, "thing")]);
             let cmds = a.handle_event(press(KeyCode::Enter));
             match cmds.as_slice() {
-                [AppCommand::LoadDetail { kind: k, id }] => {
+                [AppCommand::LoadDetail { kind: k, id, .. }] => {
                     assert_eq!(*k, kind, "wrong kind dispatched for {kind:?}");
                     assert_eq!(*id, 7);
                 }
@@ -1706,13 +1834,16 @@ mod tests {
         // string the render path paints — non-empty and unaffected by the
         // device-only tab machinery.
         let mut a = app();
-        a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
-            kind: ObjectKind::Asn,
-            id: 3,
-            title: "asn 64500".into(),
-            body: "asn: 64500\nrir: ARIN".into(),
-            tabs: Vec::new(),
-        })));
+        detail_loaded(
+            &mut a,
+            Ok(DetailView {
+                kind: ObjectKind::Asn,
+                id: 3,
+                title: "asn 64500".into(),
+                body: "asn: 64500\nrir: ARIN".into(),
+                tabs: Vec::new(),
+            }),
+        );
         assert_eq!(a.screen, Screen::Detail);
         assert_eq!(a.detail_tab, 0);
         assert_eq!(a.detail_body(), "asn: 64500\nrir: ARIN");
@@ -1728,13 +1859,16 @@ mod tests {
     fn recents_dedup_and_reopen_from_home() {
         let mut a = app();
         let load = |a: &mut App, id, title: &str| {
-            a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
-                kind: ObjectKind::Device,
-                id,
-                title: title.into(),
-                body: String::new(),
-                tabs: Vec::new(),
-            })));
+            detail_loaded(
+                a,
+                Ok(DetailView {
+                    kind: ObjectKind::Device,
+                    id,
+                    title: title.into(),
+                    body: String::new(),
+                    tabs: Vec::new(),
+                }),
+            );
             a.handle_event(press(KeyCode::Char('b')));
         };
         load(&mut a, 1, "device a");
@@ -1763,7 +1897,7 @@ mod tests {
         assert_eq!(a.mode, Mode::Normal);
         assert!(matches!(
             cmds.as_slice(),
-            [AppCommand::LoadByRef { kind: ObjectKind::Device, value }] if value == "edge01"
+            [AppCommand::LoadByRef { kind: ObjectKind::Device, value, .. }] if value == "edge01"
         ));
     }
 
@@ -1861,7 +1995,7 @@ mod tests {
 
         a.last_query = Some("edge".into());
         let cmds = a.handle_event(AppEvent::Tick);
-        assert!(matches!(cmds.as_slice(), [AppCommand::Search(q)] if q == "edge"));
+        assert!(matches!(cmds.as_slice(), [AppCommand::Search { query: q, .. }] if q == "edge"));
 
         // While typing a search, a tick must not fire a refresh.
         a.mode = Mode::Search;
@@ -1892,7 +2026,7 @@ mod tests {
         a.selected = 2; // id = 3
 
         let cmds = a.handle_event(press(KeyCode::Char('r')));
-        assert!(matches!(cmds.as_slice(), [AppCommand::Search(q)] if q == "edge"));
+        assert!(matches!(cmds.as_slice(), [AppCommand::Search { query: q, .. }] if q == "edge"));
         assert!(a.loading(), "refresh is a tracked fetch");
         assert!(a.status.contains("refreshing"));
         // Results return reordered; the cursor still tracks id=3.
@@ -1907,7 +2041,7 @@ mod tests {
         let mut a = app();
         set_results(&mut a, vec![result(7, "edge07")]);
         a.handle_event(press(KeyCode::Enter));
-        a.handle_event(AppEvent::DetailLoaded(Ok(preview_view(7, "body"))));
+        detail_loaded(&mut a, Ok(preview_view(7, "body")));
         assert_eq!(a.screen, Screen::Detail);
 
         let cmds = a.handle_event(press(KeyCode::Char('r')));
@@ -1915,7 +2049,8 @@ mod tests {
             cmds.as_slice(),
             [AppCommand::LoadDetail {
                 kind: ObjectKind::Device,
-                id: 7
+                id: 7,
+                ..
             }]
         ));
         assert!(a.loading(), "a detail reload is a tracked fetch");
@@ -2144,13 +2279,16 @@ mod tests {
             .map(|i| format!("line {i}"))
             .collect::<Vec<_>>()
             .join("\n");
-        a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
-            kind: ObjectKind::Device,
-            id: 1,
-            title: "device edge01".into(),
-            body,
-            tabs: Vec::new(),
-        })));
+        detail_loaded(
+            a,
+            Ok(DetailView {
+                kind: ObjectKind::Device,
+                id: 1,
+                title: "device edge01".into(),
+                body,
+                tabs: Vec::new(),
+            }),
+        );
         a.sync_detail_viewport(viewport);
     }
 
@@ -2251,13 +2389,16 @@ mod tests {
     #[test]
     fn detail_empty_body_is_safe() {
         let mut a = app();
-        a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
-            kind: ObjectKind::Device,
-            id: 1,
-            title: "device edge01".into(),
-            body: String::new(),
-            tabs: Vec::new(),
-        })));
+        detail_loaded(
+            &mut a,
+            Ok(DetailView {
+                kind: ObjectKind::Device,
+                id: 1,
+                title: "device edge01".into(),
+                body: String::new(),
+                tabs: Vec::new(),
+            }),
+        );
         a.sync_detail_viewport(10);
         // Every scroll key is a harmless no-op on an empty body.
         for key in [
@@ -2276,13 +2417,16 @@ mod tests {
         // Before the first render the viewport is 0, so max scroll equals the
         // full content length — but we must never panic or overflow.
         let mut a = app();
-        a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
-            kind: ObjectKind::Device,
-            id: 1,
-            title: "t".into(),
-            body: "a\nb\nc".into(),
-            tabs: Vec::new(),
-        })));
+        detail_loaded(
+            &mut a,
+            Ok(DetailView {
+                kind: ObjectKind::Device,
+                id: 1,
+                title: "t".into(),
+                body: "a\nb\nc".into(),
+                tabs: Vec::new(),
+            }),
+        );
         assert_eq!(a.detail_viewport, 0);
         for _ in 0..10 {
             a.handle_event(press(KeyCode::Char('j')));
@@ -2299,13 +2443,16 @@ mod tests {
         assert_eq!(a.detail_scroll, 40);
 
         // Opening a different object resets the offset to the top.
-        a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
-            kind: ObjectKind::Device,
-            id: 2,
-            title: "device edge02".into(),
-            body: "fresh".into(),
-            tabs: Vec::new(),
-        })));
+        detail_loaded(
+            &mut a,
+            Ok(DetailView {
+                kind: ObjectKind::Device,
+                id: 2,
+                title: "device edge02".into(),
+                body: "fresh".into(),
+                tabs: Vec::new(),
+            }),
+        );
         assert_eq!(a.detail_scroll, 0);
     }
 
@@ -2319,17 +2466,20 @@ mod tests {
                 .join("\n")
         };
         let mut a = app();
-        a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
-            kind: ObjectKind::Device,
-            id: 1,
-            title: "device edge01".into(),
-            body: long("summary"),
-            tabs: vec![DetailTab {
-                key: 'i',
-                label: "interfaces".into(),
-                body: long("iface"),
-            }],
-        })));
+        detail_loaded(
+            &mut a,
+            Ok(DetailView {
+                kind: ObjectKind::Device,
+                id: 1,
+                title: "device edge01".into(),
+                body: long("summary"),
+                tabs: vec![DetailTab {
+                    key: 'i',
+                    label: "interfaces".into(),
+                    body: long("iface"),
+                }],
+            }),
+        );
         a.sync_detail_viewport(10);
         a.handle_event(press(KeyCode::Char('G')));
         assert!(a.detail_scroll > 0);
@@ -2352,20 +2502,23 @@ mod tests {
     fn detail_scroll_keys_do_not_collide_with_device_tab_keys() {
         use crate::domain::detail::DetailTab;
         let mut a = app();
-        a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
-            kind: ObjectKind::Device,
-            id: 1,
-            title: "device edge01".into(),
-            body: (0..40)
-                .map(|i| format!("s {i}"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            tabs: vec![DetailTab {
-                key: 'i',
-                label: "interfaces".into(),
-                body: "iface body".into(),
-            }],
-        })));
+        detail_loaded(
+            &mut a,
+            Ok(DetailView {
+                kind: ObjectKind::Device,
+                id: 1,
+                title: "device edge01".into(),
+                body: (0..40)
+                    .map(|i| format!("s {i}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                tabs: vec![DetailTab {
+                    key: 'i',
+                    label: "interfaces".into(),
+                    body: "iface body".into(),
+                }],
+            }),
+        );
         a.sync_detail_viewport(10);
         // The tab key still switches tabs (and resets scroll)…
         a.handle_event(press(KeyCode::Char('i')));
@@ -2399,13 +2552,16 @@ mod tests {
             body: format!("{label} body"),
         };
         let mut a = app();
-        a.handle_event(AppEvent::DetailLoaded(Ok(DetailView {
-            kind: ObjectKind::Device,
-            id: 1,
-            title: "device edge01".into(),
-            body: "summary".into(),
-            tabs: vec![tab('i', "interfaces"), tab('p', "ips"), tab('v', "vlans")],
-        })));
+        detail_loaded(
+            &mut a,
+            Ok(DetailView {
+                kind: ObjectKind::Device,
+                id: 1,
+                title: "device edge01".into(),
+                body: "summary".into(),
+                tabs: vec![tab('i', "interfaces"), tab('p', "ips"), tab('v', "vlans")],
+            }),
+        );
         assert_eq!(a.screen, Screen::Detail);
         assert_eq!(a.detail_tab, 0);
         assert_eq!(a.detail_body(), "summary");
@@ -2618,9 +2774,193 @@ mod tests {
         // A pending dirty flag must not fire a preview fetch while reading detail.
         let mut a = app();
         set_results(&mut a, results_n(3));
-        a.handle_event(AppEvent::DetailLoaded(Ok(preview_view(1, "detail"))));
+        detail_loaded(&mut a, Ok(preview_view(1, "detail")));
         assert_eq!(a.screen, Screen::Detail);
         a.mark_preview_dirty_for_test();
         assert!(preview_tick(&mut a).is_empty());
+    }
+
+    // --- Bug B: stale full-search / full-detail response suppression ----------
+
+    /// Dispatch a search through the real key path so a request id is stamped,
+    /// returning that id (the newest spawned on the search channel).
+    fn dispatch_search(a: &mut App, query: &str) -> RequestId {
+        a.handle_event(press(KeyCode::Char('/')));
+        for c in query.chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        match cmds.as_slice() {
+            [AppCommand::Search { req, .. }] => *req,
+            other => panic!("expected a Search command, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn stale_search_complete_is_dropped_newest_wins() {
+        // Two searches are spawned; the EARLIER one's result lands LAST. The
+        // guard must drop it so the newer search's results aren't clobbered.
+        let mut a = app();
+        let first = dispatch_search(&mut a, "alpha");
+        let second = dispatch_search(&mut a, "beta");
+        assert!(second > first, "ids are monotonic per channel");
+        assert_eq!(a.pending, 2, "both searches are in flight");
+
+        // The NEWER search resolves first and is adopted.
+        a.handle_event(AppEvent::SearchComplete {
+            req: second,
+            result: Ok(SearchOutcome {
+                results: vec![result(2, "beta-hit")],
+                errors: Vec::new(),
+            }),
+        });
+        assert_eq!(a.selected_result().map(|r| r.id), Some(2));
+        assert_eq!(a.pending, 1, "the second search settled");
+
+        // The STALE earlier search lands afterwards: it must be dropped, leaving
+        // the newer results in place — but still counted down (no hung spinner).
+        a.handle_event(AppEvent::SearchComplete {
+            req: first,
+            result: Ok(SearchOutcome {
+                results: vec![result(1, "alpha-hit")],
+                errors: Vec::new(),
+            }),
+        });
+        assert_eq!(
+            a.selected_result().map(|r| r.id),
+            Some(2),
+            "stale search must not overwrite the newer results"
+        );
+        assert_eq!(a.pending, 0, "stale result still settles its fetch");
+        assert!(!a.loading());
+    }
+
+    #[test]
+    fn stale_detail_loaded_is_dropped_newest_wins() {
+        // Two detail loads are spawned (Enter on two different rows); the EARLIER
+        // one's result lands LAST and must not navigate over the newer object.
+        let mut a = app();
+        set_results(&mut a, vec![result(10, "ten"), result(20, "twenty")]);
+
+        // Enter on row 0 (id 10) → first detail request.
+        let first = match a.handle_event(press(KeyCode::Enter)).as_slice() {
+            [AppCommand::LoadDetail { id: 10, req, .. }] => *req,
+            other => panic!("expected LoadDetail for id 10, got {other:?}"),
+        };
+        // Go back, move to row 1 (id 20), Enter → second (newer) detail request.
+        a.handle_event(press(KeyCode::Char('b')));
+        a.handle_event(press(KeyCode::Char('j')));
+        let second = match a.handle_event(press(KeyCode::Enter)).as_slice() {
+            [AppCommand::LoadDetail { id: 20, req, .. }] => *req,
+            other => panic!("expected LoadDetail for id 20, got {other:?}"),
+        };
+        assert!(second > first);
+        assert_eq!(a.pending, 2);
+
+        // The newer load (id 20) resolves first and is shown.
+        a.handle_event(AppEvent::DetailLoaded {
+            req: second,
+            result: Ok(preview_view(20, "twenty body")),
+        });
+        assert_eq!(a.detail.as_ref().map(|d| d.id), Some(20));
+
+        // The stale earlier load (id 10) lands afterwards: dropped, so it does not
+        // navigate/overwrite the newer detail — but still counted down.
+        a.handle_event(AppEvent::DetailLoaded {
+            req: first,
+            result: Ok(preview_view(10, "ten body")),
+        });
+        assert_eq!(
+            a.detail.as_ref().map(|d| d.id),
+            Some(20),
+            "stale detail must not overwrite the newer object"
+        );
+        assert_eq!(a.pending, 0);
+        assert!(!a.loading());
+    }
+
+    #[test]
+    fn detail_and_search_channels_are_independent() {
+        // The detail guard must not drop a search result (and vice versa): the two
+        // channels keep separate high-water marks even off one monotonic source.
+        let mut a = app();
+        set_results(&mut a, vec![result(5, "five")]);
+        // Spawn a detail load (bumps detail_gen, not search_gen).
+        let detail_req = match a.handle_event(press(KeyCode::Enter)).as_slice() {
+            [AppCommand::LoadDetail { req, .. }] => *req,
+            other => panic!("expected LoadDetail, got {other:?}"),
+        };
+        // A fresh search result (current on the search channel) is still adopted
+        // even though detail_gen is now higher than search_gen.
+        search_complete(
+            &mut a,
+            Ok(SearchOutcome {
+                results: vec![result(6, "six")],
+                errors: Vec::new(),
+            }),
+        );
+        assert_eq!(a.selected_result().map(|r| r.id), Some(6));
+        // And the detail load resolves on its own channel.
+        a.handle_event(AppEvent::DetailLoaded {
+            req: detail_req,
+            result: Ok(preview_view(5, "five body")),
+        });
+        assert_eq!(a.detail.as_ref().map(|d| d.id), Some(5));
+    }
+
+    #[test]
+    fn refresh_then_stale_prior_search_keeps_refreshed_results() {
+        // The recents/refresh path also rides the guard: a manual refresh (`r`)
+        // spawns a newer search; a slow result from before the refresh is dropped.
+        let mut a = app();
+        set_results(&mut a, vec![result(1, "a"), result(2, "b")]);
+        a.last_query = Some("edge".into());
+        // Pretend a search was in flight before the refresh.
+        let stale = a.search_gen; // current high-water; the refresh will exceed it
+        // Manual refresh dispatches a newer search (bumps search_gen).
+        let cmds = a.handle_event(press(KeyCode::Char('r')));
+        assert!(matches!(cmds.as_slice(), [AppCommand::Search { .. }]));
+        assert!(a.search_gen > stale);
+        // The refreshed results land and are adopted.
+        set_results(&mut a, vec![result(3, "fresh")]);
+        assert_eq!(a.selected_result().map(|r| r.id), Some(3));
+        // A straggler search from before the refresh is dropped.
+        a.handle_event(AppEvent::SearchComplete {
+            req: stale,
+            result: Ok(SearchOutcome {
+                results: vec![result(99, "straggler")],
+                errors: Vec::new(),
+            }),
+        });
+        assert_eq!(
+            a.selected_result().map(|r| r.id),
+            Some(3),
+            "a pre-refresh straggler must not clobber the refreshed results"
+        );
+    }
+
+    // --- Bug A: ambiguous palette IP lookup surfaces as an error -------------
+
+    #[test]
+    fn ambiguous_detail_error_surfaces_as_error_status() {
+        // The palette IP path resolves through the ambiguity-aware resolver; an
+        // ambiguous ref returns a typed Ambiguous error on DetailLoaded, which the
+        // TUI must surface as an error status (the same path a NotFound takes),
+        // never silently navigating to a guessed object.
+        let mut a = app();
+        let ambiguous = anyhow::Error::from(crate::error::NboxError::Ambiguous {
+            noun: "IP address".into(),
+            value: "10.0.0.1".into(),
+            matches: "10.0.0.1/24 (vrf-a), 10.0.0.1/24 (vrf-b)".into(),
+        });
+        detail_loaded(&mut a, Err(ambiguous));
+        assert_eq!(
+            a.screen,
+            Screen::Home,
+            "ambiguity must not navigate to detail"
+        );
+        assert!(a.detail.is_none(), "no object is adopted on ambiguity");
+        assert_eq!(a.status_severity, Severity::Error);
+        assert!(a.status.contains("ambiguous"));
     }
 }

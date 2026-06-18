@@ -607,6 +607,14 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
     Ok(DetailView::new(kind, id, title, body).with_tabs(tabs))
 }
 
+/// A `not_found` closure for the TUI palette path: a typed
+/// [`NboxError::NotFound`], so an empty candidate set reads the same way an
+/// ambiguous one does (an error status), mirroring the CLI/MCP `not_found`
+/// shape. Used by the ambiguity-aware IP resolution in [`load_detail_by_ref`].
+fn tui_not_found(noun: &str, value: &str) -> anyhow::Error {
+    NboxError::NotFound(format!("no {noun} matched \"{value}\"")).into()
+}
+
 /// Load and render a detail by user reference (name/slug/cidr/vid/address),
 /// used by the command palette.
 pub async fn load_detail_by_ref(
@@ -636,12 +644,20 @@ pub async fn load_detail_by_ref(
             (id, format!("site {}", v.name), v.to_key_values().render())
         }
         ObjectKind::IpAddress => {
-            let ip = client
-                .ip_candidates(value)
-                .await?
-                .into_iter()
-                .next()
-                .with_context(|| format!("no IP address matched \"{value}\""))?;
+            // Route through the SAME ambiguity-aware resolver the CLI/MCP use
+            // (see `ip_view_by_ref`): a bare `into_iter().next()` would silently
+            // pick the first of several overlapping IPs (e.g. the same address in
+            // different VRFs) and show the WRONG object. With no VRF scope to
+            // narrow it, more than one candidate is `Ambiguous`, which surfaces in
+            // the TUI as an error status (the same way a NotFound load does).
+            let candidates = client.ip_candidates(value).await?;
+            let ip = resolve_unique(
+                "IP address",
+                value,
+                candidates,
+                query::ip_scope_label,
+                &tui_not_found,
+            )?;
             let id = ip.id;
             let host = ip
                 .address
@@ -786,4 +802,99 @@ pub async fn load_detail_by_ref(
         }
     };
     Ok(DetailView::new(kind, id, title, body).with_tabs(tabs))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::netbox::models::ipam::IpAddress;
+    use crate::netbox::query;
+
+    fn ip(id: u64, address: &str, vrf: Option<&str>) -> IpAddress {
+        IpAddress {
+            id,
+            url: format!("http://nb/ipam/ip-addresses/{id}/"),
+            address: address.to_string(),
+            status: None,
+            role: None,
+            vrf: vrf.map(|name| BriefObject {
+                id: id + 100,
+                url: None,
+                display: Some(name.to_string()),
+                name: Some(name.to_string()),
+                slug: None,
+            }),
+            tenant: None,
+            assigned_object_type: None,
+            assigned_object_id: None,
+            assigned_object: None,
+            dns_name: None,
+            description: None,
+            tags: Vec::new(),
+            custom_fields: serde_json::Value::Null,
+        }
+    }
+
+    /// Bug A: the TUI/palette IP lookup must route through the same
+    /// ambiguity-aware resolver the CLI/MCP use — never silently pick the first
+    /// of several overlapping candidates. This exercises the exact resolution the
+    /// `IpAddress` arm of `load_detail_by_ref` now performs.
+    #[test]
+    fn palette_ip_resolution_surfaces_ambiguity_not_first_candidate() {
+        // Same address present in two VRFs (no scope to narrow it): ambiguous.
+        let candidates = vec![
+            ip(1, "10.0.0.1/24", Some("vrf-a")),
+            ip(2, "10.0.0.1/24", Some("vrf-b")),
+        ];
+        let err = resolve_unique(
+            "IP address",
+            "10.0.0.1",
+            candidates,
+            query::ip_scope_label,
+            &tui_not_found,
+        )
+        .expect_err("overlapping IPs must be ambiguous, not silently the first");
+        // The ambiguity is surfaced as the typed error (the TUI renders this as an
+        // error status), and it is NOT the silent first-candidate behavior.
+        match err.downcast_ref::<NboxError>() {
+            Some(NboxError::Ambiguous { noun, value, .. }) => {
+                assert_eq!(noun, "IP address");
+                assert_eq!(value, "10.0.0.1");
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
+    }
+
+    /// And the unambiguous case still resolves to the one candidate unchanged.
+    #[test]
+    fn palette_ip_resolution_unambiguous_resolves() {
+        let candidates = vec![ip(7, "10.0.0.1/24", Some("vrf-a"))];
+        let resolved = resolve_unique(
+            "IP address",
+            "10.0.0.1",
+            candidates,
+            query::ip_scope_label,
+            &tui_not_found,
+        )
+        .expect("a single candidate resolves");
+        assert_eq!(resolved.id, 7);
+    }
+
+    /// An empty candidate set is a typed NotFound (so the TUI surfaces it the same
+    /// way as an ambiguous one — an error status), via the `tui_not_found` shape.
+    #[test]
+    fn palette_ip_resolution_empty_is_not_found() {
+        let err = resolve_unique(
+            "IP address",
+            "10.0.0.99",
+            Vec::<IpAddress>::new(),
+            query::ip_scope_label,
+            &tui_not_found,
+        )
+        .expect_err("no candidates → not found");
+        assert!(matches!(
+            err.downcast_ref::<NboxError>(),
+            Some(NboxError::NotFound(_))
+        ));
+    }
 }

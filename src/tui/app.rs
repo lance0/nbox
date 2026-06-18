@@ -57,7 +57,7 @@ async fn event_loop(
 
 fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent>) {
     match command {
-        AppCommand::Search(query) => {
+        AppCommand::Search { query, req } => {
             tokio::spawn(async move {
                 let result = client
                     .search(SearchRequest {
@@ -66,13 +66,15 @@ fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent
                         filters: SearchFilters::default(),
                     })
                     .await;
-                let _ = tx.send(AppEvent::SearchComplete(result)).await;
+                // Echo the request id back so a stale (superseded) search result
+                // is dropped by the pure handler.
+                let _ = tx.send(AppEvent::SearchComplete { req, result }).await;
             });
         }
-        AppCommand::LoadDetail { kind, id } => {
+        AppCommand::LoadDetail { kind, id, req } => {
             tokio::spawn(async move {
                 let result = load_detail(&client, kind, id).await;
-                let _ = tx.send(AppEvent::DetailLoaded(result)).await;
+                let _ = tx.send(AppEvent::DetailLoaded { req, result }).await;
             });
         }
         AppCommand::LoadPreview { kind, id } => {
@@ -83,10 +85,10 @@ fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent
                 let _ = tx.send(AppEvent::PreviewLoaded { kind, id, result }).await;
             });
         }
-        AppCommand::LoadByRef { kind, value } => {
+        AppCommand::LoadByRef { kind, value, req } => {
             tokio::spawn(async move {
                 let result = load_detail_by_ref(&client, kind, &value).await;
-                let _ = tx.send(AppEvent::DetailLoaded(result)).await;
+                let _ = tx.send(AppEvent::DetailLoaded { req, result }).await;
             });
         }
         AppCommand::OpenBrowser(url) => {

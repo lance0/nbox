@@ -154,6 +154,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Help wrapper was dropped; the layout helpers are pure and unit-tested.
 
 ### Fixed
+- TUI command palette `ip <address>` lookups now route through the same
+  ambiguity-aware resolver the CLI/MCP use. The palette path took the first of
+  `ip_candidates()`, so an address present in more than one VRF would silently
+  open the wrong object. An ambiguous (or not-found) reference now surfaces as an
+  error status instead, leaving the home screen in place; the unambiguous case is
+  unchanged.
+- TUI: a slow earlier search or detail load could land after a newer one and
+  clobber the screen (untagged `SearchComplete`/`DetailLoaded` events). Each
+  spawned full search/detail request now carries a monotonic per-channel request
+  id (the same idea as the preview pane's `(kind, id)` tag); a result whose id is
+  older than the latest spawned for its channel is dropped on arrival, so only the
+  newest applies. Navigation, manual/auto refresh, and the recents path all ride
+  the guard.
 - `nbox prefix <cidr> --vrf <ref>` now scopes its child-prefix and contained-IP
   sections to the resolved prefix's VRF. The prefix itself was VRF-aware, but its
   children (`within`) and member IPs (`parent`) were filtered by CIDR only, so a
