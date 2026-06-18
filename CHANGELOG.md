@@ -171,6 +171,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (ttl/xfr style), replacing the old full-screen Help screen. `?`/`F1` toggle it;
   any key or `Esc` closes it (consumed — no underlying action fires). The `cheese`
   Help wrapper was dropped; the layout helpers are pure and unit-tested.
+- TUI scroll/position indicators in pane titles. The results list now shows a
+  `selected/len` row counter in its title corner (e.g. ` 3/47 `), and the detail
+  and preview panes show a scroll-position percentage (e.g. ` 50% `) whenever
+  their body overflows the pane — so a long view reads as scrollable rather than
+  silently clipped. The indicators only appear when there's something to scroll
+  (a list with rows / a body taller than the pane) and are dimmed via the theme's
+  `text_dim`. No keybindings changed; the hint helpers are pure and unit-tested.
 
 ### Fixed
 - `--no-tui` is now honored. The flag was defined and documented but ignored in

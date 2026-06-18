@@ -15,6 +15,36 @@ use crate::tui::theme::Theme;
 const KIND_COL: u16 = 8;
 const SITE_COL: u16 = 14;
 
+/// A compact scroll-position hint for a scrollable pane's title, e.g. `" 23% "`,
+/// or `None` when all the content fits (nothing scrolls, so no hint is shown).
+///
+/// `offset` is the first visible line, `content` the total line count, `viewport`
+/// the visible rows. The percentage is the offset's progress through the
+/// scrollable span (`content - viewport`): `0%` pinned to the top, `100%` once
+/// the last line is at the bottom. Pure (no widgets), so it's unit-testable.
+fn scroll_hint(offset: u16, content: usize, viewport: u16) -> Option<String> {
+    let content = content as u16;
+    let span = content.saturating_sub(viewport);
+    // Everything fits (or the viewport isn't known yet): nothing to scroll.
+    if span == 0 || viewport == 0 {
+        return None;
+    }
+    let offset = offset.min(span);
+    // Round to the nearest percent so the bottom reads a clean 100%.
+    let pct = (u32::from(offset) * 100 + u32::from(span) / 2) / u32::from(span);
+    Some(format!(" {pct}% "))
+}
+
+/// A compact row-position hint for the results list's title, e.g. `" 3/47 "`, or
+/// `None` for an empty list. `selected` is 0-based; the hint is 1-based so it
+/// reads naturally ("row 3 of 47"). Pure and unit-testable.
+fn list_position(selected: usize, len: usize) -> Option<String> {
+    if len == 0 {
+        return None;
+    }
+    Some(format!(" {}/{len} ", selected.min(len - 1) + 1))
+}
+
 /// Render the whole UI for the current frame.
 pub fn render(frame: &mut Frame, app: &mut App) {
     let areas = Layout::vertical([
@@ -89,12 +119,20 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let theme = &app.theme;
     let border = pane_border(theme, app.focus == Focus::List);
 
+    // A row-position hint (`selected/len`) for the title corner, so a long list
+    // reads as "row 3 of 47" rather than an unbounded scroll. Computed once from
+    // the active list length; absent for an empty list.
+    let position = list_position(app.selected, app.home_len());
+
     // With search results, show them. Otherwise fall back to recents, then a hint.
     if !app.view.is_empty() {
-        let block = Block::default()
+        let mut block = Block::default()
             .borders(Borders::ALL)
             .title(" Results ")
             .border_style(border);
+        if let Some(pos) = position {
+            block = block.title(Line::from(pos).right_aligned().style(theme.text_dim));
+        }
         let rows: Vec<Row> = app
             .view
             .iter()
@@ -107,10 +145,13 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
     }
 
     if !app.recent.is_empty() {
-        let block = Block::default()
+        let mut block = Block::default()
             .borders(Borders::ALL)
             .title(" Recent ")
             .border_style(border);
+        if let Some(pos) = position {
+            block = block.title(Line::from(pos).right_aligned().style(theme.text_dim));
+        }
         // Recents carry only a kind and a title; the SITE column is empty.
         let rows: Vec<Row> = app
             .recent
@@ -150,10 +191,18 @@ fn render_home_preview(frame: &mut Frame, area: Rect, app: &mut App) {
     let theme = &app.theme;
     let border = pane_border(theme, app.focus == Focus::Preview);
     let title = app.preview_title();
-    let block = Block::default()
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {title} "))
         .border_style(border);
+    // Same scroll-position hint as the detail pane when the peek overflows.
+    if let Some(hint) = scroll_hint(
+        app.preview_scroll,
+        app.preview_content_lines(),
+        inner_height,
+    ) {
+        block = block.title(Line::from(hint).right_aligned().style(theme.text_dim));
+    }
 
     let body = app.preview_body();
     let lines = body_lines(&body, theme);
@@ -437,10 +486,15 @@ fn render_detail(frame: &mut Frame, area: Rect, app: &mut App) {
     };
     // The detail screen is the active view, so it wears the focused-border color
     // — the same focused/normal convention the home panes use (see `pane_border`).
-    let block = Block::default()
+    let mut block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {title} "))
         .border_style(pane_border(theme, true));
+    // A scroll-position hint in the title corner when the body overflows, so a
+    // long detail reads as scrollable rather than silently clipped.
+    if let Some(hint) = scroll_hint(app.detail_scroll, app.detail_content_lines(), inner_height) {
+        block = block.title(Line::from(hint).right_aligned().style(theme.text_dim));
+    }
 
     let mut lines: Vec<Line> = Vec::new();
     if let Some(d) = &app.detail
@@ -789,6 +843,39 @@ mod tests {
                 "help must not advertise unbound key {bogus}"
             );
         }
+    }
+
+    #[test]
+    fn scroll_hint_is_absent_when_content_fits() {
+        // Content shorter than (or equal to) the viewport doesn't scroll, so no
+        // hint is shown — the pane title stays bare.
+        assert_eq!(scroll_hint(0, 5, 20), None);
+        assert_eq!(scroll_hint(0, 20, 20), None);
+        // An unknown viewport (pre-first-render) shows nothing either.
+        assert_eq!(scroll_hint(0, 100, 0), None);
+    }
+
+    #[test]
+    fn scroll_hint_reports_progress_through_the_scroll_span() {
+        // 30 lines in a 10-row pane → a scroll span of 20. Top = 0%, the middle
+        // of the span rounds to ~50%, and the bottom is a clean 100%.
+        assert_eq!(scroll_hint(0, 30, 10).as_deref(), Some(" 0% "));
+        assert_eq!(scroll_hint(10, 30, 10).as_deref(), Some(" 50% "));
+        assert_eq!(scroll_hint(20, 30, 10).as_deref(), Some(" 100% "));
+        // An offset past the span (a stale value) still reads a clean 100%.
+        assert_eq!(scroll_hint(99, 30, 10).as_deref(), Some(" 100% "));
+    }
+
+    #[test]
+    fn list_position_is_one_based_and_absent_when_empty() {
+        // An empty list shows no row counter.
+        assert_eq!(list_position(0, 0), None);
+        // Otherwise it's a 1-based "row/len" pair.
+        assert_eq!(list_position(0, 47).as_deref(), Some(" 1/47 "));
+        assert_eq!(list_position(2, 47).as_deref(), Some(" 3/47 "));
+        assert_eq!(list_position(46, 47).as_deref(), Some(" 47/47 "));
+        // A stale selection past the end is clamped to the last row.
+        assert_eq!(list_position(99, 47).as_deref(), Some(" 47/47 "));
     }
 
     #[test]

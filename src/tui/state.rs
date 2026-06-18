@@ -1325,7 +1325,8 @@ impl App {
     }
 
     /// Length of the active home list: search results, or recents when empty.
-    fn home_len(&self) -> usize {
+    /// Public so the render path can show a `selected/len` row-position hint.
+    pub fn home_len(&self) -> usize {
         if self.results.is_empty() {
             self.recent.len()
         } else {
