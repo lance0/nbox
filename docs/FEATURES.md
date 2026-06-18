@@ -96,8 +96,10 @@ feature, on by default; `--no-default-features` for stdio-only):
 `/mcp`, loopback only with `Origin`/`Host` validation. Add `--oidc-issuer` +
 `--audience` for OAuth 2.1 resource-server mode (inbound IdP JWT validation,
 Protected Resource Metadata, routable bind allowed) — accountability, not per-user
-RBAC. See [docs/MCP.md](MCP.md). Per-user NetBox identity bridging, a raw
-escape-hatch tool, and MCP resources/prompts are later.
+RBAC. See [docs/MCP.md](MCP.md). The same objects are also exposed as MCP
+**resources** via one `nbox://{kind}/{ref}` template (the view `nbox_get`
+returns). Per-user NetBox identity bridging, a raw escape-hatch tool, and MCP
+prompts are later.
 
 ## Robustness
 

@@ -14,17 +14,21 @@ claim them; `tags`/`journal` are list-only.
 
 ---
 
-### Structured search filters aren't VRF/scope-aware
+### Search scope/VRF filters are exact, not hierarchical
 
-**Issue:** `nbox search --status/--site/--tenant/--role/--tag` map to NetBox query
-params, but `search` does not take `--vrf`. Only the exact lookups (`nbox ip`,
-`nbox prefix`, `nbox vlan`) accept scope flags (`--vrf`, `--site`, `--group`).
+**Issue:** `nbox search` takes `--vrf` (resolves id/RD/name, filters IP/prefix by
+`vrf_id=`) and the scope flags `--site/--region/--site-group/--location` (resolve
+the ref once, filter prefixes by `scope_type`+`scope_id`). The scope match is
+**exact**: `--region` filters by that region's own scope only — it does not pull
+in prefixes scoped to sites *inside* the region. At most one scope flag may be set
+at a time.
 
-**Impact:** In a VRF-heavy instance, `search` can return overlapping addresses
-across VRFs with no way to narrow by VRF from `search`.
+**Impact:** A hierarchical question ("everything under region X") needs more than
+one query, or an id-based filter on an endpoint that supports it.
 
-**Mitigation:** Use the exact lookup with `--vrf`, or `nbox raw GET` with explicit
-params. A server-side `--vrf` filter on `search`/list is planned for v0.3.
+**Mitigation:** Filter at the level the object is scoped, combine with `--vrf`, or
+use `nbox raw GET` with explicit params. Descendant/hierarchy expansion is not
+implemented.
 
 ---
 

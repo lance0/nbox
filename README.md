@@ -41,9 +41,9 @@ See [Installation](#installation) below for setup instructions.
 
 ## Features
 
-- **Fast shell lookups** — `device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `circuit`, `aggregate`, `asn`, `ip-range`, and `interface`, each as a one-liner.
-- **Agent-ready** — `nbox serve` is a read-only MCP server: the same lookups exposed as eight tools, returning the exact JSON view models the CLI does, so AI agents (Claude Code, Claude Desktop, …) query NetBox safely. Stdio for a local subprocess, or a loopback HTTP transport — with OIDC resource-server auth for a network-reachable, read-only deployment. See [docs/MCP.md](docs/MCP.md).
-- **Normalized search** — one `search` query runs in parallel across devices, sites, IPs, prefixes, VLANs, circuits, aggregates, ASNs, and IP ranges and returns ranked, deduped hits.
+- **Fast shell lookups** — `device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `circuit`, `provider`, `aggregate`, `asn`, `ip-range`, `tenant`, `contact`, `vm`, `cluster`, and `interface`, each as a one-liner.
+- **Agent-ready** — `nbox serve` is a read-only MCP server: the same lookups exposed as eight tools (plus the objects as `nbox://{kind}/{ref}` resources), returning the exact JSON view models the CLI does, so AI agents (Claude Code, Claude Desktop, …) query NetBox safely. Stdio for a local subprocess, or a loopback HTTP transport — with OIDC resource-server auth for a network-reachable, read-only deployment. See [docs/MCP.md](docs/MCP.md).
+- **Normalized search** — one `search` query runs in parallel across devices, sites, IPs, prefixes, VLANs, circuits, providers, aggregates, ASNs, IP ranges, tenants, contacts, VMs, and clusters and returns ranked, deduped hits.
 - **IPAM-aware** — IP → most-specific parent prefix → VLAN → scope resolution, prefix utilization and children, `next-ip` / `next-prefix` for available addresses and free blocks (computed locally with `ipnet`).
 - **Polymorphic scope** — `--site`/`--region`/`--site-group`/`--location` on `search` resolve the reference once and filter prefixes by NetBox 4.2's `scope_type` + `scope_id` (exact scope, one flag at a time); views expose `scope`/`scope_type` (site, location, region, site-group, …).
 - **Interactive TUI** — list/preview split, scrolling, command palette, recents, twelve themes (including a light theme), `NO_COLOR` honored.
@@ -228,17 +228,23 @@ nbox vlan <vid-or-name> [--site <s>] [--group <g>] [--journal]
 nbox site <name-or-slug> [--journal]
 nbox rack <name-or-id> [--journal]
 nbox circuit <cid-or-id> [--journal]
+nbox provider <slug-or-name-or-id>
 nbox aggregate <cidr-or-id> [--journal]
 nbox asn <number> [--journal]
 nbox ip-range <start-or-id> [--journal]
+nbox tenant <slug-or-name-or-id>
+nbox contact <name-or-id>
+nbox vm <name-or-id>
+nbox cluster <name-or-id>
 nbox interface <device> <interface>
 nbox tags                         # list tags (slug, name, count)
 nbox journal <kind> <ref>         # recent journal entries for an object
                                   # --journal folds recent entries into a detail lookup (cap 5)
                                   # --journal-limit N overrides the cap (implies --journal)
-nbox open <kind>/<ref>            # device, ip, prefix, vlan, site, rack, circuit, aggregate, asn,
-                                  # ip-range, and interface/<device>/<name> (the name may contain
-                                  # slashes, e.g. xe-0/0/1)
+nbox open <kind>/<ref>            # device, ip, prefix, vlan, site, rack, circuit, provider,
+                                  # aggregate, asn, ip-range, tenant, contact, vm, cluster, and
+                                  # interface/<device>/<name> (the name may contain slashes,
+                                  # e.g. xe-0/0/1)
 nbox raw GET <api-path>           # raw read-only API request (escape hatch)
 nbox serve [--http <addr>]        # read-only MCP server for AI agents (stdio, or loopback/OIDC HTTP)
 nbox config <init|path|show>
@@ -368,13 +374,18 @@ The tools are all annotated read-only:
 | Tool | What |
 |------|------|
 | `nbox_status` | Connection + NetBox/Django/Python versions. |
-| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/aggregates/ASNs/IP-ranges; `query` (required), `limit`, `status`, `site`, `tenant`, `role`, `tag`. |
-| `nbox_get` | Fetch one object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range) + `ref`; `vrf`/`site`/`group` disambiguate. |
+| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/providers/aggregates/ASNs/IP-ranges/tenants/contacts/VMs/clusters; `query` (required), `limit`, `status`, `site`, `tenant`, `role`, `tag`, `vrf`. |
+| `nbox_get` | Fetch one object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster) + `ref`; `vrf`/`site`/`group` disambiguate. |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix. |
 | `nbox_next_prefix` | Available free child prefix(es) of a given length, or all free blocks. |
 | `nbox_journal` | Recent journal entries for an object. |
 | `nbox_list_tags` | List tags. |
+
+The same objects are also exposed as MCP **resources** via one template,
+`nbox://{kind}/{ref}` (e.g. `nbox://device/edge01`), for hosts that browse or
+attach resources instead of calling tools — reading one returns the same JSON
+view `nbox_get` does.
 
 ### HTTP transport and OIDC
 

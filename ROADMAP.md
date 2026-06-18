@@ -141,14 +141,14 @@ v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implemen
 
 ## v0.2 — Nested views, IPAM power, first writes
 
-- ☑ **MCP server (read-only): `nbox serve`** — command core as MCP tools (`rmcp` 1.7, all read-only annotated): `nbox_status`, `nbox_search`, `nbox_get`, `nbox_get_interface`, `nbox_next_ip`, `nbox_next_prefix`, `nbox_journal`, `nbox_list_tags`. stdio shipped; the loopback HTTP transport (`--http`, behind the default-on `http` feature) shipped too, and OIDC resource-server auth (`--oidc-issuer`/`--audience`, RFC 9728 metadata, routable bind) for a network-reachable read-only deployment — plus an audit log and per-caller rate limit (DESIGN §24, read-only Pattern 3). Per-user NetBox identity bridging (Pattern 2 vault), a raw escape-hatch tool, and MCP resources/prompts later.
+- ☑ **MCP server (read-only): `nbox serve`** — command core as MCP tools (`rmcp` 1.7, all read-only annotated): `nbox_status`, `nbox_search`, `nbox_get`, `nbox_get_interface`, `nbox_next_ip`, `nbox_next_prefix`, `nbox_journal`, `nbox_list_tags`. stdio shipped; the loopback HTTP transport (`--http`, behind the default-on `http` feature) shipped too, and OIDC resource-server auth (`--oidc-issuer`/`--audience`, RFC 9728 metadata, routable bind) for a network-reachable read-only deployment — plus an audit log and per-caller rate limit (DESIGN §24, read-only Pattern 3). MCP resources shipped too — the same objects exposed via one `nbox://{kind}/{ref}` template. Per-user NetBox identity bridging (Pattern 2 vault), a raw escape-hatch tool, and MCP prompts later.
 - ◐ **Large-instance robustness** — ☑ honor 429 `Retry-After` (capped, with exponential backoff) in the client; search is already a bounded 5-way fan-out and `list_all` is `max`-capped. Remaining: configurable concurrency if needed.
 - ☐ **IPAM allocate (write)** — claim the next IP/prefix (POST to `available-ips`/`available-prefixes`). Read-only half is v0.1.1.
 - ☑ **Cable / interface trace** — `/api/dcim/interfaces/{id}/trace/`; surfaced as a Cable Path section on `nbox interface`.
 - ☐ **Hierarchical prefix tree in the TUI** — expand/collapse children with inline utilization (netbox#21396/#21255).
 - ☐ **Device detail — pick one path** — REST fan-out (device + interfaces + IPs) or a read-only GraphQL query. Don't build both.
 - ☐ Multi-pane TUI (nav | results | detail) per the DESIGN mockup.
-- ☐ TUI profile switcher — hotkey to flip between configured instances (e.g. dev / staging / prod) without restarting; reconnects and re-probes the version.
+- ☑ TUI profile switcher — `P` cycles forward / `Ctrl+P` back (or `profile <name>` in the palette) between configured instances (e.g. dev / staging / prod) without restarting; rebuilds the client and re-probes `/api/status/`. Session-only (does not rewrite `active_profile`).
 - ◐ IP ranges — `nbox ip-range <start|id>` lookup done (☑); range `available-ips` lands with allocation/writes.
 - ☐ **Safe writes (initial)** — `PATCH` engine, minimal diff, before/after preview, confirmation modal; agent-safe `--read-only` profile.
   - ☐ Settle write rules first: choice fields (`{value,label}`→string), brief relations (slug/id/name), confirmation in non-TTY/`--json`/MCP.
@@ -180,8 +180,8 @@ v0.1 documents `open`, `interface`, and the TUI device tabs but doesn't implemen
 - ☐ Dashboard / overview screen (counts by status, utilization, recent changes).
 - ☐ Context preservation in the TUI (scroll position + filters per view).
 - ☐ OS keyring token storage.
-- ☐ Virtualization (VMs) and tenancy detail views.
-- ☐ VRF-aware IP/prefix navigation (built on the v0.3 `--vrf` resolution).
+- ☑ Virtualization (VMs) and tenancy detail views — `nbox vm`/`cluster` (virtualization), `nbox tenant`/`contact` (tenancy), and `nbox provider` (circuits), each a CLI lookup, in `search`, and on `nbox_get`/`nbox_search`/MCP resources.
+- ◐ VRF-aware IP/prefix navigation (built on the v0.3 `--vrf` resolution). Done: `search --vrf` filter (resolves id\|rd\|name, filters IP/prefix by `vrf_id=`), VRF-scoped child prefixes + contained IPs on `nbox prefix`, exact VRF-by-RD lookup. Remaining: a dedicated VRF view / VRF-pivoted navigation in the TUI.
 - ☐ TurboBulk export — capability-detect `/api/plugins/turbobulk/`, read/export-only (JSONL, no arrow/parquet dep), behind a feature flag, clean fallback when absent. Fast full-table export/audit on large instances where paginated REST is too slow.
 
 **Reconsidering / likely cut**

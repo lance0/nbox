@@ -34,7 +34,10 @@ Optional features: `--features cache,updates` (clipboard is on by default).
 
 ## Code style
 
-Standard Rust formatting and linting. All PRs must pass:
+Standard Rust formatting and linting. `clippy::pedantic` is a true whole-project
+gate, enforced via the `[lints]` table in `Cargo.toml` (it reaches the lib, bin,
+and every test crate; a handful of pure-noise lints are allowed package-wide
+there — prefer fixing over adding to that list). All PRs must pass:
 
 ```bash
 cargo fmt --all -- --check

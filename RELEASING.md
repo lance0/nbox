@@ -35,7 +35,7 @@ since 1.95). CI enforces it via the `msrv` job.
 1. **Pre-flight (CI enforces all three):**
    ```bash
    cargo fmt --all -- --check
-   cargo clippy --all-targets --all-features -- -D warnings   # pedantic gate
+   cargo clippy --all-targets --all-features -- -D warnings   # clippy::pedantic, project-wide via the [lints] table
    cargo test --all-features                                   # integration tests are #[ignore]; CI runs them separately
    ```
 2. **Bump the version.** Set `Cargo.toml` `version = "X.Y.Z"` (≥ 0.1.1), then

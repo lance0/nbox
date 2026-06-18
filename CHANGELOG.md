@@ -168,6 +168,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `WorkerGuard` is held for the process lifetime so buffered lines flush on exit.
 
 ### Changed
+- Docs reconciled with this session's features and hardening: ROADMAP ticks
+  (virtualization/tenancy detail views, TUI profile switcher, MCP resources;
+  VRF-aware navigation marked in-progress), README usage/search/MCP coverage of
+  the new `provider`/`tenant`/`contact`/`vm`/`cluster` lookups and resources,
+  `KNOWN_ISSUES` updated for the now-shipped `search --vrf`/scope filters, and the
+  `[lints]`-table pedantic gate noted in CONTRIBUTING/RELEASING. Docs-only.
 - Internal: the `non_empty` (drop empty string → `None`) and `non_zero` (drop
   zero count → `None`) filters the detail views all duplicated are now shared
   `pub(crate)` helpers in `src/domain/util.rs`, replacing ~17 local `non_empty`
