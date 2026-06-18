@@ -401,6 +401,42 @@ pub fn require_https_or_loopback(url: &str, label: &str) -> Result<(), crate::er
     )))
 }
 
+/// The hard cap on redirect hops for the OIDC HTTP client. IdP discovery/JWKS
+/// endpoints normally answer `200` directly; a single redirect (e.g. a trailing
+/// `/` normalization) is tolerated, but a chain is treated as suspicious.
+const OIDC_MAX_REDIRECTS: usize = 3;
+
+/// Build the reqwest client nbox uses for IdP calls (discovery + JWKS), with a
+/// **redirect-safe** policy: every redirect hop's target URL is re-checked with
+/// [`require_https_or_loopback`], so an `https://` issuer/JWKS endpoint can't
+/// `30x`-redirect the fetch down to a plain-`http://` non-loopback URL and
+/// silently downgrade the transport the validation was meant to guarantee.
+///
+/// The original-URL checks in the caller still run (defense in depth); this
+/// closes the gap that they only covered the *first* hop. A non-HTTPS,
+/// non-loopback redirect target makes the request fail (not follow); the chain
+/// is also capped at [`OIDC_MAX_REDIRECTS`] hops to bound redirect loops.
+pub fn build_oidc_http_client() -> anyhow::Result<reqwest::Client> {
+    let redirect_policy = reqwest::redirect::Policy::custom(|attempt| {
+        // Re-apply the https-or-loopback rule to THIS hop's target. A plain-http
+        // non-loopback target is refused (the request errors), never followed.
+        if let Err(e) = require_https_or_loopback(attempt.url().as_str(), "redirected URL") {
+            return attempt.error(e);
+        }
+        if attempt.previous().len() >= OIDC_MAX_REDIRECTS {
+            return attempt.error(format!(
+                "OIDC request exceeded {OIDC_MAX_REDIRECTS} redirects"
+            ));
+        }
+        attempt.follow()
+    });
+    reqwest::Client::builder()
+        .timeout(Duration::from_secs(15))
+        .redirect(redirect_policy)
+        .build()
+        .map_err(|e| anyhow::anyhow!("building the OIDC HTTP client: {e}"))
+}
+
 /// Whether `host_port` (`host`, `host:port`, `[v6]`, or `[v6]:port`) is a
 /// loopback host: any `127.0.0.0/8` / `::1` literal, or the name `localhost`.
 fn host_is_loopback(host_port: &str) -> bool {
@@ -575,5 +611,95 @@ mod tests {
         let id = identity_from_claims(claims);
         assert_eq!(id.client_id.as_deref(), Some("explicit"));
         assert!(id.scopes.is_empty());
+    }
+
+    // --- (H2): the OIDC HTTP client is redirect-safe (no HTTPS downgrade) -------
+    //
+    // The client built by `build_oidc_http_client` re-checks https-or-loopback on
+    // EVERY redirect hop, so a 30x to a plain-http non-loopback URL is refused
+    // (the request errors) rather than followed — the transport the original-URL
+    // check guaranteed can't be downgraded by a redirect. A loopback http hop is
+    // still allowed (local dev), mirroring the original-URL rule.
+
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    #[tokio::test]
+    async fn redirect_to_plain_http_non_loopback_is_refused() {
+        // The IdP (a loopback wiremock server) answers discovery/JWKS with a 302 to
+        // a plain-http NON-loopback URL. The redirect-safe policy must refuse to
+        // follow it — the fetch errors instead of downgrading to http://attacker.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/jwks"))
+            .respond_with(
+                ResponseTemplate::new(302)
+                    .insert_header("location", "http://attacker.example.com/jwks"),
+            )
+            .mount(&server)
+            .await;
+
+        let http = build_oidc_http_client().expect("client builds");
+        let res = http.get(format!("{}/jwks", server.uri())).send().await;
+        // The request fails (the redirect was not followed to plain http).
+        assert!(
+            res.is_err(),
+            "a redirect to a plain-http non-loopback URL must fail, not be followed"
+        );
+        let err = res.unwrap_err();
+        // It's a redirect-policy refusal, not a transport error reaching the target.
+        assert!(
+            err.is_redirect() || err.to_string().contains("redirect"),
+            "expected a redirect-policy error, got: {err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn redirect_to_loopback_http_is_followed() {
+        // A redirect whose target is ANOTHER loopback http URL is allowed (local
+        // dev): the policy permits a loopback hop, so the fetch follows it and the
+        // final 200 body comes back.
+        let server = MockServer::start().await;
+        // `/start` redirects to `/end` on the same (loopback) server.
+        let end = format!("{}/end", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/start"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", end.as_str()))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/end"))
+            .respond_with(ResponseTemplate::new(200).set_body_string("arrived"))
+            .mount(&server)
+            .await;
+
+        let http = build_oidc_http_client().expect("client builds");
+        let body = http
+            .get(format!("{}/start", server.uri()))
+            .send()
+            .await
+            .expect("loopback http redirect should be followed")
+            .text()
+            .await
+            .expect("body");
+        assert_eq!(body, "arrived");
+    }
+
+    #[tokio::test]
+    async fn redirect_chain_is_capped() {
+        // A redirect loop is bounded: even all-loopback hops are capped so a chain
+        // can't spin forever. The server bounces `/loop` to itself; the client
+        // gives up with a redirect error after the cap.
+        let server = MockServer::start().await;
+        let self_url = format!("{}/loop", server.uri());
+        Mock::given(method("GET"))
+            .and(path("/loop"))
+            .respond_with(ResponseTemplate::new(302).insert_header("location", self_url.as_str()))
+            .mount(&server)
+            .await;
+
+        let http = build_oidc_http_client().expect("client builds");
+        let res = http.get(&self_url).send().await;
+        assert!(res.is_err(), "an unbounded redirect loop must error");
     }
 }

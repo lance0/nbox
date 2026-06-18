@@ -97,38 +97,90 @@ enum Guard {
     Oidc(OidcConfig),
 }
 
+impl Guard {
+    /// The [`AuthMode`] to record for a request that is rejected *before* auth
+    /// resolves (the pre-auth peer-IP 429). For a loopback guard that's the mode
+    /// the request would have taken — `StaticBearer` if a token is configured,
+    /// else `Loopback`; for OIDC it's `Oidc`.
+    fn unauth_mode(&self) -> AuthMode {
+        match self {
+            Guard::Loopback { token: Some(_) } => AuthMode::StaticBearer,
+            Guard::Loopback { token: None } => AuthMode::Loopback,
+            Guard::Oidc(_) => AuthMode::Oidc,
+        }
+    }
+}
+
 /// The allowed-host set for the DNS-rebinding defense, shared by rmcp's `Host`
 /// check and our `Origin` check so the two never diverge.
 ///
 /// A request whose `Host`/`Origin` host is loopback always passes (loopback is
-/// trusted regardless of mode); otherwise the host must appear in `extra`. In
-/// loopback mode `extra` is empty, so only loopback passes (the strict default).
-/// In OIDC/routable mode `extra` carries the `--audience` host plus any operator
-/// `--allowed-host` entries.
+/// trusted regardless of mode); otherwise its authority must match an `extra`
+/// entry. In loopback mode `extra` is empty, so only loopback passes (the strict
+/// default). In OIDC/routable mode `extra` carries the `--audience` authority plus
+/// any operator `--allowed-host` entries.
+///
+/// Port handling (matching rmcp's own `Host` matcher): an entry with an explicit
+/// port matches only that `host:port`; an entry with no port matches the host on
+/// any port. So an operator who pins `nbox.example.com:8443` rejects the same host
+/// on a different port, while a bare `nbox.example.com` keeps any-port matching.
 #[derive(Clone, Debug, Default)]
 struct AllowedHosts {
-    /// Non-loopback hostnames that are allowed (lowercased, port stripped).
-    extra: Vec<String>,
+    /// Non-loopback authorities that are allowed (lowercased; the port is kept
+    /// only when the operator/audience specified one explicitly).
+    extra: Vec<Authority>,
 }
 
 impl AllowedHosts {
-    /// Whether `host` (a bare hostname or IP literal, no port) is allowed. A
-    /// loopback host is always allowed; anything else must be in `extra`.
-    fn allows(&self, host: &str) -> bool {
-        if host_is_loopback(host) {
+    /// Whether the request authority `auth` (host, plus a port when the request
+    /// carried one) is allowed. A loopback host is always allowed on any port;
+    /// anything else must match an `extra` entry by the port rule above.
+    fn allows(&self, auth: &Authority) -> bool {
+        if host_is_loopback(&auth.host) {
             return true;
         }
-        let host = host.to_ascii_lowercase();
-        self.extra.contains(&host)
+        self.extra.iter().any(|allowed| allowed.matches(auth))
     }
 
     /// The list rmcp's `with_allowed_hosts` wants: the loopback names plus the
-    /// `extra` entries. (rmcp matches `host`/`host:port`; bare hostnames match
-    /// any port.) Empty `extra` ⇒ exactly rmcp's strict loopback default.
+    /// `extra` entries rendered back to `host` / `host:port` strings. rmcp's
+    /// matcher applies the same port rule we do, so the two checks agree. Empty
+    /// `extra` ⇒ exactly rmcp's strict loopback default.
     fn for_rmcp(&self) -> Vec<String> {
         let mut hosts: Vec<String> = vec!["localhost".into(), "127.0.0.1".into(), "::1".into()];
-        hosts.extend(self.extra.iter().cloned());
+        hosts.extend(self.extra.iter().map(Authority::to_rmcp_string));
         hosts
+    }
+}
+
+/// A normalized host authority: a lowercased host plus an optional explicit port.
+/// `port: None` means "any port" when used as an allow-list entry, and "the
+/// request named no port" when it describes an incoming request.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct Authority {
+    /// The lowercased host (a hostname or an IP literal, brackets stripped).
+    host: String,
+    /// The explicit port, if one was present.
+    port: Option<u16>,
+}
+
+impl Authority {
+    /// Whether this allow-list entry matches an incoming request authority. A
+    /// ported entry matches only the same `host:port`; a port-less entry matches
+    /// the host on any port (mirrors rmcp's `host_is_allowed`).
+    fn matches(&self, req: &Authority) -> bool {
+        self.host == req.host && (self.port.is_none() || self.port == req.port)
+    }
+
+    /// Render back to the `host` / `host:port` form rmcp's `with_allowed_hosts`
+    /// expects. An IPv6 host is bracketed when a port is attached so the authority
+    /// stays parseable (`[::1]:8443`).
+    fn to_rmcp_string(&self) -> String {
+        match self.port {
+            Some(port) if self.host.contains(':') => format!("[{}]:{port}", self.host),
+            Some(port) => format!("{}:{port}", self.host),
+            None => self.host.clone(),
+        }
     }
 }
 
@@ -190,22 +242,18 @@ pub async fn serve_http(client: NetBoxClient, addr: &str, opts: ServeOptions) ->
     // `--allowed-host` entries, so a real proxied request with the deployment's
     // `Host` passes both rmcp's check and our `Origin` check.
     let allowed_hosts = if oidc_on {
-        let mut extra: Vec<String> = Vec::new();
+        let mut extra: Vec<Authority> = Vec::new();
         if let Some(args) = &oidc
-            && let Some(host) = host_of_url(&args.audience)
+            && let Some(authority) = host_of_url(&args.audience)
         {
-            extra.push(host);
+            extra.push(authority);
         }
-        extra.extend(
-            extra_hosts
-                .iter()
-                .map(|h| normalize_host_entry(h))
-                .filter(|h| !h.is_empty()),
-        );
+        extra.extend(extra_hosts.iter().filter_map(|h| normalize_host_entry(h)));
         extra.sort();
         extra.dedup();
         if !extra.is_empty() {
-            tracing::info!(allowed_hosts = ?extra, "DNS-rebinding allow-list (plus loopback)");
+            let rendered: Vec<String> = extra.iter().map(Authority::to_rmcp_string).collect();
+            tracing::info!(allowed_hosts = ?rendered, "DNS-rebinding allow-list (plus loopback)");
         }
         AllowedHosts { extra }
     } else {
@@ -307,10 +355,9 @@ async fn build_oidc_config(args: OidcArgs) -> Result<OidcConfig> {
 
     // A dedicated client for IdP calls (discovery + JWKS). Same reqwest/rustls
     // style as the NetBox client; default TLS verification (an IdP is public).
-    let http = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .context("building the OIDC HTTP client")?;
+    // Its redirect policy re-checks https-or-loopback on EVERY hop, so a 30x to a
+    // plain-http non-loopback URL can't downgrade the transport (see oidc.rs).
+    let http = oidc::build_oidc_http_client()?;
 
     let jwks_uri = match args.jwks_url {
         Some(url) => url,
@@ -373,30 +420,61 @@ fn host_is_loopback(host: &str) -> bool {
     }
 }
 
-/// Extract the host (lowercased, port and brackets stripped) from a URL like
-/// the `--audience` canonical URI. `None` if it isn't an absolute `http(s)` URL
-/// with a host (e.g. an opaque audience identifier — no host to allow).
-fn host_of_url(url: &str) -> Option<String> {
+/// Extract the [`Authority`] (lowercased host + explicit port if any) from a URL
+/// like the `--audience` canonical URI. `None` if it isn't an absolute `http(s)`
+/// URL with a host (e.g. an opaque audience identifier — no host to allow). The
+/// explicit port is kept so an audience of `https://nbox.example.com:8443` pins
+/// the allow-list to that port.
+fn host_of_url(url: &str) -> Option<Authority> {
     let rest = url.split_once("://")?.1;
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     // Drop any userinfo.
     let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
-    let host = strip_port(host_port);
-    if host.is_empty() {
-        None
-    } else {
-        Some(host.to_ascii_lowercase())
-    }
+    parse_authority(host_port)
 }
 
-/// Normalize an operator-supplied `--allowed-host` entry to a bare lowercased
-/// host (tolerating a `scheme://` prefix or a trailing `:port`).
-fn normalize_host_entry(entry: &str) -> String {
+/// Normalize an operator-supplied `--allowed-host` entry to an [`Authority`]
+/// (tolerating a `scheme://` prefix). An explicit `:port` is preserved so the
+/// entry matches only that port; without one the host matches any port. `None`
+/// for an entry with no host.
+fn normalize_host_entry(entry: &str) -> Option<Authority> {
     let entry = entry.trim();
     let rest = entry.split_once("://").map_or(entry, |(_, r)| r);
     let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
     let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
-    strip_port(host_port).to_ascii_lowercase()
+    parse_authority(host_port)
+}
+
+/// Parse an authority (`host`, `host:port`, `[v6]`, or `[v6]:port`) into an
+/// [`Authority`]: the lowercased host plus the explicit port if a valid one is
+/// present. A trailing `:` with a non-numeric / out-of-range port is treated as
+/// no port (the whole authority is the host). `None` for an empty host.
+fn parse_authority(authority: &str) -> Option<Authority> {
+    let (host, port) = if let Some(rest) = authority.strip_prefix('[') {
+        // IPv6 literal: `[::1]` or `[::1]:8080`.
+        match rest.split_once(']') {
+            Some((host, after)) => {
+                let port = after.strip_prefix(':').and_then(|p| p.parse::<u16>().ok());
+                (host, port)
+            }
+            None => (rest, None),
+        }
+    } else {
+        match authority.rsplit_once(':') {
+            Some((host, port)) if !port.is_empty() && port.chars().all(|c| c.is_ascii_digit()) => {
+                (host, port.parse::<u16>().ok())
+            }
+            _ => (authority, None),
+        }
+    };
+    if host.is_empty() {
+        None
+    } else {
+        Some(Authority {
+            host: host.to_ascii_lowercase(),
+            port,
+        })
+    }
 }
 
 /// Axum middleware on `/mcp`: enforce auth, validate the `Origin` header,
@@ -481,6 +559,29 @@ async fn gate_inner(state: &GateState, mut request: Request<Body>, next: Next) -
         .get::<ConnectInfo<SocketAddr>>()
         .map(|ci| ci.0.ip());
 
+    // 0) Pre-auth peer-IP rate limit (DNS-rebinding-independent flood control).
+    //    Runs BEFORE auth so a flood of missing/invalid-bearer requests from one
+    //    peer is throttled too — otherwise the 401/403 paths return before any
+    //    limit and an attacker can hammer JWT validation unthrottled. Keyed on the
+    //    peer IP (`ip:<addr>`), so it's a coarse per-peer cap; an authenticated
+    //    request additionally honors its per-caller (`sub`/`client`) bucket below.
+    //    To avoid double-charging the SAME logical bucket, the post-auth check is
+    //    skipped when the resolved caller key is this same `ip:` key (loopback /
+    //    static-bearer callers have no token identity, so both keys coincide).
+    //    Disabled (`--rate-limit 0` / absent) ⇒ no pre-auth limiting either.
+    let peer_key = audit::caller_key(None, peer);
+    if let Some(rl) = &state.rate_limiter
+        && let RateDecision::Limited { retry_after_secs } = rl.check(&peer_key)
+    {
+        // The request hasn't authenticated yet; attribute the 429 to the mode the
+        // guard would use and no identity (no secret to leak).
+        return GateOutcome {
+            auth_mode: state.guard.unauth_mode(),
+            identity: None,
+            response: too_many_requests(retry_after_secs),
+        };
+    }
+
     // 1) Authenticate by mode. The auth check runs first; only an authenticated
     //    (or auth-not-required) request proceeds. An auth failure short-circuits
     //    with the challenge response and no identity.
@@ -556,9 +657,15 @@ async fn gate_inner(state: &GateState, mut request: Request<Body>, next: Next) -
     }
 
     // 3) Per-caller rate limit (keyed sub → client_id → peer IP). Disabled when no
-    //    limiter is configured. Over the limit → 429 + Retry-After.
+    //    limiter is configured. Over the limit → 429 + Retry-After. When the
+    //    resolved caller key is the same `ip:` key the pre-auth check already
+    //    charged in step 0 (loopback / static-bearer callers, which have no token
+    //    identity), skip it — that single logical request is not charged twice to
+    //    the one bucket. An OIDC `sub`/`client` caller has a distinct bucket, so it
+    //    honors both the coarse peer-IP cap and its own per-caller cap.
     let caller = audit::caller_key(identity.as_ref(), peer);
-    if let Some(rl) = &state.rate_limiter
+    if caller != peer_key
+        && let Some(rl) = &state.rate_limiter
         && let RateDecision::Limited { retry_after_secs } = rl.check(&caller)
     {
         return GateOutcome {
@@ -718,43 +825,21 @@ fn challenge(status: StatusCode, header_value: &str, description: &str) -> Respo
     response
 }
 
-/// Extract the host (lowercased, port stripped) from an RFC 6454 origin string
-/// (e.g. `http://127.0.0.1:8080` → `127.0.0.1`). The scheme and port are not
-/// constrained — only the host matters for the DNS-rebinding decision, which the
-/// caller makes against the allowed-host set. Returns `None` for a malformed
-/// origin or `Origin: null` (no host ⇒ not allowable).
-fn origin_host(origin: &str) -> Option<String> {
+/// Extract the [`Authority`] (lowercased host + explicit port if any) from an
+/// RFC 6454 origin string (e.g. `http://127.0.0.1:8080` → host `127.0.0.1`, port
+/// `8080`). The scheme is not constrained — only the host/port matter for the
+/// DNS-rebinding decision the caller makes against the allowed-host set. The port
+/// is kept so a port-pinned allow-list entry can reject a mismatched port.
+/// Returns `None` for a malformed origin or `Origin: null` (no host ⇒ not
+/// allowable).
+fn origin_host(origin: &str) -> Option<Authority> {
     let origin = origin.trim();
     if origin.is_empty() || origin.eq_ignore_ascii_case("null") {
         return None;
     }
     let after_scheme = origin.split_once("://").map_or(origin, |(_, rest)| rest);
     let authority = after_scheme.split(['/', '?', '#']).next().unwrap_or("");
-    let host = strip_port(authority);
-    if host.is_empty() {
-        None
-    } else {
-        Some(host.to_ascii_lowercase())
-    }
-}
-
-/// Split an authority (`host`, `host:port`, `[v6]`, or `[v6]:port`) into its
-/// host part, dropping the port.
-fn strip_port(authority: &str) -> &str {
-    if let Some(rest) = authority.strip_prefix('[') {
-        // IPv6 literal: `[::1]` or `[::1]:8080`.
-        return rest.split_once(']').map_or(rest, |(host, _)| host);
-    }
-    authority
-        .rsplit_once(':')
-        .map_or(authority, |(host, port)| {
-            // Only treat a trailing `:digits` as a port; otherwise it's a bare host.
-            if port.chars().all(|c| c.is_ascii_digit()) && !port.is_empty() {
-                host
-            } else {
-                authority
-            }
-        })
+    parse_authority(authority)
 }
 
 /// Constant-time byte-slice equality. Avoids leaking the token length-prefix
@@ -850,29 +935,43 @@ mod tests {
         assert!(parse_bind_addr("not-an-addr", true).is_err());
     }
 
+    /// A port-less [`Authority`] (host matches on any port as an allow-list entry).
+    fn host(h: &str) -> Authority {
+        Authority {
+            host: h.to_ascii_lowercase(),
+            port: None,
+        }
+    }
+
+    /// A ported [`Authority`].
+    fn host_port(h: &str, port: u16) -> Authority {
+        Authority {
+            host: h.to_ascii_lowercase(),
+            port: Some(port),
+        }
+    }
+
     #[test]
-    fn origin_host_extracts_the_host() {
+    fn origin_host_extracts_host_and_port() {
         assert_eq!(
-            origin_host("http://127.0.0.1:8080").as_deref(),
-            Some("127.0.0.1")
+            origin_host("http://127.0.0.1:8080"),
+            Some(host_port("127.0.0.1", 8080))
         );
         assert_eq!(
-            origin_host("http://localhost:8080").as_deref(),
-            Some("localhost")
+            origin_host("http://localhost:8080"),
+            Some(host_port("localhost", 8080))
         );
+        // No explicit port → port-less authority.
+        assert_eq!(origin_host("https://localhost"), Some(host("localhost")));
         assert_eq!(
-            origin_host("https://localhost").as_deref(),
-            Some("localhost")
+            origin_host("http://[::1]:8080"),
+            Some(host_port("::1", 8080))
         );
-        assert_eq!(origin_host("http://[::1]:8080").as_deref(), Some("::1"));
+        assert_eq!(origin_host("http://127.0.0.5"), Some(host("127.0.0.5")));
+        // Case-folded host.
         assert_eq!(
-            origin_host("http://127.0.0.5").as_deref(),
-            Some("127.0.0.5")
-        );
-        // Case-folded.
-        assert_eq!(
-            origin_host("https://NBOX.Example.COM").as_deref(),
-            Some("nbox.example.com")
+            origin_host("https://NBOX.Example.COM"),
+            Some(host("nbox.example.com"))
         );
         // `Origin: null` and garbage have no host.
         assert_eq!(origin_host("null"), None);
@@ -883,13 +982,15 @@ mod tests {
     fn loopback_allowed_hosts_is_strict_loopback_only() {
         // The default (loopback-mode) set: loopback always passes; nothing else.
         let allowed = AllowedHosts::default();
-        assert!(allowed.allows("127.0.0.1"));
-        assert!(allowed.allows("127.0.0.5"));
-        assert!(allowed.allows("::1"));
-        assert!(allowed.allows("localhost"));
-        assert!(!allowed.allows("evil.example.com"));
-        assert!(!allowed.allows("192.168.1.10"));
-        assert!(!allowed.allows("nbox.example.com"));
+        assert!(allowed.allows(&host("127.0.0.1")));
+        assert!(allowed.allows(&host("127.0.0.5")));
+        assert!(allowed.allows(&host("::1")));
+        assert!(allowed.allows(&host("localhost")));
+        // Loopback passes on any port too.
+        assert!(allowed.allows(&host_port("127.0.0.1", 9999)));
+        assert!(!allowed.allows(&host("evil.example.com")));
+        assert!(!allowed.allows(&host("192.168.1.10")));
+        assert!(!allowed.allows(&host("nbox.example.com")));
         // rmcp gets exactly the strict loopback default (no extras).
         assert_eq!(allowed.for_rmcp(), vec!["localhost", "127.0.0.1", "::1"]);
     }
@@ -898,17 +999,20 @@ mod tests {
     fn oidc_allowed_hosts_adds_the_audience_host_plus_loopback() {
         // OIDC mode: audience host + an operator extra, with loopback still free.
         let allowed = AllowedHosts {
-            extra: vec!["nbox.example.com".into(), "alt.example.com".into()],
+            extra: vec![host("nbox.example.com"), host("alt.example.com")],
         };
-        assert!(allowed.allows("nbox.example.com"));
-        assert!(allowed.allows("alt.example.com"));
+        assert!(allowed.allows(&host("nbox.example.com")));
+        assert!(allowed.allows(&host("alt.example.com")));
+        // A port-less entry matches the host on ANY port.
+        assert!(allowed.allows(&host_port("nbox.example.com", 8443)));
+        assert!(allowed.allows(&host_port("nbox.example.com", 443)));
         // Case-insensitive match.
-        assert!(allowed.allows("NBOX.example.com"));
+        assert!(allowed.allows(&host("NBOX.example.com")));
         // Loopback is always allowed regardless of mode.
-        assert!(allowed.allows("127.0.0.1"));
-        assert!(allowed.allows("localhost"));
+        assert!(allowed.allows(&host("127.0.0.1")));
+        assert!(allowed.allows(&host("localhost")));
         // A mismatched host is still rejected.
-        assert!(!allowed.allows("attacker.test"));
+        assert!(!allowed.allows(&host("attacker.test")));
         // rmcp gets loopback + the extras.
         assert_eq!(
             allowed.for_rmcp(),
@@ -923,32 +1027,87 @@ mod tests {
     }
 
     #[test]
+    fn explicit_port_entry_matches_only_that_port() {
+        // An allow-list entry with an explicit port pins to that `host:port`: the
+        // same host on a different port (or with no port) is rejected.
+        let allowed = AllowedHosts {
+            extra: vec![host_port("nbox.example.com", 8443)],
+        };
+        // Exact host:port matches.
+        assert!(allowed.allows(&host_port("nbox.example.com", 8443)));
+        // A different port is rejected.
+        assert!(!allowed.allows(&host_port("nbox.example.com", 443)));
+        assert!(!allowed.allows(&host_port("nbox.example.com", 8080)));
+        // No port on the request is rejected too (the entry demands the port).
+        assert!(!allowed.allows(&host("nbox.example.com")));
+        // rmcp gets the authority rendered back with its port.
+        assert_eq!(
+            allowed.for_rmcp(),
+            vec!["localhost", "127.0.0.1", "::1", "nbox.example.com:8443"]
+        );
+    }
+
+    #[test]
+    fn no_port_entry_matches_any_port() {
+        // A port-less entry keeps host-only (any-port) matching — the prior default.
+        let allowed = AllowedHosts {
+            extra: vec![host("nbox.example.com")],
+        };
+        assert!(allowed.allows(&host("nbox.example.com")));
+        assert!(allowed.allows(&host_port("nbox.example.com", 8443)));
+        assert!(allowed.allows(&host_port("nbox.example.com", 1)));
+        // Still rejects a different host.
+        assert!(!allowed.allows(&host("other.example.com")));
+    }
+
+    #[test]
+    fn explicit_port_entry_for_ipv6_round_trips_for_rmcp() {
+        // An IPv6 host with an explicit port is bracketed when rendered for rmcp.
+        let allowed = AllowedHosts {
+            extra: vec![host_port("2001:db8::1", 8443)],
+        };
+        assert!(allowed.allows(&host_port("2001:db8::1", 8443)));
+        assert!(!allowed.allows(&host_port("2001:db8::1", 443)));
+        assert_eq!(
+            allowed.for_rmcp(),
+            vec!["localhost", "127.0.0.1", "::1", "[2001:db8::1]:8443"]
+        );
+    }
+
+    #[test]
     fn host_of_url_and_normalize_host_entry() {
+        // No port in the URL → a port-less authority (matches any port).
         assert_eq!(
-            host_of_url("https://nbox.example.com").as_deref(),
-            Some("nbox.example.com")
+            host_of_url("https://nbox.example.com"),
+            Some(host("nbox.example.com"))
+        );
+        // An explicit port in the audience is PRESERVED (pins to that port).
+        assert_eq!(
+            host_of_url("https://nbox.example.com:8443/mcp"),
+            Some(host_port("nbox.example.com", 8443))
         );
         assert_eq!(
-            host_of_url("https://nbox.example.com:8443/mcp").as_deref(),
-            Some("nbox.example.com")
-        );
-        assert_eq!(
-            host_of_url("https://[2001:db8::1]:8080").as_deref(),
-            Some("2001:db8::1")
+            host_of_url("https://[2001:db8::1]:8080"),
+            Some(host_port("2001:db8::1", 8080))
         );
         // An opaque (non-URL) audience has no host.
         assert_eq!(host_of_url("nbox"), None);
 
-        // `--allowed-host` entries tolerate a scheme or port.
-        assert_eq!(normalize_host_entry("nbox.example.com"), "nbox.example.com");
+        // `--allowed-host` entries tolerate a scheme, and preserve an explicit port.
+        assert_eq!(
+            normalize_host_entry("nbox.example.com"),
+            Some(host("nbox.example.com"))
+        );
         assert_eq!(
             normalize_host_entry("https://nbox.example.com:8443"),
-            "nbox.example.com"
+            Some(host_port("nbox.example.com", 8443))
         );
         assert_eq!(
             normalize_host_entry("  HOST.example.com  "),
-            "host.example.com"
+            Some(host("host.example.com"))
         );
+        // A bare `:port` with no host is rejected.
+        assert_eq!(normalize_host_entry(""), None);
     }
 
     #[test]
@@ -1165,6 +1324,22 @@ mod rs_tests {
     /// DNS-rebinding tests in OIDC/routable mode).
     fn router_hosts(guard: Guard, allowed: AllowedHosts) -> Router {
         router_full(guard, None, allowed)
+    }
+
+    /// A port-less allow-list authority (matches the host on any port).
+    fn allowed_host(h: &str) -> Authority {
+        Authority {
+            host: h.to_ascii_lowercase(),
+            port: None,
+        }
+    }
+
+    /// A ported allow-list authority (matches only that `host:port`).
+    fn allowed_host_port(h: &str, port: u16) -> Authority {
+        Authority {
+            host: h.to_ascii_lowercase(),
+            port: Some(port),
+        }
     }
 
     /// Build the gated router with an explicit rate limiter and allowed-host set.
@@ -1513,7 +1688,7 @@ mod rs_tests {
         let token = idp.mint(&good_claims());
 
         let allowed = AllowedHosts {
-            extra: vec!["nbox.test".into()],
+            extra: vec![allowed_host("nbox.test")],
         };
         let app = router_hosts(Guard::Oidc(cfg), allowed);
         let (status, _www, body) =
@@ -1535,7 +1710,7 @@ mod rs_tests {
         let token = idp.mint(&good_claims());
 
         let allowed = AllowedHosts {
-            extra: vec!["nbox.test".into()],
+            extra: vec![allowed_host("nbox.test")],
         };
         let app = router_hosts(Guard::Oidc(cfg), allowed);
         let (status, _www, _) = send(
@@ -1556,7 +1731,7 @@ mod rs_tests {
         let token = idp.mint(&good_claims());
 
         let allowed = AllowedHosts {
-            extra: vec!["nbox.test".into()],
+            extra: vec![allowed_host("nbox.test")],
         };
         let app = router_hosts(Guard::Oidc(cfg), allowed);
         let (status, _www, _) = send(app, mcp_request(Some(&token))).await;
@@ -1800,21 +1975,30 @@ mod rs_tests {
 
         let app = router_rl(Guard::Oidc(cfg), 1);
 
+        // Distinct callers come from distinct peers (the realistic case), so the
+        // coarse pre-auth peer-IP cap doesn't conflate them and the per-`sub`
+        // isolation is what's exercised.
+        let peer_a: SocketAddr = "203.0.113.10:5000".parse().unwrap();
+        let peer_b: SocketAddr = "203.0.113.11:5000".parse().unwrap();
+
         // user-42 spends its one allowance, then is limited.
         let ok = app
             .clone()
-            .oneshot(mcp_request(Some(&token_a)))
+            .oneshot(mcp_request_from(Some(&token_a), peer_a))
             .await
             .unwrap();
         assert_eq!(ok.status(), StatusCode::OK);
         let limited = app
             .clone()
-            .oneshot(mcp_request(Some(&token_a)))
+            .oneshot(mcp_request_from(Some(&token_a), peer_a))
             .await
             .unwrap();
         assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
-        // user-99 is unaffected — its own fresh bucket.
-        let other = app.oneshot(mcp_request(Some(&token_b))).await.unwrap();
+        // user-99 (a different sub from a different peer) is unaffected.
+        let other = app
+            .oneshot(mcp_request_from(Some(&token_b), peer_b))
+            .await
+            .unwrap();
         assert_eq!(other.status(), StatusCode::OK);
     }
 
@@ -1846,22 +2030,266 @@ mod rs_tests {
         let cfg = oidc_config(&format!("{base}/jwks"));
         let token = idp.mint(&good_claims());
 
-        let app = router_rl(Guard::Oidc(cfg), 1);
-        let _ = app
-            .clone()
-            .oneshot(mcp_request(Some(&token)))
-            .await
-            .unwrap();
-        let limited = app.oneshot(mcp_request(Some(&token))).await.unwrap();
-        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+        // Limit 2, but the SAME sub arrives from three distinct peers. Each peer's
+        // coarse bucket stays under the limit (1 each), so the per-`sub` bucket is
+        // the one that trips on the 3rd request — the 429 is attributed to `sub:`.
+        let app = router_rl(Guard::Oidc(cfg), 2);
+        for (i, octet) in [10u8, 11, 12].into_iter().enumerate() {
+            let peer: SocketAddr = format!("203.0.113.{octet}:5000").parse().unwrap();
+            let resp = app
+                .clone()
+                .oneshot(mcp_request_from(Some(&token), peer))
+                .await
+                .unwrap();
+            if i < 2 {
+                assert_eq!(resp.status(), StatusCode::OK, "request {i} should pass");
+            } else {
+                assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+            }
+        }
 
         let events = events.lock().unwrap();
-        // Two requests → two audit events; the second is rate-limited.
-        assert_eq!(events.len(), 2);
+        // Three requests → three audit events; the third is rate-limited per-sub.
+        assert_eq!(events.len(), 3);
         let last = events.last().unwrap();
         assert_eq!(last.get("status"), Some("429"));
         assert_eq!(last.get("outcome"), Some("rate-limited"));
         assert_eq!(last.get("caller"), Some("sub:user-42"));
+    }
+
+    // --- (M3): unauthenticated requests are rate-limited (pre-auth peer-IP) -----
+
+    /// An UNAUTHENTICATED flood (no/invalid bearer in OIDC mode) from one peer is
+    /// throttled by the pre-auth peer-IP limiter: the auth failures themselves are
+    /// capped, not just authenticated traffic. The limiter is reached BEFORE the
+    /// 401, so request N+1 from the same peer is a 429.
+    #[tokio::test]
+    async fn unauthenticated_flood_from_one_peer_is_rate_limited() {
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+
+        let app = router_rl(Guard::Oidc(cfg), 3);
+        let peer: SocketAddr = "198.51.100.7:6000".parse().unwrap();
+
+        // The first 3 invalid-bearer requests are 401 (auth fails, but they count).
+        for i in 1..=3 {
+            let resp = app
+                .clone()
+                .oneshot(mcp_request_from(Some("not-a-real-token"), peer))
+                .await
+                .unwrap();
+            assert_eq!(
+                resp.status(),
+                StatusCode::UNAUTHORIZED,
+                "request {i} should 401 (auth-failed but counted)"
+            );
+        }
+        // The 4th from the same peer is throttled BEFORE auth → 429 + Retry-After.
+        let resp = app
+            .oneshot(mcp_request_from(Some("not-a-real-token"), peer))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(
+            resp.headers().get(header::RETRY_AFTER).is_some(),
+            "the pre-auth 429 carries Retry-After"
+        );
+    }
+
+    /// A *missing* bearer (not just an invalid one) is throttled too — the pre-auth
+    /// limiter runs for every request regardless of whether a token was presented.
+    #[tokio::test]
+    async fn unauthenticated_flood_with_no_bearer_is_rate_limited() {
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+
+        let app = router_rl(Guard::Oidc(cfg), 2);
+        let peer: SocketAddr = "198.51.100.8:6000".parse().unwrap();
+
+        for _ in 0..2 {
+            let resp = app
+                .clone()
+                .oneshot(mcp_request_from(None, peer))
+                .await
+                .unwrap();
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        }
+        let resp = app.oneshot(mcp_request_from(None, peer)).await.unwrap();
+        assert_eq!(resp.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    /// The pre-auth limiter is per-peer: one peer flooding never throttles another.
+    #[tokio::test]
+    async fn unauthenticated_flood_does_not_affect_a_different_peer() {
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+
+        let app = router_rl(Guard::Oidc(cfg), 1);
+        let flooder: SocketAddr = "198.51.100.9:6000".parse().unwrap();
+        let bystander: SocketAddr = "198.51.100.10:6000".parse().unwrap();
+
+        // The flooder spends its allowance and is then throttled.
+        let _ = app
+            .clone()
+            .oneshot(mcp_request_from(Some("bad"), flooder))
+            .await
+            .unwrap();
+        let limited = app
+            .clone()
+            .oneshot(mcp_request_from(Some("bad"), flooder))
+            .await
+            .unwrap();
+        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+        // A different peer's first request is unaffected — it gets the normal 401.
+        let other = app
+            .oneshot(mcp_request_from(Some("bad"), bystander))
+            .await
+            .unwrap();
+        assert_eq!(other.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// With the limiter disabled (`--rate-limit 0` / absent), an unauthenticated
+    /// flood is NEVER throttled — the pre-auth path also respects "disabled".
+    #[tokio::test]
+    async fn unauthenticated_flood_disabled_never_429s() {
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+
+        let app = router(Guard::Oidc(cfg)); // no limiter
+        let peer: SocketAddr = "198.51.100.11:6000".parse().unwrap();
+        for _ in 0..10 {
+            let resp = app
+                .clone()
+                .oneshot(mcp_request_from(Some("bad"), peer))
+                .await
+                .unwrap();
+            // Always the normal 401 — never a 429.
+            assert_eq!(resp.status(), StatusCode::UNAUTHORIZED);
+        }
+    }
+
+    /// The pre-auth 429 carries the `MCP-Protocol-Version` header (round-1 fix),
+    /// like every other response — including the unauthenticated throttle path.
+    #[tokio::test]
+    async fn unauthenticated_429_carries_protocol_header() {
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+
+        let app = router_rl(Guard::Oidc(cfg), 1);
+        let peer: SocketAddr = "198.51.100.12:6000".parse().unwrap();
+        let _ = app
+            .clone()
+            .oneshot(mcp_request_from(Some("bad"), peer))
+            .await
+            .unwrap();
+        let (status, ver) = protocol_header(app, mcp_request_from(Some("bad"), peer)).await;
+        assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(ver.as_deref(), Some(MCP_PROTOCOL_VERSION));
+    }
+
+    /// The unauthenticated 429 is audited too, with no identity leaked: the
+    /// outcome is `rate-limited`, the caller is the peer IP, and there's no `sub`.
+    #[tokio::test]
+    async fn unauthenticated_429_is_audited_without_identity() {
+        let (events, _guard) = capture();
+
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+
+        let app = router_rl(Guard::Oidc(cfg), 1);
+        let peer: SocketAddr = "198.51.100.13:6000".parse().unwrap();
+        let _ = app
+            .clone()
+            .oneshot(mcp_request_from(Some("bad"), peer))
+            .await
+            .unwrap();
+        let limited = app
+            .oneshot(mcp_request_from(Some("bad"), peer))
+            .await
+            .unwrap();
+        assert_eq!(limited.status(), StatusCode::TOO_MANY_REQUESTS);
+
+        let events = events.lock().unwrap();
+        let last = events.last().unwrap();
+        assert_eq!(last.get("status"), Some("429"));
+        assert_eq!(last.get("outcome"), Some("rate-limited"));
+        assert_eq!(last.get("caller"), Some("ip:198.51.100.13"));
+        // The auth mode is still recorded (oidc), but no token identity leaked.
+        assert_eq!(last.get("auth"), Some("oidc"));
+        assert_eq!(last.get("sub"), None);
+    }
+
+    // --- (M2): explicit-port allow-list matching, end to end through the gate ---
+
+    /// In OIDC/routable mode, an allow-list entry with an explicit port accepts an
+    /// Origin on that exact `host:port` and rejects the same host on another port.
+    #[tokio::test]
+    async fn oidc_origin_explicit_port_matches_only_that_port() {
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+        let token = idp.mint(&good_claims());
+
+        let allowed = AllowedHosts {
+            extra: vec![allowed_host_port("nbox.test", 8443)],
+        };
+        let app = router_hosts(Guard::Oidc(cfg), allowed);
+
+        // The exact host:port passes.
+        let (ok, _www, _) = send(
+            app.clone(),
+            mcp_request_origin(Some(&token), "https://nbox.test:8443"),
+        )
+        .await;
+        assert_eq!(ok, StatusCode::OK, "matching host:port should pass");
+
+        // A different port on the same host is rejected.
+        let (mismatch, _www, _) = send(
+            app.clone(),
+            mcp_request_origin(Some(&token), "https://nbox.test:9443"),
+        )
+        .await;
+        assert_eq!(mismatch, StatusCode::FORBIDDEN, "mismatched port is 403");
+
+        // The same host with no port is rejected too (the entry demands the port).
+        let (no_port, _www, _) =
+            send(app, mcp_request_origin(Some(&token), "https://nbox.test")).await;
+        assert_eq!(no_port, StatusCode::FORBIDDEN, "no-port origin is 403");
+    }
+
+    /// A port-less allow-list entry keeps any-port matching: an Origin on any port
+    /// for that host passes (the documented no-port behavior, unchanged).
+    #[tokio::test]
+    async fn oidc_origin_no_port_entry_matches_any_port() {
+        let idp = Arc::new(MockIdp::new("k1"));
+        let base = spawn_idp(idp.clone()).await;
+        let cfg = oidc_config(&format!("{base}/jwks"));
+        let token = idp.mint(&good_claims());
+
+        let allowed = AllowedHosts {
+            extra: vec![allowed_host("nbox.test")],
+        };
+        let app = router_hosts(Guard::Oidc(cfg), allowed);
+
+        for origin in [
+            "https://nbox.test",
+            "https://nbox.test:8443",
+            "https://nbox.test:1234",
+        ] {
+            let (status, _www, _) =
+                send(app.clone(), mcp_request_origin(Some(&token), origin)).await;
+            assert_eq!(
+                status,
+                StatusCode::OK,
+                "{origin} should pass (any-port entry)"
+            );
+        }
     }
 
     // --- (d): MCP-Protocol-Version on EVERY response, including errors ---------

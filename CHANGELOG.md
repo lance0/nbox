@@ -279,6 +279,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `:theme` respects `NO_COLOR` consistently and no colored theme is written back.
 
 ### Security
+- `nbox serve --http` (OIDC mode, `http` feature): the HTTPS-only rule for the IdP
+  issuer / JWKS / discovered endpoints is now enforced on **every HTTP redirect
+  hop**, not just the original URL. The IdP client previously followed redirects
+  with reqwest's default policy, so an `https://` endpoint could `30x`-redirect the
+  discovery/JWKS fetch down to a plain-`http://` non-loopback URL and silently
+  downgrade the transport the validation was meant to guarantee. A custom redirect
+  policy now re-checks `https-or-loopback` on each hop's target and fails the
+  request on any non-HTTPS/non-loopback hop (a loopback http hop is still allowed
+  for local dev); the chain is also capped. The original-URL checks remain (defense
+  in depth).
+- `nbox serve --http`: a flood of **unauthenticated / invalid-bearer** requests
+  from one peer is now rate-limited. The auth check returned `401`/`403` before the
+  rate limiter, so missing/invalid-token requests were never throttled and could
+  hammer JWT validation. `--rate-limit` now also applies a coarse per-peer-IP cap
+  *before* authentication; authenticated requests still honor their per-caller
+  (`sub`/`client_id`) cap as well. The pre-auth `429` carries `Retry-After` and the
+  `MCP-Protocol-Version` header and is audited (attributed to the peer IP, no
+  identity). `--rate-limit 0` / absent disables both levels (unchanged default).
+- `nbox serve --http` (OIDC mode): an `--allowed-host` (or `--audience` host) entry
+  with an **explicit port** now matches only that `host:port` for the DNS-rebinding
+  `Host`/`Origin` checks. Normalization previously stripped the port, so
+  `nbox.example.com:8443` was reduced to `nbox.example.com` and matched the host on
+  any port — broadening the allow-list beyond what the operator specified. A
+  port-less entry keeps host-only (any-port) matching; loopback still passes on any
+  port; the `Host` and `Origin` checks apply the rule identically.
 - `nbox serve --http` (OIDC mode, `http` feature): the IdP issuer, the JWKS URL
   (override or discovered), and any discovered endpoint must now use `https://`
   unless the host is loopback (local dev). A plain-`http://` non-loopback IdP URL

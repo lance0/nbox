@@ -144,7 +144,10 @@ discovered), and any discovered endpoint must use `https://` — a plain-`http:/
 IdP URL lets a network attacker swap the signing keys and mint any token. The one
 exception is a **loopback** host (`127.0.0.0/8`, `::1`, `localhost`), for local
 development against a throwaway IdP. A plain-`http://` non-loopback IdP URL is a
-startup error (exit `2`) and nbox never fetches keys over plaintext.
+startup error (exit `2`) and nbox never fetches keys over plaintext. The same rule
+is re-applied to every HTTP **redirect** the IdP client follows, so an `https://`
+endpoint can't `30x`-redirect the fetch down to a plain-`http://` non-loopback URL
+— such a redirect fails the request rather than being followed.
 
 **Allowed hosts (DNS-rebinding defense in routable mode).** Because the bind is
 routable, the allowed-host set is widened from loopback-only to also include the
@@ -155,6 +158,12 @@ front of the proxy — with `--allowed-host <HOST>` (repeatable) or
 `[serve].allowed_hosts`; they are additive on top of the audience host and
 loopback. (In loopback mode `--allowed-host` is ignored — the set stays
 loopback-only.)
+
+An entry (or the `--audience` host) with an **explicit port** matches only that
+`host:port` — e.g. `nbox.example.com:8443` accepts that host on `8443` and
+rejects it on any other port. An entry with **no port** matches the host on any
+port (the default). Loopback always passes on any port. The same port rule
+applies to both the `Host` check and the `Origin` check, so they agree.
 
 What nbox validates on each `/mcp` request: the bearer from the `Authorization`
 header (tokens in the query string are rejected); the JWT signature against the
@@ -269,15 +278,29 @@ nbox serve --http 127.0.0.1:8080 --log-file /var/log/nbox-audit.log \
 
 ### Per-caller rate limit
 
-`--rate-limit <N>` (or `[serve].rate_limit`) caps each caller at `N` requests per
-minute on `/mcp`. The flag wins over the config; absent / `0` disables it (the
-default — existing behavior is unchanged unless you opt in).
+`--rate-limit <N>` (or `[serve].rate_limit`) caps requests per minute on `/mcp`.
+The flag wins over the config; absent / `0` disables it entirely (the default —
+existing behavior is unchanged unless you opt in).
 
-The limit is keyed on the **caller**, not just the connection: the OIDC `sub` if
-present, else `client_id`, else the peer IP (which covers loopback /
-static-bearer). Each caller has its own window, so one caller hitting the limit
-never affects another. Over the limit → `429 Too Many Requests` with a
-`Retry-After` (seconds) header, and a `rate-limited` audit event.
+When enabled it applies on two levels, both at `N`/minute:
+
+- **Pre-auth, per peer IP.** Every request — including unauthenticated and
+  invalid-bearer ones — is checked against a coarse per-peer-IP bucket *before*
+  authentication. This throttles a flood of missing/invalid-token requests from a
+  single peer (which would otherwise return `401`/`403` without ever reaching a
+  limiter and could hammer JWT validation unthrottled). The check is per peer IP,
+  so one peer flooding never throttles another.
+- **Post-auth, per caller.** An authenticated request additionally honors a
+  per-caller bucket keyed on the OIDC `sub` (else `client_id`). This catches a
+  single identity spread across many source IPs.
+
+A loopback / static-bearer caller has no token identity, so its peer-IP bucket
+*is* its caller bucket — that one request is charged once, not twice. An OIDC
+caller has a distinct per-`sub` bucket, so it honors both the coarse peer cap and
+its own per-caller cap. Either limit being exceeded → `429 Too Many Requests`
+with a `Retry-After` (seconds) header and the `MCP-Protocol-Version` header, and a
+`rate-limited` audit event (the unauthenticated case is audited too, attributed to
+the peer IP with no identity).
 
 ```bash
 nbox serve --http 0.0.0.0:8080 \
