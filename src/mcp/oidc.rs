@@ -371,14 +371,7 @@ fn bearer_token(header: Option<&str>) -> Option<&str> {
 pub fn require_https_or_loopback(url: &str, label: &str) -> Result<(), crate::error::NboxError> {
     // Parse just enough to read the scheme + host. We don't pull a URL crate in
     // for this — split the scheme, then the authority, then the host.
-    let (scheme, rest) = match url.split_once("://") {
-        Some((s, r)) => (s.to_ascii_lowercase(), r),
-        None => {
-            return Err(crate::error::NboxError::Usage(format!(
-                "the OIDC {label} ({url}) is not an absolute http(s) URL"
-            )));
-        }
-    };
+    let (scheme, host_port) = absolute_url_host_port(url, label)?;
     if scheme == "https" {
         return Ok(());
     }
@@ -388,9 +381,6 @@ pub fn require_https_or_loopback(url: &str, label: &str) -> Result<(), crate::er
         )));
     }
     // Plain http:// — allowed only for a loopback host (local dev).
-    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
-    // Drop any userinfo before the host.
-    let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
     if host_is_loopback(host_port) {
         return Ok(());
     }
@@ -399,6 +389,39 @@ pub fn require_https_or_loopback(url: &str, label: &str) -> Result<(), crate::er
          (TLS is mandatory for an IdP reachable over the network); plain http:// is \
          accepted only for a loopback host (127.0.0.0/8 or ::1) in local development."
     )))
+}
+
+/// Return the lowercased scheme and authority host/port from an absolute URL.
+///
+/// This is intentionally lightweight, matching [`require_https_or_loopback`]'s
+/// needs: it rejects missing schemes and host-less authorities up front so
+/// malformed `https://` values fail as usage errors instead of surfacing later as
+/// discovery/fetch failures.
+fn absolute_url_host_port<'a>(
+    url: &'a str,
+    label: &str,
+) -> Result<(String, &'a str), crate::error::NboxError> {
+    let (scheme, rest) = match url.split_once("://") {
+        Some((s, r)) => (s.to_ascii_lowercase(), r),
+        None => {
+            return Err(crate::error::NboxError::Usage(format!(
+                "the OIDC {label} ({url}) is not an absolute http(s) URL"
+            )));
+        }
+    };
+    if scheme != "http" && scheme != "https" {
+        return Err(crate::error::NboxError::Usage(format!(
+            "the OIDC {label} ({url}) must use https (got scheme \"{scheme}\")"
+        )));
+    }
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, hp)| hp);
+    if host_port.is_empty() || host_port.starts_with(':') {
+        return Err(crate::error::NboxError::Usage(format!(
+            "the OIDC {label} ({url}) is not an absolute http(s) URL with a host"
+        )));
+    }
+    Ok((scheme, host_port))
 }
 
 /// The hard cap on redirect hops for the OIDC HTTP client. IdP discovery/JWKS
@@ -555,6 +578,22 @@ mod tests {
         );
         // Scheme is matched case-insensitively.
         assert!(require_https_or_loopback("HTTPS://idp.example.com", "issuer").is_ok());
+    }
+
+    #[test]
+    fn absolute_https_urls_must_have_a_host() {
+        for url in ["https://", "https:///jwks", "https://?x=1", "https://#frag"] {
+            let err = require_https_or_loopback(url, "issuer").unwrap_err();
+            assert!(
+                matches!(err, crate::error::NboxError::Usage(_)),
+                "{url} should be a Usage error"
+            );
+            assert_eq!(err.exit_code(), 2, "{url} should exit 2");
+            assert!(
+                format!("{err:#}").contains("with a host"),
+                "{url} should explain the missing host"
+            );
+        }
     }
 
     #[test]

@@ -85,7 +85,7 @@ are annotated read-only.
 | Tool | What |
 | ---- | ---- |
 | `nbox_status` | Connection + NetBox/Django/Python versions. |
-| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers/VMs/clusters; `query`, `limit`, `status`, `site`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; IP/prefix only). |
+| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers/VMs/clusters; `query`, `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; IP/prefix only). |
 | `nbox_get` | One object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster) + `ref`; `vrf`/`site`/`group` disambiguate. |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix. |

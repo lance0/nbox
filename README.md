@@ -217,7 +217,9 @@ nbox                              # launch the TUI
 nbox status                       # connection + NetBox/Django/Python versions
 nbox search <query> [--limit N] [--status/--site/--region/--site-group/--location/--tenant/--role/--tag <v>] [--vrf <id|rd|name>] [--cols a,b,c] [--partial]
                                   # --site/--region/--site-group/--location resolve the ref once and filter
-                                  # prefixes by that scope (scope_type=dcim.<kind> + scope_id), exact match.
+                                  # scope-capable endpoints by resolved id (prefixes/clusters via
+                                  # scope_type=dcim.<kind> + scope_id; devices via *_id;
+                                  # --site also filters VLANs/VMs by site_id), exact match.
                                   # At most one scope flag (else exit 2); an unknown ref errors (exit 4)
                                   # --vrf resolves id|rd|name once and filters IP/prefix results by vrf_id
                                   # (VRF-incapable endpoints skip it); orthogonal to scope; unknown → exit 4
@@ -377,7 +379,7 @@ The tools are all annotated read-only:
 | Tool | What |
 |------|------|
 | `nbox_status` | Connection + NetBox/Django/Python versions. |
-| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/providers/aggregates/ASNs/IP-ranges/tenants/contacts/VMs/clusters; `query` (required), `limit`, `status`, `site`, `tenant`, `role`, `tag`, `vrf`. |
+| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/providers/aggregates/ASNs/IP-ranges/tenants/contacts/VMs/clusters; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; filters IP/prefix results only). |
 | `nbox_get` | Fetch one object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster) + `ref`; `vrf`/`site`/`group` disambiguate. |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix. |
