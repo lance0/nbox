@@ -277,6 +277,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `t` theme-cycle already honored, so it could re-enable color under `NO_COLOR` and
   then persist a colored theme on exit. Both theme paths now share one guard, so
   `:theme` respects `NO_COLOR` consistently and no colored theme is written back.
+- `nbox search --site <name|id>` now actually filters devices, VLANs, and VMs.
+  Those branches resolved the `--site` reference to an id but still passed the
+  *raw* user value as `site=<value>`; NetBox's `site` query param wants a slug, so
+  a numeric id or display-name `--site` silently matched nothing on those object
+  kinds (prefixes/clusters, on the polymorphic `scope`, were unaffected). They now
+  filter by the resolved `site_id=<id>`. Devices additionally honor `--region`/
+  `--site-group`/`--location` via the resolved `region_id`/`site_group_id`/
+  `location_id` (no raw values), and `site` is no longer carried through the
+  plain-value allowlist at all — every scope kind goes through its resolved id.
+- The numeric resolvers `site_by_ref`/`region_by_ref`/`site_group_by_ref`/
+  `location_by_ref`/`vrf_by_ref` no longer dead-end on a 404. A numeric reference
+  took a by-id fast-path that returned immediately, *including* returning "not
+  found" on a 404, so an object whose slug/name (or VRF RD) is itself numeric (a
+  site slug `"5"`) could never resolve once the id lookup missed. The by-id 404
+  case now FALLS THROUGH to the slug/name (and RD for VRF) lookups; a genuine id
+  hit still short-circuits.
 
 ### Security
 - `nbox serve --http` (OIDC mode, `http` feature): the HTTPS-only rule for the IdP

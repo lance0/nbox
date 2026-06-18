@@ -66,9 +66,12 @@ impl ObjectKind {
 ///
 /// `site`/`region`/`site_group`/`location` are *scope* filters: NetBox 4.2's
 /// prefix `scope` is a single polymorphic type+id, so at most one of them may be
-/// set at a time (enforced in [`NetBoxClient::search`]). They are resolved to a
-/// numeric id up front and handled out-of-band for the prefix endpoint, not
-/// through the plain-value allowlist below.
+/// set at a time (enforced in [`NetBoxClient::search`]). All four are resolved to
+/// a numeric id up front and handled out-of-band per endpoint — as `scope_type`+
+/// `scope_id` on the polymorphic endpoints (prefixes, clusters) and as
+/// `site_id`/`region_id`/`site_group_id`/`location_id` on the rest — never through
+/// the plain-value allowlist below (the plain `?site=` param wants a slug, so an
+/// id or display name would silently match nothing).
 #[derive(Debug, Clone, Default)]
 pub struct SearchFilters {
     pub status: Option<String>,
@@ -102,13 +105,14 @@ impl SearchFilters {
     /// then skips that endpoint rather than send an ignored param (NetBox
     /// silently ignores unknown filters and would return everything).
     ///
-    /// Scope filters (`region`/`site_group`/`location`) are *not* included here —
-    /// they're resolved to ids and applied out-of-band per endpoint. `site` stays
-    /// here because non-prefix endpoints accept the site slug directly.
+    /// Scope filters (`site`/`region`/`site_group`/`location`) are *not* included
+    /// here — they're resolved to a numeric id once and applied out-of-band per
+    /// endpoint (as `site_id`/`region_id`/… or `scope_type`+`scope_id`). The plain
+    /// `?site=` param expects a *slug*, so a `--site` given as an id or display
+    /// name would silently match nothing; the resolved id avoids that.
     fn params_for(&self, supported: &[&str]) -> Option<Vec<(&'static str, String)>> {
-        let active: [(&'static str, &Option<String>); 5] = [
+        let active: [(&'static str, &Option<String>); 4] = [
             ("status", &self.status),
-            ("site", &self.site),
             ("tenant", &self.tenant),
             ("role", &self.role),
             ("tag", &self.tag),
@@ -180,15 +184,27 @@ fn non_empty(s: Option<String>) -> Option<String> {
 
 /// Whether an endpoint should skip itself because an id-based scope
 /// (`region`/`site-group`/`location`) is active and the endpoint has no clean
-/// filter for it. `--site` (a `dcim.site` scope) is honored directly by the
-/// endpoints that support it, so it does NOT trigger a skip here — only the three
-/// id-based scopes do. This keeps a region/site-group/location filter from
-/// silently returning an unfiltered endpoint's full result set.
+/// filter for it. `--site` (a `dcim.site` scope) is honored by the endpoints that
+/// support it via the resolved `site_id`, so it does NOT trigger a skip here —
+/// only the three id-based scopes do. This keeps a region/site-group/location
+/// filter from silently returning an unfiltered endpoint's full result set.
 fn skip_for_id_scope(scope: Option<&ResolvedScope>) -> bool {
     matches!(
         scope.map(|s| s.content_type),
         Some("dcim.region" | "dcim.sitegroup" | "dcim.location")
     )
+}
+
+/// Whether an endpoint should skip itself because *any* scope is active and the
+/// endpoint can honor no scope at all — including `--site`. Used by the endpoints
+/// that carry no site/region/site-group/location filter (IPs, circuits,
+/// aggregates, ASNs, IP ranges, tenants, contacts, providers, and the site search
+/// itself), so an active scope skips them rather than returning an unfiltered
+/// result set. Endpoints that honor `--site` (devices/VLANs/VMs via `site_id`)
+/// use [`skip_for_id_scope`] instead, and the polymorphic endpoints
+/// (prefixes/clusters) honor every scope out-of-band.
+fn skip_for_any_scope(scope: Option<&ResolvedScope>) -> bool {
+    scope.is_some()
 }
 
 /// A typed not-found error for an unresolved scope reference, e.g. a `--region`
@@ -435,18 +451,19 @@ impl NetBoxClient {
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
     ) -> Result<Vec<SearchResult>> {
-        // Devices honor `--site` via the plain `site` allowlist (slug accepted).
-        // For the id-based scopes (region/site-group/location), NetBox devices
-        // expose clean `region_id`/`site_group_id`/`location_id` filters, so apply
-        // those out-of-band; `--site` continues through the allowlist below.
+        // Devices expose clean id filters for every scope kind
+        // (`site_id`/`region_id`/`site_group_id`/`location_id`), so honor all four
+        // out-of-band by the resolved id. The plain `?site=` param wants a slug, so
+        // a `--site` given as an id or display name would silently miss — use the
+        // resolved `site_id` instead.
         let device_scope: Option<(&'static str, u64)> = match scope.map(|s| s.content_type) {
+            Some("dcim.site") => scope.map(|s| ("site_id", s.id)),
             Some("dcim.region") => scope.map(|s| ("region_id", s.id)),
             Some("dcim.sitegroup") => scope.map(|s| ("site_group_id", s.id)),
             Some("dcim.location") => scope.map(|s| ("location_id", s.id)),
             _ => None,
         };
-        let Some(mut params) = endpoint_params(q, f, &["status", "site", "tenant", "role", "tag"])
-        else {
+        let Some(mut params) = endpoint_params(q, f, &["status", "tenant", "role", "tag"]) else {
             return Ok(Vec::new());
         };
         if let Some((key, id)) = device_scope {
@@ -476,10 +493,11 @@ impl NetBoxClient {
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
     ) -> Result<Vec<SearchResult>> {
-        // No clean per-site filter for a region/site-group/location scope here —
-        // skip the endpoint rather than send a dead param (consistent with how
-        // `--site` is skipped on endpoints that can't honor it).
-        if skip_for_id_scope(scope) {
+        // The site search itself carries no scope filter (a site has no parent
+        // site/region/site-group/location filter on this endpoint that maps to our
+        // scope flags cleanly), so any active scope skips it rather than sending a
+        // dead param.
+        if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
         let Some(params) = endpoint_params(q, f, &["status", "tenant", "tag"]) else {
@@ -507,7 +525,9 @@ impl NetBoxClient {
         scope: Option<&ResolvedScope>,
         vrf_id: Option<u64>,
     ) -> Result<Vec<SearchResult>> {
-        if skip_for_id_scope(scope) {
+        // IPs carry no scope filter that maps to our flags — any active scope
+        // (including `--site`) skips them.
+        if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
         let Some(mut params) = endpoint_params(q, f, &["status", "tenant", "role", "tag"]) else {
@@ -594,17 +614,21 @@ impl NetBoxClient {
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
     ) -> Result<Vec<SearchResult>> {
-        // VLANs honor `--site` directly (allowlist). NetBox's VLAN region/
+        // VLANs honor `--site` via the resolved `site_id`. NetBox's VLAN region/
         // site-group filters exist but aren't uniformly clean (no location scope),
         // so skip VLANs for any id-based scope rather than apply an inconsistent
         // subset — matching the conservative "skip if unsure" rule.
         if skip_for_id_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(params) = endpoint_params(q, f, &["status", "site", "tenant", "role", "tag"])
-        else {
+        let Some(mut params) = endpoint_params(q, f, &["status", "tenant", "role", "tag"]) else {
             return Ok(Vec::new());
         };
+        // Only a `dcim.site` scope reaches here (the id-based scopes skipped above):
+        // filter by the resolved `site_id`, not the slug-only `?site=`.
+        if let Some(s) = scope {
+            params.push(("site_id", s.id.to_string()));
+        }
         let page: Page<Vlan> = self.list(Endpoint::Vlans, params).await?;
         Ok(page
             .results
@@ -633,7 +657,9 @@ impl NetBoxClient {
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
     ) -> Result<Vec<SearchResult>> {
-        if skip_for_id_scope(scope) {
+        // Circuits carry no scope filter that maps to our flags — any active scope
+        // (including `--site`) skips them.
+        if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
         let Some(params) = endpoint_params(q, f, &["status", "tenant", "tag"]) else {
@@ -663,7 +689,9 @@ impl NetBoxClient {
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
     ) -> Result<Vec<SearchResult>> {
-        if skip_for_id_scope(scope) {
+        // Aggregates carry no scope filter that maps to our flags — any active
+        // scope (including `--site`) skips them.
+        if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
         let Some(params) = endpoint_params(q, f, &["tenant", "tag"]) else {
@@ -693,7 +721,9 @@ impl NetBoxClient {
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
     ) -> Result<Vec<SearchResult>> {
-        if skip_for_id_scope(scope) {
+        // ASNs carry no scope filter that maps to our flags — any active scope
+        // (including `--site`) skips them.
+        if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
         let Some(mut params) = endpoint_params(q, f, &["tenant", "tag"]) else {
@@ -734,7 +764,9 @@ impl NetBoxClient {
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
     ) -> Result<Vec<SearchResult>> {
-        if skip_for_id_scope(scope) {
+        // IP ranges carry no scope filter that maps to our flags — any active
+        // scope (including `--site`) skips them.
+        if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
         let Some(params) = endpoint_params(q, f, &["status", "tenant", "role", "tag"]) else {
@@ -768,13 +800,13 @@ impl NetBoxClient {
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
     ) -> Result<Vec<SearchResult>> {
-        // Tenants carry no region/site-group/location scope filter — skip them
-        // for an id-based scope rather than return an unfiltered set.
-        if skip_for_id_scope(scope) {
+        // Tenants carry no scope filter (site/region/site-group/location) — skip
+        // them for any active scope rather than return an unfiltered set.
+        if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
         // The tenant endpoint accepts only `q` + `tag` from our filter set
-        // (no status/site/tenant/role), so an unsupported active filter skips it.
+        // (no status/tenant/role), so an unsupported active filter skips it.
         let Some(params) = endpoint_params(q, f, &["tag"]) else {
             return Ok(Vec::new());
         };
@@ -803,10 +835,11 @@ impl NetBoxClient {
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
     ) -> Result<Vec<SearchResult>> {
-        if skip_for_id_scope(scope) {
+        // Contacts carry no scope filter — skip them for any active scope.
+        if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
-        // Contacts accept only `q` + `tag` (no status/site/tenant/role).
+        // Contacts accept only `q` + `tag` (no status/tenant/role).
         let Some(params) = endpoint_params(q, f, &["tag"]) else {
             return Ok(Vec::new());
         };
@@ -835,12 +868,12 @@ impl NetBoxClient {
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
     ) -> Result<Vec<SearchResult>> {
-        // Providers carry no region/site-group/location scope filter — skip them
-        // for an id-based scope rather than return an unfiltered set.
-        if skip_for_id_scope(scope) {
+        // Providers carry no scope filter (site/region/site-group/location) — skip
+        // them for any active scope rather than return an unfiltered set.
+        if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
-        // Providers accept only `q` + `tag` (no status/site/tenant/role).
+        // Providers accept only `q` + `tag` (no status/tenant/role).
         let Some(params) = endpoint_params(q, f, &["tag"]) else {
             return Ok(Vec::new());
         };
@@ -873,16 +906,20 @@ impl NetBoxClient {
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
     ) -> Result<Vec<SearchResult>> {
-        // VMs honor `--site` via the plain `site` allowlist (slug accepted), but
-        // carry no clean region/site-group/location filter here — skip them for an
-        // id-based scope rather than return an unfiltered set.
+        // VMs honor `--site` via the resolved `site_id`; for the id-based scopes
+        // (region/site-group/location) the VM filters aren't uniformly clean (no
+        // location scope), so skip them rather than apply an inconsistent subset.
         if skip_for_id_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(params) = endpoint_params(q, f, &["status", "site", "tenant", "role", "tag"])
-        else {
+        let Some(mut params) = endpoint_params(q, f, &["status", "tenant", "role", "tag"]) else {
             return Ok(Vec::new());
         };
+        // Only a `dcim.site` scope reaches here (the id-based scopes skipped above):
+        // filter by the resolved `site_id`, not the slug-only `?site=`.
+        if let Some(s) = scope {
+            params.push(("site_id", s.id.to_string()));
+        }
         let page: Page<VirtualMachine> = self.list(Endpoint::VirtualMachines, params).await?;
         Ok(page
             .results
@@ -970,13 +1007,16 @@ mod tests {
             status: Some("active".into()),
             ..Default::default()
         };
-        // Devices support both → params built (q + status + site).
-        let dev = endpoint_params("edge", &f, &["status", "site", "tenant", "role"]).unwrap();
+        // `site` is a scope filter handled out-of-band (resolved to `site_id`), so
+        // it never flows through the plain-value allowlist — only `status` does.
+        let dev = endpoint_params("edge", &f, &["status", "tenant", "role"]).unwrap();
         assert!(dev.contains(&("q", "edge".to_string())));
-        assert!(dev.contains(&("site", "dc1".to_string())));
         assert!(dev.contains(&("status", "active".to_string())));
-        // IP addresses don't support `site` → endpoint skipped entirely.
-        assert!(endpoint_params("edge", &f, &["status", "tenant", "role"]).is_none());
+        // The raw `site` value must NOT leak into the allowlist params.
+        assert!(!dev.iter().any(|(k, _)| *k == "site"));
+        // An endpoint that doesn't support `status` → skipped entirely (the active
+        // `status` filter can't be satisfied).
+        assert!(endpoint_params("edge", &f, &["tenant", "role"]).is_none());
     }
 
     #[test]

@@ -385,12 +385,21 @@ async fn region_by_id_hits_detail_endpoint() {
 
 #[tokio::test]
 async fn region_by_unknown_id_returns_none() {
-    // A numeric ref that 404s on the detail endpoint is unresolved (None), not an
+    // A numeric ref that 404s on the detail endpoint falls through to the
+    // slug/name lookups; when those also miss it's unresolved (None), not an
     // error — search maps that to a not-found (exit 4) up the stack.
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/dcim/regions/999/"))
         .respond_with(ResponseTemplate::new(404).set_body_json(json!({"detail": "Not found."})))
+        .mount(&server)
+        .await;
+    // The fall-through slug/name__ie/name__ic lookups all come back empty.
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/regions/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 0, "next": null, "previous": null, "results": []
+        })))
         .mount(&server)
         .await;
 

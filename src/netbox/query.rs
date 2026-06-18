@@ -350,13 +350,17 @@ impl NetBoxClient {
     }
 
     /// Resolve a site by numeric id, then slug, then exact name, then
-    /// name-contains. The id fast-path hits the detail endpoint directly (404 →
-    /// `None`), so `--site 5` resolves; mirrors [`tenant_by_ref`](Self::tenant_by_ref).
+    /// name-contains. The id fast-path hits the detail endpoint directly; a hit
+    /// returns immediately (so `--site 5` resolves), but a 404 FALLS THROUGH to
+    /// the slug/name lookups — a site whose slug or name is itself numeric (e.g.
+    /// `"5"`) still resolves. Mirrors [`tenant_by_ref`](Self::tenant_by_ref).
     pub async fn site_by_ref(&self, value: &str) -> Result<Option<Site>> {
-        if let Ok(id) = value.parse::<u64>() {
-            return self
-                .get_optional(&format!("/api/dcim/sites/{id}/"), &[])
-                .await;
+        if let Ok(id) = value.parse::<u64>()
+            && let Some(s) = self
+                .get_optional::<Site>(&format!("/api/dcim/sites/{id}/"), &[])
+                .await?
+        {
+            return Ok(Some(s));
         }
         let by_slug: Page<Site> = self
             .list(Endpoint::Sites, vec![("slug", value.to_string())])
@@ -379,13 +383,16 @@ impl NetBoxClient {
     /// Resolve a region by numeric id, then slug, then exact name, then
     /// name-contains. Mirrors [`site_by_ref`](Self::site_by_ref); used to
     /// translate `--region` into a numeric id for prefix `scope_type=dcim.region`
-    /// filtering. The id fast-path hits the detail endpoint (404 → `None`), so
-    /// `--region 5` resolves.
+    /// filtering. The id fast-path hits the detail endpoint; a hit returns
+    /// immediately (so `--region 5` resolves), but a 404 FALLS THROUGH to the
+    /// slug/name lookups (a numeric slug/name still resolves).
     pub async fn region_by_ref(&self, value: &str) -> Result<Option<Region>> {
-        if let Ok(id) = value.parse::<u64>() {
-            return self
-                .get_optional(&format!("/api/dcim/regions/{id}/"), &[])
-                .await;
+        if let Ok(id) = value.parse::<u64>()
+            && let Some(r) = self
+                .get_optional::<Region>(&format!("/api/dcim/regions/{id}/"), &[])
+                .await?
+        {
+            return Ok(Some(r));
         }
         let by_slug: Page<Region> = self
             .list(Endpoint::Regions, vec![("slug", value.to_string())])
@@ -409,12 +416,16 @@ impl NetBoxClient {
     /// name-contains. Mirrors [`site_by_ref`](Self::site_by_ref); used to
     /// translate `--site-group` into a numeric id for prefix
     /// `scope_type=dcim.sitegroup` filtering. The id fast-path hits the detail
-    /// endpoint (404 → `None`), so `--site-group 5` resolves.
+    /// endpoint; a hit returns immediately (so `--site-group 5` resolves), but a
+    /// 404 FALLS THROUGH to the slug/name lookups (a numeric slug/name still
+    /// resolves).
     pub async fn site_group_by_ref(&self, value: &str) -> Result<Option<SiteGroup>> {
-        if let Ok(id) = value.parse::<u64>() {
-            return self
-                .get_optional(&format!("/api/dcim/site-groups/{id}/"), &[])
-                .await;
+        if let Ok(id) = value.parse::<u64>()
+            && let Some(g) = self
+                .get_optional::<SiteGroup>(&format!("/api/dcim/site-groups/{id}/"), &[])
+                .await?
+        {
+            return Ok(Some(g));
         }
         let by_slug: Page<SiteGroup> = self
             .list(Endpoint::SiteGroups, vec![("slug", value.to_string())])
@@ -438,12 +449,15 @@ impl NetBoxClient {
     /// name-contains. Mirrors [`site_by_ref`](Self::site_by_ref); used to
     /// translate `--location` into a numeric id for prefix
     /// `scope_type=dcim.location` filtering. The id fast-path hits the detail
-    /// endpoint (404 → `None`), so `--location 5` resolves.
+    /// endpoint; a hit returns immediately (so `--location 5` resolves), but a 404
+    /// FALLS THROUGH to the slug/name lookups (a numeric slug/name still resolves).
     pub async fn location_by_ref(&self, value: &str) -> Result<Option<Location>> {
-        if let Ok(id) = value.parse::<u64>() {
-            return self
-                .get_optional(&format!("/api/dcim/locations/{id}/"), &[])
-                .await;
+        if let Ok(id) = value.parse::<u64>()
+            && let Some(l) = self
+                .get_optional::<Location>(&format!("/api/dcim/locations/{id}/"), &[])
+                .await?
+        {
+            return Ok(Some(l));
         }
         let by_slug: Page<Location> = self
             .list(Endpoint::Locations, vec![("slug", value.to_string())])
@@ -466,12 +480,16 @@ impl NetBoxClient {
     /// Resolve a VRF by numeric id, then exact RD, then exact name, then
     /// name-contains. VRFs have no slug (unlike sites/regions), so the order is
     /// id → `rd` → `name__ie` → `name__ic`. Used to translate `--vrf` into a
-    /// numeric id for the `vrf_id=` search/list filter on IPs and prefixes.
+    /// numeric id for the `vrf_id=` search/list filter on IPs and prefixes. The id
+    /// fast-path hits the detail endpoint; a hit returns immediately, but a 404
+    /// FALLS THROUGH to the RD/name lookups (a numeric RD or name still resolves).
     pub async fn vrf_by_ref(&self, value: &str) -> Result<Option<Vrf>> {
-        if let Ok(id) = value.parse::<u64>() {
-            return self
-                .get_optional(&format!("/api/ipam/vrfs/{id}/"), &[])
-                .await;
+        if let Ok(id) = value.parse::<u64>()
+            && let Some(v) = self
+                .get_optional::<Vrf>(&format!("/api/ipam/vrfs/{id}/"), &[])
+                .await?
+        {
+            return Ok(Some(v));
         }
         let by_rd: Page<Vrf> = self
             .list(Endpoint::Vrfs, vec![("rd", value.to_string())])
@@ -1067,5 +1085,195 @@ mod tests {
         let bare: Vlan =
             serde_json::from_value(json!({"id": 4, "url": "u", "vid": 13, "name": "d"})).unwrap();
         assert_eq!(vlan_scope_label(&bare), "13 d");
+    }
+
+    // --- M4: numeric by-id 404 falls through to slug/name/RD lookup ---
+
+    #[tokio::test]
+    async fn site_by_ref_numeric_404_falls_through_to_slug() {
+        // A numeric `--site 5` whose id detail 404s must still resolve a site whose
+        // SLUG is literally "5" (the old fast-path returned None on 404).
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/sites/5/"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("Not Found"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/sites/"))
+            .and(query_param("slug", "5"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{"id": 42, "url": "u", "name": "Site Five", "slug": "5"}]
+            })))
+            .mount(&server)
+            .await;
+
+        let site = client_for(&server)
+            .site_by_ref("5")
+            .await
+            .expect("site lookup")
+            .expect("site resolved by slug after 404");
+        assert_eq!(site.id, 42);
+    }
+
+    #[tokio::test]
+    async fn site_by_ref_valid_id_returns_immediately() {
+        // A genuine id hit returns straight off the detail endpoint — no slug/name
+        // list calls (mounted `.expect(0)` to prove the fast-path short-circuits).
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/sites/9/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 9, "url": "u", "name": "iad1", "slug": "iad1"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/sites/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 0, "next": null, "previous": null, "results": []
+            })))
+            .expect(0)
+            .mount(&server)
+            .await;
+
+        let site = client_for(&server)
+            .site_by_ref("9")
+            .await
+            .expect("site lookup")
+            .expect("site resolved by id");
+        assert_eq!(site.id, 9);
+    }
+
+    #[tokio::test]
+    async fn region_by_ref_numeric_404_falls_through_to_slug() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/regions/5/"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("Not Found"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/regions/"))
+            .and(query_param("slug", "5"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{"id": 42, "url": "u", "name": "Region Five", "slug": "5"}]
+            })))
+            .mount(&server)
+            .await;
+
+        let region = client_for(&server)
+            .region_by_ref("5")
+            .await
+            .expect("region lookup")
+            .expect("region resolved by slug after 404");
+        assert_eq!(region.id, 42);
+    }
+
+    #[tokio::test]
+    async fn site_group_by_ref_numeric_404_falls_through_to_slug() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/site-groups/5/"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("Not Found"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/site-groups/"))
+            .and(query_param("slug", "5"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{"id": 42, "url": "u", "name": "Group Five", "slug": "5"}]
+            })))
+            .mount(&server)
+            .await;
+
+        let group = client_for(&server)
+            .site_group_by_ref("5")
+            .await
+            .expect("site-group lookup")
+            .expect("site-group resolved by slug after 404");
+        assert_eq!(group.id, 42);
+    }
+
+    #[tokio::test]
+    async fn location_by_ref_numeric_404_falls_through_to_slug() {
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/locations/5/"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("Not Found"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/locations/"))
+            .and(query_param("slug", "5"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{"id": 42, "url": "u", "name": "Location Five", "slug": "5"}]
+            })))
+            .mount(&server)
+            .await;
+
+        let loc = client_for(&server)
+            .location_by_ref("5")
+            .await
+            .expect("location lookup")
+            .expect("location resolved by slug after 404");
+        assert_eq!(loc.id, 42);
+    }
+
+    #[tokio::test]
+    async fn vrf_by_ref_numeric_404_falls_through_to_rd() {
+        // VRFs have no slug; a numeric `--vrf 5` that 404s must still resolve a VRF
+        // whose RD is literally "5".
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/vrfs/5/"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("Not Found"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/vrfs/"))
+            .and(query_param("rd", "5"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{"id": 42, "url": "u", "name": "vrf-five", "rd": "5"}]
+            })))
+            .mount(&server)
+            .await;
+
+        let vrf = client_for(&server)
+            .vrf_by_ref("5")
+            .await
+            .expect("vrf lookup")
+            .expect("vrf resolved by rd after 404");
+        assert_eq!(vrf.id, 42);
+    }
+
+    #[tokio::test]
+    async fn site_by_ref_numeric_404_with_no_other_match_is_none() {
+        // Numeric id 404s, and slug/name lookups all miss → unresolved (None, not
+        // an error). In search this becomes a not-found (exit 4).
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/sites/5/"))
+            .respond_with(ResponseTemplate::new(404).set_body_string("Not Found"))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/sites/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 0, "next": null, "previous": null, "results": []
+            })))
+            .mount(&server)
+            .await;
+
+        let resolved = client_for(&server)
+            .site_by_ref("5")
+            .await
+            .expect("site lookup");
+        assert!(resolved.is_none());
     }
 }

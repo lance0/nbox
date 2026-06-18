@@ -554,19 +554,47 @@ async fn search_with_site_scopes_prefixes_by_scope_type_and_id() {
         .mount(&server)
         .await;
 
-    // Devices/VLANs accept the site slug directly; the rest skip on `--site`.
+    // Devices/VLANs/VMs filter by the RESOLVED `site_id`, never the slug-only
+    // `?site=` (which would silently miss an id/display-name `--site`). Each comes
+    // back with a hit, proving it's queried with `site_id` and surfaced.
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
-        .and(query_param("site", "iad1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .and(query_param("site_id", "9"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 1, "url": "http://nb/api/dcim/devices/1/", "name": "10.1-edge",
+                "site": {"id": 9, "display": "iad1"}
+            }]
+        })))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/ipam/vlans/"))
-        .and(query_param("site", "iad1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .and(query_param("site_id", "9"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 5, "url": "http://nb/api/ipam/vlans/5/", "vid": 101, "name": "10.1-vlan",
+                "site": {"id": 9, "display": "iad1"}
+            }]
+        })))
         .mount(&server)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/api/virtualization/virtual-machines/"))
+        .and(query_param("site_id", "9"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 7, "url": "http://nb/api/virtualization/virtual-machines/7/",
+                "name": "10.1-vm", "site": {"id": 9, "display": "iad1"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+    // Clusters honor `--site` via the polymorphic scope; give an empty page.
+    mount_empty(&server, "/api/virtualization/clusters/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -587,6 +615,23 @@ async fn search_with_site_scopes_prefixes_by_scope_type_and_id() {
         .expect("site-scoped prefix surfaced");
     assert_eq!(prefix.display, "10.1.0.0/24");
     assert_eq!(prefix.subtitle.as_deref(), Some("iad1"));
+    // The device/VLAN/VM hits prove `site_id` filtering reaches them (the bug was
+    // them silently missing when `--site` wasn't a slug).
+    let device = results
+        .iter()
+        .find(|r| r.kind == ObjectKind::Device)
+        .expect("site-scoped device surfaced");
+    assert_eq!(device.display, "10.1-edge");
+    let vlan = results
+        .iter()
+        .find(|r| r.kind == ObjectKind::Vlan)
+        .expect("site-scoped VLAN surfaced");
+    assert_eq!(vlan.display, "101 10.1-vlan");
+    let vm = results
+        .iter()
+        .find(|r| r.kind == ObjectKind::Vm)
+        .expect("site-scoped VM surfaced");
+    assert_eq!(vm.display, "10.1-vm");
 }
 
 #[tokio::test]
@@ -716,15 +761,16 @@ async fn assert_scope_filters_prefixes(endpoint: &str, content_type: &str, filte
     mount_empty(&server, "/api/dcim/devices/").await;
     mount_empty(&server, "/api/virtualization/clusters/").await;
 
-    let results = client(&server)
-        .search(SearchRequest {
-            query: "10.2".into(),
-            limit: 25,
-            filters,
-        })
-        .await
-        .unwrap()
-        .results;
+    let c = client(&server);
+    // Box the fan-out future to keep it off the stack (clippy::large_futures).
+    let results = Box::pin(c.search(SearchRequest {
+        query: "10.2".into(),
+        limit: 25,
+        filters,
+    }))
+    .await
+    .unwrap()
+    .results;
 
     let prefix = results
         .iter()
@@ -779,14 +825,15 @@ async fn assert_unknown_scope_is_not_found(endpoint: &str, noun: &str, filters: 
     // Every lookup (`slug`, `name__ie`, `name__ic`) comes back empty.
     mount_empty(&server, endpoint).await;
 
-    let err = client(&server)
-        .search(SearchRequest {
-            query: "10.2".into(),
-            limit: 25,
-            filters,
-        })
-        .await
-        .expect_err("unknown scope ref should error, not return empty");
+    let c = client(&server);
+    // Box the fan-out future to keep it off the stack (clippy::large_futures).
+    let err = Box::pin(c.search(SearchRequest {
+        query: "10.2".into(),
+        limit: 25,
+        filters,
+    }))
+    .await
+    .expect_err("unknown scope ref should error, not return empty");
 
     assert_eq!(nbox::error::NboxError::exit_code_for(&err), 4);
     assert!(
@@ -874,15 +921,16 @@ async fn assert_scope_filters_clusters(endpoint: &str, content_type: &str, filte
     mount_empty(&server, "/api/ipam/prefixes/").await;
     mount_empty(&server, "/api/dcim/devices/").await;
 
-    let results = client(&server)
-        .search(SearchRequest {
-            query: "prod".into(),
-            limit: 25,
-            filters,
-        })
-        .await
-        .unwrap()
-        .results;
+    let c = client(&server);
+    // Box the fan-out future to keep it off the stack (clippy::large_futures).
+    let results = Box::pin(c.search(SearchRequest {
+        query: "prod".into(),
+        limit: 25,
+        filters,
+    }))
+    .await
+    .unwrap()
+    .results;
 
     let cluster = results
         .iter()
@@ -1203,19 +1251,28 @@ async fn search_combines_vrf_and_site_scope_on_prefixes() {
         .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
         .mount(&server)
         .await;
-    // IPs honor vrf (and skip on site since IPs can't carry `--site` here).
+    // Devices/VLANs/VMs filter by the resolved `site_id` (not the slug `?site=`);
+    // IPs skip on site since they can't carry `--site`. Clusters honor it via the
+    // polymorphic scope.
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
-        .and(query_param("site", "iad1"))
+        .and(query_param("site_id", "9"))
         .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/ipam/vlans/"))
-        .and(query_param("site", "iad1"))
+        .and(query_param("site_id", "9"))
         .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
         .mount(&server)
         .await;
+    Mock::given(method("GET"))
+        .and(path("/api/virtualization/virtual-machines/"))
+        .and(query_param("site_id", "9"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .mount(&server)
+        .await;
+    mount_empty(&server, "/api/virtualization/clusters/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -1279,4 +1336,198 @@ async fn search_region_scope_skips_non_prefix_non_device_non_cluster_endpoints()
         "no endpoint should have been hit that can't honor --region; errors: {:?}",
         outcome.errors
     );
+}
+
+/// Regression (H3): `search --site <id>` must filter devices/VLANs/VMs by the
+/// RESOLVED `site_id=<id>`, never the slug-only `?site=<id>` (which silently
+/// matches nothing — a numeric `--site` is an id, not a slug). The numeric ref is
+/// resolved straight off the site detail endpoint, then applied as `site_id`.
+#[tokio::test]
+async fn search_with_numeric_site_filters_devices_vlans_vms_by_site_id() {
+    let server = MockServer::start().await;
+
+    // Numeric `--site` → resolved via the detail endpoint (id 9).
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/sites/9/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 9, "url": "http://nb/api/dcim/sites/9/", "name": "iad1", "slug": "iad1"
+        })))
+        .mount(&server)
+        .await;
+
+    // Devices/VLANs/VMs each carry `site_id=9` and a hit comes back — proving the
+    // resolved id reaches them (the bug was a raw `site=9` slug query missing all).
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/"))
+        .and(query_param("site_id", "9"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 1, "url": "http://nb/api/dcim/devices/1/", "name": "edge01"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/vlans/"))
+        .and(query_param("site_id", "9"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 5, "url": "http://nb/api/ipam/vlans/5/", "vid": 10, "name": "edge"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/virtualization/virtual-machines/"))
+        .and(query_param("site_id", "9"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 7, "url": "http://nb/api/virtualization/virtual-machines/7/", "name": "edge-vm"}]
+        })))
+        .mount(&server)
+        .await;
+    // Prefixes + clusters honor `--site` via the polymorphic scope (empty here).
+    mount_empty(&server, "/api/ipam/prefixes/").await;
+    mount_empty(&server, "/api/virtualization/clusters/").await;
+    // The site-search branch hits `/api/dcim/sites/` with `q=` (no detail id).
+    mount_empty(&server, "/api/dcim/sites/").await;
+
+    let outcome = client(&server)
+        .search(SearchRequest {
+            query: "edge".into(),
+            limit: 25,
+            filters: SearchFilters {
+                site: Some("9".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+
+    assert!(outcome.errors.is_empty(), "errors: {:?}", outcome.errors);
+    let kinds: Vec<ObjectKind> = outcome.results.iter().map(|r| r.kind).collect();
+    assert!(kinds.contains(&ObjectKind::Device), "got: {kinds:?}");
+    assert!(kinds.contains(&ObjectKind::Vlan), "got: {kinds:?}");
+    assert!(kinds.contains(&ObjectKind::Vm), "got: {kinds:?}");
+}
+
+/// Regression (H3): `search --site <display-name>` resolves the name to an id and
+/// filters devices/VLANs/VMs by `site_id`, never the slug-only `?site=<name>`.
+#[tokio::test]
+async fn search_with_site_name_filters_devices_by_site_id() {
+    let server = MockServer::start().await;
+
+    // A display-name `--site`: slug + exact miss, `name__ic` resolves to id 9.
+    for key in ["slug", "name__ie"] {
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/sites/"))
+            .and(query_param(key, "IAD One"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+            .mount(&server)
+            .await;
+    }
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/sites/"))
+        .and(query_param("name__ic", "IAD One"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 9, "url": "http://nb/api/dcim/sites/9/", "name": "IAD One", "slug": "iad1"}]
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/"))
+        .and(query_param("site_id", "9"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 1, "url": "http://nb/api/dcim/devices/1/", "name": "edge01"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/vlans/"))
+        .and(query_param("site_id", "9"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/virtualization/virtual-machines/"))
+        .and(query_param("site_id", "9"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .mount(&server)
+        .await;
+    mount_empty(&server, "/api/ipam/prefixes/").await;
+    mount_empty(&server, "/api/virtualization/clusters/").await;
+    // The site-search branch (`q=`) — catch-all empty page.
+    mount_empty(&server, "/api/dcim/sites/").await;
+
+    let outcome = client(&server)
+        .search(SearchRequest {
+            query: "edge".into(),
+            limit: 25,
+            filters: SearchFilters {
+                site: Some("IAD One".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+
+    assert!(outcome.errors.is_empty(), "errors: {:?}", outcome.errors);
+    let device = outcome
+        .results
+        .iter()
+        .find(|r| r.kind == ObjectKind::Device)
+        .expect("name-resolved site filters devices by site_id");
+    assert_eq!(device.display, "edge01");
+}
+
+/// Regression (H3): `search --region <ref>` filters DEVICES by the resolved
+/// `region_id` (devices expose `region_id`/`site_group_id`/`location_id` cleanly),
+/// not a raw `region=` value. Confirms the id-based scopes also use `*_id`.
+#[tokio::test]
+async fn search_with_region_filters_devices_by_region_id() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/regions/"))
+        .and(query_param("slug", "us-east"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 3, "url": "http://nb/api/dcim/regions/3/", "name": "US East", "slug": "us-east"}]
+        })))
+        .mount(&server)
+        .await;
+    // The device endpoint must carry `region_id=3` (not a raw `region=`).
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/"))
+        .and(query_param("region_id", "3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 1, "url": "http://nb/api/dcim/devices/1/", "name": "edge01"}]
+        })))
+        .mount(&server)
+        .await;
+    // Prefixes + clusters honor a region scope; empty pages keep the fan-out clean.
+    mount_empty(&server, "/api/ipam/prefixes/").await;
+    mount_empty(&server, "/api/virtualization/clusters/").await;
+
+    let outcome = client(&server)
+        .search(SearchRequest {
+            query: "edge".into(),
+            limit: 25,
+            filters: SearchFilters {
+                region: Some("us-east".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+
+    assert!(outcome.errors.is_empty(), "errors: {:?}", outcome.errors);
+    let device = outcome
+        .results
+        .iter()
+        .find(|r| r.kind == ObjectKind::Device)
+        .expect("region-scoped device filtered by region_id");
+    assert_eq!(device.display, "edge01");
 }

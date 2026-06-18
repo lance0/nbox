@@ -52,7 +52,7 @@ nbox tenant <slug|name|id>
 nbox contact <name|id>
 nbox vm <name|id>
 nbox cluster <name|id>
-nbox search <query> [--limit N] [--status S] [--site SLUG] [--region SLUG] [--site-group SLUG] [--location SLUG] [--tenant SLUG] [--role SLUG] [--tag SLUG] [--vrf <id|rd|name>] [--cols a,b,c] [--partial]
+nbox search <query> [--limit N] [--status S] [--site <name|slug|id>] [--region <name|slug|id>] [--site-group <name|slug|id>] [--location <name|slug|id>] [--tenant SLUG] [--role SLUG] [--tag SLUG] [--vrf <id|rd|name>] [--cols a,b,c] [--partial]
 nbox tags
 nbox journal <kind> <ref>
 nbox open <kind>/<ref>
