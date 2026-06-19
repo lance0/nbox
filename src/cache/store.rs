@@ -1,14 +1,10 @@
-//! Cache storage backends.
+//! Cache storage.
 //!
 //! A [`CacheStore`] is a profile-scoped `key → bytes` map with a hard expiry. The
 //! orchestrator ([`super::Cache`]) serializes view models into the `bytes` and
-//! decides *freshness* (fresh vs. stale-but-serveable) from `fetched_at`; the
-//! store only persists entries and evicts ones past their `expires_at`.
-//!
-//! [`MemoryStore`] is always compiled (process-lifetime; used by the lean
-//! `--no-default-features` build and as the fallback when the on-disk store can't
-//! open). The on-disk SQLite backend lives in `super::sqlite`, behind the `cache`
-//! feature.
+//! reads `fetched_at` to report freshness; the store only holds entries and drops
+//! ones past their `expires_at`. The sole backend is the in-process, size-capped
+//! [`MemoryStore`] — nothing is written to disk.
 
 use std::collections::HashMap;
 use std::sync::Mutex;
@@ -44,10 +40,9 @@ impl CacheEntry {
     }
 }
 
-/// A profile-scoped cache backend. Implementations are cheap to share across
-/// async tasks (`Send + Sync`); calls are synchronous and fast (a local map or a
-/// single-row SQLite query), so the orchestrator invokes them inline rather than
-/// off the runtime.
+/// A profile-scoped cache backend. Cheap to share across async tasks
+/// (`Send + Sync`); calls are synchronous and fast (a local map), so the
+/// orchestrator invokes them inline rather than off the runtime.
 pub trait CacheStore: Send + Sync {
     /// The live entry for `(profile, key)`, or `None` if absent/expired. An
     /// expired hit is dropped as a side effect (lazy expiry).
@@ -62,9 +57,13 @@ pub trait CacheStore: Send + Sync {
     fn sweep(&self, now: UnixSecs);
 }
 
-/// An in-process [`CacheStore`] backed by a mutex-guarded map. Process-lifetime
-/// only — nothing survives a restart. Always compiled; the default build prefers
-/// the on-disk SQLite store and falls back to this when it can't be opened.
+/// Hard cap on the number of cached entries — a backstop so a long-lived TUI or
+/// MCP session can't grow the cache without bound. With the short de-dupe TTL the
+/// live working set is normally far smaller; this only guarantees an upper bound.
+const MAX_ENTRIES: usize = 1024;
+
+/// An in-process [`CacheStore`] backed by a mutex-guarded, size-capped map.
+/// Process-lifetime only — nothing survives a restart.
 #[derive(Debug, Default)]
 pub struct MemoryStore {
     entries: Mutex<HashMap<(String, String), CacheEntry>>,
@@ -102,10 +101,20 @@ impl CacheStore for MemoryStore {
     }
 
     fn put(&self, profile: &str, key: &str, entry: &CacheEntry) {
-        self.entries
-            .lock()
-            .unwrap()
-            .insert((profile.to_string(), key.to_string()), entry.clone());
+        let mut map = self.entries.lock().unwrap();
+        let k = (profile.to_string(), key.to_string());
+        // Stay within the cap: when inserting a new key into a full map, evict the
+        // oldest entry (smallest `fetched_at`). The scan is cheap at this size.
+        if !map.contains_key(&k)
+            && map.len() >= MAX_ENTRIES
+            && let Some(oldest) = map
+                .iter()
+                .min_by_key(|(_, e)| e.fetched_at)
+                .map(|(k, _)| k.clone())
+        {
+            map.remove(&oldest);
+        }
+        map.insert(k, entry.clone());
     }
 
     fn invalidate(&self, profile: &str, key: &str) {
@@ -198,6 +207,24 @@ mod tests {
         s.put("b", "k", &entry("b", 0, 100));
         s.clear(None);
         assert!(s.is_empty());
+    }
+
+    #[test]
+    fn put_evicts_oldest_when_over_capacity() {
+        let s = MemoryStore::new();
+        let over = u64::try_from(MAX_ENTRIES).unwrap() + 10;
+        for i in 0..over {
+            // Increasing fetched_at, so k0 is the oldest; long expiry so nothing
+            // expires during the test — only the cap should drop entries.
+            s.put("p", &format!("k{i}"), &entry("v", i, i + 1_000_000));
+        }
+        assert!(s.len() <= MAX_ENTRIES, "size stays bounded by the cap");
+        assert!(
+            s.get("p", "k0", 1).is_none(),
+            "the oldest entry was evicted"
+        );
+        let last = format!("k{}", over - 1);
+        assert!(s.get("p", &last, 1).is_some(), "the newest entry is kept");
     }
 
     #[test]

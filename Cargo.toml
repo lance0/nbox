@@ -79,13 +79,6 @@ ipnet = "2"
 # degrade gracefully. The apple/windows backends are cfg(target_os)-inert off-OS.
 keyring = { version = "=3.6.3", optional = true }
 
-# On-disk read cache (the `cache` feature, default-on). `bundled` compiles
-# vendored SQLite from C and links it statically — the documented fix for the
-# musl link failures, and it keeps the cross-built static binaries self-contained
-# (no runtime libsqlite3). The in-memory cache works without this dep, so the lean
-# `--no-default-features` build drops it cleanly.
-rusqlite = { version = "0.40", features = ["bundled"], optional = true }
-
 # Update notifications, later
 update-informer = { version = "1", default-features = false, features = ["github", "ureq", "rustls-tls"], optional = true }
 
@@ -124,12 +117,8 @@ libc = "0.2"
 # feature on (clipboard, http/MCP, native keyring, the update notifier). nbox ships
 # a single binary; `--no-default-features` is a dev-only lean stdio build, and the
 # D-Bus `keyring-secret-service` backend stays opt-in so the musl build links clean.
-default = ["cache", "clipboard", "http", "keyring", "updates"]
+default = ["clipboard", "http", "keyring", "updates"]
 clipboard = ["dep:arboard"]
-# On-disk SQLite read cache. Default-on (the flagship "local mirror" experience —
-# instant cold start, offline-ish browsing, cross-invocation reuse). The
-# in-memory cache is unconditional; this feature just adds the persistent backend.
-cache = ["dep:rusqlite"]
 updates = ["dep:update-informer"]
 # OS keyring token storage (`nbox config token`). Default-on like `http`. Selects
 # the apple/windows native backends, which are cfg(target_os)-inert off their OS,

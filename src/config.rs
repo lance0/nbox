@@ -179,37 +179,32 @@ impl Default for UiConfig {
     }
 }
 
-/// Local read-cache settings (the `[cache]` section). The cache stores assembled
-/// view models per profile so repeated reads (TUI back-navigation, chatty MCP
-/// agents, scripting loops) don't re-hit NetBox. Pure data — the runtime mapping
-/// to the cache engine lives in `crate::cache`.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// Local read-cache settings (the `[cache]` section). The cache is a small,
+/// in-memory store of assembled view models per profile, so a burst of identical
+/// reads (TUI back-navigation, a chatty MCP agent) doesn't re-hit NetBox. Pure
+/// data — the runtime engine lives in `crate::cache`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct CacheSettings {
     /// Master switch. When off, every read goes straight to NetBox.
     #[serde(default = "default_true")]
     pub enabled: bool,
-    /// Multiplies every TTL — the one knob to make the cache warmer (`2.0`) or
-    /// colder (`0.5`). Non-positive / non-finite values fall back to `1.0`.
-    #[serde(default = "default_ttl_scale")]
-    pub ttl_scale: f64,
-    /// Override the on-disk cache file path. Absent ⇒ the platform cache dir
-    /// (`$XDG_CACHE_HOME/nbox/cache.db` and equivalents).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub path: Option<String>,
+    /// How long (seconds) a cached value is reused before a fresh fetch. A short
+    /// de-dupe window, not a freshness window — clamped to 5–300s by the engine.
+    #[serde(default = "default_cache_ttl")]
+    pub ttl_secs: u64,
 }
 
 impl Default for CacheSettings {
     fn default() -> Self {
         Self {
             enabled: true,
-            ttl_scale: 1.0,
-            path: None,
+            ttl_secs: default_cache_ttl(),
         }
     }
 }
 
-fn default_ttl_scale() -> f64 {
-    1.0
+fn default_cache_ttl() -> u64 {
+    30
 }
 
 /// A single NetBox connection profile.
