@@ -21,6 +21,33 @@ pub enum PaletteCommand {
     Config,
     /// Re-run the last search.
     Refresh,
+    /// Set one or more search filters (`key=value` pairs). An empty value clears
+    /// that key. Applied on top of the active filters, then the last query re-runs.
+    Filter(Vec<(String, String)>),
+    /// Clear all active search filters.
+    ClearFilters,
+}
+
+/// The filter keys the TUI accepts, mirroring the CLI/MCP allowlist — shown in
+/// usage errors. (`site-group` and `site_group` are both accepted.)
+const FILTER_KEYS_HELP: &str = "status site region site-group location tenant role tag vrf";
+
+/// Whether `key` is an accepted filter key (case-insensitive). The input layer is
+/// an allowlist too, so the TUI can never send NetBox an unknown query param.
+fn is_filter_key(key: &str) -> bool {
+    matches!(
+        key.to_ascii_lowercase().as_str(),
+        "status"
+            | "site"
+            | "region"
+            | "site-group"
+            | "site_group"
+            | "location"
+            | "tenant"
+            | "role"
+            | "tag"
+            | "vrf"
+    )
 }
 
 /// Parse palette input. Unknown verbs are treated as a bare search query.
@@ -77,6 +104,44 @@ pub fn parse(input: &str) -> Result<PaletteCommand, String> {
         }
         "config" | "cfg" => Ok(PaletteCommand::Config),
         "refresh" | "r" => Ok(PaletteCommand::Refresh),
+        // `filter` alone clears; `filter k=v …` sets one or more (allowlisted keys).
+        "filter" => {
+            if rest.is_empty() {
+                return Ok(PaletteCommand::ClearFilters);
+            }
+            let mut pairs = Vec::new();
+            for tok in rest.split_whitespace() {
+                let (k, v) = tok.split_once('=').ok_or_else(|| {
+                    format!(
+                        "usage: filter key=value … (keys: {FILTER_KEYS_HELP}); 'filter' clears all"
+                    )
+                })?;
+                if !is_filter_key(k) {
+                    return Err(format!(
+                        "unknown filter key '{k}'; keys: {FILTER_KEYS_HELP}"
+                    ));
+                }
+                pairs.push((k.to_string(), v.to_string()));
+            }
+            Ok(PaletteCommand::Filter(pairs))
+        }
+        // `unfilter k …` clears one or more keys.
+        "unfilter" => {
+            if rest.is_empty() {
+                return Err(format!("usage: unfilter <key> (keys: {FILTER_KEYS_HELP})"));
+            }
+            let mut pairs = Vec::new();
+            for k in rest.split_whitespace() {
+                if !is_filter_key(k) {
+                    return Err(format!(
+                        "unknown filter key '{k}'; keys: {FILTER_KEYS_HELP}"
+                    ));
+                }
+                pairs.push((k.to_string(), String::new()));
+            }
+            Ok(PaletteCommand::Filter(pairs))
+        }
+        "clear-filters" => Ok(PaletteCommand::ClearFilters),
         // Anything else: treat the whole input as a search query.
         _ => Ok(PaletteCommand::Search(input.to_string())),
     }
@@ -157,5 +222,37 @@ mod tests {
         assert!(parse("theme").is_err());
         assert!(parse("profile").is_err());
         assert!(parse("   ").is_err());
+    }
+
+    #[test]
+    fn parses_filter_set_clear_and_unfilter() {
+        assert_eq!(
+            parse("filter status=active site=dc1").unwrap(),
+            PaletteCommand::Filter(vec![
+                ("status".into(), "active".into()),
+                ("site".into(), "dc1".into()),
+            ])
+        );
+        // bare `filter` (and `clear-filters`) clear everything.
+        assert_eq!(parse("filter").unwrap(), PaletteCommand::ClearFilters);
+        assert_eq!(
+            parse("clear-filters").unwrap(),
+            PaletteCommand::ClearFilters
+        );
+        // `unfilter k …` clears specific keys (empty value).
+        assert_eq!(
+            parse("unfilter status vrf").unwrap(),
+            PaletteCommand::Filter(vec![
+                ("status".into(), String::new()),
+                ("vrf".into(), String::new()),
+            ])
+        );
+    }
+
+    #[test]
+    fn filter_rejects_unknown_keys_and_bad_syntax() {
+        assert!(parse("filter bogus=1").is_err(), "unknown key");
+        assert!(parse("filter status").is_err(), "missing '='");
+        assert!(parse("unfilter bogus").is_err(), "unknown key");
     }
 }

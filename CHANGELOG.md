@@ -21,6 +21,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Config modal). Set the tracing filter (e.g. `nbox=debug`) and a log-file path from
   the TUI; both persist to `config.toml` (format-preserving) and apply on the next
   launch (tracing initializes at startup).
+- **TUI search filters.** The TUI now applies the same filters as the CLI search —
+  `status` / `site` / `region` / `site-group` / `location` / `tenant` / `role` /
+  `tag` / `vrf` — via the command palette: `filter status=active site=dc1`,
+  `unfilter <key>`, and `filter` (or `clear-filters`) to clear. Filters ride every
+  search through the existing resolver (scope mutual-exclusion, VRF-by-ref,
+  per-endpoint allowlist), so unknown keys are rejected and the TUI never sends an
+  unknown query param. Setting a filter re-runs the last query.
 
 ### Changed
 - The TUI profile switcher (`P` / `Ctrl+P`) now cycles profiles in **config-file

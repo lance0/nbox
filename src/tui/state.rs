@@ -13,7 +13,7 @@ use crate::config::ProfileConfig;
 use crate::domain::detail::DetailView;
 use crate::netbox::auth::AuthScheme;
 use crate::netbox::client::NetBoxClient;
-use crate::netbox::search::{ObjectKind, SearchOutcome, SearchResult};
+use crate::netbox::search::{ObjectKind, SearchFilters, SearchOutcome, SearchResult};
 use crate::tui::cheese::{Spinner, TextInput};
 use crate::tui::config_modal::{ConfigModal, ModalOutcome, ProfilesMode, TestState};
 use crate::tui::palette::{self, PaletteCommand};
@@ -218,6 +218,9 @@ pub enum AppCommand {
     Search {
         query: String,
         req: RequestId,
+        /// The active search filters, snapshotted at dispatch (the dispatcher has
+        /// no `App` handle). Resolved by `NetBoxClient::search`, exactly as the CLI.
+        filters: SearchFilters,
     },
     LoadDetail {
         kind: ObjectKind,
@@ -396,6 +399,11 @@ pub struct App {
     /// The `:` command-palette line editor — same cheese-backed wrapper.
     pub command_input: TextInput,
     pub last_query: Option<String>,
+    /// Active search filters (status / scope / tenant / role / tag / vrf), applied
+    /// to every search. Set via the palette `filter k=v` verb (and, later, the
+    /// chips bar / `f` modal). Fed to `NetBoxClient::search` through
+    /// [`AppCommand::Search`] — the same resolver the CLI uses.
+    pub filters: SearchFilters,
 
     pub results: Vec<SearchResult>,
     /// Indices into `results` in display order (fuzzy-filtered while searching).
@@ -521,6 +529,7 @@ impl App {
             search_input: TextInput::new("search NetBox…"),
             command_input: TextInput::new("command (e.g. device edge01)"),
             last_query: None,
+            filters: SearchFilters::default(),
             results: Vec::new(),
             view: Vec::new(),
             selected: 0,
@@ -1557,7 +1566,7 @@ impl App {
                     }
                     self.last_query = Some(query.clone());
                     self.set_status(format!("searching {query}…"), Severity::Info);
-                    return vec![AppCommand::Search { query, req: 0 }];
+                    return vec![self.search_cmd(query)];
                 }
             }
             _ => {
@@ -1593,6 +1602,138 @@ impl App {
     }
 
     /// Map a parsed palette command onto state changes / commands.
+    /// Build an [`AppCommand::Search`] for `query` carrying the active filters. The
+    /// `req` is a placeholder (`0`) — the dispatcher stamps the real channel id.
+    fn search_cmd(&self, query: String) -> AppCommand {
+        AppCommand::Search {
+            query,
+            req: 0,
+            filters: self.filters.clone(),
+        }
+    }
+
+    /// A compact `key=value` summary of the active filters (display order), or an
+    /// empty string when none are set. Pure; reused by the status line (and, later,
+    /// the chips bar).
+    fn filters_summary(&self) -> String {
+        let f = &self.filters;
+        [
+            ("status", &f.status),
+            ("site", &f.site),
+            ("region", &f.region),
+            ("site-group", &f.site_group),
+            ("location", &f.location),
+            ("tenant", &f.tenant),
+            ("role", &f.role),
+            ("tag", &f.tag),
+            ("vrf", &f.vrf),
+        ]
+        .into_iter()
+        .filter_map(|(k, v)| v.as_ref().map(|v| format!("{k}={v}")))
+        .collect::<Vec<_>>()
+        .join(" ")
+    }
+
+    /// Apply one `key=value` filter pair to [`Self::filters`]; an empty value
+    /// clears the key. The four scope keys (site/region/site-group/location) are
+    /// mutually exclusive, so setting one clears the others (the resolver enforces
+    /// this too — this just keeps the active set coherent).
+    fn apply_filter_pair(&mut self, key: &str, value: &str) {
+        let v = {
+            let t = value.trim();
+            (!t.is_empty()).then(|| t.to_string())
+        };
+        let setting = v.is_some();
+        let f = &mut self.filters;
+        match key.to_ascii_lowercase().as_str() {
+            "status" => f.status = v,
+            "tenant" => f.tenant = v,
+            "role" => f.role = v,
+            "tag" => f.tag = v,
+            "vrf" => f.vrf = v,
+            "site" => {
+                f.site = v;
+                if setting {
+                    f.region = None;
+                    f.site_group = None;
+                    f.location = None;
+                }
+            }
+            "region" => {
+                f.region = v;
+                if setting {
+                    f.site = None;
+                    f.site_group = None;
+                    f.location = None;
+                }
+            }
+            "site-group" | "site_group" => {
+                f.site_group = v;
+                if setting {
+                    f.site = None;
+                    f.region = None;
+                    f.location = None;
+                }
+            }
+            "location" => {
+                f.location = v;
+                if setting {
+                    f.site = None;
+                    f.region = None;
+                    f.site_group = None;
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Set one or more filter pairs, then re-run the last query so results reflect
+    /// the new filters (or stage them with a status when there's no query yet).
+    fn set_filters(&mut self, pairs: Vec<(String, String)>) -> Vec<AppCommand> {
+        if self.fence_during_switch() {
+            return Vec::new();
+        }
+        for (k, v) in &pairs {
+            self.apply_filter_pair(k, v);
+        }
+        self.after_filter_change()
+    }
+
+    /// Clear all active filters, then re-run the last query.
+    fn clear_filters(&mut self) -> Vec<AppCommand> {
+        if self.fence_during_switch() {
+            return Vec::new();
+        }
+        self.filters = SearchFilters::default();
+        self.after_filter_change()
+    }
+
+    /// Shared tail of a filter change: a status, plus a re-run of the last query so
+    /// the change takes effect (filters apply to the next search if there is none).
+    fn after_filter_change(&mut self) -> Vec<AppCommand> {
+        let summary = self.filters_summary();
+        match self.last_query.clone() {
+            Some(query) => {
+                let msg = if summary.is_empty() {
+                    format!("filters cleared; refreshing '{query}'…")
+                } else {
+                    format!("filters [{summary}]; refreshing '{query}'…")
+                };
+                self.set_status(msg, Severity::Info);
+                vec![self.search_cmd(query)]
+            }
+            None => {
+                let msg = if summary.is_empty() {
+                    "filters cleared".to_string()
+                } else {
+                    format!("filters [{summary}] — run a search to apply")
+                };
+                self.set_status(msg, Severity::Info);
+                Vec::new()
+            }
+        }
+    }
+
     fn apply_palette(&mut self, cmd: PaletteCommand) -> Vec<AppCommand> {
         // Fence palette fetches mid-switch so they don't hit the old client; the
         // theme/open/copy/profile verbs below are unaffected (no fetch, or the
@@ -1615,7 +1756,7 @@ impl App {
                 }
                 self.last_query = Some(query.clone());
                 self.set_status(format!("searching {query}…"), Severity::Info);
-                vec![AppCommand::Search { query, req: 0 }]
+                vec![self.search_cmd(query)]
             }
             PaletteCommand::Open => match self.selected_result() {
                 Some(r) => vec![AppCommand::OpenBrowser {
@@ -1650,7 +1791,7 @@ impl App {
                 match self.last_query.clone() {
                     Some(query) => {
                         self.set_status(format!("refreshing {query}…"), Severity::Info);
-                        vec![AppCommand::Search { query, req: 0 }]
+                        vec![self.search_cmd(query)]
                     }
                     None => {
                         self.set_status("nothing to refresh", Severity::Warning);
@@ -1658,6 +1799,8 @@ impl App {
                     }
                 }
             }
+            PaletteCommand::Filter(pairs) => self.set_filters(pairs),
+            PaletteCommand::ClearFilters => self.clear_filters(),
         }
     }
 
@@ -1790,7 +1933,7 @@ impl App {
             && let Some(query) = self.last_query.clone()
         {
             self.pending_reselect = self.selected_result().map(|r| (r.kind, r.id));
-            return vec![AppCommand::Search { query, req: 0 }];
+            return vec![self.search_cmd(query)];
         }
         Vec::new()
     }
@@ -1820,7 +1963,7 @@ impl App {
                 Some(query) => {
                     self.pending_reselect = self.selected_result().map(|r| (r.kind, r.id));
                     self.set_status(format!("refreshing {query}…"), Severity::Info);
-                    vec![AppCommand::Search { query, req: 0 }]
+                    vec![self.search_cmd(query)]
                 }
                 None => {
                     self.set_status("nothing to refresh", Severity::Warning);
@@ -3099,6 +3242,45 @@ mod tests {
             cmds.as_slice(),
             [AppCommand::LoadByRef { kind: ObjectKind::Device, value, .. }] if value == "edge01"
         ));
+    }
+
+    #[test]
+    fn palette_filter_sets_scopes_exclusively_and_reruns_query() {
+        let mut a = app();
+        a.last_query = Some("edge".into());
+        // Set two filters → re-runs the last query carrying them.
+        let cmds = a.apply_palette(PaletteCommand::Filter(vec![
+            ("status".into(), "active".into()),
+            ("site".into(), "dc1".into()),
+        ]));
+        assert_eq!(a.filters.status.as_deref(), Some("active"));
+        assert_eq!(a.filters.site.as_deref(), Some("dc1"));
+        assert!(matches!(
+            cmds.as_slice(),
+            [AppCommand::Search { query, filters, .. }]
+                if query == "edge" && filters.site.as_deref() == Some("dc1")
+        ));
+        // Scope is mutually exclusive: setting region clears the site.
+        a.apply_palette(PaletteCommand::Filter(vec![(
+            "region".into(),
+            "us-east".into(),
+        )]));
+        assert_eq!(a.filters.region.as_deref(), Some("us-east"));
+        assert_eq!(
+            a.filters.site, None,
+            "setting a scope clears the sibling scopes"
+        );
+        // An empty value clears just that key.
+        a.apply_palette(PaletteCommand::Filter(vec![(
+            "status".into(),
+            String::new(),
+        )]));
+        assert_eq!(a.filters.status, None);
+        assert_eq!(a.filters.region.as_deref(), Some("us-east"));
+        // ClearFilters wipes everything.
+        a.apply_palette(PaletteCommand::ClearFilters);
+        assert_eq!(a.filters.region, None);
+        assert_eq!(a.filters_summary(), "");
     }
 
     #[test]
