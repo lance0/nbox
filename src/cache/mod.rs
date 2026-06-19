@@ -14,7 +14,9 @@
 //! `fetched_at`; the store only persists and evicts.
 
 mod key;
+mod orchestrator;
 mod store;
 
 pub use key::{CacheKey, profile_partition};
+pub use orchestrator::{Cache, CacheConfig, Cached, Freshness, Source, Tier};
 pub use store::{CacheEntry, CacheStore, MemoryStore, UnixSecs, now_unix};
