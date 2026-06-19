@@ -104,7 +104,7 @@ jsonwebtoken = { version = "10", default-features = false, features = ["rust_cry
 # prefix keeps a session correlatable across its requests without writing the
 # raw session token to the log. Already in the tree via `jsonwebtoken`'s
 # `rust_crypto`; declared here so the direct use is explicit and version-pinned.
-sha2 = { version = "0.10", optional = true }
+sha2 = { version = "0.11", optional = true }
 
 # Unix syscalls — used in `main` to reset the SIGPIPE disposition to SIG_DFL so a
 # closed stdout pipe (e.g. `nbox … | head`) terminates the process normally
@@ -154,7 +154,7 @@ wiremock = "0.6"
 # private key via `jsonwebtoken`. Gated by the http-only tests at use sites.
 # `rand` 0.8 supplies the RNG for keygen (matches `rsa`'s `rand_core` 0.6).
 rsa = { version = "0.9", features = ["pem"] }
-rand = "0.8"
+rand = "0.10"
 base64 = "0.22"
 
 # Lints apply to every target of the package — lib, bin, AND the integration
