@@ -154,7 +154,7 @@ Consolidated future scope:
 - ☐ GraphQL capability probing v2 if schema churn demands it: dynamic `*Filter` discovery and/or a
   short TTL cache keyed by instance/profile to avoid re-probing when users bounce between profiles
   pointing at the same NetBox.
-- ◐ **Local cache (2026-06-19).** A small, bounded **in-memory** view-model cache (keyed by
+- ☑ **Local cache (2026-06-19).** A small, bounded **in-memory** view-model cache (keyed by
   profile+kind+ref) so a burst of identical reads doesn't re-hit NetBox. Single short TTL (default 30s,
   a *de-dupe* window, not a freshness window — nothing is served past TTL); `r`/auto-refresh/profile-
   switch always bust; a dim "cached Ns ago" footer chip surfaces age. Shipped for TUI **detail**
@@ -166,9 +166,11 @@ Consolidated future scope:
   `nbox cache clear` (nothing persistent to bypass or clear). The cache is a long-lived-process feature.
   ☑ **MCP cache** — `nbox serve` reads (`nbox_get`) go through the cache (chatty agents re-reading the
   same object graph de-dupe within the TTL), with an `nbox_cache_clear` tool so agents can force fresh
-  reads after out-of-band changes. Remaining: ☐ MCP `cached_at`/age annotation on responses (optional —
-  short TTL + the clear tool cover most of it); ☐ **preview-pane caching** (route the results preview
-  through the same cache so scrolling back over seen rows is instant and warms detail opens).
+  reads after out-of-band changes. ☑ **Preview-pane caching** — the results preview shares the detail
+  cache key, so scrolling back over seen rows is instant and a preview warms the cache for opening that
+  object (and vice versa). Cache is now complete across surfaces (TUI detail + preview, settings toggle,
+  MCP reads + clear; CLI intentionally none). Optional follow-up: ☐ MCP `cached_at`/age annotation
+  (short TTL + the clear tool already cover most of it).
 - ☐ **Single binary.** Ship one canonical full-featured binary per platform: the default feature set
   carries every cross-platform user feature (`http`, native `keyring`, `clipboard`, `updates`), no
   feature-variant artifacts. `--no-default-features` stays a dev-only lean build;
