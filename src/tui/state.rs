@@ -446,6 +446,11 @@ pub struct App {
     pub pending_reselect: Option<(ObjectKind, u64)>,
     pub recent: Vec<RecentItem>,
     pub detail: Option<DetailView>,
+    /// Per-object detail view state — `(kind, id) → (tab, scroll)` — so re-opening
+    /// (or refreshing) an object you've already looked at restores its tab and
+    /// scroll instead of snapping back to the summary at the top. Captured when a
+    /// detail is left or replaced; cleared on a profile switch.
+    detail_view_state: std::collections::HashMap<(ObjectKind, u64), (usize, u16)>,
     /// Active detail tab: 0 = summary, n>0 = `detail.tabs[n-1]`.
     pub detail_tab: usize,
     /// Vertical scroll offset (in lines) of the detail body. The pure scroll
@@ -575,6 +580,7 @@ impl App {
             request_seq: 0,
             search_gen: 0,
             detail_gen: 0,
+            detail_view_state: std::collections::HashMap::new(),
             dashboard_gen: 0,
             dashboard: None,
             dashboard_error: None,
@@ -778,9 +784,16 @@ impl App {
                     Ok(view) => {
                         self.record_recent(view.kind, view.id, view.title.clone());
                         self.navigate_to(Screen::Detail);
+                        // Snapshot the outgoing detail, then restore this object's
+                        // saved tab/scroll (summary/top if it's the first visit).
+                        self.save_detail_view_state();
+                        let key = (view.kind, view.id);
+                        let max_tab = view.tabs.len();
                         self.detail = Some(view);
-                        self.detail_tab = 0;
-                        self.detail_scroll = 0;
+                        let (tab, scroll) =
+                            self.detail_view_state.get(&key).copied().unwrap_or((0, 0));
+                        self.detail_tab = tab.min(max_tab);
+                        self.detail_scroll = scroll.min(self.detail_max_scroll());
                         self.clear_status();
                     }
                     Err(e) => self.set_status(format!("error: {e:#}"), Severity::Error),
@@ -1928,7 +1941,19 @@ impl App {
 
     /// Pop back to the previous screen, or Home if the stack is empty.
     fn go_back(&mut self) {
+        if self.screen == Screen::Detail {
+            self.save_detail_view_state();
+        }
         self.screen = self.history.pop().unwrap_or(Screen::Home);
+    }
+
+    /// Snapshot the loaded detail's tab + scroll under its `(kind, id)`, so
+    /// re-opening or refreshing the same object restores them.
+    fn save_detail_view_state(&mut self) {
+        if let Some(d) = &self.detail {
+            self.detail_view_state
+                .insert((d.kind, d.id), (self.detail_tab, self.detail_scroll));
+        }
     }
 
     /// Whether a search is currently showing — results on screen or a remembered
@@ -2269,6 +2294,7 @@ impl App {
         self.recent.clear();
         self.selected = 0;
         self.detail = None;
+        self.detail_view_state.clear();
         self.detail_tab = 0;
         self.detail_scroll = 0;
         self.preview = None;
@@ -3998,6 +4024,26 @@ mod tests {
             }),
         );
         a.sync_detail_viewport(viewport);
+    }
+
+    #[test]
+    fn detail_scroll_restores_on_re_entry() {
+        let mut a = app();
+        // 30 lines in a 10-row pane → scrollable.
+        detail_with_body_lines(&mut a, 30, 10);
+        for _ in 0..5 {
+            a.handle_event(press(KeyCode::Char('j')));
+        }
+        let scrolled = a.detail_scroll;
+        assert!(scrolled > 0, "scrolled down");
+        // Back to Home (snapshots the detail's scroll), then re-open the same object.
+        a.handle_event(press(KeyCode::Char('b')));
+        assert_eq!(a.screen, Screen::Home);
+        detail_with_body_lines(&mut a, 30, 10);
+        assert_eq!(
+            a.detail_scroll, scrolled,
+            "the per-object scroll is restored on re-entry"
+        );
     }
 
     #[test]

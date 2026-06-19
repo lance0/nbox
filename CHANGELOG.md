@@ -61,6 +61,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - TUI results table polish: the **KIND** column is now colored by NetBox domain
   (hosts / addressing / locations / circuits / tenancy) so it's scannable, and the
   selected row uses a solid gutter bar (`▌`) instead of `>`. Cosmetic only.
+- TUI context preservation: a detail's **tab + scroll position are remembered per
+  object**, so re-opening (or refreshing) something you've already looked at
+  restores where you were instead of snapping back to the summary at the top. (The
+  home cursor, active filters, and the loaded dashboard were already kept across
+  navigation.)
 - The update notifier now ships in the **default** build, so a released binary
   tells you when a newer version is available. It checks GitHub on a background
   thread, only on a TTY and never in `--json`/piped output, so scripts are
