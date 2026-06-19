@@ -200,7 +200,16 @@ fn dash_block(title: &'static str, theme: &Theme) -> Block<'static> {
 /// else the graph color). Pure-ish — returns styled spans for one cell.
 fn util_bar(pct: u8, width: u16, theme: &Theme) -> Vec<Span<'static>> {
     let width = width.max(1);
-    let filled = u16::try_from(u32::from(pct) * u32::from(width) / 100).unwrap_or(width);
+    // Floor the fill (only a true 100% fills every cell), but never let a non-zero
+    // utilization round down to an empty bar — a sliver still shows one block, so
+    // e.g. 10% on a narrow bar reads as a little progress rather than nothing.
+    let filled = if pct == 0 {
+        0
+    } else {
+        u16::try_from((u32::from(pct) * u32::from(width) / 100).max(1))
+            .unwrap_or(width)
+            .min(width)
+    };
     let empty = width.saturating_sub(filled);
     let color = if pct >= 90 {
         theme.error
@@ -381,10 +390,11 @@ fn tree_branch(
     s
 }
 
-/// A compact `███░░ 92%` utilization cell, colored by severity, for a tree row.
+/// A compact `███░░░░░░░ 92%` utilization cell, colored by severity, for a tree
+/// row. Ten cells so low single-digit/teens percentages still show a block.
 fn tree_util(pct: u8, theme: &Theme) -> Vec<Span<'static>> {
     let mut spans = vec![Span::raw("  ")];
-    spans.extend(util_bar(pct, 6, theme));
+    spans.extend(util_bar(pct, 10, theme));
     spans
 }
 
@@ -1962,6 +1972,23 @@ mod tests {
             "tree footer mentions collapse"
         );
         assert!(nav.contains("Enter open"), "tree footer mentions open");
+    }
+
+    #[test]
+    fn util_bar_floors_fill_but_keeps_nonzero_visible() {
+        let theme = Theme::default_theme();
+        // The first span is the filled run; its char count is the cell count.
+        let filled = |pct, w| util_bar(pct, w, &theme)[0].content.chars().count();
+        assert_eq!(filled(0, 10), 0, "zero → empty");
+        assert_eq!(
+            filled(5, 10),
+            1,
+            "a sliver still shows one block, not nothing"
+        );
+        assert_eq!(filled(10, 10), 1, "10% of 10 → one block");
+        assert_eq!(filled(50, 10), 5);
+        assert_eq!(filled(99, 10), 9, "99% does not round up to full");
+        assert_eq!(filled(100, 10), 10, "only a true 100% fills every cell");
     }
 
     #[test]
