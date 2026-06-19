@@ -1047,7 +1047,12 @@ fn render_config(
         return;
     }
 
-    let popup = centered_popup(area, 60, area.height.saturating_sub(4));
+    // Size to content, capped to the screen — the ttl/xfr modal idiom
+    // (`base_height.min(area.height - 4)`), so the modal floats as a centered box
+    // instead of filling the screen like a page. `CONTENT_H` covers the tallest
+    // section (the profile add/edit form); on a standard 80x24 it's unchanged.
+    const CONTENT_H: u16 = 20;
+    let popup = centered_popup(area, 60, CONTENT_H.min(area.height.saturating_sub(4)));
     frame.render_widget(Clear, popup);
 
     let section_label = match modal.section {
@@ -1525,12 +1530,14 @@ fn footer_nav(app: &App) -> &'static str {
             " / search · j/k scroll · g/G top/bottom · Tab results · Enter open · o/y open/copy · r refresh · ? help · q quit "
         }
         Screen::Home => {
-            " / search · j/k move · Enter open · Tab preview · o/y open/copy · r refresh · t theme · ? help · q quit "
+            " / search · j/k move · Enter open · D dash · T tree · S settings · Tab preview · o/y open/copy · r refresh · t theme · ? help · q quit "
         }
         Screen::Detail => {
             " j/k scroll · g/G top/bottom · i/p/c/v/s tabs · o/y open/copy · b back · r refresh · t theme · ? help · q quit "
         }
-        Screen::Dashboard => " r refresh · b/Esc back · D home · / search · ? help · q quit ",
+        Screen::Dashboard => {
+            " r refresh · b/Esc back · T tree · S settings · / search · ? help · q quit "
+        }
         Screen::PrefixTree => {
             " j/k move · Space/←/→ collapse/expand · Enter open · o/y open/copy · r refresh · b/Esc back · ? help · q quit "
         }
