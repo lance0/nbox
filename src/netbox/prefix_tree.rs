@@ -98,7 +98,56 @@ pub fn build_nodes(prefixes: Vec<Prefix>) -> Vec<PrefixNode> {
         (Some(_), None) => std::cmp::Ordering::Greater,
         (Some(x), Some(y)) => x.cmp(y),
     });
+    fill_child_coverage(&mut nodes);
     nodes
+}
+
+/// Parse the prefix length (the number after `/`) from a CIDR. Pure.
+fn prefix_len(cidr: &str) -> Option<u32> {
+    cidr.rsplit('/').next()?.trim().parse().ok()
+}
+
+/// Fill in each container prefix's utilization the API no longer provides
+/// (NetBox 4.5 dropped the `utilization` field): for a prefix with child
+/// prefixes, utilization is the fraction of its address space those direct
+/// children cover — `Σ 2^(parent_len − child_len)` — which is exactly NetBox's
+/// container-utilization, computed for free from the already-fetched tree (no
+/// extra calls; works on every NetBox version). A prefix that already has an
+/// API-provided value (older NetBox) keeps it; a leaf (no children) is left
+/// `None` (its IP-level utilization would need per-prefix queries). The nodes
+/// are in VRF-grouped tree order, so a subtree is the contiguous run of deeper
+/// rows following a node until the depth returns to its level. Pure.
+fn fill_child_coverage(nodes: &mut [PrefixNode]) {
+    for i in 0..nodes.len() {
+        if nodes[i].utilization.is_some() {
+            continue; // keep an API-provided value (NetBox ≤ 4.4)
+        }
+        let Some(parent_len) = prefix_len(&nodes[i].prefix) else {
+            continue;
+        };
+        let parent_depth = nodes[i].depth;
+        let mut fraction = 0f64;
+        let mut has_child = false;
+        for child in &nodes[(i + 1)..] {
+            if child.depth <= parent_depth {
+                break; // left this prefix's subtree (or crossed a VRF boundary)
+            }
+            if child.depth == parent_depth + 1
+                && let Some(child_len) = prefix_len(&child.prefix)
+                && child_len >= parent_len
+            {
+                fraction += 2f64.powi(
+                    i32::try_from(parent_len).unwrap_or(0) - i32::try_from(child_len).unwrap_or(0),
+                );
+                has_child = true;
+            }
+        }
+        if has_child {
+            let pct = (fraction * 100.0).round().clamp(0.0, 100.0);
+            // pct is already clamped to 0..=100 → fits u8.
+            nodes[i].utilization = Some(pct as u8);
+        }
+    }
 }
 
 /// The indices of `nodes` that are currently visible given the set of collapsed
@@ -159,6 +208,58 @@ mod tests {
             "_depth": depth,
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn prefix_len_parses_the_mask() {
+        assert_eq!(prefix_len("10.0.0.0/16"), Some(16));
+        assert_eq!(prefix_len("2001:db8::/48"), Some(48));
+        assert_eq!(prefix_len("garbage"), None);
+    }
+
+    #[test]
+    fn child_coverage_fills_container_utilization() {
+        // A /16 fully carved into two /17s → 100% covered (NetBox dropped the API
+        // field on 4.5, so we compute it from the tree).
+        let nodes = build_nodes(vec![
+            prefix(1, "10.0.0.0/16", 0, 2, None),
+            prefix(2, "10.0.0.0/17", 1, 0, None),
+            prefix(3, "10.0.128.0/17", 1, 0, None),
+        ]);
+        assert_eq!(nodes[0].utilization, Some(100));
+        // Leaves have no children → no computed utilization (would need IP queries).
+        assert_eq!(nodes[1].utilization, None);
+        assert_eq!(nodes[2].utilization, None);
+    }
+
+    #[test]
+    fn child_coverage_is_partial_for_sparse_containers() {
+        // A /16 with a single /18 child covers 1/4 of the space → 25%.
+        let nodes = build_nodes(vec![
+            prefix(1, "10.0.0.0/16", 0, 1, None),
+            prefix(2, "10.0.0.0/18", 1, 0, None),
+        ]);
+        assert_eq!(nodes[0].utilization, Some(25));
+        // A grandchild doesn't double-count against the grandparent (only direct
+        // children): /16 → /18 → /20; the /16 still reads 25%.
+        let nodes = build_nodes(vec![
+            prefix(1, "10.0.0.0/16", 0, 1, None),
+            prefix(2, "10.0.0.0/18", 1, 1, None),
+            prefix(3, "10.0.0.0/20", 2, 0, None),
+        ]);
+        assert_eq!(nodes[0].utilization, Some(25), "only direct children count");
+    }
+
+    #[test]
+    fn api_provided_utilization_is_kept_over_computed() {
+        // An older NetBox that still serves `utilization` keeps its richer value.
+        let p: Prefix = serde_json::from_value(json!({
+            "id": 1, "url": "u", "prefix": "10.0.0.0/16", "children": 1, "_depth": 0,
+            "utilization": 73,
+        }))
+        .unwrap();
+        let nodes = build_nodes(vec![p, prefix(2, "10.0.0.0/24", 1, 0, None)]);
+        assert_eq!(nodes[0].utilization, Some(73));
     }
 
     #[test]
