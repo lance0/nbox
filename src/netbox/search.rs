@@ -76,7 +76,7 @@ impl ObjectKind {
 /// `site_id`/`region_id`/`site_group_id`/`location_id` on the rest — never through
 /// the plain-value allowlist below (the plain `?site=` param wants a slug, so an
 /// id or display name would silently match nothing).
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchFilters {
     pub status: Option<String>,
     pub site: Option<String>,

@@ -101,6 +101,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Some(Modal::Config(modal)) => {
             render_config(frame, area, modal, &names, &active, &theme);
         }
+        Some(Modal::Filter(modal)) => render_filter(frame, area, modal, &theme),
         None => {}
     }
 }
@@ -465,6 +466,7 @@ pub fn help_bindings() -> Vec<Vec<(&'static str, &'static str)>> {
         vec![
             ("/", "search"),
             (":", "command palette"),
+            ("f / F", "filter / clear"),
             ("Tab / S-Tab", "switch pane"),
             ("j / k", "move / scroll"),
             ("g / G", "top / bottom"),
@@ -593,6 +595,104 @@ fn centered_popup(area: Rect, content_w: u16, content_h: u16) -> Rect {
     let popup_x = area.x + area.width.saturating_sub(popup_w) / 2;
     let popup_y = area.y + area.height.saturating_sub(popup_h) / 2;
     Rect::new(popup_x, popup_y, popup_w, popup_h)
+}
+
+/// Render the centered `f` filter modal: a small form over the active filters.
+/// The four scope filters collapse into a `scope type` cycle + a `scope value`
+/// row; the rest are text fields. `Enter` applies, `Esc` cancels.
+fn render_filter(
+    frame: &mut Frame,
+    area: Rect,
+    modal: &mut crate::tui::filter_modal::FilterModal,
+    theme: &Theme,
+) {
+    use crate::tui::filter_modal::row;
+
+    let popup = centered_popup(area, 54, 9);
+    frame.render_widget(Clear, popup);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Filters ")
+        .title(
+            Line::from(" Enter apply · Esc cancel ")
+                .right_aligned()
+                .style(Style::default().fg(theme.text_dim)),
+        )
+        .border_style(Style::default().fg(theme.border_focused))
+        .padding(Padding::horizontal(1));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let mut constraints = vec![Constraint::Length(1); row::COUNT];
+    constraints.push(Constraint::Length(1)); // blank
+    constraints.push(Constraint::Min(1)); // help
+    let rows = Layout::vertical(constraints).split(inner);
+
+    let focus = modal.focus;
+    let scope_label = modal.scope_type_label();
+    let labels = [
+        "status",
+        "scope type",
+        "scope value",
+        "tenant",
+        "role",
+        "tag",
+        "vrf",
+    ];
+    let label_w = 14u16.min(inner.width);
+    let mut cursor: Option<Position> = None;
+
+    for i in 0..row::COUNT {
+        let r = rows[i];
+        let focused = i == focus;
+        let marker = if focused { "> " } else { "  " };
+        let label_style = Style::default().fg(if focused {
+            theme.header
+        } else {
+            theme.text_dim
+        });
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                format!("{marker}{:<12}", labels[i]),
+                label_style,
+            )),
+            Rect::new(r.x, r.y, label_w, 1),
+        );
+        let value_area = Rect::new(
+            r.x.saturating_add(label_w),
+            r.y,
+            r.width.saturating_sub(label_w),
+            1,
+        );
+        if i == row::SCOPE_TYPE {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        format!("‹ {scope_label} ›"),
+                        Style::default().fg(theme.accent),
+                    ),
+                    Span::styled("  (←/→)", Style::default().fg(theme.text_dim)),
+                ])),
+                value_area,
+            );
+        } else if let Some(input) = modal.input_mut(i) {
+            let pos = input.render_with_focus(frame, value_area, ' ', theme, focused);
+            if focused {
+                cursor = Some(pos);
+            }
+        }
+    }
+    if let Some(pos) = cursor {
+        frame.set_cursor_position(pos);
+    }
+
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            "↑/↓ field · ←/→ scope · Enter apply · Esc cancel",
+            Style::default().fg(theme.text_dim),
+        )),
+        rows[row::COUNT + 1],
+    );
 }
 
 /// Render the centered Config modal over the full frame `area`. Two sections

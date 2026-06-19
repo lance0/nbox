@@ -29,7 +29,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-endpoint allowlist), so unknown keys are rejected and the TUI never sends an
   unknown query param. Setting a filter re-runs the last query. Active filters show
   as a **chips bar** above the results (scope filters in the header color, the rest
-  in the accent), so what's applied is always visible.
+  in the accent), so what's applied is always visible. A discoverable **`f` filter
+  modal** edits them all (the four scope filters collapse into one type+value row,
+  so only one scope is ever set), and **`F`** clears every filter.
 
 ### Changed
 - The TUI profile switcher (`P` / `Ctrl+P`) now cycles profiles in **config-file

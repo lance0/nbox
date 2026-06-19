@@ -13,6 +13,7 @@ pub mod app;
 pub mod cheese;
 pub mod config_modal;
 pub mod events;
+pub mod filter_modal;
 pub mod fuzzy;
 pub mod onboarding;
 pub mod palette;

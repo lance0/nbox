@@ -16,6 +16,7 @@ use crate::netbox::client::NetBoxClient;
 use crate::netbox::search::{ObjectKind, SearchFilters, SearchOutcome, SearchResult};
 use crate::tui::cheese::{Spinner, TextInput};
 use crate::tui::config_modal::{ConfigModal, ModalOutcome, ProfilesMode, TestState};
+use crate::tui::filter_modal::{FilterModal, FilterOutcome};
 use crate::tui::palette::{self, PaletteCommand};
 use crate::tui::theme::{Severity, Theme};
 
@@ -30,6 +31,9 @@ pub enum Modal {
     /// settings form. Has its own key handling. Boxed so the `Modal` enum stays
     /// small (the Config state is much larger than `Help`).
     Config(Box<ConfigModal>),
+    /// The `f` filter modal: a discoverable editor for the active search filters.
+    /// Boxed for the same size reason as `Config`.
+    Filter(Box<FilterModal>),
 }
 
 /// Which screen is in the body area.
@@ -943,6 +947,9 @@ impl App {
             }
             KeyCode::Char('t') => self.cycle_theme(),
             KeyCode::Char('r') => return self.refresh_current_view(),
+            // Search filters: `f` opens the filter editor, `F` clears all filters.
+            KeyCode::Char('f') => self.open_filter_modal(),
+            KeyCode::Char('F') => return self.clear_filters(),
             // Profile switcher. `Tab` is taken on Home (pane focus), so the
             // configured-profile cycle rides `P` forward / `Ctrl+P` backward (a
             // free, mnemonic key); the palette `profile <name>` verb jumps to a
@@ -1006,6 +1013,14 @@ impl App {
 
     /// Open the Config modal on the Profiles section (the `S` key / palette
     /// `config`). A no-op while one is already open.
+    /// Open the `f` filter modal, seeded from the active filters. A no-op while
+    /// another modal is open.
+    fn open_filter_modal(&mut self) {
+        if self.modal.is_none() {
+            self.modal = Some(Modal::Filter(Box::new(FilterModal::new(&self.filters))));
+        }
+    }
+
     fn open_config_modal(&mut self) {
         if self.modal.is_none() {
             self.modal = Some(Modal::Config(Box::new(ConfigModal::new(
@@ -1029,7 +1044,28 @@ impl App {
                 Vec::new()
             }
             Some(Modal::Config(_)) => self.handle_config_modal_key(key),
+            Some(Modal::Filter(_)) => self.handle_filter_modal_key(key),
             None => Vec::new(),
+        }
+    }
+
+    /// Drive the filter modal: feed it the key, then act on its [`FilterOutcome`].
+    /// Apply replaces the active filters and re-runs the last query.
+    fn handle_filter_modal_key(&mut self, key: KeyEvent) -> Vec<AppCommand> {
+        let Some(Modal::Filter(modal)) = &mut self.modal else {
+            return Vec::new();
+        };
+        match modal.handle_key(key) {
+            FilterOutcome::None => Vec::new(),
+            FilterOutcome::Close => {
+                self.modal = None;
+                Vec::new()
+            }
+            FilterOutcome::Apply(filters) => {
+                self.modal = None;
+                self.filters = *filters;
+                self.after_filter_change()
+            }
         }
     }
 
