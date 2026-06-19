@@ -81,6 +81,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     match app.screen {
         Screen::Home => render_home(frame, body_area, app),
         Screen::Detail => render_detail(frame, body_area, app),
+        Screen::Dashboard => render_dashboard(frame, body_area, app),
     }
 
     render_footer(frame, footer_area, app);
@@ -179,6 +180,142 @@ fn render_filter_bar(frame: &mut Frame, area: Rect, f: &SearchFilters, theme: &T
     }
     spans.push(Span::styled("  :clear-filters", bar.fg(theme.text_dim)));
     frame.render_widget(Paragraph::new(Line::from(spans)).style(bar), area);
+}
+
+/// A bordered dashboard card with a dim border + one column of inner padding.
+fn dash_block(title: &'static str, theme: &Theme) -> Block<'static> {
+    Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(theme.border))
+        .padding(Padding::horizontal(1))
+}
+
+/// A `███░░ 92%` utilization bar, colored by severity (≥90 error, ≥75 warning,
+/// else the graph color). Pure-ish — returns styled spans for one cell.
+fn util_bar(pct: u8, width: u16, theme: &Theme) -> Vec<Span<'static>> {
+    let width = width.max(1);
+    let filled = u16::try_from(u32::from(pct) * u32::from(width) / 100).unwrap_or(width);
+    let empty = width.saturating_sub(filled);
+    let color = if pct >= 90 {
+        theme.error
+    } else if pct >= 75 {
+        theme.warning
+    } else {
+        theme.graph_primary
+    };
+    vec![
+        Span::styled("█".repeat(filled as usize), Style::default().fg(color)),
+        Span::styled(
+            "░".repeat(empty as usize),
+            Style::default().fg(theme.text_dim),
+        ),
+        Span::styled(format!(" {pct:>3}%"), Style::default().fg(theme.text_dim)),
+    ]
+}
+
+/// Trim an ISO-8601 timestamp to a compact `YYYY-MM-DD HH:MM` for the activity card.
+fn short_time(s: &str) -> String {
+    s.split('.')
+        .next()
+        .unwrap_or(s)
+        .replace('T', " ")
+        .chars()
+        .take(16)
+        .collect()
+}
+
+/// The overview dashboard (`D`): device status counts, top-utilized prefixes, and
+/// recent journal activity. Read-only cards; falls back to a loading/error line.
+fn render_dashboard(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let Some(data) = app.dashboard.as_ref() else {
+        let msg = app.dashboard_error.as_deref().map_or_else(
+            || "Loading dashboard…".to_string(),
+            |e| format!("dashboard error: {e}"),
+        );
+        frame.render_widget(
+            Paragraph::new(msg)
+                .block(dash_block(" Dashboard ", theme))
+                .style(Style::default().fg(theme.text_dim)),
+            area,
+        );
+        return;
+    };
+
+    let rows = Layout::vertical([Constraint::Length(9), Constraint::Min(3)]).split(area);
+    let top =
+        Layout::horizontal([Constraint::Percentage(45), Constraint::Percentage(55)]).split(rows[0]);
+
+    // Devices by status.
+    let mut status_lines = vec![Line::from(vec![
+        Span::styled("total  ", Style::default().fg(theme.text_dim)),
+        Span::styled(
+            data.device_total.to_string(),
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD),
+        ),
+    ])];
+    for (status, count) in &data.device_status_counts {
+        status_lines.push(Line::from(vec![
+            Span::styled(format!("{status:<16}"), theme.status_style(status)),
+            Span::styled(count.to_string(), Style::default().fg(theme.text)),
+        ]));
+    }
+    frame.render_widget(
+        Paragraph::new(status_lines).block(dash_block(" Devices by status ", theme)),
+        top[0],
+    );
+
+    // Top-utilized prefixes.
+    let bar_w = top[1].width.saturating_sub(28).clamp(1, 24);
+    let prefix_lines: Vec<Line> = if data.top_prefixes.is_empty() {
+        vec![Line::from(Span::styled(
+            "no utilization data",
+            Style::default().fg(theme.text_dim),
+        ))]
+    } else {
+        data.top_prefixes
+            .iter()
+            .map(|(cidr, pct)| {
+                let mut spans = vec![Span::styled(
+                    format!("{cidr:<20}"),
+                    Style::default().fg(theme.text),
+                )];
+                spans.extend(util_bar(*pct, bar_w, theme));
+                Line::from(spans)
+            })
+            .collect()
+    };
+    frame.render_widget(
+        Paragraph::new(prefix_lines).block(dash_block(" Top-utilized prefixes ", theme)),
+        top[1],
+    );
+
+    // Recent activity.
+    let activity_lines: Vec<Line> = if data.recent.is_empty() {
+        vec![Line::from(Span::styled(
+            "no recent journal entries",
+            Style::default().fg(theme.text_dim),
+        ))]
+    } else {
+        data.recent
+            .iter()
+            .map(|j| {
+                Line::from(vec![
+                    Span::styled(
+                        format!("{:<17} ", short_time(&j.created)),
+                        Style::default().fg(theme.text_dim),
+                    ),
+                    Span::styled(format!("{:<9}", j.kind), Style::default().fg(theme.accent)),
+                    Span::styled(j.summary.clone(), Style::default().fg(theme.text)),
+                ])
+            })
+            .collect()
+    };
+    frame.render_widget(
+        Paragraph::new(activity_lines).block(dash_block(" Recent activity ", theme)),
+        rows[1],
+    );
 }
 
 fn render_home(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -479,6 +616,7 @@ pub fn help_bindings() -> Vec<Vec<(&'static str, &'static str)>> {
             ("y", "copy"),
             ("t", "cycle theme"),
             ("r", "refresh"),
+            ("D", "dashboard"),
             ("P / C-P", "switch profile"),
             ("S", "config / profiles"),
             ("i p c v s", "device tabs"),
@@ -1209,6 +1347,7 @@ fn footer_nav(app: &App) -> &'static str {
         Screen::Detail => {
             " j/k scroll · g/G top/bottom · i/p/c/v/s tabs · o/y open/copy · b back · r refresh · t theme · ? help · q quit "
         }
+        Screen::Dashboard => " r refresh · b/Esc back · D home · / search · ? help · q quit ",
     }
 }
 

@@ -13,6 +13,7 @@ use crate::config::ProfileConfig;
 use crate::domain::detail::DetailView;
 use crate::netbox::auth::AuthScheme;
 use crate::netbox::client::NetBoxClient;
+use crate::netbox::dashboard::DashboardData;
 use crate::netbox::search::{ObjectKind, SearchFilters, SearchOutcome, SearchResult};
 use crate::tui::cheese::{Spinner, TextInput};
 use crate::tui::config_modal::{ConfigModal, ModalOutcome, ProfilesMode, TestState};
@@ -41,6 +42,8 @@ pub enum Modal {
 pub enum Screen {
     Home,
     Detail,
+    /// The overview dashboard (`D`): status counts, top prefixes, recent activity.
+    Dashboard,
 }
 
 /// Input mode.
@@ -79,6 +82,12 @@ pub enum AppEvent {
     DetailLoaded {
         req: RequestId,
         result: anyhow::Result<DetailView>,
+    },
+    /// An overview-dashboard load result, tagged with its request id so a stale
+    /// (superseded) load is dropped on arrival.
+    DashboardLoaded {
+        req: RequestId,
+        result: anyhow::Result<DashboardData>,
     },
     /// A preview-pane detail load, tagged with the (kind, id) it was issued for
     /// so a stale response (the selection moved on) can be dropped.
@@ -232,6 +241,11 @@ pub enum AppCommand {
         /// The detail channel's request id, for stale-`DetailLoaded` suppression.
         req: RequestId,
     },
+    /// Load the overview dashboard (status counts / top prefixes / recent journal).
+    /// Tagged with a request id so a stale `DashboardLoaded` is dropped.
+    LoadDashboard {
+        req: RequestId,
+    },
     /// Load the highlighted result's detail into the live preview pane. Carries
     /// its (kind, id) so the response can be matched against the selection it
     /// was issued for (stale ones are dropped on arrival).
@@ -301,6 +315,7 @@ impl AppCommand {
                 | AppCommand::LoadDetail { .. }
                 | AppCommand::LoadPreview { .. }
                 | AppCommand::LoadByRef { .. }
+                | AppCommand::LoadDashboard { .. }
                 | AppCommand::SwitchProfile { .. }
                 | AppCommand::TestConnect { .. }
         )
@@ -474,6 +489,13 @@ pub struct App {
     /// The latest request id stamped on a spawned full-detail load (`LoadDetail`
     /// or `LoadByRef`). A `DetailLoaded` older than this is dropped on arrival.
     pub detail_gen: RequestId,
+    /// High-water mark for the overview dashboard load; a `DashboardLoaded` with an
+    /// older id is dropped (latest-wins, like search/detail).
+    pub dashboard_gen: RequestId,
+    /// The loaded overview data (`None` until the first load settles).
+    pub dashboard: Option<DashboardData>,
+    /// The last dashboard load error, shown on the dashboard when a load fails.
+    pub dashboard_error: Option<String>,
 
     /// Count of fetching async commands currently in flight (Search / LoadDetail
     /// / LoadPreview / LoadByRef / refresh). Bumped when such a command is
@@ -553,6 +575,9 @@ impl App {
             request_seq: 0,
             search_gen: 0,
             detail_gen: 0,
+            dashboard_gen: 0,
+            dashboard: None,
+            dashboard_error: None,
             pending: 0,
             spinner: Spinner::new(),
             should_quit: false,
@@ -639,6 +664,11 @@ impl App {
                     self.request_seq += 1;
                     *req = self.request_seq;
                     self.detail_gen = self.request_seq;
+                }
+                AppCommand::LoadDashboard { req } => {
+                    self.request_seq += 1;
+                    *req = self.request_seq;
+                    self.dashboard_gen = self.request_seq;
                 }
                 // Preview loads carry (kind,id); profile switches carry their own
                 // monotonic switch id, stamped at initiation in `switch_to_index`
@@ -754,6 +784,26 @@ impl App {
                         self.clear_status();
                     }
                     Err(e) => self.set_status(format!("error: {e:#}"), Severity::Error),
+                }
+                Vec::new()
+            }
+            AppEvent::DashboardLoaded { req, result } => {
+                // Settle the spinner even when dropped as stale; an older-id load
+                // (the user pressed `r`/reopened) never overwrites the newest.
+                self.end_request();
+                if req < self.dashboard_gen {
+                    return Vec::new();
+                }
+                match result {
+                    Ok(data) => {
+                        self.dashboard = Some(data);
+                        self.dashboard_error = None;
+                        self.clear_status();
+                    }
+                    Err(e) => {
+                        self.dashboard_error = Some(format!("{e:#}"));
+                        self.set_status(format!("dashboard error: {e:#}"), Severity::Error);
+                    }
                 }
                 Vec::new()
             }
@@ -960,6 +1010,8 @@ impl App {
             // Search filters: `f` opens the filter editor, `F` clears all filters.
             KeyCode::Char('f') => self.open_filter_modal(),
             KeyCode::Char('F') => return self.clear_filters(),
+            // Overview dashboard.
+            KeyCode::Char('D') => return self.open_dashboard(),
             // Profile switcher. `Tab` is taken on Home (pane focus), so the
             // configured-profile cycle rides `P` forward / `Ctrl+P` backward (a
             // free, mnemonic key); the palette `profile <name>` verb jumps to a
@@ -1023,6 +1075,18 @@ impl App {
 
     /// Open the Config modal on the Profiles section (the `S` key / palette
     /// `config`). A no-op while one is already open.
+    /// Open the overview dashboard and kick off its load. A no-op if already on it
+    /// (use `r` to refresh); fenced during a profile switch.
+    fn open_dashboard(&mut self) -> Vec<AppCommand> {
+        if self.screen == Screen::Dashboard || self.fence_during_switch() {
+            return Vec::new();
+        }
+        self.navigate_to(Screen::Dashboard);
+        self.dashboard_error = None;
+        self.set_status("loading dashboard…", Severity::Info);
+        vec![AppCommand::LoadDashboard { req: 0 }]
+    }
+
     /// Open the `f` filter modal, seeded from the active filters. A no-op while
     /// another modal is open.
     fn open_filter_modal(&mut self) {
@@ -2046,6 +2110,10 @@ impl App {
                     Vec::new()
                 }
             },
+            Screen::Dashboard => {
+                self.set_status("refreshing dashboard…", Severity::Info);
+                vec![AppCommand::LoadDashboard { req: 0 }]
+            }
         }
     }
 
@@ -2251,6 +2319,8 @@ impl App {
                 label: d.title.clone(),
                 url: object_web_url(&self.base_url, d.kind, d.id),
             }),
+            // The dashboard has no single selected object to open/copy.
+            Screen::Dashboard => None,
         }
     }
 
@@ -3332,6 +3402,46 @@ mod tests {
         assert_eq!(a.last_query, None, "query forgotten");
         assert!(!a.search_active());
         assert_eq!(a.screen, Screen::Home);
+    }
+
+    #[test]
+    fn d_opens_dashboard_and_load_settles_then_back() {
+        let mut a = app();
+        let cmds = a.handle_event(press(KeyCode::Char('D')));
+        assert_eq!(a.screen, Screen::Dashboard);
+        let req = match cmds.as_slice() {
+            [AppCommand::LoadDashboard { req }] => *req,
+            other => panic!("expected LoadDashboard, got {other:?}"),
+        };
+        let data = crate::netbox::dashboard::DashboardData {
+            device_total: 5,
+            ..Default::default()
+        };
+        a.handle_event(AppEvent::DashboardLoaded {
+            req,
+            result: Ok(data),
+        });
+        assert_eq!(a.dashboard.as_ref().unwrap().device_total, 5);
+        assert!(!a.loading(), "the load settled the spinner");
+        // `b` returns to Home.
+        a.handle_event(press(KeyCode::Char('b')));
+        assert_eq!(a.screen, Screen::Home);
+    }
+
+    #[test]
+    fn stale_dashboard_load_is_dropped() {
+        let mut a = app();
+        a.handle_event(press(KeyCode::Char('D')));
+        // Reopen path bumps the generation; simulate a stale (older-id) result.
+        a.dashboard_gen = 9;
+        a.handle_event(AppEvent::DashboardLoaded {
+            req: 3,
+            result: Ok(crate::netbox::dashboard::DashboardData {
+                device_total: 99,
+                ..Default::default()
+            }),
+        });
+        assert!(a.dashboard.is_none(), "a stale dashboard load is dropped");
     }
 
     #[test]

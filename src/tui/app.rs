@@ -113,6 +113,12 @@ fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent
                 let _ = tx.send(AppEvent::DetailLoaded { req, result }).await;
             });
         }
+        AppCommand::LoadDashboard { req } => {
+            tokio::spawn(async move {
+                let result = crate::netbox::dashboard::load_dashboard(&client).await;
+                let _ = tx.send(AppEvent::DashboardLoaded { req, result }).await;
+            });
+        }
         AppCommand::LoadPreview { kind, id } => {
             tokio::spawn(async move {
                 let result = load_detail(&client, kind, id).await;

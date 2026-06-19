@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   showing) clears the search back to the recents list, and the palette
   `clear-search` (alias `clear`) does the same — the counterpart to `F`. `b` stays
   plain back-navigation.
+- **Overview dashboard** (TUI). Press `D` for a read-only landing screen: device
+  counts by status, the most-utilized prefixes (with utilization bars), and recent
+  journal activity — fanned out concurrently. `r` refreshes, `b`/`Esc` returns
+  home. Utilization ranking is best-effort over a capped page (NetBox has no
+  `ordering=utilization`).
 
 ### Changed
 - The TUI profile switcher (`P` / `Ctrl+P`) now cycles profiles in **config-file
