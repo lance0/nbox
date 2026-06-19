@@ -14,7 +14,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
-use crate::config::{BackendKind, ProfileConfig};
+use crate::config::{ApiConfig, ApiSurface, BackendPreference, ProfileConfig};
 use crate::error::NboxError;
 use crate::netbox::auth::AuthScheme;
 use crate::netbox::endpoints::Endpoint;
@@ -38,7 +38,7 @@ pub struct NetBoxClient {
     http: reqwest::Client,
     page_size: usize,
     exclude_config_context: bool,
-    backend: BackendKind,
+    api: ApiConfig,
     graphql_capabilities: Arc<tokio::sync::OnceCell<GraphqlCapabilities>>,
 }
 
@@ -80,14 +80,27 @@ impl NetBoxClient {
             http,
             page_size,
             exclude_config_context: profile.exclude_config_context.unwrap_or(true),
-            backend: profile.backend(),
+            api: profile.api.clone().unwrap_or_default(),
             graphql_capabilities: Arc::new(tokio::sync::OnceCell::new()),
         })
     }
 
-    /// The preferred read backend for this client/profile.
-    pub fn backend(&self) -> BackendKind {
-        self.backend
+    /// The configured backend preference for `surface` (REST when unset). This is
+    /// the *preference*; [`effective_backend`](Self::effective_backend) resolves it
+    /// against the capability probe.
+    pub fn api_preference(&self, surface: ApiSurface) -> BackendPreference {
+        match surface {
+            ApiSurface::Search => self.api.search,
+            ApiSurface::Vrf => self.api.vrf,
+        }
+        .unwrap_or_default()
+    }
+
+    /// True when any surface prefers GraphQL — the gate for probing the schema so
+    /// a pure-REST profile keeps `nbox status` cheap.
+    pub(crate) fn any_graphql_preferred(&self) -> bool {
+        self.api.search == Some(BackendPreference::Graphql)
+            || self.api.vrf == Some(BackendPreference::Graphql)
     }
 
     pub(crate) fn graphql_capability_cache(&self) -> &tokio::sync::OnceCell<GraphqlCapabilities> {

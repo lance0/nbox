@@ -1199,7 +1199,6 @@ impl App {
                         let partition = crate::cache::profile_partition(
                             &self.profile_name,
                             self.client.base_url().as_str(),
-                            self.client.backend(),
                         );
                         self.cache = self.cache.with_partition(partition);
                         self.clear_for_profile_switch();
@@ -2045,7 +2044,7 @@ impl App {
             config.timeout_secs = existing.config.timeout_secs;
             config.page_size = existing.config.page_size;
             config.exclude_config_context = existing.config.exclude_config_context;
-            config.backend = existing.config.backend;
+            config.api.clone_from(&existing.config.api);
         }
         self.upsert_live_profile(original.as_deref(), &name, config);
 

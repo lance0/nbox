@@ -19,7 +19,7 @@ use crate::domain::WithJournal;
 use crate::domain::detail;
 use crate::domain::journal_view::{JournalEntryRow, JournalView};
 use crate::domain::tag_view::TagsView;
-use crate::netbox::capabilities::GraphqlBackendCapabilities;
+use crate::netbox::capabilities::SurfaceRouting;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::models::ipam::{AvailablePrefix, Prefix};
 use crate::netbox::search::{SearchFilters, SearchRequest};
@@ -591,7 +591,7 @@ fn serve_cache(ctx: &Ctx, client: &NetBoxClient) -> cache::Cache {
         .and_then(|p| config::load(&p).ok())
         .map(|c| c.cache)
         .unwrap_or_default();
-    let partition = cache::profile_partition("serve", client.base_url().as_str(), client.backend());
+    let partition = cache::profile_partition("serve", client.base_url().as_str());
     cache::Cache::from_settings(partition, &settings)
 }
 
@@ -815,8 +815,8 @@ async fn build_tui_app(
         .collect();
 
     // The cache partition keys cached view models to this connection (profile +
-    // URL + backend), computed before `name`/`base_url` are moved into the App.
-    let cache_partition = crate::cache::profile_partition(&name, &base_url, profile.backend());
+    // URL), computed before `name`/`base_url` are moved into the App.
+    let cache_partition = crate::cache::profile_partition(&name, &base_url);
 
     let mut app = tui::state::App::new(
         client,
@@ -859,13 +859,15 @@ async fn build_tui_app(
 async fn run_status(ctx: &Ctx) -> Result<()> {
     let client = connect(ctx)?;
     let status = client.status().await?;
+    let api = client.api_routing().await;
     let capabilities = client.capabilities(&status).await;
     let url = client.base_url().as_str().to_string();
-    let graphql_summary = graphql_capabilities_plain(&capabilities.graphql);
+    let search_line = surface_routing_plain(&api.search);
+    let vrf_line = surface_routing_plain(&api.vrf);
 
     let report = serde_json::json!({
         "netbox_url": url,
-        "backend": client.backend(),
+        "api": api,
         "netbox_version": status.netbox_version,
         "django_version": status.django_version,
         "python_version": status.python_version,
@@ -875,35 +877,23 @@ async fn run_status(ctx: &Ctx) -> Result<()> {
     emit(ctx, &report, || {
         let mut kv = KeyValues::new();
         kv.push("netbox_url", url.clone())
-            .push("backend", client.backend().as_str())
+            .push("api search", search_line.clone())
+            .push("api vrf", vrf_line.clone())
             .push("netbox_version", status.netbox_version.clone())
             .push_opt("django", status.django_version.clone())
             .push_opt("python", status.python_version.clone())
-            .push("rest", "available (search, detail)")
-            .push("graphql", graphql_summary);
+            .push("rest", "available (canonical)");
         kv.print();
     })
 }
 
-fn graphql_capabilities_plain(gql: &GraphqlBackendCapabilities) -> String {
-    if !gql.configured {
-        return "not configured".to_string();
+/// One `api <surface>` plain-status line: the effective backend, plus the
+/// fallback reason in parentheses when a GraphQL preference resolved to REST.
+fn surface_routing_plain(surface: &SurfaceRouting) -> String {
+    match &surface.reason {
+        Some(reason) => format!("{} ({reason})", surface.effective),
+        None => surface.effective.clone(),
     }
-    if !gql.available {
-        return match gql.error.as_deref() {
-            Some(error) => format!("unavailable ({error})"),
-            None => "unavailable".to_string(),
-        };
-    }
-    let Some(search) = &gql.search else {
-        return "available".to_string();
-    };
-    format!(
-        "available (search lists {}/{}, paginated {})",
-        search.lists_found,
-        search.lists_found + search.missing_lists.len(),
-        search.paginated_lists
-    )
 }
 
 /// `nbox search <query>` — normalized multi-endpoint search.

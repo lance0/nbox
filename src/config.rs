@@ -33,11 +33,17 @@ open_browser_command = ""
 url = "https://netbox.example.com"
 token_env = "NETBOX_TOKEN"
 auth_scheme = "auto"        # auto | bearer | token
-backend = "rest"            # rest | graphql
 verify_tls = true
 timeout_secs = 15
 page_size = 100
 exclude_config_context = true
+
+# REST is the canonical backend. GraphQL is an opt-in per-surface accelerator;
+# uncomment to route a read surface through it (falls back to REST if the
+# instance's GraphQL schema doesn't support that surface).
+# [profiles.default.api]
+# search = "graphql"        # rest | graphql
+# vrf = "graphql"           # rest | graphql
 "#;
 
 /// The config schema version this build writes and understands. Bump when the
@@ -218,8 +224,14 @@ pub struct ProfileConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_scheme: Option<AuthScheme>,
 
+    /// Per-surface backend preferences (`[profiles.<name>.api]`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub backend: Option<BackendKind>,
+    pub api: Option<ApiConfig>,
+
+    /// Capture for the removed `backend` key so [`load`] can reject it with a
+    /// clear pointer to `[profiles.<name>.api]` instead of silently ignoring it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<toml::Value>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_tls: Option<bool>,
@@ -242,13 +254,13 @@ pub struct ProfileConfig {
     Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
 )]
 #[serde(rename_all = "snake_case")]
-pub enum BackendKind {
+pub enum BackendPreference {
     #[default]
     Rest,
     Graphql,
 }
 
-impl BackendKind {
+impl BackendPreference {
     #[must_use]
     pub fn as_str(self) -> &'static str {
         match self {
@@ -258,10 +270,50 @@ impl BackendKind {
     }
 }
 
-impl ProfileConfig {
+/// A read surface whose backend can be chosen independently. REST is canonical;
+/// GraphQL is an opt-in per-surface accelerator (see [`ApiConfig`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiSurface {
+    /// The multi-kind `search` fan-out.
+    Search,
+    /// The VRF routing-context view (its prefixes/addresses bundle).
+    Vrf,
+}
+
+impl ApiSurface {
+    /// The `[profiles.<name>.api]` key this surface is configured under.
     #[must_use]
-    pub fn backend(&self) -> BackendKind {
-        self.backend.unwrap_or_default()
+    pub fn key(self) -> &'static str {
+        match self {
+            Self::Search => "search",
+            Self::Vrf => "vrf",
+        }
+    }
+}
+
+/// Per-surface backend preferences (`[profiles.<name>.api]`). A missing table, or
+/// a missing key within it, means REST for that surface. Unknown keys (e.g. the
+/// not-yet-implemented `detail`) are rejected so typos surface as config errors.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct ApiConfig {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub search: Option<BackendPreference>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub vrf: Option<BackendPreference>,
+}
+
+impl ProfileConfig {
+    /// The configured backend preference for `surface` (REST when unset).
+    #[must_use]
+    pub fn api_preference(&self, surface: ApiSurface) -> BackendPreference {
+        self.api
+            .as_ref()
+            .and_then(|a| match surface {
+                ApiSurface::Search => a.search,
+                ApiSurface::Vrf => a.vrf,
+            })
+            .unwrap_or_default()
     }
 }
 
@@ -303,6 +355,17 @@ pub fn load(path: &Path) -> Result<Config> {
             "config_version {v} is newer than this nbox understands ({CONFIG_VERSION}); \
              some settings may be ignored — consider upgrading nbox"
         );
+    }
+    // The coarse `backend = "rest"|"graphql"` profile key was removed in favor of
+    // per-surface `[profiles.<name>.api]` preferences. Reject it loudly rather
+    // than silently ignore it, pointing at the replacement.
+    for (name, profile) in &cfg.profiles {
+        if profile.backend.is_some() {
+            anyhow::bail!(
+                "profile `{name}`: the `backend` key was removed — set the backend per surface under \
+                 `[profiles.{name}.api]` instead, e.g. `search = \"graphql\"` (and/or `vrf = \"graphql\"`)"
+            );
+        }
     }
     Ok(cfg)
 }
@@ -1088,8 +1151,10 @@ theme = "nord"
 url = "https://netbox.example.com"
 token_env = "NETBOX_TOKEN"
 auth_scheme = "bearer"
-backend = "graphql"
 page_size = 250
+
+[profiles.work.api]
+search = "graphql"
 "#;
 
     #[test]
@@ -1102,7 +1167,15 @@ page_size = 250
         let work = &cfg.profiles["work"];
         assert_eq!(work.url, "https://netbox.example.com");
         assert_eq!(work.auth_scheme, Some(AuthScheme::Bearer));
-        assert_eq!(work.backend(), BackendKind::Graphql);
+        assert_eq!(
+            work.api_preference(ApiSurface::Search),
+            BackendPreference::Graphql
+        );
+        // An unset surface defaults to REST.
+        assert_eq!(
+            work.api_preference(ApiSurface::Vrf),
+            BackendPreference::Rest
+        );
         assert_eq!(work.page_size, Some(250));
         assert_eq!(work.verify_tls, None);
     }
@@ -1123,9 +1196,67 @@ page_size = 250
     }
 
     #[test]
-    fn profile_backend_defaults_to_rest() {
+    fn api_preference_defaults_to_rest() {
         let profile: ProfileConfig = toml::from_str("url = \"https://nb.example\"").unwrap();
-        assert_eq!(profile.backend(), BackendKind::Rest);
+        assert_eq!(
+            profile.api_preference(ApiSurface::Search),
+            BackendPreference::Rest
+        );
+        assert_eq!(
+            profile.api_preference(ApiSurface::Vrf),
+            BackendPreference::Rest
+        );
+    }
+
+    #[test]
+    fn api_surface_preferences_parse() {
+        let profile: ProfileConfig = toml::from_str(
+            "url = \"https://nb.example\"\n[api]\nsearch = \"graphql\"\nvrf = \"rest\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            profile.api_preference(ApiSurface::Search),
+            BackendPreference::Graphql
+        );
+        assert_eq!(
+            profile.api_preference(ApiSurface::Vrf),
+            BackendPreference::Rest
+        );
+    }
+
+    #[test]
+    fn invalid_api_value_is_a_config_error() {
+        let err = toml::from_str::<ProfileConfig>(
+            "url = \"https://nb.example\"\n[api]\nsearch = \"grpc\"\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("grpc") || err.to_string().contains("search"));
+    }
+
+    #[test]
+    fn unknown_api_surface_is_rejected() {
+        // `detail` is intentionally not implemented; a typo'd/unsupported surface
+        // must error rather than be silently ignored.
+        let err = toml::from_str::<ProfileConfig>(
+            "url = \"https://nb.example\"\n[api]\ndetail = \"graphql\"\n",
+        )
+        .unwrap_err();
+        assert!(err.to_string().contains("detail"));
+    }
+
+    #[test]
+    fn removed_backend_key_is_rejected_with_pointer() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "[profiles.work]\nurl = \"https://nb.example\"\nbackend = \"graphql\"\n",
+        )
+        .unwrap();
+        let err = load(&path).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("`backend`"), "got: {msg}");
+        assert!(msg.contains("[profiles.work.api]"), "got: {msg}");
     }
 
     #[test]

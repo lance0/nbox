@@ -263,13 +263,16 @@ async fn status_returns_versions() {
     let value = serde_json::to_value(&report).expect("serialize report");
 
     assert_eq!(value["netbox_version"], "4.5.5");
-    assert_eq!(value["backend"], "rest");
     assert_eq!(value["django_version"], "5.0.9");
     assert_eq!(value["python_version"], "3.12.3");
-    assert_eq!(value["capabilities"]["backend"], "rest");
+    // Per-surface API routing: a default (REST) profile is effective REST on both.
+    assert_eq!(value["api"]["search"]["configured"], "rest");
+    assert_eq!(value["api"]["search"]["effective"], "rest");
+    assert_eq!(value["api"]["vrf"]["effective"], "rest");
     assert_eq!(value["capabilities"]["version"]["compatible"], true);
     assert_eq!(value["capabilities"]["rest"]["search"], true);
-    assert_eq!(value["capabilities"]["graphql"]["configured"], false);
+    // A REST profile doesn't probe GraphQL, so no surface support is reported.
+    assert_eq!(value["capabilities"]["graphql"]["probed"], false);
     // The configured base URL is echoed back (the mock's URI, trailing slash).
     assert_eq!(value["netbox_url"], format!("{}/", mock.uri()));
 }

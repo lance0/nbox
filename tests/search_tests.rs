@@ -1,6 +1,6 @@
 //! Integration tests for the multi-endpoint search fan-out.
 
-use nbox::config::{BackendKind, ProfileConfig};
+use nbox::config::{ApiConfig, BackendPreference, ProfileConfig};
 use nbox::netbox::client::NetBoxClient;
 use nbox::netbox::search::{ObjectKind, SearchFilters, SearchRequest};
 use serde_json::json;
@@ -18,7 +18,10 @@ fn client(server: &MockServer) -> NetBoxClient {
 fn graphql_client(server: &MockServer) -> NetBoxClient {
     let profile = ProfileConfig {
         url: server.uri(),
-        backend: Some(BackendKind::Graphql),
+        api: Some(ApiConfig {
+            search: Some(BackendPreference::Graphql),
+            vrf: None,
+        }),
         ..Default::default()
     };
     NetBoxClient::new(&profile, None).unwrap()

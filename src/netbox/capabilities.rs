@@ -1,18 +1,24 @@
-//! Typed NetBox capability report.
+//! Typed NetBox capability report + per-surface backend resolution.
 //!
-//! This is the shared place for version/backend facts that user-facing surfaces
-//! need to expose. It deliberately summarizes capabilities rather than leaking
-//! every introspection detail; feature code should still use the lower-level
-//! REST/GraphQL helpers that enforce exact behavior.
+//! REST is canonical; GraphQL is an opt-in per-surface accelerator. This module
+//! turns a profile's configured [`BackendPreference`] per [`ApiSurface`] plus the
+//! live GraphQL schema probe into:
+//!   - an [`EffectiveBackend`] the operation routing acts on, and
+//!   - an [`ApiRouting`] / [`NetBoxCapabilities`] the `status` surfaces expose.
+//!
+//! It deliberately summarizes capabilities rather than leaking every
+//! introspection detail; feature code still uses the lower-level REST/GraphQL
+//! helpers that enforce exact behavior.
 
 use serde::Serialize;
 
-use crate::config::BackendKind;
+use crate::config::{ApiSurface, BackendPreference};
 use crate::netbox::client::NetBoxClient;
-use crate::netbox::graphql::{FilterShape, GraphqlCapabilities};
+use crate::netbox::graphql::GraphqlCapabilities;
 use crate::netbox::status::{MIN_MAJOR, MIN_MINOR, Status, meets_minimum};
 
-const SEARCH_LISTS: [&str; 14] = [
+/// The GraphQL list fields the search fan-out uses, one per searchable kind.
+const SEARCH_LISTS: [&str; 15] = [
     "device_list",
     "site_list",
     "ip_address_list",
@@ -27,18 +33,74 @@ const SEARCH_LISTS: [&str; 14] = [
     "provider_list",
     "virtual_machine_list",
     "cluster_list",
+    "vrf_list",
 ];
+
+/// The resolved backend for one operation: the configured preference reconciled
+/// against the live capability probe. `RestFallback` records *why* a GraphQL
+/// preference could not be honored so `status` can explain it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum EffectiveBackend {
+    Rest,
+    Graphql,
+    RestFallback { reason: String },
+}
+
+impl EffectiveBackend {
+    /// True only when the operation should use GraphQL.
+    #[must_use]
+    pub fn uses_graphql(&self) -> bool {
+        matches!(self, Self::Graphql)
+    }
+
+    /// The `rest`/`graphql` label for status output (a fallback reads as `rest`).
+    #[must_use]
+    pub fn label(&self) -> &'static str {
+        if self.uses_graphql() {
+            "graphql"
+        } else {
+            "rest"
+        }
+    }
+
+    /// The fallback reason, when a GraphQL preference resolved to REST.
+    #[must_use]
+    pub fn reason(&self) -> Option<String> {
+        match self {
+            Self::RestFallback { reason } => Some(reason.clone()),
+            _ => None,
+        }
+    }
+}
+
+/// Configured-vs-effective backend routing for every surface (`status.api`).
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct ApiRouting {
+    pub search: SurfaceRouting,
+    pub vrf: SurfaceRouting,
+}
+
+/// One surface's routing: what was configured, what is effective, and (on a
+/// fallback) why they differ.
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct SurfaceRouting {
+    /// The configured preference (`rest`/`graphql`).
+    pub configured: BackendPreference,
+    /// The effective backend after capability resolution (`rest`/`graphql`).
+    pub effective: String,
+    /// Why the effective backend differs from the configured one, if it does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason: Option<String>,
+}
 
 /// Capabilities for the currently connected NetBox instance/profile.
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct NetBoxCapabilities {
-    /// The active read backend for this profile.
-    pub backend: BackendKind,
     /// Version compatibility facts from `/api/status/`.
     pub version: VersionCapabilities,
     /// REST behavior nbox relies on.
     pub rest: RestCapabilities,
-    /// GraphQL search capability summary. Probed only when `backend=graphql`.
+    /// GraphQL capability summary. Probed only when a surface prefers GraphQL.
     pub graphql: GraphqlBackendCapabilities,
 }
 
@@ -56,7 +118,7 @@ pub struct VersionCapabilities {
 /// REST behavior nbox treats as foundational.
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct RestCapabilities {
-    /// REST is always the primary backend and remains available after status succeeds.
+    /// REST is always the canonical backend and remains available after status succeeds.
     pub available: bool,
     /// Search fan-out can use REST.
     pub search: bool,
@@ -68,95 +130,180 @@ pub struct RestCapabilities {
     pub exclude_config_context: bool,
 }
 
-/// GraphQL search capability summary.
+/// GraphQL capability summary (surface-aware).
 #[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
 pub struct GraphqlBackendCapabilities {
-    /// Whether this profile selected the GraphQL backend.
-    pub configured: bool,
-    /// Whether this report attempted GraphQL introspection.
+    /// Whether this report attempted GraphQL introspection (only when a surface
+    /// prefers GraphQL — a pure-REST profile keeps `status` cheap).
     pub probed: bool,
     /// Whether the introspection probe succeeded.
     pub available: bool,
-    /// Search list-field summary when GraphQL was available.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub search: Option<GraphqlSearchCapabilities>,
-    /// Filter-shape summary for drift-prone filters.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub filters: Option<GraphqlFilterCapabilities>,
-    /// Probe error, when GraphQL was configured but unavailable.
+    /// Probe error, when GraphQL was probed but unavailable.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
-}
-
-/// GraphQL search list support.
-#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
-pub struct GraphqlSearchCapabilities {
-    /// Number of nbox search list fields found in the schema.
-    pub lists_found: usize,
-    /// Number of found search list fields that support pagination.
-    pub paginated_lists: usize,
-    /// Search list fields nbox expects but the schema did not expose.
-    pub missing_lists: Vec<String>,
-}
-
-/// GraphQL filter-shape summary for compatibility-sensitive filters.
-#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
-pub struct GraphqlFilterCapabilities {
-    /// Prefix/cluster polymorphic scope type filter shape.
-    pub scope_type: Option<GraphqlFilterInfo>,
-    /// Prefix/cluster polymorphic scope id filter shape.
-    pub scope_id: Option<GraphqlFilterInfo>,
-    /// Device/VM site id filter shape.
-    pub site_id: Option<GraphqlFilterInfo>,
-    /// Prefix/IP VRF id filter shape.
-    pub vrf_id: Option<GraphqlFilterInfo>,
-    /// Tree-node scope filters such as location/region/site-group IDs.
-    pub tree_node_scope_ids: bool,
-}
-
-/// One GraphQL filter field's high-level shape.
-#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
-pub struct GraphqlFilterInfo {
-    /// GraphQL input shape category: `scalar`, `list`, or `lookup`.
-    pub shape: &'static str,
-    /// GraphQL named type when introspection reported one.
+    /// Per-surface GraphQL support, when the probe succeeded.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub named_type: Option<String>,
+    pub surfaces: Option<GraphqlSurfaces>,
+}
+
+/// Per-surface GraphQL support.
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct GraphqlSurfaces {
+    pub search: SurfaceSupport,
+    pub vrf: SurfaceSupport,
+}
+
+/// Whether a GraphQL surface is usable, recommended, and what (if anything) the
+/// schema is missing for it. Version is a hint; the schema probe is truth.
+#[derive(Debug, Clone, Serialize, schemars::JsonSchema)]
+pub struct SurfaceSupport {
+    /// Whether nbox can run this surface over GraphQL at all.
+    pub supported: bool,
+    /// Whether GraphQL is the recommended backend for this surface (full coverage).
+    pub recommended: bool,
+    /// Schema pieces nbox expects for full support that were not found.
+    pub missing: Vec<String>,
+}
+
+/// GraphQL search support: nbox runs a bundled query over whatever list fields
+/// exist and skips the rest, so it's *supported* as long as at least one list is
+/// present, and *recommended* only when every searchable list is exposed.
+fn search_support(caps: &GraphqlCapabilities) -> SurfaceSupport {
+    let missing: Vec<String> = SEARCH_LISTS
+        .iter()
+        .filter(|l| caps.list(l).is_none())
+        .map(|l| (*l).to_string())
+        .collect();
+    let supported = missing.len() < SEARCH_LISTS.len();
+    let recommended = missing.is_empty();
+    SurfaceSupport {
+        supported,
+        recommended,
+        missing,
+    }
+}
+
+/// True when `list_name` exposes a `key` filter (used for the VRF surface's
+/// `vrf_id` requirements).
+fn list_has_filter(caps: &GraphqlCapabilities, list_name: &str, key: &str) -> bool {
+    let Some(field) = caps.list(list_name) else {
+        return false;
+    };
+    let Some(filter_type) = field.filter_type() else {
+        return false;
+    };
+    caps.filter_shape(filter_type, key).is_some()
+}
+
+/// GraphQL VRF support requires the VRF list plus `vrf_id` filtering on prefixes
+/// and IP addresses (the children bundle). All-or-nothing — a partial schema
+/// falls back to REST with the missing pieces named.
+fn vrf_support(caps: &GraphqlCapabilities) -> SurfaceSupport {
+    let mut missing = Vec::new();
+    if caps.list("vrf_list").is_none() {
+        missing.push("vrf_list".to_string());
+    }
+    if !list_has_filter(caps, "prefix_list", "vrf_id") {
+        missing.push("prefix_list.vrf_id".to_string());
+    }
+    if !list_has_filter(caps, "ip_address_list", "vrf_id") {
+        missing.push("ip_address_list.vrf_id".to_string());
+    }
+    let supported = missing.is_empty();
+    SurfaceSupport {
+        supported,
+        recommended: supported,
+        missing,
+    }
+}
+
+fn surface_support(caps: &GraphqlCapabilities, surface: ApiSurface) -> SurfaceSupport {
+    match surface {
+        ApiSurface::Search => search_support(caps),
+        ApiSurface::Vrf => vrf_support(caps),
+    }
 }
 
 impl NetBoxClient {
+    /// Resolve a surface's configured preference against the live probe. REST
+    /// passes straight through; a GraphQL preference is honored only when the
+    /// surface is supported, else it falls back to REST with a reason.
+    pub async fn effective_backend(&self, surface: ApiSurface) -> EffectiveBackend {
+        if self.api_preference(surface) == BackendPreference::Rest {
+            return EffectiveBackend::Rest;
+        }
+        match self.graphql_capabilities().await {
+            Ok(caps) => {
+                let support = surface_support(&caps, surface);
+                if support.supported {
+                    EffectiveBackend::Graphql
+                } else {
+                    EffectiveBackend::RestFallback {
+                        reason: format!(
+                            "GraphQL {} surface unavailable: missing {}",
+                            surface.key(),
+                            support.missing.join(", ")
+                        ),
+                    }
+                }
+            }
+            Err(err) => EffectiveBackend::RestFallback {
+                reason: format!("GraphQL unavailable: {err:#}"),
+            },
+        }
+    }
+
+    /// Configured-vs-effective routing for both surfaces (`status.api`).
+    pub async fn api_routing(&self) -> ApiRouting {
+        ApiRouting {
+            search: self.surface_routing(ApiSurface::Search).await,
+            vrf: self.surface_routing(ApiSurface::Vrf).await,
+        }
+    }
+
+    async fn surface_routing(&self, surface: ApiSurface) -> SurfaceRouting {
+        let effective = self.effective_backend(surface).await;
+        SurfaceRouting {
+            configured: self.api_preference(surface),
+            effective: effective.label().to_string(),
+            reason: effective.reason(),
+        }
+    }
+
     /// Build a capability report from an already-fetched status payload.
     ///
-    /// REST facts are local/config-derived after `/api/status/` succeeds.
-    /// GraphQL introspection is attempted only for profiles that explicitly opt
-    /// into the GraphQL backend, so `nbox status` stays cheap for the default
-    /// REST profile.
+    /// REST facts are local/config-derived after `/api/status/` succeeds. GraphQL
+    /// introspection is attempted only when a surface prefers GraphQL, so
+    /// `nbox status` stays cheap for the default REST profile.
     pub async fn capabilities(&self, status: &Status) -> NetBoxCapabilities {
-        let graphql = if self.backend() == BackendKind::Graphql {
+        let graphql = if self.any_graphql_preferred() {
             match self.graphql_capabilities().await {
-                Ok(caps) => GraphqlBackendCapabilities::from_caps(true, caps),
+                Ok(caps) => GraphqlBackendCapabilities {
+                    probed: true,
+                    available: true,
+                    error: None,
+                    surfaces: Some(GraphqlSurfaces {
+                        search: search_support(&caps),
+                        vrf: vrf_support(&caps),
+                    }),
+                },
                 Err(err) => GraphqlBackendCapabilities {
-                    configured: true,
                     probed: true,
                     available: false,
-                    search: None,
-                    filters: None,
                     error: Some(format!("{err:#}")),
+                    surfaces: None,
                 },
             }
         } else {
             GraphqlBackendCapabilities {
-                configured: false,
                 probed: false,
                 available: false,
-                search: None,
-                filters: None,
                 error: None,
+                surfaces: None,
             }
         };
 
         NetBoxCapabilities {
-            backend: self.backend(),
             version: VersionCapabilities {
                 netbox: status.netbox_version.clone(),
                 minimum_supported: format!("{MIN_MAJOR}.{MIN_MINOR}"),
@@ -174,94 +321,22 @@ impl NetBoxClient {
     }
 }
 
-impl GraphqlBackendCapabilities {
-    fn from_caps(configured: bool, caps: GraphqlCapabilities) -> Self {
-        Self {
-            configured,
-            probed: true,
-            available: true,
-            search: Some(GraphqlSearchCapabilities::from_caps(&caps)),
-            filters: Some(GraphqlFilterCapabilities::from_caps(&caps)),
-            error: None,
-        }
-    }
-}
-
-impl GraphqlSearchCapabilities {
-    fn from_caps(caps: &GraphqlCapabilities) -> Self {
-        let mut lists_found = 0;
-        let mut paginated_lists = 0;
-        let mut missing_lists = Vec::new();
-
-        for list in SEARCH_LISTS {
-            match caps.list(list) {
-                Some(field) => {
-                    lists_found += 1;
-                    if field.has_pagination() {
-                        paginated_lists += 1;
-                    }
-                }
-                None => missing_lists.push(list.to_string()),
-            }
-        }
-
-        Self {
-            lists_found,
-            paginated_lists,
-            missing_lists,
-        }
-    }
-}
-
-impl GraphqlFilterCapabilities {
-    fn from_caps(caps: &GraphqlCapabilities) -> Self {
-        Self {
-            scope_type: filter_info(caps, "prefix_list", "scope_type"),
-            scope_id: filter_info(caps, "prefix_list", "scope_id"),
-            site_id: filter_info(caps, "device_list", "site_id"),
-            vrf_id: filter_info(caps, "prefix_list", "vrf_id"),
-            tree_node_scope_ids: ["region_id", "site_group_id", "location_id"]
-                .iter()
-                .any(|key| {
-                    filter_info(caps, "device_list", key)
-                        .and_then(|info| info.named_type)
-                        .as_deref()
-                        == Some("TreeNodeFilter")
-                }),
-        }
-    }
-}
-
-fn filter_info(
-    caps: &GraphqlCapabilities,
-    list_name: &str,
-    key: &str,
-) -> Option<GraphqlFilterInfo> {
-    let filter_type = caps.list(list_name)?.filter_type()?;
-    Some(GraphqlFilterInfo {
-        shape: caps.filter_shape(filter_type, key)?.as_str(),
-        named_type: caps.filter_named_type(filter_type, key).map(str::to_string),
-    })
-}
-
-impl FilterShape {
-    fn as_str(self) -> &'static str {
-        match self {
-            Self::Scalar => "scalar",
-            Self::List => "list",
-            Self::Lookup => "lookup",
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::ProfileConfig;
+    use crate::config::{ApiConfig, ProfileConfig};
     use crate::netbox::client::NetBoxClient;
     use crate::netbox::status::Status;
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn status() -> Status {
+        Status {
+            netbox_version: "4.5.5".into(),
+            django_version: None,
+            python_version: None,
+        }
+    }
 
     #[tokio::test]
     async fn rest_profile_reports_local_capabilities_without_graphql_probe() {
@@ -275,24 +350,22 @@ mod tests {
             None,
         )
         .unwrap();
-        let caps = client
-            .capabilities(&Status {
-                netbox_version: "4.5.5".into(),
-                django_version: None,
-                python_version: None,
-            })
-            .await;
+        let caps = client.capabilities(&status()).await;
 
-        assert_eq!(caps.backend, BackendKind::Rest);
         assert!(caps.version.compatible);
         assert_eq!(caps.rest.page_size, 250);
         assert!(!caps.rest.exclude_config_context);
-        assert!(!caps.graphql.configured);
         assert!(!caps.graphql.probed);
+        assert!(caps.graphql.surfaces.is_none());
+
+        // A pure-REST profile routes both surfaces to REST.
+        let routing = client.api_routing().await;
+        assert_eq!(routing.search.effective, "rest");
+        assert_eq!(routing.vrf.effective, "rest");
     }
 
     #[tokio::test]
-    async fn graphql_profile_reports_probe_error_without_failing_capabilities() {
+    async fn graphql_profile_reports_probe_error_and_falls_back() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/graphql/"))
@@ -303,29 +376,37 @@ mod tests {
         let client = NetBoxClient::new(
             &ProfileConfig {
                 url: server.uri(),
-                backend: Some(BackendKind::Graphql),
+                api: Some(ApiConfig {
+                    search: Some(BackendPreference::Graphql),
+                    vrf: Some(BackendPreference::Graphql),
+                }),
                 ..Default::default()
             },
             None,
         )
         .unwrap();
-        let caps = client
-            .capabilities(&Status {
-                netbox_version: "4.5.5".into(),
-                django_version: None,
-                python_version: None,
-            })
-            .await;
+        let caps = client.capabilities(&status()).await;
 
-        assert_eq!(caps.backend, BackendKind::Graphql);
-        assert!(caps.graphql.configured);
         assert!(caps.graphql.probed);
         assert!(!caps.graphql.available);
         assert!(
             caps.graphql
                 .error
                 .as_deref()
-                .is_some_and(|e| { e.contains("not found") || e.contains("HTTP 404") })
+                .is_some_and(|e| e.contains("not found") || e.contains("HTTP 404"))
+        );
+
+        // A GraphQL preference with an unreachable schema falls back to REST,
+        // surfacing the reason.
+        let routing = client.api_routing().await;
+        assert_eq!(routing.search.configured, BackendPreference::Graphql);
+        assert_eq!(routing.search.effective, "rest");
+        assert!(routing.search.reason.is_some());
+        assert!(
+            !client
+                .effective_backend(ApiSurface::Search)
+                .await
+                .uses_graphql()
         );
     }
 }

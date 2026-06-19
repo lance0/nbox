@@ -6,20 +6,20 @@
 //! ([`super::Cache`]) holds the partition and prepends it, so call sites name
 //! only the object.
 
-use crate::config::BackendKind;
 use crate::netbox::search::ObjectKind;
 
-/// A stable identifier for one connection's cache partition: the profile name,
-/// its normalized base URL, and the read backend.
+/// A stable identifier for one connection's cache partition: the profile name and
+/// its normalized base URL.
 ///
-/// Re-pointing a profile's URL or switching REST↔GraphQL changes this string, so
-/// cached view models can never bleed across distinct targets. The NetBox version
-/// is deliberately *not* part of the key — cached values are nbox's own assembled
-/// structs (not NetBox's raw responses), so a version difference can't corrupt a
-/// deserialized view, and leaving it out keeps reads stable across a probe.
-pub fn profile_partition(name: &str, base_url: &str, backend: BackendKind) -> String {
+/// Re-pointing a profile's URL changes this string, so cached view models can
+/// never bleed across distinct targets. The read backend is deliberately *not*
+/// part of the key: REST and GraphQL produce identical normalized view models, so
+/// flipping a surface's backend can't invalidate a cached value. The NetBox
+/// version is left out for the same reason — cached values are nbox's own
+/// assembled structs, not NetBox's raw responses.
+pub fn profile_partition(name: &str, base_url: &str) -> String {
     let url = base_url.trim_end_matches('/');
-    format!("{name}|{url}|{}", backend.as_str())
+    format!("{name}|{url}")
 }
 
 /// A within-profile cache key: a namespace plus an object reference. Opaque and
@@ -65,18 +65,18 @@ mod tests {
     use super::*;
 
     #[test]
-    fn partition_separates_url_and_backend() {
-        let a = profile_partition("prod", "https://nb.example/", BackendKind::Rest);
-        let c = profile_partition("prod", "https://nb.example/", BackendKind::Graphql);
-        let d = profile_partition("prod", "https://other.example/", BackendKind::Rest);
-        assert_ne!(a, c, "backend segregates");
+    fn partition_separates_profile_and_url() {
+        let a = profile_partition("prod", "https://nb.example/");
+        let b = profile_partition("staging", "https://nb.example/");
+        let d = profile_partition("prod", "https://other.example/");
+        assert_ne!(a, b, "profile name segregates");
         assert_ne!(a, d, "base url segregates");
     }
 
     #[test]
     fn partition_is_trailing_slash_insensitive() {
-        let with = profile_partition("p", "https://nb/", BackendKind::Rest);
-        let without = profile_partition("p", "https://nb", BackendKind::Rest);
+        let with = profile_partition("p", "https://nb/");
+        let without = profile_partition("p", "https://nb");
         assert_eq!(with, without);
     }
 

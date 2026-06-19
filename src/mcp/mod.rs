@@ -26,13 +26,12 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 
 use crate::cache::{Cache, CacheKey};
-use crate::config::BackendKind;
 use crate::domain::detail;
 use crate::domain::interface_view::InterfaceView;
 use crate::domain::journal_view::JournalView;
 use crate::domain::tag_view::TagsView;
 use crate::error::NboxError;
-use crate::netbox::capabilities::NetBoxCapabilities;
+use crate::netbox::capabilities::{ApiRouting, NetBoxCapabilities};
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::search::{SearchFilters, SearchRequest, SearchResult};
 
@@ -232,8 +231,8 @@ pub struct ListTagsArgs {
 pub struct StatusReport {
     /// The NetBox base URL the server is connected to.
     pub netbox_url: String,
-    /// The active read backend for this profile.
-    pub backend: BackendKind,
+    /// Configured-vs-effective per-surface backend routing (`search`/`vrf`).
+    pub api: ApiRouting,
     /// The NetBox application version.
     pub netbox_version: String,
     /// The Django framework version NetBox runs on (`null` if unreported).
@@ -413,10 +412,11 @@ impl NboxMcp {
     )]
     async fn nbox_status(&self) -> Result<Json<StatusReport>, ErrorData> {
         let status = self.client.status().await.map_err(to_mcp_error)?;
+        let api = self.client.api_routing().await;
         let capabilities = self.client.capabilities(&status).await;
         Ok(Json(StatusReport {
             netbox_url: self.client.base_url().as_str().to_string(),
-            backend: self.client.backend(),
+            api,
             netbox_version: status.netbox_version,
             django_version: status.django_version,
             python_version: status.python_version,

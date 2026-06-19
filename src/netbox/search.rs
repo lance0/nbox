@@ -12,7 +12,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
 
-use crate::config::BackendKind;
+use crate::config::ApiSurface;
 use crate::netbox::client::{MAX_PAGE_SIZE, NetBoxClient};
 use crate::netbox::endpoints::Endpoint;
 use crate::netbox::graphql::GraphqlCapabilities;
@@ -273,7 +273,13 @@ impl NetBoxClient {
     pub async fn search(&self, req: SearchRequest) -> Result<SearchOutcome> {
         // Both fan-outs are large futures; box them at this public entry point so
         // spawned call sites can await `search()` normally (clippy::large_futures).
-        if self.backend() == BackendKind::Graphql {
+        // GraphQL is used only when the search surface prefers it *and* the schema
+        // probe supports it; otherwise we fall back to canonical REST.
+        if self
+            .effective_backend(ApiSurface::Search)
+            .await
+            .uses_graphql()
+        {
             return Box::pin(self.search_graphql(req)).await;
         }
         Box::pin(self.search_rest(req)).await
