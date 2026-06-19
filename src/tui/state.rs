@@ -95,12 +95,68 @@ pub enum Mode {
     Command,
 }
 
-/// Which pane on the split home screen has focus. Movement keys route to it:
-/// the list moves the selection, the preview scrolls its body.
+/// Which pane of the three-pane home screen has focus. Movement keys route to it:
+/// Nav moves the section cursor, the list moves the selection, the preview scrolls
+/// its body. `Tab`/`Shift+Tab` cycle left→right (Nav → List → Preview).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Focus {
+    Nav,
     List,
     Preview,
+}
+
+/// A section in the home Navigation pane: a browse-by-kind entry, or `Recent`.
+/// Selecting a kind lists all of it into the Results pane; `Recent` shows the
+/// recently-opened items. Search stays on `/` (not a nav entry).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NavSection {
+    Devices,
+    Prefixes,
+    Ips,
+    Vlans,
+    Sites,
+    Racks,
+    Recent,
+}
+
+/// The Nav sections in display order: the browse kinds, then `Recent` (rendered
+/// under a divider). The selection cursor indexes this array.
+pub const NAV_SECTIONS: [NavSection; 7] = [
+    NavSection::Devices,
+    NavSection::Prefixes,
+    NavSection::Ips,
+    NavSection::Vlans,
+    NavSection::Sites,
+    NavSection::Racks,
+    NavSection::Recent,
+];
+
+impl NavSection {
+    /// The pane label.
+    pub fn label(self) -> &'static str {
+        match self {
+            NavSection::Devices => "Devices",
+            NavSection::Prefixes => "Prefixes",
+            NavSection::Ips => "IPs",
+            NavSection::Vlans => "VLANs",
+            NavSection::Sites => "Sites",
+            NavSection::Racks => "Racks",
+            NavSection::Recent => "Recent",
+        }
+    }
+
+    /// The object kind this section browses, or `None` for `Recent`.
+    pub fn object_kind(self) -> Option<ObjectKind> {
+        Some(match self {
+            NavSection::Devices => ObjectKind::Device,
+            NavSection::Prefixes => ObjectKind::Prefix,
+            NavSection::Ips => ObjectKind::IpAddress,
+            NavSection::Vlans => ObjectKind::Vlan,
+            NavSection::Sites => ObjectKind::Site,
+            NavSection::Racks => ObjectKind::Rack,
+            NavSection::Recent => return None,
+        })
+    }
 }
 
 /// Events delivered to the event loop.
@@ -117,6 +173,14 @@ pub enum AppEvent {
     SearchComplete {
         req: RequestId,
         result: anyhow::Result<SearchOutcome>,
+    },
+    /// A browse-by-kind result for the Nav pane, tagged with the browse channel's
+    /// request id (stale ones dropped) and the kind it listed (for the Results
+    /// title + count).
+    BrowseComplete {
+        req: RequestId,
+        kind: ObjectKind,
+        result: anyhow::Result<Vec<SearchResult>>,
     },
     /// A full-detail load (from Enter / a palette lookup), tagged with the detail
     /// channel's request id so a stale (older-id) response can be dropped.
@@ -293,6 +357,13 @@ pub enum AppCommand {
         /// no `App` handle). Resolved by `NetBoxClient::search`, exactly as the CLI.
         filters: SearchFilters,
     },
+    /// Browse all objects of one kind into the Results pane (the Nav pane picked a
+    /// kind). Carries the browse channel's request id so a stale `BrowseComplete`
+    /// is dropped on arrival, like `Search`.
+    Browse {
+        kind: ObjectKind,
+        req: RequestId,
+    },
     LoadDetail {
         kind: ObjectKind,
         id: u64,
@@ -386,6 +457,7 @@ impl AppCommand {
         matches!(
             self,
             AppCommand::Search { .. }
+                | AppCommand::Browse { .. }
                 | AppCommand::LoadDetail { .. }
                 | AppCommand::LoadByRef { .. }
                 | AppCommand::LoadDashboard { .. }
@@ -477,9 +549,15 @@ pub struct App {
     pub test_seq: RequestId,
     /// High-water mark: the id of the latest test-connect initiated.
     pub test_gen: RequestId,
-    /// Which home pane has focus: the results list or the preview. Movement keys
-    /// route to it. `Tab`/`Shift+Tab` toggle it; only meaningful on Home.
+    /// Which home pane has focus: Nav, the results list, or the preview. Movement
+    /// keys route to it. `Tab`/`Shift+Tab` cycle it; only meaningful on Home.
     pub focus: Focus,
+    /// Cursor into [`NAV_SECTIONS`] — the highlighted Navigation-pane row.
+    pub nav_selected: usize,
+    /// The kind currently browsed into the Results pane (the Nav pane picked it),
+    /// or `None` when Results holds a search / the recents fallback. Drives the
+    /// Results pane title.
+    pub browse_kind: Option<ObjectKind>,
     pub history: Vec<Screen>,
     pub status: String,
     /// Severity of the current `status` message, so the footer can color it via
@@ -571,6 +649,9 @@ pub struct App {
     /// The latest request id stamped on a spawned full search. A `SearchComplete`
     /// older than this is from a superseded request and is dropped on arrival.
     pub search_gen: RequestId,
+    /// High-water mark for the browse-by-kind channel; a `BrowseComplete` older
+    /// than this is dropped (latest-wins, like search).
+    pub browse_gen: RequestId,
     /// The latest request id stamped on a spawned full-detail load (`LoadDetail`
     /// or `LoadByRef`). A `DetailLoaded` older than this is dropped on arrival.
     pub detail_gen: RequestId,
@@ -668,6 +749,8 @@ impl App {
             test_seq: 0,
             test_gen: 0,
             focus: Focus::List,
+            nav_selected: NAV_SECTIONS.len() - 1, // Recent, matching the default view
+            browse_kind: None,
             history: Vec::new(),
             status: String::new(),
             status_severity: Severity::Info,
@@ -694,6 +777,7 @@ impl App {
             preview_viewport: 0,
             request_seq: 0,
             search_gen: 0,
+            browse_gen: 0,
             detail_gen: 0,
             detail_view_state: std::collections::HashMap::new(),
             dashboard_gen: 0,
@@ -795,6 +879,11 @@ impl App {
                     *req = self.request_seq;
                     self.search_gen = self.request_seq;
                 }
+                AppCommand::Browse { req, .. } => {
+                    self.request_seq += 1;
+                    *req = self.request_seq;
+                    self.browse_gen = self.request_seq;
+                }
                 AppCommand::LoadDetail { req, .. } | AppCommand::LoadByRef { req, .. } => {
                     self.request_seq += 1;
                     *req = self.request_seq;
@@ -832,6 +921,10 @@ impl App {
     /// dropped so a slow earlier search can't overwrite newer results.
     fn is_current_search(&self, req: RequestId) -> bool {
         req >= self.search_gen
+    }
+
+    fn is_current_browse(&self, req: RequestId) -> bool {
+        req >= self.browse_gen
     }
 
     /// True when `req` is the newest full-detail request spawned (the
@@ -889,6 +982,8 @@ impl App {
                                 Severity::Warning,
                             );
                         }
+                        // These results came from a search, not a Nav browse.
+                        self.browse_kind = None;
                         self.results = outcome.results;
                         self.view = (0..self.results.len()).collect();
                         self.selected = self
@@ -902,6 +997,27 @@ impl App {
                             .unwrap_or(0);
                         // The highlighted result may have changed; let the
                         // debounce decide whether to (re)load the preview.
+                        self.mark_preview_dirty();
+                    }
+                    Err(e) => self.set_status(format!("error: {e:#}"), Severity::Error),
+                }
+                Vec::new()
+            }
+            AppEvent::BrowseComplete { req, kind, result } => {
+                // Settle the in-flight fetch (counted down even if dropped as
+                // stale, so the spinner can't hang), then drop a superseded browse.
+                self.end_request();
+                if !self.is_current_browse(req) {
+                    return Vec::new();
+                }
+                match result {
+                    Ok(items) => {
+                        self.set_status(format!("{} result(s)", items.len()), Severity::Success);
+                        self.browse_kind = Some(kind);
+                        self.last_query = None; // these results came from browse, not search
+                        self.results = items;
+                        self.view = (0..self.results.len()).collect();
+                        self.selected = 0;
                         self.mark_preview_dirty();
                     }
                     Err(e) => self.set_status(format!("error: {e:#}"), Severity::Error),
@@ -1255,10 +1371,17 @@ impl App {
             KeyCode::Char('P') => return self.cycle_profile(true),
             // Tab / Shift+Tab cycle focus between the home split's panes, and on the
             // detail screen cycle the section tabs (summary → interfaces → …).
-            KeyCode::Tab if self.screen == Screen::Home => self.toggle_focus(),
-            KeyCode::BackTab if self.screen == Screen::Home => self.toggle_focus(),
+            KeyCode::Tab if self.screen == Screen::Home => self.cycle_focus(true),
+            KeyCode::BackTab if self.screen == Screen::Home => self.cycle_focus(false),
             KeyCode::Tab if self.screen == Screen::Detail => self.cycle_detail_tab(true),
             KeyCode::BackTab if self.screen == Screen::Detail => self.cycle_detail_tab(false),
+            // The Nav pane owns movement when focused: j/k move the section cursor.
+            KeyCode::Char('j') | KeyCode::Down if self.on_nav() => self.nav_move(true),
+            KeyCode::Char('k') | KeyCode::Up if self.on_nav() => self.nav_move(false),
+            KeyCode::Char('g') | KeyCode::Home if self.on_nav() => self.nav_selected = 0,
+            KeyCode::Char('G') | KeyCode::End if self.on_nav() => {
+                self.nav_selected = NAV_SECTIONS.len() - 1;
+            }
             // Movement keys route to whatever owns scrolling/selection right now:
             // the detail screen scrolls its body; on Home the focused pane decides
             // (List → move the selection, Preview → scroll the preview body).
@@ -1281,6 +1404,10 @@ impl App {
             KeyCode::PageDown => self.select_page_down(),
             KeyCode::PageUp => self.select_page_up(),
             KeyCode::Enter => {
+                // On the Nav pane, Enter browses the highlighted section.
+                if self.on_nav() {
+                    return self.select_nav();
+                }
                 if self.screen == Screen::Home
                     && let Some((kind, id)) = self.home_target()
                 {
@@ -2423,6 +2550,7 @@ impl App {
     fn clear_search(&mut self) {
         self.request_seq += 1;
         self.search_gen = self.request_seq;
+        self.browse_kind = None;
         self.results.clear();
         self.view.clear();
         self.selected = 0;
@@ -2474,11 +2602,66 @@ impl App {
 
     /// Flip focus between the home split's list and preview panes. Switching to
     /// the preview re-clamps its scroll in case the loaded body changed since.
-    fn toggle_focus(&mut self) {
-        self.focus = match self.focus {
-            Focus::List => Focus::Preview,
-            Focus::Preview => Focus::List,
+    /// Cycle focus across the three home panes (Nav → List → Preview, wrapping).
+    /// `forward` follows the left→right order; `Shift+Tab` reverses it.
+    fn cycle_focus(&mut self, forward: bool) {
+        use Focus::{List, Nav, Preview};
+        self.focus = if forward {
+            match self.focus {
+                Nav => List,
+                List => Preview,
+                Preview => Nav,
+            }
+        } else {
+            match self.focus {
+                Nav => Preview,
+                List => Nav,
+                Preview => List,
+            }
         };
+    }
+
+    /// True when the home Navigation pane currently owns the keyboard.
+    fn on_nav(&self) -> bool {
+        self.screen == Screen::Home && self.focus == Focus::Nav
+    }
+
+    /// Move the Nav-pane cursor one row, clamped to the section list.
+    fn nav_move(&mut self, forward: bool) {
+        let last = NAV_SECTIONS.len() - 1;
+        let cur = self.nav_selected.min(last);
+        self.nav_selected = if forward {
+            (cur + 1).min(last)
+        } else {
+            cur.saturating_sub(1)
+        };
+    }
+
+    /// Act on the highlighted Nav section: browse a kind into Results (moving focus
+    /// there), or show the recents list. Returns any command to dispatch.
+    fn select_nav(&mut self) -> Vec<AppCommand> {
+        let section = NAV_SECTIONS[self.nav_selected.min(NAV_SECTIONS.len() - 1)];
+        match section.object_kind() {
+            Some(kind) => {
+                if self.fence_during_switch() {
+                    return Vec::new();
+                }
+                self.browse_kind = Some(kind);
+                self.focus = Focus::List;
+                self.set_status(format!("browsing {}…", section.label()), Severity::Info);
+                vec![AppCommand::Browse { kind, req: 0 }]
+            }
+            None => {
+                // Recent: drop browse/search results so the recents fallback shows.
+                self.browse_kind = None;
+                self.last_query = None;
+                self.results.clear();
+                self.view.clear();
+                self.selected = 0;
+                self.focus = Focus::List;
+                Vec::new()
+            }
+        }
     }
 
     /// True when the active movement keys should scroll a body rather than move a
@@ -5238,16 +5421,99 @@ mod tests {
     fn tab_and_backtab_cycle_focus() {
         let mut a = app();
         set_results(&mut a, results_n(3));
+        // Tab cycles left→right across the three panes (Nav → List → Preview),
+        // wrapping. Default focus is List.
         assert_eq!(a.focus, Focus::List);
         a.handle_event(press(KeyCode::Tab));
         assert_eq!(a.focus, Focus::Preview);
         a.handle_event(press(KeyCode::Tab));
+        assert_eq!(a.focus, Focus::Nav);
+        a.handle_event(press(KeyCode::Tab));
         assert_eq!(a.focus, Focus::List);
-        // Shift+Tab (BackTab) toggles the same way.
+        // Shift+Tab (BackTab) cycles in reverse.
+        a.handle_event(press(KeyCode::BackTab));
+        assert_eq!(a.focus, Focus::Nav);
         a.handle_event(press(KeyCode::BackTab));
         assert_eq!(a.focus, Focus::Preview);
         a.handle_event(press(KeyCode::BackTab));
         assert_eq!(a.focus, Focus::List);
+    }
+
+    #[test]
+    fn nav_jk_moves_the_section_cursor_clamped() {
+        let mut a = app();
+        a.focus = Focus::Nav;
+        a.nav_selected = 0;
+        a.handle_event(press(KeyCode::Char('j')));
+        assert_eq!(a.nav_selected, 1);
+        a.handle_event(press(KeyCode::Char('k')));
+        assert_eq!(a.nav_selected, 0);
+        // Clamp at the top.
+        a.handle_event(press(KeyCode::Char('k')));
+        assert_eq!(a.nav_selected, 0);
+        // `G` jumps to the last section (Recent).
+        a.handle_event(press(KeyCode::Char('G')));
+        assert_eq!(a.nav_selected, NAV_SECTIONS.len() - 1);
+    }
+
+    #[test]
+    fn nav_enter_on_a_kind_browses_and_focuses_results() {
+        let mut a = app();
+        a.focus = Focus::Nav;
+        a.nav_selected = 0; // Devices
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(
+            matches!(
+                cmds.as_slice(),
+                [AppCommand::Browse {
+                    kind: ObjectKind::Device,
+                    ..
+                }]
+            ),
+            "got: {cmds:?}"
+        );
+        assert_eq!(a.browse_kind, Some(ObjectKind::Device));
+        assert_eq!(a.focus, Focus::List);
+    }
+
+    #[test]
+    fn nav_enter_on_recent_clears_browse_and_shows_recents() {
+        let mut a = app();
+        set_results(&mut a, results_n(3));
+        a.browse_kind = Some(ObjectKind::Device);
+        a.focus = Focus::Nav;
+        a.nav_selected = NAV_SECTIONS.len() - 1; // Recent
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(cmds.is_empty());
+        assert_eq!(a.browse_kind, None);
+        assert!(a.view.is_empty());
+        assert_eq!(a.focus, Focus::List);
+    }
+
+    #[test]
+    fn browse_complete_populates_results_and_titles_them() {
+        let mut a = app();
+        a.browse_gen = 1; // a browse is in flight
+        a.handle_event(AppEvent::BrowseComplete {
+            req: 1,
+            kind: ObjectKind::Rack,
+            result: Ok(vec![result_of(ObjectKind::Rack, 5, "ci-rack-1")]),
+        });
+        assert_eq!(a.browse_kind, Some(ObjectKind::Rack));
+        assert_eq!(a.view.len(), 1);
+        assert_eq!(a.results[0].display, "ci-rack-1");
+    }
+
+    #[test]
+    fn stale_browse_result_is_dropped() {
+        let mut a = app();
+        a.browse_gen = 5; // newer browse already issued
+        a.handle_event(AppEvent::BrowseComplete {
+            req: 2, // older
+            kind: ObjectKind::Device,
+            result: Ok(vec![result_of(ObjectKind::Device, 1, "old")]),
+        });
+        assert!(a.results.is_empty(), "a superseded browse must be dropped");
     }
 
     #[test]

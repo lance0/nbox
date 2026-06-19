@@ -123,6 +123,16 @@ fn dispatch(command: AppCommand, client: NetBoxClient, cache: Cache, tx: mpsc::S
                 let _ = tx.send(AppEvent::SearchComplete { req, result }).await;
             });
         }
+        AppCommand::Browse { kind, req } => {
+            tokio::spawn(async move {
+                let result =
+                    crate::netbox::browse::browse(&client, kind, crate::netbox::browse::BROWSE_CAP)
+                        .await;
+                let _ = tx
+                    .send(AppEvent::BrowseComplete { req, kind, result })
+                    .await;
+            });
+        }
         AppCommand::LoadDetail {
             kind,
             id,

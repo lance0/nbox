@@ -12,9 +12,11 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::cache::Source;
 use crate::netbox::prefix_tree::{self, PrefixTreeData};
-use crate::netbox::search::SearchFilters;
+use crate::netbox::search::{ObjectKind, SearchFilters};
 use crate::tui::config_modal::{ConfigModal, ConfigSection, ProfilesMode, TestState};
-use crate::tui::state::{App, Focus, Modal, Mode, RelatedModal, Screen, result_row_cells};
+use crate::tui::state::{
+    App, Focus, Modal, Mode, NAV_SECTIONS, NavSection, RelatedModal, Screen, result_row_cells,
+};
 use crate::tui::theme::Theme;
 
 /// Column widths for the results table. KIND is fixed-width so the kind tags line
@@ -604,12 +606,78 @@ fn render_prefix_tree(frame: &mut Frame, area: Rect, app: &mut App) {
     );
 }
 
+/// Fixed width of the home Navigation rail (border + a comfortable label column,
+/// roomy enough for "●Prefixes 33").
+const NAV_WIDTH: u16 = 16;
+
 fn render_home(frame: &mut Frame, area: Rect, app: &mut App) {
-    // Split the body: list on the left (~40%), live preview on the right (~60%).
-    let panes =
-        Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)]).split(area);
-    render_home_list(frame, panes[0], app);
-    render_home_preview(frame, panes[1], app);
+    // Three panes: a fixed-width Nav rail, then the results / live-preview split.
+    let cols = Layout::horizontal([
+        Constraint::Length(NAV_WIDTH),
+        Constraint::Percentage(40),
+        Constraint::Min(0),
+    ])
+    .split(area);
+    render_home_nav(frame, cols[0], app);
+    render_home_list(frame, cols[1], app);
+    render_home_preview(frame, cols[2], app);
+}
+
+/// The plural pane-title noun for a browsed kind (mirrors the Nav labels).
+fn browse_label(kind: ObjectKind) -> &'static str {
+    match kind {
+        ObjectKind::Device => "Devices",
+        ObjectKind::Prefix => "Prefixes",
+        ObjectKind::IpAddress => "IPs",
+        ObjectKind::Vlan => "VLANs",
+        ObjectKind::Site => "Sites",
+        ObjectKind::Rack => "Racks",
+        _ => "Results",
+    }
+}
+
+/// The left Navigation rail: browse-by-kind sections (domain-colored bullets) with
+/// a divider before Recent. The highlighted row gets an accent gutter while the
+/// pane holds focus.
+fn render_home_nav(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let border = pane_border(theme, app.focus == Focus::Nav);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Browse ")
+        .border_style(border)
+        .padding(Padding::horizontal(1));
+    let focused = app.focus == Focus::Nav;
+
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, section) in NAV_SECTIONS.iter().enumerate() {
+        if *section == NavSection::Recent {
+            lines.push(Line::from(Span::styled(
+                "──────",
+                Style::default()
+                    .fg(theme.border)
+                    .add_modifier(Modifier::DIM),
+            )));
+        }
+        let selected = i == app.nav_selected;
+        let gutter = if selected && focused { "▌" } else { " " };
+        // Kinds get a domain-colored bullet (same palette as the result KIND tag);
+        // Recent is a dim marker since it isn't a kind.
+        let bullet_color = section
+            .object_kind()
+            .map_or(theme.text_dim, |k| kind_accent(k.as_str(), theme));
+        let label_style = if selected {
+            Style::default().fg(theme.text).add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.text)
+        };
+        lines.push(Line::from(vec![
+            Span::styled(gutter, Style::default().fg(theme.accent)),
+            Span::styled("● ", Style::default().fg(bullet_color)),
+            Span::styled(section.label(), label_style),
+        ]));
+    }
+    frame.render_widget(Paragraph::new(lines).block(block), area);
 }
 
 /// Border style for a pane given whether it currently holds focus: the focused
@@ -639,11 +707,16 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
     // the active list length; absent for an empty list.
     let position = list_position(app.selected, app.home_len());
 
-    // With search results, show them. Otherwise fall back to recents, then a hint.
+    // With search/browse results, show them; the title names a browsed kind.
+    // Otherwise fall back to recents, then a hint.
     if !app.view.is_empty() {
+        let title = match app.browse_kind {
+            Some(kind) => format!(" {} ", browse_label(kind)),
+            None => " Results ".to_string(),
+        };
         let mut block = Block::default()
             .borders(Borders::ALL)
-            .title(" Results ")
+            .title(title)
             .border_style(border)
             .padding(Padding::horizontal(1));
         if let Some(pos) = position {
