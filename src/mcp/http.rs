@@ -209,6 +209,8 @@ pub struct ServeOptions {
     pub allowed_hosts: Vec<String>,
     /// Per-caller requests-per-minute cap; `0` ⇒ disabled (default).
     pub rate_limit: u32,
+    /// The read cache the long-lived server shares across tool calls.
+    pub cache: crate::cache::Cache,
 }
 
 /// Serve the read-only MCP server over HTTP until interrupted.
@@ -225,6 +227,7 @@ pub async fn serve_http(client: NetBoxClient, addr: &str, opts: ServeOptions) ->
         oidc,
         allowed_hosts: extra_hosts,
         rate_limit,
+        cache,
     } = opts;
     let oidc_on = oidc.is_some();
     let socket = parse_bind_addr(addr, oidc_on)?;
@@ -284,8 +287,9 @@ pub async fn serve_http(client: NetBoxClient, addr: &str, opts: ServeOptions) ->
     };
 
     // Build the server once; the service factory hands rmcp a fresh clone per
-    // session (cheap — `NboxMcp` holds an `Arc<NetBoxClient>`).
-    let server = NboxMcp::new(client);
+    // session (cheap — `NboxMcp` holds an `Arc<NetBoxClient>` and a cheaply-cloned
+    // `Cache` sharing one store, so all sessions share the cache).
+    let server = NboxMcp::new(client, cache);
 
     let cancel = CancellationToken::new();
     // `StreamableHttpServerConfig` is `#[non_exhaustive]`, so build from the

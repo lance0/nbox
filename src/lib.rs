@@ -558,8 +558,11 @@ async fn run_serve(ctx: &Ctx, flags: ServeFlags) -> Result<()> {
     };
 
     let client = connect(ctx)?;
+    // The long-lived server shares a read cache across tool calls (chatty agents
+    // re-read the same object graph); agents can drop it with `nbox_cache_clear`.
+    let cache = serve_cache(ctx, &client);
     match http {
-        None => mcp::serve(client).await,
+        None => mcp::serve(client, cache).await,
         Some(addr) => {
             serve_http_or_explain(
                 client,
@@ -569,10 +572,26 @@ async fn run_serve(ctx: &Ctx, flags: ServeFlags) -> Result<()> {
                 jwks_url,
                 allowed_hosts,
                 rate_limit,
+                cache,
             )
             .await
         }
     }
+}
+
+/// Build the read cache for `nbox serve` from the `[cache]` config (best-effort —
+/// a missing/unreadable config yields the defaults: cache on, 30s) and the
+/// connected client (its URL + backend key the cache partition).
+fn serve_cache(ctx: &Ctx, client: &NetBoxClient) -> cache::Cache {
+    let settings = ctx
+        .config_path
+        .clone()
+        .or_else(|| config::default_path().ok())
+        .and_then(|p| config::load(&p).ok())
+        .map(|c| c.cache)
+        .unwrap_or_default();
+    let partition = cache::profile_partition("serve", client.base_url().as_str(), client.backend());
+    cache::Cache::from_settings(partition, &settings)
 }
 
 /// Read just the `[serve]` section, best-effort: a missing or unparseable config
@@ -593,6 +612,7 @@ fn load_serve_config(ctx: &Ctx) -> config::ServeConfig {
 /// `oidc` is the validated `(issuer, audience)` pair (OIDC resource-server mode);
 /// `jwks_url` is the optional JWKS override. Both are ignored without `--http`.
 #[cfg(feature = "http")]
+#[allow(clippy::too_many_arguments)] // a flag/config forwarding wrapper; bundling would add indirection
 async fn serve_http_or_explain(
     client: NetBoxClient,
     addr: &str,
@@ -601,6 +621,7 @@ async fn serve_http_or_explain(
     jwks_url: Option<String>,
     allowed_hosts: Vec<String>,
     rate_limit: u32,
+    cache: cache::Cache,
 ) -> Result<()> {
     let oidc = oidc.map(|(issuer, audience)| mcp::OidcArgs {
         issuer,
@@ -615,6 +636,7 @@ async fn serve_http_or_explain(
             oidc,
             allowed_hosts,
             rate_limit,
+            cache,
         },
     )
     .await
@@ -624,7 +646,7 @@ async fn serve_http_or_explain(
 // site is feature-agnostic; it has nothing to await, hence the allow. The OIDC
 // inputs are unused — without the feature there is no transport to configure.
 #[cfg(not(feature = "http"))]
-#[allow(clippy::unused_async)]
+#[allow(clippy::unused_async, clippy::too_many_arguments)]
 async fn serve_http_or_explain(
     _client: NetBoxClient,
     _addr: &str,
@@ -633,6 +655,7 @@ async fn serve_http_or_explain(
     _jwks_url: Option<String>,
     _allowed_hosts: Vec<String>,
     _rate_limit: u32,
+    _cache: cache::Cache,
 ) -> Result<()> {
     Err(error::NboxError::Usage(
         "`nbox serve --http` requires the `http` build feature, which this binary \

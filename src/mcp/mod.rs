@@ -25,6 +25,7 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::cache::{Cache, CacheKey};
 use crate::config::BackendKind;
 use crate::domain::detail;
 use crate::domain::interface_view::InterfaceView;
@@ -39,6 +40,10 @@ use crate::netbox::search::{SearchFilters, SearchRequest, SearchResult};
 #[derive(Clone)]
 pub struct NboxMcp {
     client: Arc<NetBoxClient>,
+    /// Read cache shared across this long-lived server's tool calls, so a chatty
+    /// agent re-reading the same object graph de-dupes within the TTL. Agents can
+    /// drop it with `nbox_cache_clear`.
+    cache: Cache,
     tool_router: ToolRouter<Self>,
 }
 
@@ -145,7 +150,7 @@ pub struct SearchArgs {
 }
 
 /// Arguments for `nbox_get`.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
+#[derive(Debug, Clone, Deserialize, schemars::JsonSchema)]
 pub struct GetArgs {
     /// What kind of object to fetch.
     pub kind: GetKind,
@@ -245,6 +250,14 @@ pub struct SearchReport {
     pub results: Vec<SearchResult>,
     /// Per-endpoint failures (partial result); empty when every endpoint succeeded.
     pub errors: Vec<String>,
+}
+
+/// `nbox_cache_clear` result: a small confirmation (a concrete type, so the tool
+/// advertises a proper object output schema).
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct CacheClearReport {
+    /// Human-readable confirmation, e.g. "cache cleared".
+    pub status: String,
 }
 
 /// `nbox_next_ip` / `nbox_next_prefix` result: the resolved prefix plus the
@@ -378,10 +391,12 @@ fn percent_decode(s: &str) -> String {
 
 #[tool_router]
 impl NboxMcp {
-    /// Build a server bound to a NetBox client.
-    pub fn new(client: NetBoxClient) -> Self {
+    /// Build a server bound to a NetBox client and a read cache. Pass
+    /// `Cache::disabled()` to opt out (e.g. in tests).
+    pub fn new(client: NetBoxClient, cache: Cache) -> Self {
         Self {
             client: Arc::new(client),
+            cache,
             tool_router: Self::tool_router(),
         }
     }
@@ -457,7 +472,22 @@ impl NboxMcp {
         &self,
         Parameters(args): Parameters<GetArgs>,
     ) -> Result<Json<serde_json::Value>, ErrorData> {
-        self.get_impl(args).await.map_err(to_mcp_error)
+        self.get_cached(args).await.map_err(to_mcp_error)
+    }
+
+    /// Drop nbox's local read cache so the next reads fetch fresh from NetBox.
+    /// Read-only with respect to NetBox — it only clears cached copies held in
+    /// this server process; use it after data changed in NetBox out-of-band.
+    #[tool(
+        name = "nbox_cache_clear",
+        description = "Clear nbox's local read cache so the next lookups fetch fresh from NetBox. Use this after data changed in NetBox out-of-band and you need the current state before the cache TTL expires. Safe and read-only with respect to NetBox — it only drops cached copies held in this server process.",
+        annotations(read_only_hint = true, idempotent_hint = true)
+    )]
+    async fn nbox_cache_clear(&self) -> Result<Json<CacheClearReport>, ErrorData> {
+        self.cache.clear_all();
+        Ok(Json(CacheClearReport {
+            status: "cache cleared".to_string(),
+        }))
     }
 
     /// Show one interface on a device, with its addresses and cable-path trace.
@@ -582,6 +612,29 @@ impl NboxMcp {
 }
 
 impl NboxMcp {
+    /// `nbox_get` through the read cache: serve a within-TTL copy if present, else
+    /// fetch via [`get_impl`](Self::get_impl) and store it. Single-flighted, so an
+    /// agent firing several reads of the same object collapses to one fetch. The
+    /// key folds in the disambiguators so the same CIDR in two VRFs caches apart.
+    /// A not-found/ambiguous error still propagates (nothing is cached for it).
+    async fn get_cached(&self, args: GetArgs) -> anyhow::Result<Json<serde_json::Value>> {
+        let scope = format!(
+            "vrf={};site={};group={}",
+            args.vrf.as_deref().unwrap_or(""),
+            args.site.as_deref().unwrap_or(""),
+            args.group.as_deref().unwrap_or(""),
+        );
+        let key = CacheKey::object(args.kind.as_str(), &args.reference, &scope);
+        let cached = self
+            .cache
+            .get_or_fetch(&key, || async {
+                let Json(value) = self.get_impl(args.clone()).await?;
+                Ok(value)
+            })
+            .await?;
+        Ok(Json(cached.value))
+    }
+
     /// Dispatch `nbox_get` to the matching shared resolver + view builder.
     /// Returns the JSON view, or a typed error (not-found/ambiguous map to
     /// invalid_params at the tool boundary). The fetch + view-build path is the
@@ -773,8 +826,8 @@ impl ServerHandler for NboxMcp {
 /// Serve the MCP server over stdio until the client disconnects.
 ///
 /// stdout is reserved for the JSON-RPC stream; this prints nothing else.
-pub async fn serve(client: NetBoxClient) -> anyhow::Result<()> {
-    let service = NboxMcp::new(client).serve(stdio()).await?;
+pub async fn serve(client: NetBoxClient, cache: Cache) -> anyhow::Result<()> {
+    let service = NboxMcp::new(client, cache).serve(stdio()).await?;
     service.waiting().await?;
     Ok(())
 }

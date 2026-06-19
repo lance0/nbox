@@ -46,6 +46,14 @@ impl CacheKey {
         Self(format!("detail|{}|ref:{}", kind.as_str(), value.trim()))
     }
 
+    /// A key for an MCP `nbox_get` object lookup: the kind label, the reference,
+    /// and any disambiguators folded into `scope` (vrf/site/group), so e.g. the
+    /// same CIDR resolved in two VRFs caches separately. `kind` is the caller's
+    /// own slug (the MCP `GetKind`), so this doesn't depend on `ObjectKind`.
+    pub fn object(kind: &str, reference: &str, scope: &str) -> Self {
+        Self(format!("get|{kind}|ref:{}|{scope}", reference.trim()))
+    }
+
     /// The opaque key string (what the store sees).
     pub fn as_str(&self) -> &str {
         &self.0
@@ -99,5 +107,17 @@ mod tests {
         let by_id = CacheKey::detail(ObjectKind::Device, 7);
         let by_ref = CacheKey::detail_ref(ObjectKind::Device, "7");
         assert_ne!(by_id, by_ref);
+    }
+
+    #[test]
+    fn object_key_includes_scope_so_disambiguators_dont_collide() {
+        let vrf_a = CacheKey::object("prefix", "10.0.0.0/24", "vrf=a;site=;group=");
+        let vrf_b = CacheKey::object("prefix", "10.0.0.0/24", "vrf=b;site=;group=");
+        assert_ne!(vrf_a, vrf_b, "same CIDR in two VRFs must not share a key");
+        // Stable + reference-trimmed.
+        assert_eq!(
+            CacheKey::object("device", "  edge01 ", "vrf=;site=;group="),
+            CacheKey::object("device", "edge01", "vrf=;site=;group=")
+        );
     }
 }

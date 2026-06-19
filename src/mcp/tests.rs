@@ -54,7 +54,51 @@ fn server_for(mock: &MockServer) -> NboxMcp {
         url: mock.uri(),
         ..Default::default()
     };
-    NboxMcp::new(NetBoxClient::new(&profile, None).unwrap())
+    // A disabled cache so each tool call hits the mock (the `.expect(N)` counts
+    // assume no caching); cache behavior has its own dedicated tests.
+    NboxMcp::new(
+        NetBoxClient::new(&profile, None).unwrap(),
+        crate::cache::Cache::disabled(),
+    )
+}
+
+#[tokio::test]
+async fn nbox_get_consults_cache_and_clear_busts_it() {
+    // No reachable NetBox: a cache HIT must answer with no network, and after a
+    // clear the next call must fall through to the (unreachable) origin and error.
+    let profile = ProfileConfig {
+        url: "http://127.0.0.1:9/".into(),
+        ..Default::default()
+    };
+    let cache = crate::cache::Cache::from_settings(
+        "t".into(),
+        &crate::config::CacheSettings {
+            enabled: true,
+            ttl_secs: 30,
+        },
+    );
+    let server = NboxMcp::new(NetBoxClient::new(&profile, None).unwrap(), cache);
+
+    let args = get_args(GetKind::Site, "iad1");
+    // Pre-seed under the exact key `get_cached` computes for these args.
+    let key = crate::cache::CacheKey::object("site", "iad1", "vrf=;site=;group=");
+    server
+        .cache
+        .put(&key, &json!({ "name": "iad1", "from_cache": true }));
+
+    let Json(v) = server
+        .get_cached(args.clone())
+        .await
+        .expect("served from cache without touching the network");
+    assert_eq!(v["from_cache"], json!(true));
+
+    // Clearing drops the entry, so the next get falls through to the unreachable
+    // origin and errors — proving the clear tool busts the cache.
+    server.cache.clear_all();
+    assert!(
+        server.get_cached(args).await.is_err(),
+        "after clear, a miss hits NetBox (unreachable in this test)"
+    );
 }
 
 /// An empty paginated page, for endpoints a flow touches but doesn't care about.

@@ -49,6 +49,7 @@ const EXPECTED_TOOLS: &[&str] = &[
     "nbox_next_prefix",
     "nbox_journal",
     "nbox_list_tags",
+    "nbox_cache_clear",
 ];
 
 /// A live `nbox serve` child plus the plumbing to talk to it. Holds the child's
