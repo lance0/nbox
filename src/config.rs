@@ -69,6 +69,10 @@ pub struct Config {
     #[serde(default)]
     pub ui: UiConfig,
 
+    /// Local read-cache settings. Absent ⇒ defaults (on-disk cache enabled).
+    #[serde(default)]
+    pub cache: CacheSettings,
+
     /// MCP server (`nbox serve`) settings. Absent ⇒ all defaults (stdio).
     #[serde(default)]
     pub serve: ServeConfig,
@@ -173,6 +177,39 @@ impl Default for UiConfig {
             refresh_secs: None,
         }
     }
+}
+
+/// Local read-cache settings (the `[cache]` section). The cache stores assembled
+/// view models per profile so repeated reads (TUI back-navigation, chatty MCP
+/// agents, scripting loops) don't re-hit NetBox. Pure data — the runtime mapping
+/// to the cache engine lives in `crate::cache`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CacheSettings {
+    /// Master switch. When off, every read goes straight to NetBox.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Multiplies every TTL — the one knob to make the cache warmer (`2.0`) or
+    /// colder (`0.5`). Non-positive / non-finite values fall back to `1.0`.
+    #[serde(default = "default_ttl_scale")]
+    pub ttl_scale: f64,
+    /// Override the on-disk cache file path. Absent ⇒ the platform cache dir
+    /// (`$XDG_CACHE_HOME/nbox/cache.db` and equivalents).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub path: Option<String>,
+}
+
+impl Default for CacheSettings {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            ttl_scale: 1.0,
+            path: None,
+        }
+    }
+}
+
+fn default_ttl_scale() -> f64 {
+    1.0
 }
 
 /// A single NetBox connection profile.

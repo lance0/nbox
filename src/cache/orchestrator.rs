@@ -98,6 +98,23 @@ impl Default for CacheConfig {
 }
 
 impl CacheConfig {
+    /// Build the runtime policy from the user's `[cache]` settings: the on/off
+    /// switch and the TTL scale come from config; the per-tier TTLs and grace
+    /// window keep their (conservative) defaults. A non-positive or non-finite
+    /// `ttl_scale` is rejected back to `1.0`.
+    pub fn from_settings(s: &crate::config::CacheSettings) -> Self {
+        let scale = if s.ttl_scale.is_finite() && s.ttl_scale > 0.0 {
+            s.ttl_scale
+        } else {
+            1.0
+        };
+        Self {
+            enabled: s.enabled,
+            scale,
+            ..Self::default()
+        }
+    }
+
     fn base_ttl(&self, tier: Tier) -> u64 {
         match tier {
             Tier::Static => self.static_ttl,
@@ -367,6 +384,27 @@ mod tests {
         assert_eq!(cfg.max_age(Tier::Detail), 600, "300 * 2.0");
         assert_eq!(cfg.max_age(Tier::Search), 120);
         assert_eq!(cfg.hard_window(Tier::Detail), 600 + 600);
+    }
+
+    #[test]
+    fn from_settings_maps_switch_and_scale_and_rejects_bad_scale() {
+        use crate::config::CacheSettings;
+        let on = CacheConfig::from_settings(&CacheSettings {
+            enabled: true,
+            ttl_scale: 3.0,
+            path: None,
+        });
+        assert!(on.enabled);
+        assert_eq!(on.max_age(Tier::Detail), 900, "300 * 3.0");
+
+        // A zero / negative / non-finite scale falls back to 1.0 (never a 0 TTL).
+        let bad = CacheConfig::from_settings(&CacheSettings {
+            enabled: false,
+            ttl_scale: 0.0,
+            path: None,
+        });
+        assert!(!bad.enabled);
+        assert!((bad.scale - 1.0).abs() < f64::EPSILON);
     }
 
     #[test]
