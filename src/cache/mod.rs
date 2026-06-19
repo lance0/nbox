@@ -15,8 +15,12 @@
 
 mod key;
 mod orchestrator;
+#[cfg(feature = "cache")]
+mod sqlite;
 mod store;
 
 pub use key::{CacheKey, profile_partition};
 pub use orchestrator::{Cache, CacheConfig, Cached, Freshness, Source, Tier};
+#[cfg(feature = "cache")]
+pub use sqlite::SqliteStore;
 pub use store::{CacheEntry, CacheStore, MemoryStore, UnixSecs, now_unix};
