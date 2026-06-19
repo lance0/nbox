@@ -861,54 +861,104 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &mut App) {
     // draws the `sigil value` line itself (with a visible cursor) and reports
     // where the terminal cursor should sit, which we then place. The borrow of
     // `app.theme` is cloned out first so the input can borrow `app` mutably.
+    //
+    // The editor is inset one column on each side (`footer_input_area`) so the
+    // `/`/`:` sigil lands at the same column as the header and the normal-mode
+    // `/ search` hint — the footer reads as morphing in place rather than the
+    // sigil snapping to the terminal edge.
     match app.mode {
         Mode::Search => {
             let theme = app.theme.clone();
-            let pos = app.search_input.render(frame, area, '/', &theme);
+            let pos = app
+                .search_input
+                .render(frame, footer_input_area(area), '/', &theme);
             frame.set_cursor_position(pos);
             return;
         }
         Mode::Command => {
             let theme = app.theme.clone();
-            let pos = app.command_input.render(frame, area, ':', &theme);
+            let pos = app
+                .command_input
+                .render(frame, footer_input_area(area), ':', &theme);
             frame.set_cursor_position(pos);
             return;
         }
         Mode::Normal => {}
     }
 
+    let line = footer_line(app);
+    frame.render_widget(
+        Paragraph::new(line).style(Style::default().fg(app.theme.text)),
+        area,
+    );
+}
+
+/// Inset a footer rect by one column on each side so the Search/Command line
+/// editor's sigil aligns with the header and the normal-mode nav hint (column 1)
+/// rather than hugging the terminal edge. Width floors at 0 on a tiny terminal.
+fn footer_input_area(area: Rect) -> Rect {
+    Rect {
+        x: area.x.saturating_add(1),
+        y: area.y,
+        width: area.width.saturating_sub(2),
+        height: area.height,
+    }
+}
+
+/// Context-sensitive normal-mode footer. Live state (spinner, result count,
+/// errors, transient theme notices) gets the left edge; persistent navigation
+/// follows so controls stay visible without burying the thing that just changed.
+fn footer_line(app: &App) -> Line<'static> {
     let theme = &app.theme;
     let mut spans: Vec<Span> = Vec::new();
-    // While a request is in flight, lead the status line with the loading
-    // spinner glyph (styled via the cheese palette). When idle the footer is
-    // exactly as before — no spinner cell.
+    let mut has_state = false;
+
     if app.loading() {
-        spans.push(Span::raw(" "));
         spans.push(app.spinner.span(theme));
+        spans.push(Span::raw(" "));
+        has_state = true;
     }
     if !app.status.is_empty() {
-        // A live status message is colored by its severity: errors red, partial
-        // results yellow, confirmations green, ordinary chatter dim.
         spans.push(Span::styled(
-            format!(" {} ", app.status),
+            app.status.clone(),
             theme.message_style(app.status_severity),
         ));
     } else if app.loading() {
-        // Loading with no specific status: a neutral hint beside the spinner.
         spans.push(Span::styled(
-            " loading… ",
+            "loading…",
+            Style::default().fg(theme.text_dim),
+        ));
+    } else {
+        has_state = false;
+    }
+
+    if has_state || !app.status.is_empty() {
+        spans.push(Span::raw("    "));
+        spans.push(Span::styled(
+            footer_nav(app).trim_start().to_string(),
             Style::default().fg(theme.text_dim),
         ));
     } else {
         spans.push(Span::styled(
-            " / search   Tab pane   Enter open   o browser   y copy   b back   t theme   ? help   q quit ",
+            footer_nav(app),
             Style::default().fg(theme.text_dim),
         ));
     }
-    frame.render_widget(
-        Paragraph::new(Line::from(spans)).style(Style::default().fg(theme.text)),
-        area,
-    );
+    Line::from(spans)
+}
+
+fn footer_nav(app: &App) -> &'static str {
+    match app.screen {
+        Screen::Home if app.focus == Focus::Preview => {
+            " / search · j/k scroll · g/G top/bottom · Tab results · Enter open · o/y open/copy · r refresh · ? help · q quit "
+        }
+        Screen::Home => {
+            " / search · j/k move · Enter open · Tab preview · o/y open/copy · r refresh · t theme · ? help · q quit "
+        }
+        Screen::Detail => {
+            " j/k scroll · g/G top/bottom · i/p/c/v/s tabs · o/y open/copy · b back · r refresh · t theme · ? help · q quit "
+        }
+    }
 }
 
 fn mode_label(mode: Mode) -> &'static str {
@@ -922,6 +972,31 @@ fn mode_label(mode: Mode) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::ProfileConfig;
+    use crate::netbox::client::NetBoxClient;
+
+    fn app() -> App {
+        let profile = ProfileConfig {
+            url: "http://localhost".into(),
+            ..Default::default()
+        };
+        let client = NetBoxClient::new(&profile, None).unwrap();
+        App::new(
+            client,
+            "default",
+            "test".into(),
+            "http://localhost".into(),
+            "4.5.5".into(),
+            None,
+        )
+    }
+
+    fn line_text(line: &Line) -> String {
+        line.spans
+            .iter()
+            .map(|s| s.content.as_ref())
+            .collect::<String>()
+    }
 
     /// Pull the foreground color the line's last span renders in.
     fn last_fg(line: &Line) -> Option<ratatui::style::Color> {
@@ -1014,6 +1089,24 @@ mod tests {
         assert_eq!(label_width(&body), LABEL_CAP);
         // A body with no key/value rows needs no column.
         assert_eq!(label_width("just a header line"), 0);
+    }
+
+    #[test]
+    fn footer_input_area_insets_one_column_each_side() {
+        // The search/command editor sits one column in from each edge, so the
+        // sigil aligns with the header instead of hugging the terminal edge.
+        let full = Rect::new(0, 23, 80, 1);
+        let inset = footer_input_area(full);
+        assert_eq!(inset.x, 1, "left-padded by one column");
+        assert_eq!(inset.width, 78, "one column trimmed off each side");
+        assert_eq!((inset.y, inset.height), (23, 1), "row is unchanged");
+    }
+
+    #[test]
+    fn footer_input_area_floors_width_on_a_tiny_terminal() {
+        // A 1-column footer can't be inset twice; width saturates at 0, no panic.
+        let inset = footer_input_area(Rect::new(0, 0, 1, 1));
+        assert_eq!(inset.width, 0);
     }
 
     #[test]
@@ -1165,6 +1258,60 @@ mod tests {
                 "help must not advertise unbound key {bogus}"
             );
         }
+    }
+
+    #[test]
+    fn footer_nav_is_contextual() {
+        let mut a = app();
+        let home = footer_nav(&a);
+        assert!(home.contains("j/k move"));
+        assert!(home.contains("Enter open"));
+
+        a.focus = Focus::Preview;
+        let preview = footer_nav(&a);
+        assert!(preview.contains("j/k scroll"));
+        assert!(preview.contains("Tab results"));
+
+        a.screen = Screen::Detail;
+        let detail = footer_nav(&a);
+        assert!(detail.contains("b back"));
+        assert!(detail.contains("i/p/c/v/s tabs"));
+        assert!(!detail.contains("Enter open"));
+    }
+
+    #[test]
+    fn footer_status_does_not_replace_navigation() {
+        let mut a = app();
+        a.status = "theme: nord".into();
+
+        let text = line_text(&footer_line(&a));
+
+        assert!(
+            text.starts_with("theme: nord"),
+            "status owns the left edge: {text}"
+        );
+        assert!(text.contains("/ search"), "nav remains present: {text}");
+        let status_idx = text.find("theme: nord").expect("status present");
+        let nav_idx = text.find("/ search").expect("nav present");
+        assert!(status_idx < nav_idx, "status precedes navigation: {text}");
+    }
+
+    #[test]
+    fn footer_loading_state_precedes_navigation() {
+        let mut a = app();
+        a.pending = 1;
+        a.status = "searching edge…".into();
+
+        let text = line_text(&footer_line(&a));
+
+        assert!(text.contains("searching edge"), "status present: {text}");
+        assert!(text.contains("/ search"), "nav remains present: {text}");
+        let status_idx = text.find("searching edge").expect("status present");
+        let nav_idx = text.find("/ search").expect("nav present");
+        assert!(
+            status_idx < nav_idx,
+            "loading state precedes navigation: {text}"
+        );
     }
 
     #[test]
