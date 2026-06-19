@@ -8,7 +8,7 @@ use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Tab
 
 use std::collections::HashSet;
 
-use crate::netbox::prefix_tree::{self, PrefixNode, PrefixTreeData};
+use crate::netbox::prefix_tree::{self, PrefixTreeData};
 use crate::netbox::search::SearchFilters;
 use crate::tui::config_modal::{ConfigModal, ConfigSection, ProfilesMode, TestState};
 use crate::tui::state::{App, Focus, Modal, Mode, RelatedModal, Screen, result_row_cells};
@@ -123,7 +123,7 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(Block::default().style(bar), area);
 
     let left = Line::from(vec![
-        Span::styled(" profile: ", bar.fg(theme.text_dim)),
+        Span::styled("  profile: ", bar.fg(theme.text_dim)),
         Span::styled(
             app.profile_name.clone(),
             bar.fg(theme.header).add_modifier(Modifier::BOLD),
@@ -163,7 +163,7 @@ fn any_filter_active(f: &SearchFilters) -> bool {
 fn render_filter_bar(frame: &mut Frame, area: Rect, f: &SearchFilters, theme: &Theme) {
     let bar = Style::default().bg(theme.chrome_bg);
     frame.render_widget(Block::default().style(bar), area);
-    let mut spans = vec![Span::styled(" filters: ", bar.fg(theme.text_dim))];
+    let mut spans = vec![Span::styled("  filters: ", bar.fg(theme.text_dim))];
     for (k, v, scope) in [
         ("status", &f.status, false),
         ("site", &f.site, true),
@@ -323,23 +323,76 @@ fn render_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     );
 }
 
-/// The disclosure marker for a tree row: a closed/open triangle for a collapsible
-/// prefix, or blank for a leaf. Pure.
-fn tree_disclosure(node: &PrefixNode, collapsed: bool) -> &'static str {
-    if !node.collapsible() {
-        " "
-    } else if collapsed {
-        "▸"
-    } else {
-        "▾"
+/// For tree rows in display order (depths only), mark each as the last of its
+/// siblings: `true` when no later row at the same depth appears before a shallower
+/// one. Drives `└` vs `├` and whether an ancestor column draws a continuing `│`.
+/// Pure (one backward pass). Callers pass one VRF group at a time so siblings
+/// never cross VRF boundaries.
+fn last_sibling_flags(depths: &[u64]) -> Vec<bool> {
+    let mut flags = vec![true; depths.len()];
+    // seen[d] = a row at depth d has been seen *later* within the current context.
+    let mut seen: Vec<bool> = Vec::new();
+    for i in (0..depths.len()).rev() {
+        let d = depths[i] as usize;
+        if seen.len() < d + 1 {
+            seen.resize(d + 1, false);
+        }
+        // A shallower/equal row closes any deeper subtrees opened after it.
+        for s in seen.iter_mut().skip(d + 1) {
+            *s = false;
+        }
+        flags[i] = !seen[d];
+        seen[d] = true;
     }
+    flags
+}
+
+/// The branch prefix for a tree row: the ancestor pipe columns (`│  ` / `   `)
+/// then this row's connector + disclosure. `anc[l]` is the last-sibling flag of
+/// the ancestor at depth `l` (last → blank column, else a continuing `│`). At
+/// depth 0 there is no connector, only the disclosure. Pure.
+fn tree_branch(
+    depth: usize,
+    anc: &[bool],
+    is_last: bool,
+    collapsible: bool,
+    collapsed: bool,
+) -> String {
+    let disc = if collapsible {
+        if collapsed { "▸" } else { "▾" }
+    } else if depth == 0 {
+        " "
+    } else {
+        "─"
+    };
+    let mut s = String::new();
+    for l in 1..depth {
+        s.push_str(if anc.get(l).copied().unwrap_or(true) {
+            "   "
+        } else {
+            "│  "
+        });
+    }
+    if depth >= 1 {
+        s.push(if is_last { '└' } else { '├' });
+    }
+    s.push_str(disc);
+    s.push(' ');
+    s
+}
+
+/// A compact `███░░ 92%` utilization cell, colored by severity, for a tree row.
+fn tree_util(pct: u8, theme: &Theme) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::raw("  ")];
+    spans.extend(util_bar(pct, 6, theme));
+    spans
 }
 
 /// Build the prefix-tree body as styled lines: a dim VRF header wherever the VRF
-/// changes, then each visible prefix indented by its depth with a disclosure
-/// marker, status, child count, and utilization. Returns the lines plus the
-/// display-row index of the selected node (for scroll-to-selection). Pure (no
-/// widgets/terminal), so the indentation and markers are unit-testable.
+/// changes, then each visible prefix with tree connectors (`├ └ │`), a disclosure
+/// marker, status, child count, and a small utilization bar. Returns the lines
+/// plus the display-row index of the selected node (for scroll-to-selection).
+/// Pure (no widgets/terminal), so the connectors + markers are unit-testable.
 fn prefix_tree_lines<'a>(
     data: &'a PrefixTreeData,
     collapsed: &HashSet<u64>,
@@ -350,80 +403,84 @@ fn prefix_tree_lines<'a>(
     let visible = prefix_tree::visible_indices(&data.nodes, collapsed);
     let mut lines: Vec<Line> = Vec::new();
     let mut sel_row = 0;
-    let mut last_vrf: Option<Option<&str>> = None;
-    for (vis_i, &node_idx) in visible.iter().enumerate() {
-        let node = &data.nodes[node_idx];
-        // A VRF section header whenever the table changes (global first).
-        let vrf = node.vrf.as_deref();
-        if last_vrf != Some(vrf) {
-            if last_vrf.is_some() {
-                lines.push(Line::from(""));
-            }
-            let label = vrf.map_or_else(|| "global table".to_string(), |v| format!("vrf: {v}"));
-            lines.push(Line::from(Span::styled(
-                format!("  {label}"),
-                Style::default()
-                    .fg(theme.header)
-                    .add_modifier(Modifier::BOLD),
-            )));
-            last_vrf = Some(vrf);
-        }
 
-        let is_sel = vis_i == selected;
-        if is_sel {
-            sel_row = lines.len();
+    // Walk the visible nodes in contiguous VRF groups so the connector math (which
+    // siblings continue) never bleeds across tables.
+    let mut g = 0;
+    while g < visible.len() {
+        let vrf = data.nodes[visible[g]].vrf.as_deref();
+        let mut end = g;
+        while end < visible.len() && data.nodes[visible[end]].vrf.as_deref() == vrf {
+            end += 1;
         }
-        let collapsed_here = node.collapsible() && collapsed.contains(&node.id);
-        let gutter = if is_sel { "▌ " } else { "  " };
-        let indent = "  ".repeat(node.depth as usize);
-        let disc = tree_disclosure(node, collapsed_here);
+        let group = &visible[g..end];
 
-        let cidr_style = {
-            let s = Style::default().fg(prefix_color);
+        // VRF section header (global first); a blank spacer between groups.
+        if g > 0 {
+            lines.push(Line::from(""));
+        }
+        let label = vrf.map_or_else(|| "global table".to_string(), |v| format!("vrf: {v}"));
+        lines.push(Line::from(Span::styled(
+            format!("  {label}"),
+            Style::default()
+                .fg(theme.header)
+                .add_modifier(Modifier::BOLD),
+        )));
+
+        let depths: Vec<u64> = group.iter().map(|&i| data.nodes[i].depth).collect();
+        let last_flags = last_sibling_flags(&depths);
+        let mut anc: Vec<bool> = Vec::new();
+        for (k, &node_idx) in group.iter().enumerate() {
+            let node = &data.nodes[node_idx];
+            let vis_i = g + k;
+            let is_sel = vis_i == selected;
             if is_sel {
-                s.add_modifier(Modifier::BOLD)
-            } else {
-                s
+                sel_row = lines.len();
             }
-        };
-        let mut spans = vec![
-            Span::styled(gutter, Style::default().fg(theme.accent)),
-            Span::styled(
-                format!("{indent}{disc} "),
-                Style::default().fg(theme.text_dim),
-            ),
-            Span::styled(node.prefix.clone(), cidr_style),
-        ];
-        if let Some(status) = &node.status {
-            spans.push(Span::raw("  "));
-            spans.push(Span::styled(status.clone(), theme.status_style(status)));
-        }
-        if node.children > 0 {
-            spans.push(Span::styled(
-                format!("  [{}]", node.children),
-                Style::default().fg(theme.text_dim),
-            ));
-        }
-        if let Some(pct) = node.utilization {
-            let color = if pct >= 90 {
-                theme.error
-            } else if pct >= 75 {
-                theme.warning
-            } else {
-                theme.text_dim
+            let depth = node.depth as usize;
+            let collapsed_here = node.collapsible() && collapsed.contains(&node.id);
+            let is_last = last_flags[k];
+
+            anc.truncate(depth);
+            let branch = tree_branch(depth, &anc, is_last, node.collapsible(), collapsed_here);
+            anc.push(is_last);
+
+            let gutter = if is_sel { "▌ " } else { "  " };
+            let cidr_style = {
+                let s = Style::default().fg(prefix_color);
+                if is_sel {
+                    s.add_modifier(Modifier::BOLD)
+                } else {
+                    s
+                }
             };
-            spans.push(Span::styled(
-                format!("  {pct}%"),
-                Style::default().fg(color),
-            ));
+            let mut spans = vec![
+                Span::styled(gutter, Style::default().fg(theme.accent)),
+                Span::styled(branch, Style::default().fg(theme.text_dim)),
+                Span::styled(node.prefix.clone(), cidr_style),
+            ];
+            if let Some(status) = &node.status {
+                spans.push(Span::raw("  "));
+                spans.push(Span::styled(status.clone(), theme.status_style(status)));
+            }
+            if node.children > 0 {
+                spans.push(Span::styled(
+                    format!("  [{}]", node.children),
+                    Style::default().fg(theme.text_dim),
+                ));
+            }
+            if let Some(pct) = node.utilization {
+                spans.extend(tree_util(pct, theme));
+            }
+            if !node.description.is_empty() {
+                spans.push(Span::styled(
+                    format!("  {}", node.description),
+                    Style::default().fg(theme.text_dim),
+                ));
+            }
+            lines.push(Line::from(spans));
         }
-        if !node.description.is_empty() {
-            spans.push(Span::styled(
-                format!("  {}", node.description),
-                Style::default().fg(theme.text_dim),
-            ));
-        }
-        lines.push(Line::from(spans));
+        g = end;
     }
     (lines, sel_row)
 }
@@ -1516,21 +1573,25 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &mut App) {
         Mode::Normal => {}
     }
 
+    // Render the nav into the shared inset (same gutter as the editor) so it lines
+    // up with the header/panes instead of hugging the left edge; the bg block above
+    // already filled the full row edge-to-edge.
     let line = footer_line(app);
     frame.render_widget(
         Paragraph::new(line).style(Style::default().fg(app.theme.text).bg(app.theme.chrome_bg)),
-        area,
+        footer_input_area(area),
     );
 }
 
-/// Inset a footer rect by one column on each side so the Search/Command line
-/// editor's sigil aligns with the header and the normal-mode nav hint (column 1)
-/// rather than hugging the terminal edge. Width floors at 0 on a tiny terminal.
+/// Inset a footer rect by two columns on each side: the shared left gutter for
+/// all the chrome (header, filter bar, footer nav, and the Search/Command editor)
+/// so they line up with the bordered panes' content column (border + one pad) —
+/// nothing hugs the terminal edge. Width floors at 0 on a tiny terminal.
 fn footer_input_area(area: Rect) -> Rect {
     Rect {
-        x: area.x.saturating_add(1),
+        x: area.x.saturating_add(2),
         y: area.y,
-        width: area.width.saturating_sub(2),
+        width: area.width.saturating_sub(4),
         height: area.height,
     }
 }
@@ -1631,6 +1692,7 @@ mod tests {
     use super::*;
     use crate::config::ProfileConfig;
     use crate::netbox::client::NetBoxClient;
+    use crate::netbox::prefix_tree::PrefixNode;
 
     fn app() -> App {
         let profile = ProfileConfig {
@@ -1749,13 +1811,13 @@ mod tests {
     }
 
     #[test]
-    fn footer_input_area_insets_one_column_each_side() {
-        // The search/command editor sits one column in from each edge, so the
-        // sigil aligns with the header instead of hugging the terminal edge.
+    fn footer_input_area_insets_two_columns_each_side() {
+        // The shared chrome gutter: nav + search/command editor sit two columns in
+        // from each edge, lining up with the bordered panes' content column.
         let full = Rect::new(0, 23, 80, 1);
         let inset = footer_input_area(full);
-        assert_eq!(inset.x, 1, "left-padded by one column");
-        assert_eq!(inset.width, 78, "one column trimmed off each side");
+        assert_eq!(inset.x, 2, "left-padded by two columns");
+        assert_eq!(inset.width, 76, "two columns trimmed off each side");
         assert_eq!((inset.y, inset.height), (23, 1), "row is unchanged");
     }
 
@@ -1828,12 +1890,8 @@ mod tests {
         }
     }
 
-    fn lead_spaces(s: &str) -> usize {
-        s.chars().take_while(|c| *c == ' ').count()
-    }
-
     #[test]
-    fn prefix_tree_lines_indent_by_depth_and_mark_collapsible() {
+    fn prefix_tree_lines_connect_depth_and_mark_collapsible() {
         let theme = Theme::default_theme();
         let data = PrefixTreeData {
             nodes: vec![
@@ -1847,15 +1905,28 @@ mod tests {
         assert!(line_text(&lines[0]).contains("global table"));
         assert!(line_text(&lines[1]).contains("10.0.0.0/8"));
         assert!(line_text(&lines[2]).contains("10.0.0.0/24"));
-        // The expanded collapsible root shows the open triangle.
-        assert!(lines[1].spans[1].content.contains('▾'), "expanded → ▾");
-        // The depth-1 child's indent segment (span 1) is deeper than the root's.
+        // The expanded collapsible root shows the open triangle, no branch connector.
+        let root_branch = &lines[1].spans[1].content;
+        assert!(root_branch.contains('▾'), "expanded root → ▾");
         assert!(
-            lead_spaces(&lines[2].spans[1].content) > lead_spaces(&lines[1].spans[1].content),
-            "child indents deeper than parent"
+            !root_branch.contains('├') && !root_branch.contains('└'),
+            "a depth-0 root has no branch connector"
+        );
+        // The depth-1 child is drawn with a branch connector (last child → └).
+        assert!(
+            lines[2].spans[1].content.contains('└'),
+            "the only child gets the last-sibling connector └"
         );
         // Selected node (visible index 0) maps to its display row (row 1, after the header).
         assert_eq!(sel_row, 1);
+    }
+
+    #[test]
+    fn last_sibling_flags_marks_final_child_per_subtree() {
+        // 10/8 → {/16 → /24}, /16b ; depths: 0,1,2,1
+        let flags = last_sibling_flags(&[0, 1, 2, 1]);
+        assert_eq!(flags, vec![true, false, true, true]);
+        // The first /16 is NOT last (another /16 follows); the /24 and last /16 are.
     }
 
     #[test]
