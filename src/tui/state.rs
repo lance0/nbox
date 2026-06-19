@@ -14,6 +14,7 @@ use crate::domain::detail::DetailView;
 use crate::netbox::auth::AuthScheme;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::dashboard::DashboardData;
+use crate::netbox::prefix_tree::{self, PrefixNode, PrefixTreeData};
 use crate::netbox::search::{ObjectKind, SearchFilters, SearchOutcome, SearchResult};
 use crate::tui::cheese::{Spinner, TextInput};
 use crate::tui::config_modal::{ConfigModal, ModalOutcome, ProfilesMode, TestState};
@@ -44,6 +45,9 @@ pub enum Screen {
     Detail,
     /// The overview dashboard (`D`): status counts, top prefixes, recent activity.
     Dashboard,
+    /// The hierarchical prefix tree (`T`): the IPAM prefix hierarchy, VRF-grouped,
+    /// depth-indented, with collapse/expand.
+    PrefixTree,
 }
 
 /// Input mode.
@@ -88,6 +92,12 @@ pub enum AppEvent {
     DashboardLoaded {
         req: RequestId,
         result: anyhow::Result<DashboardData>,
+    },
+    /// A prefix-tree load result, tagged with its request id so a stale
+    /// (superseded) load is dropped on arrival.
+    PrefixTreeLoaded {
+        req: RequestId,
+        result: anyhow::Result<PrefixTreeData>,
     },
     /// A preview-pane detail load, tagged with the (kind, id) it was issued for
     /// so a stale response (the selection moved on) can be dropped.
@@ -246,6 +256,11 @@ pub enum AppCommand {
     LoadDashboard {
         req: RequestId,
     },
+    /// Load the IPAM prefix tree (one capped page, grouped by VRF). Tagged with a
+    /// request id so a stale `PrefixTreeLoaded` is dropped.
+    LoadPrefixTree {
+        req: RequestId,
+    },
     /// Load the highlighted result's detail into the live preview pane. Carries
     /// its (kind, id) so the response can be matched against the selection it
     /// was issued for (stale ones are dropped on arrival).
@@ -316,6 +331,7 @@ impl AppCommand {
                 | AppCommand::LoadPreview { .. }
                 | AppCommand::LoadByRef { .. }
                 | AppCommand::LoadDashboard { .. }
+                | AppCommand::LoadPrefixTree { .. }
                 | AppCommand::SwitchProfile { .. }
                 | AppCommand::TestConnect { .. }
         )
@@ -502,6 +518,24 @@ pub struct App {
     /// The last dashboard load error, shown on the dashboard when a load fails.
     pub dashboard_error: Option<String>,
 
+    /// High-water mark for the prefix-tree load; a `PrefixTreeLoaded` with an
+    /// older id is dropped (latest-wins, like search/detail/dashboard).
+    pub prefix_tree_gen: RequestId,
+    /// The loaded prefix tree (`None` until the first load settles).
+    pub prefix_tree: Option<PrefixTreeData>,
+    /// The last prefix-tree load error, shown on the screen when a load fails.
+    pub prefix_tree_error: Option<String>,
+    /// Cursor into the *visible* prefix-tree rows (those not under a collapsed
+    /// ancestor). Clamped on every move and after a collapse/expand reshapes the
+    /// visible set.
+    pub prefix_tree_selected: usize,
+    /// Prefix ids whose subtree is collapsed (hidden). Toggled by Space/←/→ on the
+    /// tree screen; ids that vanish on reload are harmless (just unused).
+    pub prefix_tree_collapsed: std::collections::HashSet<u64>,
+    /// Last-known prefix-tree viewport height (visible rows), stashed at render so
+    /// the pure paging handler can step by a screenful. 0 until the first render.
+    pub prefix_tree_viewport: u16,
+
     /// Count of fetching async commands currently in flight (Search / LoadDetail
     /// / LoadPreview / LoadByRef / refresh). Bumped when such a command is
     /// dispatched, decremented when its matching result event arrives; clamped at
@@ -584,6 +618,12 @@ impl App {
             dashboard_gen: 0,
             dashboard: None,
             dashboard_error: None,
+            prefix_tree_gen: 0,
+            prefix_tree: None,
+            prefix_tree_error: None,
+            prefix_tree_selected: 0,
+            prefix_tree_collapsed: std::collections::HashSet::new(),
+            prefix_tree_viewport: 0,
             pending: 0,
             spinner: Spinner::new(),
             should_quit: false,
@@ -675,6 +715,11 @@ impl App {
                     self.request_seq += 1;
                     *req = self.request_seq;
                     self.dashboard_gen = self.request_seq;
+                }
+                AppCommand::LoadPrefixTree { req } => {
+                    self.request_seq += 1;
+                    *req = self.request_seq;
+                    self.prefix_tree_gen = self.request_seq;
                 }
                 // Preview loads carry (kind,id); profile switches carry their own
                 // monotonic switch id, stamped at initiation in `switch_to_index`
@@ -816,6 +861,30 @@ impl App {
                     Err(e) => {
                         self.dashboard_error = Some(format!("{e:#}"));
                         self.set_status(format!("dashboard error: {e:#}"), Severity::Error);
+                    }
+                }
+                Vec::new()
+            }
+            AppEvent::PrefixTreeLoaded { req, result } => {
+                // Settle the spinner even when dropped as stale; an older-id load
+                // (the user pressed `r`/reopened) never overwrites the newest.
+                self.end_request();
+                if req < self.prefix_tree_gen {
+                    return Vec::new();
+                }
+                match result {
+                    Ok(data) => {
+                        self.prefix_tree = Some(data);
+                        self.prefix_tree_error = None;
+                        // A fresh tree resets the cursor; collapsed ids are kept so a
+                        // refresh preserves the user's expand/collapse shape.
+                        self.prefix_tree_selected = 0;
+                        self.clamp_tree_selection();
+                        self.clear_status();
+                    }
+                    Err(e) => {
+                        self.prefix_tree_error = Some(format!("{e:#}"));
+                        self.set_status(format!("prefix tree error: {e:#}"), Severity::Error);
                     }
                 }
                 Vec::new()
@@ -1025,6 +1094,37 @@ impl App {
             KeyCode::Char('F') => return self.clear_filters(),
             // Overview dashboard.
             KeyCode::Char('D') => return self.open_dashboard(),
+            // Prefix tree.
+            KeyCode::Char('T') => return self.open_prefix_tree(),
+            // Prefix-tree navigation + collapse/expand (only while on that screen,
+            // so these keys are inert elsewhere). Movement is guarded ahead of the
+            // generic select/scroll arms below.
+            KeyCode::Char('j') | KeyCode::Down if self.screen == Screen::PrefixTree => {
+                self.tree_move(1);
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.screen == Screen::PrefixTree => {
+                self.tree_move(-1);
+            }
+            KeyCode::Char('g') | KeyCode::Home if self.screen == Screen::PrefixTree => {
+                self.prefix_tree_selected = 0;
+            }
+            KeyCode::Char('G') | KeyCode::End if self.screen == Screen::PrefixTree => {
+                self.tree_select_last();
+            }
+            KeyCode::PageDown if self.screen == Screen::PrefixTree => {
+                self.tree_move(self.tree_page());
+            }
+            KeyCode::PageUp if self.screen == Screen::PrefixTree => {
+                self.tree_move(-self.tree_page());
+            }
+            // Space toggles the selected subtree; ←/h collapse, →/l expand.
+            KeyCode::Char(' ') if self.screen == Screen::PrefixTree => self.tree_toggle(),
+            KeyCode::Left | KeyCode::Char('h') if self.screen == Screen::PrefixTree => {
+                self.tree_set_collapsed(true);
+            }
+            KeyCode::Right | KeyCode::Char('l') if self.screen == Screen::PrefixTree => {
+                self.tree_set_collapsed(false);
+            }
             // Profile switcher. `Tab` is taken on Home (pane focus), so the
             // configured-profile cycle rides `P` forward / `Ctrl+P` backward (a
             // free, mnemonic key); the palette `profile <name>` verb jumps to a
@@ -1066,6 +1166,20 @@ impl App {
                     self.set_status("loading…", Severity::Info);
                     return vec![AppCommand::LoadDetail { kind, id, req: 0 }];
                 }
+                // On the tree, Enter opens the selected prefix's detail.
+                if self.screen == Screen::PrefixTree
+                    && let Some(id) = self.tree_selected_node().map(|n| n.id)
+                {
+                    if self.fence_during_switch() {
+                        return Vec::new();
+                    }
+                    self.set_status("loading…", Severity::Info);
+                    return vec![AppCommand::LoadDetail {
+                        kind: ObjectKind::Prefix,
+                        id,
+                        req: 0,
+                    }];
+                }
             }
             KeyCode::Char('o') => {
                 if let Some(target) = self.action_target() {
@@ -1098,6 +1212,120 @@ impl App {
         self.dashboard_error = None;
         self.set_status("loading dashboard…", Severity::Info);
         vec![AppCommand::LoadDashboard { req: 0 }]
+    }
+
+    /// Open the prefix tree and kick off its load. A no-op if already on it (use
+    /// `r` to refresh); fenced during a profile switch.
+    fn open_prefix_tree(&mut self) -> Vec<AppCommand> {
+        if self.screen == Screen::PrefixTree || self.fence_during_switch() {
+            return Vec::new();
+        }
+        self.navigate_to(Screen::PrefixTree);
+        self.prefix_tree_error = None;
+        self.set_status("loading prefixes…", Severity::Info);
+        vec![AppCommand::LoadPrefixTree { req: 0 }]
+    }
+
+    /// The prefix-tree nodes that are currently visible (not under a collapsed
+    /// ancestor), as indices into the loaded `nodes`. Empty when nothing's loaded.
+    fn tree_visible(&self) -> Vec<usize> {
+        self.prefix_tree.as_ref().map_or_else(Vec::new, |t| {
+            prefix_tree::visible_indices(&t.nodes, &self.prefix_tree_collapsed)
+        })
+    }
+
+    /// The node the tree cursor is on, resolved through the visible-row mapping.
+    fn tree_selected_node(&self) -> Option<&PrefixNode> {
+        let tree = self.prefix_tree.as_ref()?;
+        let visible = self.tree_visible();
+        let node_idx = *visible.get(self.prefix_tree_selected)?;
+        tree.nodes.get(node_idx)
+    }
+
+    /// Pin the cursor inside the visible-row range (it shrinks when a subtree
+    /// collapses, or when a reload returns fewer rows).
+    fn clamp_tree_selection(&mut self) {
+        let len = self.tree_visible().len();
+        if len == 0 {
+            self.prefix_tree_selected = 0;
+        } else if self.prefix_tree_selected >= len {
+            self.prefix_tree_selected = len - 1;
+        }
+    }
+
+    /// Move the cursor by `delta` visible rows (negative = up), saturating at both
+    /// ends. Done in `usize` space so there are no wrapping casts.
+    fn tree_move(&mut self, delta: isize) {
+        let len = self.tree_visible().len();
+        if len == 0 {
+            self.prefix_tree_selected = 0;
+            return;
+        }
+        let max = len - 1;
+        let cur = self.prefix_tree_selected.min(max);
+        self.prefix_tree_selected = if delta >= 0 {
+            cur.saturating_add(usize::try_from(delta).unwrap_or(0))
+                .min(max)
+        } else {
+            cur.saturating_sub(delta.unsigned_abs())
+        };
+    }
+
+    /// Jump the cursor to the last visible row.
+    fn tree_select_last(&mut self) {
+        let len = self.tree_visible().len();
+        self.prefix_tree_selected = len.saturating_sub(1);
+    }
+
+    /// One PgUp/PgDn step in rows: the live viewport, or a small fallback before
+    /// the first render has measured it.
+    fn tree_page(&self) -> isize {
+        let fallback = isize::try_from(PAGE_JUMP_FALLBACK).unwrap_or(10);
+        let h = self.prefix_tree_viewport;
+        if h == 0 {
+            fallback
+        } else {
+            isize::try_from(h.max(1)).unwrap_or(fallback)
+        }
+    }
+
+    /// Stash the tree viewport height (visible rows) at render, for paging.
+    pub fn sync_tree_viewport(&mut self, rows: u16) {
+        self.prefix_tree_viewport = rows;
+    }
+
+    /// Toggle the selected prefix's collapsed state (no-op on a childless leaf),
+    /// then re-clamp the cursor since the visible set just changed.
+    fn tree_toggle(&mut self) {
+        let Some(node) = self.tree_selected_node() else {
+            return;
+        };
+        if !node.collapsible() {
+            return;
+        }
+        let id = node.id;
+        if !self.prefix_tree_collapsed.remove(&id) {
+            self.prefix_tree_collapsed.insert(id);
+        }
+        self.clamp_tree_selection();
+    }
+
+    /// Explicitly collapse (`true`) or expand (`false`) the selected prefix's
+    /// subtree (no-op on a leaf), then re-clamp the cursor.
+    fn tree_set_collapsed(&mut self, collapsed: bool) {
+        let Some(node) = self.tree_selected_node() else {
+            return;
+        };
+        if !node.collapsible() {
+            return;
+        }
+        let id = node.id;
+        if collapsed {
+            self.prefix_tree_collapsed.insert(id);
+        } else {
+            self.prefix_tree_collapsed.remove(&id);
+        }
+        self.clamp_tree_selection();
     }
 
     /// Open the `f` filter modal, seeded from the active filters. A no-op while
@@ -2139,6 +2367,10 @@ impl App {
                 self.set_status("refreshing dashboard…", Severity::Info);
                 vec![AppCommand::LoadDashboard { req: 0 }]
             }
+            Screen::PrefixTree => {
+                self.set_status("refreshing prefixes…", Severity::Info);
+                vec![AppCommand::LoadPrefixTree { req: 0 }]
+            }
         }
     }
 
@@ -2347,6 +2579,11 @@ impl App {
             }),
             // The dashboard has no single selected object to open/copy.
             Screen::Dashboard => None,
+            // On the tree, target the selected prefix so `o`/`y` work there too.
+            Screen::PrefixTree => self.tree_selected_node().map(|n| ActionTarget {
+                label: n.prefix.clone(),
+                url: object_web_url(&self.base_url, ObjectKind::Prefix, n.id),
+            }),
         }
     }
 
@@ -3468,6 +3705,151 @@ mod tests {
             }),
         });
         assert!(a.dashboard.is_none(), "a stale dashboard load is dropped");
+    }
+
+    fn tree_node(id: u64, cidr: &str, depth: u64, children: u64) -> PrefixNode {
+        PrefixNode {
+            id,
+            prefix: cidr.into(),
+            vrf: None,
+            status: Some("active".into()),
+            depth,
+            children,
+            utilization: None,
+            description: String::new(),
+        }
+    }
+
+    /// Deliver a prefix-tree load tagged as the current request (passes the guard).
+    fn load_tree(a: &mut App, nodes: Vec<PrefixNode>) {
+        let req = a.prefix_tree_gen;
+        let total = nodes.len();
+        a.handle_event(AppEvent::PrefixTreeLoaded {
+            req,
+            result: Ok(PrefixTreeData { nodes, total }),
+        });
+    }
+
+    #[test]
+    fn t_opens_prefix_tree_and_load_settles_then_back() {
+        let mut a = app();
+        let cmds = a.handle_event(press(KeyCode::Char('T')));
+        assert_eq!(a.screen, Screen::PrefixTree);
+        let req = match cmds.as_slice() {
+            [AppCommand::LoadPrefixTree { req }] => *req,
+            other => panic!("expected LoadPrefixTree, got {other:?}"),
+        };
+        a.handle_event(AppEvent::PrefixTreeLoaded {
+            req,
+            result: Ok(PrefixTreeData {
+                nodes: vec![tree_node(1, "10.0.0.0/8", 0, 0)],
+                total: 1,
+            }),
+        });
+        assert_eq!(a.prefix_tree.as_ref().unwrap().nodes.len(), 1);
+        assert!(!a.loading(), "the load settled the spinner");
+        a.handle_event(press(KeyCode::Char('b')));
+        assert_eq!(a.screen, Screen::Home);
+    }
+
+    #[test]
+    fn stale_prefix_tree_load_is_dropped() {
+        let mut a = app();
+        a.handle_event(press(KeyCode::Char('T')));
+        a.prefix_tree_gen = 9;
+        a.handle_event(AppEvent::PrefixTreeLoaded {
+            req: 3,
+            result: Ok(PrefixTreeData {
+                nodes: vec![tree_node(1, "10.0.0.0/8", 0, 0)],
+                total: 1,
+            }),
+        });
+        assert!(
+            a.prefix_tree.is_none(),
+            "a stale prefix-tree load is dropped"
+        );
+    }
+
+    #[test]
+    fn prefix_tree_movement_clamps_within_visible() {
+        let mut a = app();
+        a.handle_event(press(KeyCode::Char('T')));
+        load_tree(
+            &mut a,
+            vec![
+                tree_node(1, "10.0.0.0/8", 0, 0),
+                tree_node(2, "10.1.0.0/8", 0, 0),
+            ],
+        );
+        assert_eq!(a.prefix_tree_selected, 0);
+        // Up at the top stays put.
+        a.handle_event(press(KeyCode::Char('k')));
+        assert_eq!(a.prefix_tree_selected, 0);
+        // Down moves; down again clamps at the last row.
+        a.handle_event(press(KeyCode::Char('j')));
+        assert_eq!(a.prefix_tree_selected, 1);
+        a.handle_event(press(KeyCode::Char('j')));
+        assert_eq!(
+            a.prefix_tree_selected, 1,
+            "can't move past the last visible row"
+        );
+    }
+
+    #[test]
+    fn prefix_tree_collapse_hides_children() {
+        let mut a = app();
+        a.handle_event(press(KeyCode::Char('T')));
+        load_tree(
+            &mut a,
+            vec![
+                tree_node(1, "10.0.0.0/8", 0, 1),
+                tree_node(2, "10.0.0.0/16", 1, 1),
+                tree_node(3, "10.0.0.0/24", 2, 0),
+                tree_node(4, "10.1.0.0/16", 1, 0),
+            ],
+        );
+        assert_eq!(a.tree_visible().len(), 4, "all visible initially");
+        // Cursor on the /8 (id 1); Space collapses its whole subtree.
+        a.handle_event(press(KeyCode::Char(' ')));
+        assert_eq!(a.tree_visible().len(), 1, "the subtree is hidden");
+        assert_eq!(
+            a.prefix_tree_selected, 0,
+            "cursor clamps onto the collapsed root"
+        );
+        // Right expands it again.
+        a.handle_event(press(KeyCode::Right));
+        assert_eq!(a.tree_visible().len(), 4, "expanded back");
+    }
+
+    #[test]
+    fn enter_on_prefix_tree_opens_the_selected_prefix() {
+        let mut a = app();
+        a.handle_event(press(KeyCode::Char('T')));
+        load_tree(&mut a, vec![tree_node(7, "10.0.0.0/8", 0, 0)]);
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(
+            matches!(
+                cmds.as_slice(),
+                [AppCommand::LoadDetail {
+                    kind: ObjectKind::Prefix,
+                    id: 7,
+                    ..
+                }]
+            ),
+            "Enter opens the selected prefix's detail, got {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn refresh_on_prefix_tree_reloads() {
+        let mut a = app();
+        a.handle_event(press(KeyCode::Char('T')));
+        load_tree(&mut a, vec![tree_node(1, "10.0.0.0/8", 0, 0)]);
+        let cmds = a.handle_event(press(KeyCode::Char('r')));
+        assert!(
+            matches!(cmds.as_slice(), [AppCommand::LoadPrefixTree { .. }]),
+            "r refreshes the tree, got {cmds:?}"
+        );
     }
 
     #[test]

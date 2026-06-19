@@ -6,6 +6,9 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table};
 
+use std::collections::HashSet;
+
+use crate::netbox::prefix_tree::{self, PrefixNode, PrefixTreeData};
 use crate::netbox::search::SearchFilters;
 use crate::tui::config_modal::{ConfigModal, ConfigSection, ProfilesMode, TestState};
 use crate::tui::state::{App, Focus, Modal, Mode, Screen, result_row_cells};
@@ -82,6 +85,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         Screen::Home => render_home(frame, body_area, app),
         Screen::Detail => render_detail(frame, body_area, app),
         Screen::Dashboard => render_dashboard(frame, body_area, app),
+        Screen::PrefixTree => render_prefix_tree(frame, body_area, app),
     }
 
     render_footer(frame, footer_area, app);
@@ -315,6 +319,184 @@ fn render_dashboard(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(
         Paragraph::new(activity_lines).block(dash_block(" Recent activity ", theme)),
         rows[1],
+    );
+}
+
+/// The disclosure marker for a tree row: a closed/open triangle for a collapsible
+/// prefix, or blank for a leaf. Pure.
+fn tree_disclosure(node: &PrefixNode, collapsed: bool) -> &'static str {
+    if !node.collapsible() {
+        " "
+    } else if collapsed {
+        "▸"
+    } else {
+        "▾"
+    }
+}
+
+/// Build the prefix-tree body as styled lines: a dim VRF header wherever the VRF
+/// changes, then each visible prefix indented by its depth with a disclosure
+/// marker, status, child count, and utilization. Returns the lines plus the
+/// display-row index of the selected node (for scroll-to-selection). Pure (no
+/// widgets/terminal), so the indentation and markers are unit-testable.
+fn prefix_tree_lines<'a>(
+    data: &'a PrefixTreeData,
+    collapsed: &HashSet<u64>,
+    selected: usize,
+    theme: &Theme,
+) -> (Vec<Line<'a>>, usize) {
+    let prefix_color = kind_accent("prefix", theme);
+    let visible = prefix_tree::visible_indices(&data.nodes, collapsed);
+    let mut lines: Vec<Line> = Vec::new();
+    let mut sel_row = 0;
+    let mut last_vrf: Option<Option<&str>> = None;
+    for (vis_i, &node_idx) in visible.iter().enumerate() {
+        let node = &data.nodes[node_idx];
+        // A VRF section header whenever the table changes (global first).
+        let vrf = node.vrf.as_deref();
+        if last_vrf != Some(vrf) {
+            if last_vrf.is_some() {
+                lines.push(Line::from(""));
+            }
+            let label = vrf.map_or_else(|| "global table".to_string(), |v| format!("vrf: {v}"));
+            lines.push(Line::from(Span::styled(
+                format!("  {label}"),
+                Style::default()
+                    .fg(theme.header)
+                    .add_modifier(Modifier::BOLD),
+            )));
+            last_vrf = Some(vrf);
+        }
+
+        let is_sel = vis_i == selected;
+        if is_sel {
+            sel_row = lines.len();
+        }
+        let collapsed_here = node.collapsible() && collapsed.contains(&node.id);
+        let gutter = if is_sel { "▌ " } else { "  " };
+        let indent = "  ".repeat(node.depth as usize);
+        let disc = tree_disclosure(node, collapsed_here);
+
+        let cidr_style = {
+            let s = Style::default().fg(prefix_color);
+            if is_sel {
+                s.add_modifier(Modifier::BOLD)
+            } else {
+                s
+            }
+        };
+        let mut spans = vec![
+            Span::styled(gutter, Style::default().fg(theme.accent)),
+            Span::styled(
+                format!("{indent}{disc} "),
+                Style::default().fg(theme.text_dim),
+            ),
+            Span::styled(node.prefix.clone(), cidr_style),
+        ];
+        if let Some(status) = &node.status {
+            spans.push(Span::raw("  "));
+            spans.push(Span::styled(status.clone(), theme.status_style(status)));
+        }
+        if node.children > 0 {
+            spans.push(Span::styled(
+                format!("  [{}]", node.children),
+                Style::default().fg(theme.text_dim),
+            ));
+        }
+        if let Some(pct) = node.utilization {
+            let color = if pct >= 90 {
+                theme.error
+            } else if pct >= 75 {
+                theme.warning
+            } else {
+                theme.text_dim
+            };
+            spans.push(Span::styled(
+                format!("  {pct}%"),
+                Style::default().fg(color),
+            ));
+        }
+        if !node.description.is_empty() {
+            spans.push(Span::styled(
+                format!("  {}", node.description),
+                Style::default().fg(theme.text_dim),
+            ));
+        }
+        lines.push(Line::from(spans));
+    }
+    (lines, sel_row)
+}
+
+/// The hierarchical prefix tree (`T`): the IPAM prefix hierarchy, VRF-grouped and
+/// depth-indented, with collapse/expand. Read-only; falls back to a
+/// loading/error/empty line.
+fn render_prefix_tree(frame: &mut Frame, area: Rect, app: &mut App) {
+    // Stash the inner height (rows inside the borders + padding) for paging.
+    let inner_h = area.height.saturating_sub(2);
+    app.sync_tree_viewport(inner_h);
+    let theme = &app.theme;
+
+    let Some(data) = app.prefix_tree.as_ref() else {
+        let msg = app.prefix_tree_error.as_deref().map_or_else(
+            || "Loading prefixes…".to_string(),
+            |e| format!("prefix tree error: {e}"),
+        );
+        frame.render_widget(
+            Paragraph::new(msg)
+                .block(dash_block(" Prefix tree ", theme))
+                .style(Style::default().fg(theme.text_dim)),
+            area,
+        );
+        return;
+    };
+
+    if data.nodes.is_empty() {
+        frame.render_widget(
+            Paragraph::new("No prefixes found.")
+                .block(dash_block(" Prefix tree ", theme))
+                .style(Style::default().fg(theme.text_dim)),
+            area,
+        );
+        return;
+    }
+
+    let visible_len = prefix_tree::visible_indices(&data.nodes, &app.prefix_tree_collapsed).len();
+    let (lines, sel_row) = prefix_tree_lines(
+        data,
+        &app.prefix_tree_collapsed,
+        app.prefix_tree_selected,
+        theme,
+    );
+
+    // Title: how many prefixes are shown (and whether the listing is capped), with
+    // a right-aligned cursor position over the visible rows.
+    let capped = if data.capped() {
+        format!(" (capped at {})", data.nodes.len())
+    } else {
+        String::new()
+    };
+    let title = format!(" Prefix tree — {} prefixes{capped} ", data.total);
+    let mut block = Block::default()
+        .borders(Borders::ALL)
+        .title(title)
+        .border_style(Style::default().fg(theme.border))
+        .padding(Padding::horizontal(1));
+    if let Some(pos) = list_position(app.prefix_tree_selected, visible_len) {
+        block = block.title(Line::from(pos).right_aligned().style(theme.text_dim));
+    }
+
+    // Scroll so the selected row stays visible: pin it to the bottom edge once it
+    // scrolls past, clamped so the last page doesn't leave a trailing gap.
+    let height = inner_h.max(1) as usize;
+    let max_offset = lines.len().saturating_sub(height);
+    let offset = sel_row
+        .saturating_sub(height.saturating_sub(1))
+        .min(max_offset);
+    frame.render_widget(
+        Paragraph::new(lines)
+            .block(block)
+            .scroll((u16::try_from(offset).unwrap_or(u16::MAX), 0)),
+        area,
     );
 }
 
@@ -617,6 +799,7 @@ pub fn help_bindings() -> Vec<Vec<(&'static str, &'static str)>> {
             ("t", "cycle theme"),
             ("r", "refresh"),
             ("D", "dashboard"),
+            ("T", "prefix tree"),
             ("P / C-P", "switch profile"),
             ("S", "config / profiles"),
             ("i p c v s", "device tabs"),
@@ -1348,6 +1531,9 @@ fn footer_nav(app: &App) -> &'static str {
             " j/k scroll · g/G top/bottom · i/p/c/v/s tabs · o/y open/copy · b back · r refresh · t theme · ? help · q quit "
         }
         Screen::Dashboard => " r refresh · b/Esc back · D home · / search · ? help · q quit ",
+        Screen::PrefixTree => {
+            " j/k move · Space/←/→ collapse/expand · Enter open · o/y open/copy · r refresh · b/Esc back · ? help · q quit "
+        }
     }
 }
 
@@ -1546,6 +1732,84 @@ mod tests {
             ..SearchFilters::default()
         };
         assert!(any_filter_active(&g), "a vrf filter counts");
+    }
+
+    fn tree_node(id: u64, cidr: &str, depth: u64, children: u64) -> PrefixNode {
+        PrefixNode {
+            id,
+            prefix: cidr.into(),
+            vrf: None,
+            status: Some("active".into()),
+            depth,
+            children,
+            utilization: None,
+            description: String::new(),
+        }
+    }
+
+    fn lead_spaces(s: &str) -> usize {
+        s.chars().take_while(|c| *c == ' ').count()
+    }
+
+    #[test]
+    fn prefix_tree_lines_indent_by_depth_and_mark_collapsible() {
+        let theme = Theme::default_theme();
+        let data = PrefixTreeData {
+            nodes: vec![
+                tree_node(1, "10.0.0.0/8", 0, 1),
+                tree_node(2, "10.0.0.0/24", 1, 0),
+            ],
+            total: 2,
+        };
+        let (lines, sel_row) = prefix_tree_lines(&data, &HashSet::new(), 0, &theme);
+        // A "global table" header, then the two prefix rows.
+        assert!(line_text(&lines[0]).contains("global table"));
+        assert!(line_text(&lines[1]).contains("10.0.0.0/8"));
+        assert!(line_text(&lines[2]).contains("10.0.0.0/24"));
+        // The expanded collapsible root shows the open triangle.
+        assert!(lines[1].spans[1].content.contains('▾'), "expanded → ▾");
+        // The depth-1 child's indent segment (span 1) is deeper than the root's.
+        assert!(
+            lead_spaces(&lines[2].spans[1].content) > lead_spaces(&lines[1].spans[1].content),
+            "child indents deeper than parent"
+        );
+        // Selected node (visible index 0) maps to its display row (row 1, after the header).
+        assert_eq!(sel_row, 1);
+    }
+
+    #[test]
+    fn prefix_tree_lines_collapsed_marks_and_hides_child() {
+        let theme = Theme::default_theme();
+        let data = PrefixTreeData {
+            nodes: vec![
+                tree_node(1, "10.0.0.0/8", 0, 1),
+                tree_node(2, "10.0.0.0/24", 1, 0),
+            ],
+            total: 2,
+        };
+        let collapsed: HashSet<u64> = [1].into_iter().collect();
+        let (lines, _) = prefix_tree_lines(&data, &collapsed, 0, &theme);
+        let body: Vec<String> = lines.iter().map(line_text).collect();
+        assert!(
+            body.iter().any(|l| l.contains('▸')),
+            "collapsed → ▸: {body:?}"
+        );
+        assert!(
+            !body.iter().any(|l| l.contains("10.0.0.0/24")),
+            "the collapsed child is hidden: {body:?}"
+        );
+    }
+
+    #[test]
+    fn footer_nav_covers_prefix_tree() {
+        let mut a = app();
+        a.screen = Screen::PrefixTree;
+        let nav = footer_nav(&a);
+        assert!(
+            nav.contains("collapse/expand"),
+            "tree footer mentions collapse"
+        );
+        assert!(nav.contains("Enter open"), "tree footer mentions open");
     }
 
     #[test]

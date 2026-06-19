@@ -119,6 +119,12 @@ fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent
                 let _ = tx.send(AppEvent::DashboardLoaded { req, result }).await;
             });
         }
+        AppCommand::LoadPrefixTree { req } => {
+            tokio::spawn(async move {
+                let result = crate::netbox::prefix_tree::load_prefix_tree(&client).await;
+                let _ = tx.send(AppEvent::PrefixTreeLoaded { req, result }).await;
+            });
+        }
         AppCommand::LoadPreview { kind, id } => {
             tokio::spawn(async move {
                 let result = load_detail(&client, kind, id).await;
