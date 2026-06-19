@@ -279,6 +279,7 @@ async fn search_merges_ranks_and_dedups_across_endpoints() {
     mount_empty(&server, "/api/virtualization/virtual-machines/").await;
     mount_empty(&server, "/api/virtualization/clusters/").await;
     mount_empty(&server, "/api/dcim/racks/").await;
+    mount_empty(&server, "/api/ipam/vrfs/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -909,6 +910,7 @@ async fn search_truncates_to_limit() {
     mount_empty(&server, "/api/virtualization/virtual-machines/").await;
     mount_empty(&server, "/api/virtualization/clusters/").await;
     mount_empty(&server, "/api/dcim/racks/").await;
+    mount_empty(&server, "/api/ipam/vrfs/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -952,6 +954,7 @@ async fn search_reports_partial_endpoint_failures() {
     mount_empty(&server, "/api/virtualization/virtual-machines/").await;
     mount_empty(&server, "/api/virtualization/clusters/").await;
     mount_empty(&server, "/api/dcim/racks/").await;
+    mount_empty(&server, "/api/ipam/vrfs/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -1030,6 +1033,7 @@ async fn search_surfaces_circuits_aggregates_asns_and_ip_ranges() {
     mount_empty(&server, "/api/virtualization/virtual-machines/").await;
     mount_empty(&server, "/api/virtualization/clusters/").await;
     mount_empty(&server, "/api/dcim/racks/").await;
+    mount_empty(&server, "/api/ipam/vrfs/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -1105,6 +1109,7 @@ async fn search_surfaces_tenants_and_contacts() {
     mount_empty(&server, "/api/virtualization/virtual-machines/").await;
     mount_empty(&server, "/api/virtualization/clusters/").await;
     mount_empty(&server, "/api/dcim/racks/").await;
+    mount_empty(&server, "/api/ipam/vrfs/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -1168,6 +1173,7 @@ async fn search_surfaces_providers() {
     mount_empty(&server, "/api/virtualization/virtual-machines/").await;
     mount_empty(&server, "/api/virtualization/clusters/").await;
     mount_empty(&server, "/api/dcim/racks/").await;
+    mount_empty(&server, "/api/ipam/vrfs/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -1231,6 +1237,7 @@ async fn search_surfaces_vms_and_clusters() {
     mount_empty(&server, "/api/tenancy/contacts/").await;
     mount_empty(&server, "/api/circuits/providers/").await;
     mount_empty(&server, "/api/dcim/racks/").await;
+    mount_empty(&server, "/api/ipam/vrfs/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -1292,6 +1299,7 @@ async fn search_surfaces_racks() {
     mount_empty(&server, "/api/circuits/providers/").await;
     mount_empty(&server, "/api/virtualization/virtual-machines/").await;
     mount_empty(&server, "/api/virtualization/clusters/").await;
+    mount_empty(&server, "/api/ipam/vrfs/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -1313,6 +1321,60 @@ async fn search_surfaces_racks() {
     assert_eq!(rack.subtitle.as_deref(), Some("den1"));
     // The `/api/` web-URL rewrite drops the API prefix.
     assert_eq!(rack.url, "http://nb/dcim/racks/3/");
+}
+
+#[tokio::test]
+async fn search_surfaces_vrfs() {
+    let server = MockServer::start().await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/vrfs/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 4, "url": "http://nb/api/ipam/vrfs/4/", "name": "customer-prod",
+                "rd": "65000:100",
+                "tenant": {"id": 1, "display": "Acme Corp"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+    mount_empty(&server, "/api/dcim/devices/").await;
+    mount_empty(&server, "/api/dcim/sites/").await;
+    mount_empty(&server, "/api/ipam/ip-addresses/").await;
+    mount_empty(&server, "/api/ipam/prefixes/").await;
+    mount_empty(&server, "/api/ipam/vlans/").await;
+    mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/ipam/aggregates/").await;
+    mount_empty(&server, "/api/ipam/asns/").await;
+    mount_empty(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty(&server, "/api/tenancy/tenants/").await;
+    mount_empty(&server, "/api/tenancy/contacts/").await;
+    mount_empty(&server, "/api/circuits/providers/").await;
+    mount_empty(&server, "/api/virtualization/virtual-machines/").await;
+    mount_empty(&server, "/api/virtualization/clusters/").await;
+    mount_empty(&server, "/api/dcim/racks/").await;
+
+    let outcome = client(&server)
+        .search(SearchRequest {
+            query: "customer".into(),
+            limit: 25,
+            filters: SearchFilters::default(),
+        })
+        .await
+        .unwrap();
+    assert!(outcome.errors.is_empty(), "errors: {:?}", outcome.errors);
+
+    let vrf = outcome
+        .results
+        .iter()
+        .find(|r| r.kind == ObjectKind::Vrf)
+        .expect("vrf surfaced in search results");
+    assert_eq!(vrf.display, "customer-prod");
+    // Subtitle prefers the RD.
+    assert_eq!(vrf.subtitle.as_deref(), Some("65000:100"));
+    // The `/api/` web-URL rewrite drops the API prefix.
+    assert_eq!(vrf.url, "http://nb/ipam/vrfs/4/");
 }
 
 #[tokio::test]
@@ -1343,6 +1405,7 @@ async fn search_matches_asn_by_number() {
     mount_empty(&server, "/api/virtualization/virtual-machines/").await;
     mount_empty(&server, "/api/virtualization/clusters/").await;
     mount_empty(&server, "/api/dcim/racks/").await;
+    mount_empty(&server, "/api/ipam/vrfs/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -1449,6 +1512,7 @@ async fn search_with_site_scopes_prefixes_by_scope_type_and_id() {
     // Clusters honor `--site` via the polymorphic scope; give an empty page.
     mount_empty(&server, "/api/virtualization/clusters/").await;
     mount_empty(&server, "/api/dcim/racks/").await;
+    mount_empty(&server, "/api/ipam/vrfs/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -1543,7 +1607,8 @@ async fn search_skips_non_site_endpoints_unchanged_with_active_site() {
     mount_empty(&server, "/api/ipam/prefixes/").await; // scope-filtered
     mount_empty(&server, "/api/virtualization/virtual-machines/").await; // accepts `site`
     mount_empty(&server, "/api/virtualization/clusters/").await; // accepts `site`
-    mount_empty(&server, "/api/dcim/racks/").await; // accepts `site` (site_id)
+    mount_empty(&server, "/api/dcim/racks/").await;
+    mount_empty(&server, "/api/ipam/vrfs/").await; // accepts `site` (site_id)
     // The site-search branch (`q=` lookup) is reached too; fall through to a
     // catch-all empty page for `/api/dcim/sites/` so it doesn't 404.
     Mock::given(method("GET"))
@@ -1616,6 +1681,7 @@ async fn assert_scope_filters_prefixes(endpoint: &str, content_type: &str, filte
     mount_empty(&server, "/api/dcim/devices/").await;
     mount_empty(&server, "/api/virtualization/clusters/").await;
     mount_empty(&server, "/api/dcim/racks/").await;
+    mount_empty(&server, "/api/ipam/vrfs/").await;
 
     let c = client(&server);
     // Box the fan-out future to keep it off the stack (clippy::large_futures).
@@ -1777,6 +1843,7 @@ async fn assert_scope_filters_clusters(endpoint: &str, content_type: &str, filte
     mount_empty(&server, "/api/ipam/prefixes/").await;
     mount_empty(&server, "/api/dcim/devices/").await;
     mount_empty(&server, "/api/dcim/racks/").await;
+    mount_empty(&server, "/api/ipam/vrfs/").await;
 
     let c = client(&server);
     // Box the fan-out future to keep it off the stack (clippy::large_futures).
@@ -1936,6 +2003,7 @@ async fn search_with_vrf_filters_ip_and_prefix_by_vrf_id() {
     mount_empty(&server, "/api/virtualization/virtual-machines/").await;
     mount_empty(&server, "/api/virtualization/clusters/").await;
     mount_empty(&server, "/api/dcim/racks/").await;
+    mount_empty(&server, "/api/ipam/vrfs/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -2011,6 +2079,7 @@ async fn search_with_vrf_resolved_by_id_filters_prefixes() {
     mount_empty(&server, "/api/virtualization/virtual-machines/").await;
     mount_empty(&server, "/api/virtualization/clusters/").await;
     mount_empty(&server, "/api/dcim/racks/").await;
+    mount_empty(&server, "/api/ipam/vrfs/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -2133,6 +2202,7 @@ async fn search_combines_vrf_and_site_scope_on_prefixes() {
         .await;
     mount_empty(&server, "/api/virtualization/clusters/").await;
     mount_empty(&server, "/api/dcim/racks/").await;
+    mount_empty(&server, "/api/ipam/vrfs/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -2177,7 +2247,8 @@ async fn search_region_scope_skips_non_prefix_non_device_non_cluster_endpoints()
         .await;
     mount_empty(&server, "/api/ipam/prefixes/").await; // scope-filtered
     mount_empty(&server, "/api/dcim/devices/").await; // region_id-filtered
-    mount_empty(&server, "/api/dcim/racks/").await; // region_id-filtered
+    mount_empty(&server, "/api/dcim/racks/").await;
+    mount_empty(&server, "/api/ipam/vrfs/").await; // region_id-filtered
     mount_empty(&server, "/api/virtualization/clusters/").await; // scope-filtered
 
     let outcome = client(&server)
@@ -2249,6 +2320,7 @@ async fn search_with_numeric_site_filters_devices_vlans_vms_by_site_id() {
     mount_empty(&server, "/api/ipam/prefixes/").await;
     mount_empty(&server, "/api/virtualization/clusters/").await;
     mount_empty(&server, "/api/dcim/racks/").await;
+    mount_empty(&server, "/api/ipam/vrfs/").await;
     // The site-search branch hits `/api/dcim/sites/` with `q=` (no detail id).
     mount_empty(&server, "/api/dcim/sites/").await;
 
@@ -2320,6 +2392,7 @@ async fn search_with_site_name_filters_devices_by_site_id() {
     mount_empty(&server, "/api/ipam/prefixes/").await;
     mount_empty(&server, "/api/virtualization/clusters/").await;
     mount_empty(&server, "/api/dcim/racks/").await;
+    mount_empty(&server, "/api/ipam/vrfs/").await;
     // The site-search branch (`q=`) — catch-all empty page.
     mount_empty(&server, "/api/dcim/sites/").await;
 
@@ -2374,6 +2447,7 @@ async fn search_with_region_filters_devices_by_region_id() {
     mount_empty(&server, "/api/ipam/prefixes/").await;
     mount_empty(&server, "/api/virtualization/clusters/").await;
     mount_empty(&server, "/api/dcim/racks/").await;
+    mount_empty(&server, "/api/ipam/vrfs/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {

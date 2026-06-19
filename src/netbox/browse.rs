@@ -12,7 +12,7 @@ use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
 use crate::netbox::models::common::BriefObject;
 use crate::netbox::models::dcim::{Device, Rack, Site};
-use crate::netbox::models::ipam::{IpAddress, Prefix, Vlan};
+use crate::netbox::models::ipam::{IpAddress, Prefix, Vlan, Vrf};
 use crate::netbox::pagination::Page;
 use crate::netbox::search::{ObjectKind, SearchResult};
 use crate::util::format::api_to_web_url;
@@ -111,6 +111,23 @@ pub async fn browse(
                 })
                 .collect()
         }
+        ObjectKind::Vrf => {
+            let rows: Vec<Vrf> = client.list_all(Endpoint::Vrfs, vec![], max).await?;
+            rows.into_iter()
+                .map(|v| SearchResult {
+                    kind: ObjectKind::Vrf,
+                    id: v.id,
+                    // The RD identifies a VRF at a glance; fall back to the tenant.
+                    subtitle: v
+                        .rd
+                        .clone()
+                        .or_else(|| v.tenant.as_ref().map(BriefObject::label)),
+                    url: api_to_web_url(&v.url),
+                    display: v.name,
+                    score: 0,
+                })
+                .collect()
+        }
         // Kinds the Nav pane never offers for browse.
         _ => Vec::new(),
     };
@@ -130,11 +147,12 @@ async fn count(client: &NetBoxClient, endpoint: Endpoint) -> Result<u32> {
 /// Per-kind totals for the Nav pane labels, fetched concurrently and best-effort:
 /// a kind whose count probe fails is simply omitted (its label shows no number).
 pub async fn nav_counts(client: &NetBoxClient) -> Vec<(ObjectKind, u32)> {
-    let (devices, prefixes, ips, vlans, sites, racks) = tokio::join!(
+    let (devices, prefixes, ips, vlans, vrfs, sites, racks) = tokio::join!(
         count(client, Endpoint::Devices),
         count(client, Endpoint::Prefixes),
         count(client, Endpoint::IpAddresses),
         count(client, Endpoint::Vlans),
+        count(client, Endpoint::Vrfs),
         count(client, Endpoint::Sites),
         count(client, Endpoint::Racks),
     );
@@ -143,6 +161,7 @@ pub async fn nav_counts(client: &NetBoxClient) -> Vec<(ObjectKind, u32)> {
         (ObjectKind::Prefix, prefixes),
         (ObjectKind::IpAddress, ips),
         (ObjectKind::Vlan, vlans),
+        (ObjectKind::Vrf, vrfs),
         (ObjectKind::Site, sites),
         (ObjectKind::Rack, racks),
     ]

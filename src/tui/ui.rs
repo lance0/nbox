@@ -630,6 +630,7 @@ fn browse_label(kind: ObjectKind) -> &'static str {
         ObjectKind::Prefix => "Prefixes",
         ObjectKind::IpAddress => "IPs",
         ObjectKind::Vlan => "VLANs",
+        ObjectKind::Vrf => "VRFs",
         ObjectKind::Site => "Sites",
         ObjectKind::Rack => "Racks",
         _ => "Results",
@@ -889,7 +890,7 @@ fn kv_line<'a>(line: &'a str, width: usize, theme: &Theme) -> Line<'a> {
 fn kind_accent(kind: &str, theme: &Theme) -> Color {
     match kind {
         "device" | "vm" | "cluster" => theme.accent,
-        "ip" | "prefix" | "aggregate" | "ip-range" | "ip_range" | "asn" | "vlan" => {
+        "ip" | "prefix" | "aggregate" | "ip-range" | "ip_range" | "asn" | "vlan" | "vrf" => {
             theme.graph_secondary
         }
         "site" | "rack" => theme.header,

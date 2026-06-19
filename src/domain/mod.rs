@@ -27,6 +27,7 @@ pub mod tenant_view;
 pub mod util;
 pub mod vlan_view;
 pub mod vm_view;
+pub mod vrf_view;
 
 use serde::Serialize;
 

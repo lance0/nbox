@@ -114,6 +114,7 @@ pub enum NavSection {
     Prefixes,
     Ips,
     Vlans,
+    Vrfs,
     Sites,
     Racks,
     Recent,
@@ -121,11 +122,12 @@ pub enum NavSection {
 
 /// The Nav sections in display order: the browse kinds, then `Recent` (rendered
 /// under a divider). The selection cursor indexes this array.
-pub const NAV_SECTIONS: [NavSection; 7] = [
+pub const NAV_SECTIONS: [NavSection; 8] = [
     NavSection::Devices,
     NavSection::Prefixes,
     NavSection::Ips,
     NavSection::Vlans,
+    NavSection::Vrfs,
     NavSection::Sites,
     NavSection::Racks,
     NavSection::Recent,
@@ -139,6 +141,7 @@ impl NavSection {
             NavSection::Prefixes => "Prefixes",
             NavSection::Ips => "IPs",
             NavSection::Vlans => "VLANs",
+            NavSection::Vrfs => "VRFs",
             NavSection::Sites => "Sites",
             NavSection::Racks => "Racks",
             NavSection::Recent => "Recent",
@@ -152,6 +155,7 @@ impl NavSection {
             NavSection::Prefixes => ObjectKind::Prefix,
             NavSection::Ips => ObjectKind::IpAddress,
             NavSection::Vlans => ObjectKind::Vlan,
+            NavSection::Vrfs => ObjectKind::Vrf,
             NavSection::Sites => ObjectKind::Site,
             NavSection::Racks => ObjectKind::Rack,
             NavSection::Recent => return None,
@@ -3440,6 +3444,7 @@ fn object_web_url(base_url: &str, kind: ObjectKind, id: u64) -> String {
         ObjectKind::Vm => format!("virtualization/virtual-machines/{id}/"),
         ObjectKind::Cluster => format!("virtualization/clusters/{id}/"),
         ObjectKind::Rack => format!("dcim/racks/{id}/"),
+        ObjectKind::Vrf => format!("ipam/vrfs/{id}/"),
     };
 
     let mut base = base_url.to_string();

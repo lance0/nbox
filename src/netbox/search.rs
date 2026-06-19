@@ -18,7 +18,7 @@ use crate::netbox::endpoints::Endpoint;
 use crate::netbox::graphql::GraphqlCapabilities;
 use crate::netbox::models::circuits::{Circuit, Provider};
 use crate::netbox::models::dcim::{Device, Rack, Site};
-use crate::netbox::models::ipam::{Aggregate, Asn, IpAddress, IpRange, Prefix, Vlan};
+use crate::netbox::models::ipam::{Aggregate, Asn, IpAddress, IpRange, Prefix, Vlan, Vrf};
 use crate::netbox::models::tenancy::{Contact, Tenant};
 use crate::netbox::models::virtualization::{Cluster, VirtualMachine};
 use crate::netbox::pagination::Page;
@@ -46,6 +46,11 @@ pub enum ObjectKind {
     /// scope), openable in the TUI, and a cross-navigation target (e.g. a device's
     /// rack). Kept last to preserve the existing variants' order.
     Rack,
+    /// A VRF (routing/forwarding instance). Searchable by name/RD, openable in the
+    /// TUI as a routing-context view (its prefix tree + scoped addresses + route
+    /// targets), and a cross-navigation target. Carries no site scope, so scope
+    /// filters skip it. Kept last to preserve the existing variants' order.
+    Vrf,
 }
 
 impl ObjectKind {
@@ -67,6 +72,7 @@ impl ObjectKind {
             ObjectKind::Vm => "vm",
             ObjectKind::Cluster => "cluster",
             ObjectKind::Rack => "rack",
+            ObjectKind::Vrf => "vrf",
         }
     }
 }
@@ -313,6 +319,7 @@ impl NetBoxClient {
             vms,
             clusters,
             racks,
+            vrfs,
         ) = tokio::join!(
             self.search_devices(&q, f, scope.as_ref()),
             self.search_sites(&q, f, scope.as_ref()),
@@ -329,6 +336,7 @@ impl NetBoxClient {
             self.search_vms(&q, f, scope.as_ref()),
             self.search_clusters(&q, f, scope.as_ref()),
             self.search_racks(&q, f, scope.as_ref()),
+            self.search_vrfs(&q, f, scope.as_ref()),
         );
 
         let mut merged = Vec::new();
@@ -350,6 +358,7 @@ impl NetBoxClient {
             ("vms", vms),
             ("clusters", clusters),
             ("racks", racks),
+            ("vrfs", vrfs),
         ];
         for (name, branch) in branches {
             match branch {
@@ -407,6 +416,7 @@ impl NetBoxClient {
             vms,
             clusters,
             racks,
+            vrfs,
         ) = tokio::join!(
             self.gql_search_devices(&caps, &q, f, scope.as_ref(), req.limit),
             self.gql_search_sites(&caps, &q, f, scope.as_ref(), req.limit),
@@ -423,6 +433,7 @@ impl NetBoxClient {
             self.gql_search_vms(&caps, &q, f, scope.as_ref(), req.limit),
             self.gql_search_clusters(&caps, &q, f, scope.as_ref(), req.limit),
             self.gql_search_racks(&caps, &q, f, scope.as_ref(), req.limit),
+            self.gql_search_vrfs(&caps, &q, f, scope.as_ref(), req.limit),
         );
 
         let mut merged = Vec::new();
@@ -444,6 +455,7 @@ impl NetBoxClient {
             ("vms", vms),
             ("clusters", clusters),
             ("racks", racks),
+            ("vrfs", vrfs),
         ] {
             match branch {
                 Ok(mut items) => merged.append(&mut items),
@@ -670,6 +682,7 @@ impl NetBoxClient {
             ObjectKind::Vm => format!("virtualization/virtual-machines/{id}/"),
             ObjectKind::Cluster => format!("virtualization/clusters/{id}/"),
             ObjectKind::Rack => format!("dcim/racks/{id}/"),
+            ObjectKind::Vrf => format!("ipam/vrfs/{id}/"),
         };
         self.base_url()
             .join(&path)
@@ -2041,6 +2054,82 @@ impl NetBoxClient {
             })
             .collect())
     }
+
+    async fn search_vrfs(
+        &self,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+    ) -> Result<Vec<SearchResult>> {
+        // VRFs carry no site scope (site/region/site-group/location) — skip them
+        // for any active scope rather than return an unfiltered set.
+        if skip_for_any_scope(scope) {
+            return Ok(Vec::new());
+        }
+        // The VRF endpoint accepts `q` + `tenant` + `tag` from our filter set
+        // (no status/role/site), so an unsupported active filter skips it.
+        let Some(params) = endpoint_params(q, f, &["tenant", "tag"]) else {
+            return Ok(Vec::new());
+        };
+        let page: Page<Vrf> = self.list(Endpoint::Vrfs, params).await?;
+        Ok(page
+            .results
+            .into_iter()
+            .map(|v| SearchResult {
+                kind: ObjectKind::Vrf,
+                id: v.id,
+                score: score_match(q, &v.name),
+                // The RD identifies a VRF at a glance; fall back to the tenant.
+                subtitle: v.rd.clone().or_else(|| {
+                    v.tenant
+                        .as_ref()
+                        .map(super::models::common::BriefObject::label)
+                }),
+                url: api_to_web_url(&v.url),
+                display: v.name,
+            })
+            .collect())
+    }
+
+    async fn gql_search_vrfs(
+        &self,
+        caps: &GraphqlCapabilities,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        if skip_for_any_scope(scope) {
+            return Ok(Vec::new());
+        }
+        let Some(filters) = Self::gql_filters(caps, "vrf_list", q, f, &["tag"]) else {
+            return Ok(Vec::new());
+        };
+        let rows: Vec<GqlVrfLike> = self
+            .graphql_list(
+                caps,
+                "vrf_list",
+                Value::Object(filters),
+                "id name display rd tenant { id name display slug }",
+                limit,
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|v| {
+                let id = v.id()?;
+                let display = v.name.or(v.display)?;
+                Some(SearchResult {
+                    kind: ObjectKind::Vrf,
+                    id,
+                    score: score_match(q, &display),
+                    subtitle: v.rd.or_else(|| v.tenant.and_then(GqlBrief::label)),
+                    url: self.gql_web_url(ObjectKind::Vrf, id),
+                    display,
+                })
+            })
+            .collect())
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2217,6 +2306,21 @@ struct GqlTenantLike {
     display: Option<String>,
     slug: Option<String>,
     group: Option<GqlBrief>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlVrfLike {
+    id: Option<String>,
+    name: Option<String>,
+    display: Option<String>,
+    rd: Option<String>,
+    tenant: Option<GqlBrief>,
+}
+
+impl GqlId for GqlVrfLike {
+    fn raw_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
 }
 
 impl GqlId for GqlTenantLike {

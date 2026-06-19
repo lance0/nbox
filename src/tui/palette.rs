@@ -82,6 +82,7 @@ pub fn parse(input: &str) -> Result<PaletteCommand, String> {
         "vlan" => lookup(ObjectKind::Vlan, "vlan <vid|name>"),
         "site" => lookup(ObjectKind::Site, "site <name|slug>"),
         "rack" => lookup(ObjectKind::Rack, "rack <name|id>"),
+        "vrf" => lookup(ObjectKind::Vrf, "vrf <name|rd|id>"),
         "find" | "search" => {
             if rest.is_empty() {
                 Err("usage: find <query>".into())

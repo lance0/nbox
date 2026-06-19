@@ -335,6 +335,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Contact { value }) => run_contact(&ctx, &value).await,
         Some(Command::Vm { value }) => run_vm(&ctx, &value).await,
         Some(Command::Cluster { value }) => run_cluster(&ctx, &value).await,
+        Some(Command::Vrf { value }) => run_vrf(&ctx, &value).await,
         Some(Command::Vlan {
             value,
             site,
@@ -1260,6 +1261,13 @@ async fn run_cluster(ctx: &Ctx, value: &str) -> Result<()> {
     emit(ctx, &view, || view.to_key_values().print())
 }
 
+/// `nbox vrf <name|rd|id>` — show a VRF.
+async fn run_vrf(ctx: &Ctx, value: &str) -> Result<()> {
+    let client = connect(ctx)?;
+    let view = detail::vrf_view_by_ref(&client, value, &not_found).await?;
+    emit(ctx, &view, || view.to_key_values().print())
+}
+
 /// `nbox open <kind/ref>` — resolve an object and open it in the browser.
 async fn run_open(ctx: &Ctx, object_ref: &str) -> Result<()> {
     let (kind, value) = parse_object_ref(object_ref)?;
@@ -1336,6 +1344,7 @@ pub(crate) async fn resolve_object_url(
         "provider" => client.provider_by_ref(value).await?.map(|p| p.url),
         "vm" => client.vm_by_ref(value).await?.map(|vm| vm.url),
         "cluster" => client.cluster_by_ref(value).await?.map(|c| c.url),
+        "vrf" => client.vrf_by_ref(value).await?.map(|v| v.url),
         // `interface/<device-ref>/<name>`: the device ref is the first segment of
         // `value`, and EVERYTHING after the next `/` is the interface name —
         // taken verbatim, since names contain slashes (e.g. `xe-0/0/1`,
@@ -1353,7 +1362,7 @@ pub(crate) async fn resolve_object_url(
             client.device_interface(dev.id, name).await?.map(|i| i.url)
         }
         other => anyhow::bail!(
-            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, interface)"
+            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, interface)"
         ),
     };
     Ok(url)
@@ -1466,8 +1475,9 @@ pub(crate) async fn resolve_content_type_id(
             .cluster_by_ref(value)
             .await?
             .map(|c| ("virtualization.cluster", c.id)),
+        "vrf" => client.vrf_by_ref(value).await?.map(|v| ("ipam.vrf", v.id)),
         other => anyhow::bail!(
-            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster)"
+            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf)"
         ),
     };
     resolved.ok_or_else(|| not_found(kind, value))

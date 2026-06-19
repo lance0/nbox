@@ -66,12 +66,13 @@ pub enum GetKind {
     Provider,
     Vm,
     Cluster,
+    Vrf,
 }
 
 impl GetKind {
     /// Every kind, in the order the docs and `nbox://{kind}/{ref}` template list
     /// them — the same set `nbox_get` accepts.
-    const ALL: [GetKind; 15] = [
+    const ALL: [GetKind; 16] = [
         GetKind::Device,
         GetKind::Ip,
         GetKind::Prefix,
@@ -87,6 +88,7 @@ impl GetKind {
         GetKind::Provider,
         GetKind::Vm,
         GetKind::Cluster,
+        GetKind::Vrf,
     ];
 
     /// The `snake_case` slug used in `nbox://{kind}/{ref}` URIs and the `kind`
@@ -108,6 +110,7 @@ impl GetKind {
             GetKind::Provider => "provider",
             GetKind::Vm => "vm",
             GetKind::Cluster => "cluster",
+            GetKind::Vrf => "vrf",
         }
     }
 
@@ -697,6 +700,7 @@ impl NboxMcp {
             GetKind::Cluster => {
                 serde_json::to_value(detail::cluster_view_by_ref(c, r, &not_found).await?)?
             }
+            GetKind::Vrf => serde_json::to_value(detail::vrf_view_by_ref(c, r, &not_found).await?)?,
         };
         Ok(Json(value))
     }
@@ -764,6 +768,7 @@ impl NboxMcp {
             GetKind::Provider => "provider",
             GetKind::Vm => "vm",
             GetKind::Cluster => "cluster",
+            GetKind::Vrf => "vrf",
         };
         crate::resolve_content_type_id(&self.client, cli_kind, value).await
     }

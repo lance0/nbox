@@ -167,6 +167,23 @@ pub struct Vrf {
     #[serde(default)]
     pub description: Option<String>,
 
+    /// Whether the VRF enforces unique IP space (NetBox's `enforce_unique`).
+    #[serde(default)]
+    pub enforce_unique: Option<bool>,
+    /// Route targets imported into this VRF (`/api/ipam/route-targets/` briefs).
+    #[serde(default)]
+    pub import_targets: Vec<BriefObject>,
+    /// Route targets exported from this VRF.
+    #[serde(default)]
+    pub export_targets: Vec<BriefObject>,
+
+    /// Count of prefixes in this VRF (NetBox annotates this on the detail/list).
+    #[serde(default)]
+    pub prefix_count: Option<u64>,
+    /// Count of IP addresses in this VRF.
+    #[serde(default)]
+    pub ipaddress_count: Option<u64>,
+
     #[serde(default)]
     pub tags: Vec<Tag>,
     #[serde(default)]

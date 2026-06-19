@@ -315,6 +315,12 @@ pub enum Command {
         value: String,
     },
 
+    /// Show a VRF by name, route distinguisher (RD), or numeric ID.
+    Vrf {
+        /// VRF name, RD, or numeric ID.
+        value: String,
+    },
+
     /// Show a VLAN by VID or name.
     Vlan {
         /// VLAN VID or name.

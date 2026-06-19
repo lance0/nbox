@@ -8,6 +8,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **VRFs are now a first-class object.** A VRF can be looked up (`nbox vrf <name|rd|id>`),
+  found in search (`nbox search` / TUI `/` / MCP `nbox_search`, REST and GraphQL —
+  subtitle = its RD, falling back to the tenant), browsed from the TUI Nav rail
+  (a **VRFs** section with a live count), opened from the palette (`vrf <ref>`),
+  resolved by `nbox open vrf/<ref>`, journalled (`nbox journal vrf/<ref>`), and
+  fetched over MCP (`nbox_get` / `nbox://vrf/<ref>`). The VRF view normalizes RD,
+  tenant, enforce-unique, import/export route targets, and the prefix/address
+  counts. In the TUI the detail opens as a routing context: a compact header card
+  (RD · tenant · route-target counts · enforce-unique) over the VRF's prefix tree,
+  with `addresses` and `targets` tabs. Previously VRF was only a search *filter*
+  (`--vrf`) and an exact-by-RD lookup, never a navigable object.
 - **Three-pane home (Navigation rail).** The home screen is now Nav │ Results │
   Detail. The left Nav rail browses by kind — Devices / Prefixes / IPs / VLANs /
   Sites / Racks — each with a domain-colored bullet and a **live object count**,

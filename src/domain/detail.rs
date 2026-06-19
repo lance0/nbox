@@ -31,14 +31,19 @@ use crate::domain::site_view::SiteView;
 use crate::domain::tenant_view::TenantView;
 use crate::domain::vlan_view::VlanView;
 use crate::domain::vm_view::VmView;
+use crate::domain::vrf_view::VrfView;
 use crate::error::NboxError;
 use crate::netbox::client::NetBoxClient;
+use crate::netbox::endpoints::Endpoint;
 use crate::netbox::models::circuits::{Circuit, Provider};
 use crate::netbox::models::common::BriefObject;
 use crate::netbox::models::dcim::{Device, Rack, Site};
-use crate::netbox::models::ipam::{Aggregate, Asn, IpAddress, IpRange, Prefix, Vlan, VlanGroup};
+use crate::netbox::models::ipam::{
+    Aggregate, Asn, IpAddress, IpRange, Prefix, Vlan, VlanGroup, Vrf,
+};
 use crate::netbox::models::tenancy::{Contact, Tenant};
 use crate::netbox::models::virtualization::{Cluster, VirtualMachine};
+use crate::netbox::prefix_tree::{PrefixNode, build_nodes};
 use crate::netbox::query;
 use crate::netbox::search::ObjectKind;
 
@@ -46,6 +51,9 @@ use crate::netbox::search::ObjectKind;
 const DEVICE_CAP: usize = 200;
 /// Cap on child/IP rows pulled into a prefix or VLAN section (CLI, MCP, TUI).
 const SECTION_CAP: usize = 50;
+/// Cap on prefixes/addresses pulled into a VRF's scoped sections (the routing
+/// context can hold more than a single prefix's children, so a larger window).
+const VRF_SECTION_CAP: usize = 200;
 /// How many recent journal entries to fold into a detail view with `--journal`.
 pub const JOURNAL_INLINE_MAX: usize = 5;
 
@@ -424,6 +432,19 @@ pub async fn cluster_view_by_ref(
     Ok(ClusterView::from_model(cluster))
 }
 
+/// `vrf <name|rd|id>`: resolve a VRF and build its flat view. Shared by CLI/MCP.
+pub async fn vrf_view_by_ref(
+    client: &NetBoxClient,
+    value: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<VrfView> {
+    let vrf = client
+        .vrf_by_ref(value)
+        .await?
+        .ok_or_else(|| not_found("vrf", value))?;
+    Ok(VrfView::from_model(vrf))
+}
+
 /// A switchable section on a detail screen (e.g. a device's interfaces).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetailTab {
@@ -602,6 +623,175 @@ async fn rack_elevation_tab(client: &NetBoxClient, rack_id: u64, u_height: u32) 
     }
 }
 
+/// The tenant cross-link for a VRF (the one related object with a detail view).
+fn vrf_links(v: &Vrf) -> Vec<ObjectLink> {
+    let mut l = Vec::new();
+    push_link(&mut l, "tenant", ObjectKind::Tenant, v.tenant.as_ref());
+    l
+}
+
+/// A 7-cell utilization bar (`▓▓▓░░░░`). Mirrors the prefix view's bar style so
+/// the VRF tree reads the same as a prefix detail.
+fn util_bar(pct: u8) -> String {
+    const WIDTH: usize = 7;
+    let filled = ((f64::from(pct).clamp(0.0, 100.0) / 100.0) * WIDTH as f64).round() as usize;
+    let filled = filled.min(WIDTH);
+    let mut bar = String::with_capacity(WIDTH * 3);
+    for i in 0..WIDTH {
+        bar.push_str(if i < filled { "▓" } else { "░" });
+    }
+    bar
+}
+
+/// The compact VRF header card: identity + routing metadata in up to two lines
+/// (RD, tenant, route-target counts, enforce-unique; then the description). The
+/// full route targets live in the `targets` tab, not here.
+fn vrf_header_lines(v: &VrfView) -> String {
+    let mut top: Vec<String> = vec![format!("RD {}", v.rd.as_deref().unwrap_or("—"))];
+    if let Some(t) = &v.tenant {
+        top.push(format!("Tenant {t}"));
+    }
+    if !v.import_targets.is_empty() || !v.export_targets.is_empty() {
+        top.push(format!(
+            "RT ↓{} ↑{}",
+            v.import_targets.len(),
+            v.export_targets.len()
+        ));
+    }
+    if let Some(eu) = v.enforce_unique {
+        top.push(format!("enforce-uniq {}", if eu { "✓" } else { "✗" }));
+    }
+    let mut out = top.join("   ");
+    if let Some(d) = &v.description {
+        out.push('\n');
+        out.push_str(d);
+    }
+    out
+}
+
+/// Render VRF-scoped prefixes as an indented tree (NetBox returns them in tree
+/// order with a per-VRF depth). A utilization bar is shown only when one is known
+/// (a leaf has none) — otherwise the row falls back to its status/description so
+/// it never displays a fake 0% bar.
+fn vrf_prefix_section(nodes: &[PrefixNode], total: u64) -> String {
+    use std::fmt::Write as _;
+    if nodes.is_empty() {
+        return "Prefixes (0)\n  (none in this VRF)".to_string();
+    }
+    let mut out = format!("Prefixes ({total})\n");
+    for n in nodes {
+        let label = format!("{}{}", "  ".repeat(n.depth as usize + 1), n.prefix);
+        let status = n.status.as_deref().unwrap_or("");
+        let tail = match n.utilization {
+            Some(pct) => format!("{}  {pct}%", util_bar(pct)),
+            None if !n.description.is_empty() => n.description.clone(),
+            None => String::new(),
+        };
+        let _ = writeln!(out, "{label:<28}{status:<10}{tail}");
+    }
+    if total as usize > nodes.len() {
+        let shown = nodes.len();
+        let _ = write!(out, "  … {} more (showing {shown})", total as usize - shown);
+    }
+    out
+}
+
+/// Render the VRF-scoped IP addresses as a flat list (address + status/DNS).
+fn vrf_addresses_section(ips: &[IpAddress], total: u64) -> String {
+    use std::fmt::Write as _;
+    if ips.is_empty() {
+        return "Addresses (0)\n  (none in this VRF)".to_string();
+    }
+    let mut out = format!("Addresses ({total})\n");
+    for ip in ips {
+        let note = ip
+            .dns_name
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(ToString::to_string)
+            .or_else(|| ip.status.as_ref().map(|c| c.value.clone()))
+            .unwrap_or_default();
+        let _ = writeln!(out, "  {:<24}{note}", ip.address);
+    }
+    if total as usize > ips.len() {
+        let _ = write!(out, "  … {} more", total as usize - ips.len());
+    }
+    out
+}
+
+/// Render the VRF's import/export route targets.
+fn vrf_targets_section(v: &VrfView) -> String {
+    use std::fmt::Write as _;
+    if v.import_targets.is_empty() && v.export_targets.is_empty() {
+        return "Route Targets\n  (none)".to_string();
+    }
+    let mut out = String::from("Route Targets\n");
+    let _ = writeln!(out, "Import ({})", v.import_targets.len());
+    for rt in &v.import_targets {
+        let _ = writeln!(out, "  {rt}");
+    }
+    let _ = writeln!(out, "Export ({})", v.export_targets.len());
+    for rt in &v.export_targets {
+        let _ = writeln!(out, "  {rt}");
+    }
+    out
+}
+
+/// Build a VRF's routing-context detail: a compact header card + its prefix tree
+/// as the body, with `addresses` and `targets` tabs. The scoped sections are
+/// fetched best-effort and capped at [`VRF_SECTION_CAP`].
+async fn load_vrf_detail(
+    client: &NetBoxClient,
+    vrf: Vrf,
+) -> Result<(String, String, Vec<DetailTab>)> {
+    let vrf_id = vrf.id;
+    let name = vrf.name.clone();
+    let view = VrfView::from_model(vrf);
+
+    let prefixes: Vec<Prefix> = client
+        .list_all(
+            Endpoint::Prefixes,
+            vec![("vrf_id", vrf_id.to_string())],
+            VRF_SECTION_CAP,
+        )
+        .await
+        .unwrap_or_default();
+    let prefix_total = view.prefix_count.unwrap_or(prefixes.len() as u64);
+    let nodes = build_nodes(prefixes);
+
+    let ips: Vec<IpAddress> = client
+        .list_all(
+            Endpoint::IpAddresses,
+            vec![("vrf_id", vrf_id.to_string())],
+            VRF_SECTION_CAP,
+        )
+        .await
+        .unwrap_or_default();
+    let ip_total = view.ipaddress_count.unwrap_or(ips.len() as u64);
+
+    let body = format!(
+        "{}\n\n{}",
+        vrf_header_lines(&view),
+        vrf_prefix_section(&nodes, prefix_total)
+    );
+    let tabs = vec![
+        DetailTab {
+            key: 'a',
+            label: format!("addresses·{ip_total}"),
+            body: vrf_addresses_section(&ips, ip_total),
+        },
+        DetailTab {
+            key: 't',
+            label: format!(
+                "targets·{}",
+                view.import_targets.len() + view.export_targets.len()
+            ),
+            body: vrf_targets_section(&view),
+        },
+    ];
+    Ok((format!("vrf {name}"), body, tabs))
+}
+
 pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Result<DetailView> {
     let mut tabs = Vec::new();
     let mut links = Vec::new();
@@ -739,6 +929,13 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
                 .await?;
             let v = ClusterView::from_model(c);
             (format!("cluster {}", v.name), v.to_key_values().render())
+        }
+        ObjectKind::Vrf => {
+            let vrf: Vrf = client.get(&format!("/api/ipam/vrfs/{id}/"), &[]).await?;
+            links = vrf_links(&vrf);
+            let (title, body, vrf_tabs) = load_vrf_detail(client, vrf).await?;
+            tabs = vrf_tabs;
+            (title, body)
         }
     };
     Ok(DetailView::new(kind, id, title, body)
@@ -958,6 +1155,17 @@ pub async fn load_detail_by_ref(
                 format!("cluster {}", v.name),
                 v.to_key_values().render(),
             )
+        }
+        ObjectKind::Vrf => {
+            let vrf = client
+                .vrf_by_ref(value)
+                .await?
+                .with_context(|| format!("no vrf matched \"{value}\""))?;
+            let id = vrf.id;
+            links = vrf_links(&vrf);
+            let (title, body, vrf_tabs) = load_vrf_detail(client, vrf).await?;
+            tabs = vrf_tabs;
+            (id, title, body)
         }
     };
     Ok(DetailView::new(kind, id, title, body)
