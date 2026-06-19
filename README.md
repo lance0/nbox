@@ -339,13 +339,20 @@ saves and switches to it. Unlike the quick `P` cycle, selecting or adding-and-us
 a profile here **persists** `active_profile` to your config. Deleting the active
 or last profile is blocked.
 
-`Tab` switches the Config modal to its **Settings** section, an in-app editor for
-the real `[ui]` settings: `theme` (cycle with `←`/`→`/Space, applied live),
-`refresh_secs` (auto-refresh interval; empty/`0` = off), and
-`open_browser_command` (a custom browser-open command; empty = OS default). `↑`/`↓`
-move between fields; `Enter` or `Ctrl+S` saves each changed field back to
-`config.toml` (format-preserving), re-arms the auto-refresh without a restart, and
-applies the new browser command to the next open.
+`Tab` switches the Config modal to its **Settings** section, a two-pane editor —
+categories on the left, the selected category's fields on the right:
+
+- **Appearance** — `theme` (cycle with `←`/`→`/Space, applied live).
+- **Behavior** — `refresh_secs` (auto-refresh interval; empty/`0` = off) and
+  `open_browser_command` (a custom browser-open command; empty = OS default).
+- **Logging** — `log_level` (a tracing filter like `nbox=debug`) and `log_file` (a
+  path); both persist and apply on the next launch.
+
+`↑`/`↓` pick a category, `→` enters its fields (`↑`/`↓` move between them, `Esc`
+steps back), and `Enter` or `Ctrl+S` saves every changed field back to
+`config.toml` (format-preserving — comments and unrelated keys are kept), re-arms
+the auto-refresh without a restart, and applies the new browser command to the next
+open. Settings live in `~/.config/nbox/`, so they survive upgrades.
 
 `[ui].open_browser_command`, when set, is what `nbox open` and the TUI `o` action
 run to open a URL (the URL is appended as a literal final argument, never

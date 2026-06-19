@@ -800,7 +800,12 @@ async fn build_tui_app(
     app.set_profiles(profiles);
     // Seed the live UI settings the Settings section edits and the `o` open path
     // reads (auto-refresh interval + custom browser-open command).
-    app.set_ui_settings(refresh_secs, cfg.ui.open_browser_command.clone());
+    app.set_ui_settings(
+        refresh_secs,
+        cfg.ui.open_browser_command.clone(),
+        cfg.log_level.clone(),
+        cfg.log_file.clone(),
+    );
     // Honor NO_COLOR: render the TUI monochrome regardless of the configured
     // theme. The TUI is always a TTY when interactive, so the color decision here
     // keys on NO_COLOR (truecolor vs ANSI is moot when no color is emitted). See

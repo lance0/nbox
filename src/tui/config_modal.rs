@@ -334,42 +334,93 @@ impl ProfilesPane {
     }
 }
 
-/// The focusable rows of the Settings form, in display order. `theme` is a cycle
-/// (Left/Right or Space), the other two are text fields.
-pub mod setting {
-    pub const THEME: usize = 0;
-    pub const REFRESH: usize = 1;
-    pub const BROWSER: usize = 2;
-    /// Number of settings rows.
-    pub const COUNT: usize = 3;
+/// A single setting field.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingId {
+    /// `[ui].theme` — a cycle (Left/Right/Space), hot-applied live.
+    Theme,
+    /// `[ui].refresh_secs` — numeric text (empty/0 = off).
+    RefreshSecs,
+    /// `[ui].open_browser_command` — free text (empty = OS default).
+    OpenBrowserCommand,
+    /// Top-level `log_level` — free text (empty = default; applies next launch).
+    LogLevel,
+    /// Top-level `log_file` — a path (empty = stderr only; applies next launch).
+    LogFile,
 }
 
-/// The Settings section: an editable form over the *real* `[ui]` settings.
+impl SettingId {
+    /// The label shown beside the field in the fields pane.
+    pub fn label(self) -> &'static str {
+        match self {
+            SettingId::Theme => "theme",
+            SettingId::RefreshSecs => "refresh_secs",
+            SettingId::OpenBrowserCommand => "open command",
+            SettingId::LogLevel => "log_level",
+            SettingId::LogFile => "log_file",
+        }
+    }
+}
+
+/// Settings grouped into categories, in display order. Adding a setting is just
+/// adding a field to a category here — the surface is data-driven, so it scales
+/// without touching the navigation or render code.
+pub const SETTINGS_CATEGORIES: &[(&str, &[SettingId])] = &[
+    ("Appearance", &[SettingId::Theme]),
+    (
+        "Behavior",
+        &[SettingId::RefreshSecs, SettingId::OpenBrowserCommand],
+    ),
+    ("Logging", &[SettingId::LogLevel, SettingId::LogFile]),
+];
+
+/// Which pane of the two-pane Settings section holds focus.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsFocus {
+    /// The left category list: `↑/↓` select, `→` enters the fields.
+    Categories,
+    /// The right field list: `↑/↓` move, edit in place, `Esc` back to categories.
+    Fields,
+}
+
+/// The Settings section: a two-pane editor — categories on the left, the selected
+/// category's fields on the right.
 ///
-/// `theme` is held as an index into [`Theme::list`] and cycled in place (it also
-/// hot-applies live to the running app — see [`ModalOutcome::ChangeTheme`]). The
-/// other two are free-text [`TextInput`]s: `refresh_secs` (numeric; empty/0 =
-/// off) and `open_browser_command` (empty = the OS default). `focus` selects the
-/// row Up/Down move between; typing / cycling routes to the focused row. PURE +
-/// unit-testable — no I/O; the app persists + re-arms on [`ModalOutcome::SaveSettings`].
+/// `theme` is a cycle (Left/Right/Space, hot-applied live — see
+/// [`ModalOutcome::ChangeTheme`]); the rest are free-text [`TextInput`]s. In the
+/// Categories pane `↑/↓` pick a category and `→` enters its fields; in the Fields
+/// pane `↑/↓` move between fields and `Esc` returns to the categories. PURE +
+/// unit-testable — no I/O; the app persists on [`ModalOutcome::SaveSettings`].
 pub struct SettingsPane {
+    /// Which pane has focus.
+    pub focus: SettingsFocus,
+    /// Selected category (index into [`SETTINGS_CATEGORIES`]).
+    pub category: usize,
+    /// Focused field within the selected category.
+    pub field: usize,
     /// Index into [`Theme::list`] of the working theme selection.
     pub theme_index: usize,
     /// `refresh_secs` as typed (digits only; empty = off).
     pub refresh: TextInput,
     /// `open_browser_command` as typed (empty = OS default).
     pub browser: TextInput,
-    /// Focused row: one of [`setting::THEME`] / `REFRESH` / `BROWSER`.
-    pub focus: usize,
+    /// `log_level` as typed (empty = default; a tracing filter like `nbox=debug`).
+    pub log_level: TextInput,
+    /// `log_file` as typed (empty = stderr only; a path).
+    pub log_file: TextInput,
     /// A transient info / validation line shown under the form.
     pub message: Option<String>,
 }
 
 impl SettingsPane {
-    /// Build the form seeded from the live settings: the current theme name, the
-    /// refresh interval (rendered as digits; `None`/`0` = empty = off), and the
-    /// browser command.
-    fn new(theme_name: &str, refresh_secs: Option<u64>, open_browser_command: &str) -> Self {
+    /// Build the form seeded from the live settings.
+    fn new(
+        theme_name: &str,
+        refresh_secs: Option<u64>,
+        open_browser_command: &str,
+        log_level: &str,
+        log_file: &str,
+    ) -> Self {
         let mut refresh = TextInput::new("seconds (empty = off)");
         if let Some(secs) = refresh_secs.filter(|s| *s > 0) {
             refresh.set_value(secs.to_string());
@@ -378,12 +429,38 @@ impl SettingsPane {
         if !open_browser_command.is_empty() {
             browser.set_value(open_browser_command);
         }
+        let mut log_level_in = TextInput::new("e.g. info, nbox=debug (empty = default)");
+        if !log_level.is_empty() {
+            log_level_in.set_value(log_level);
+        }
+        let mut log_file_in = TextInput::new("path (empty = stderr only)");
+        if !log_file.is_empty() {
+            log_file_in.set_value(log_file);
+        }
         Self {
+            focus: SettingsFocus::Categories,
+            category: 0,
+            field: 0,
             theme_index: Theme::index_of(theme_name),
             refresh,
             browser,
-            focus: setting::THEME,
+            log_level: log_level_in,
+            log_file: log_file_in,
             message: None,
+        }
+    }
+
+    /// The fields of the selected category.
+    pub fn current_fields(&self) -> &'static [SettingId] {
+        SETTINGS_CATEGORIES[self.category.min(SETTINGS_CATEGORIES.len() - 1)].1
+    }
+
+    /// The focused field id, when the Fields pane is active.
+    pub fn focused_field(&self) -> Option<SettingId> {
+        if self.focus == SettingsFocus::Fields {
+            self.current_fields().get(self.field).copied()
+        } else {
+            None
         }
     }
 
@@ -407,14 +484,70 @@ impl SettingsPane {
         self.browser.value().trim().to_string()
     }
 
-    /// Move focus to the next row (wrapping).
-    fn focus_next(&mut self) {
-        self.focus = (self.focus + 1) % setting::COUNT;
+    /// The typed `log_level`, trimmed; empty ⇒ `None` (unset).
+    pub fn log_level_value(&self) -> Option<String> {
+        let t = self.log_level.value().trim();
+        (!t.is_empty()).then(|| t.to_string())
     }
 
-    /// Move focus to the previous row (wrapping).
-    fn focus_prev(&mut self) {
-        self.focus = (self.focus + setting::COUNT - 1) % setting::COUNT;
+    /// The typed `log_file`, trimmed; empty ⇒ `None` (unset).
+    pub fn log_file_value(&self) -> Option<String> {
+        let t = self.log_file.value().trim();
+        (!t.is_empty()).then(|| t.to_string())
+    }
+
+    /// The `TextInput` backing a field, if it has one (theme is a cycle, not text).
+    pub fn input_mut(&mut self, id: SettingId) -> Option<&mut TextInput> {
+        match id {
+            SettingId::Theme => None,
+            SettingId::RefreshSecs => Some(&mut self.refresh),
+            SettingId::OpenBrowserCommand => Some(&mut self.browser),
+            SettingId::LogLevel => Some(&mut self.log_level),
+            SettingId::LogFile => Some(&mut self.log_file),
+        }
+    }
+
+    /// Select the next category (wrapping), resetting the field cursor.
+    fn next_category(&mut self) {
+        self.category = (self.category + 1) % SETTINGS_CATEGORIES.len();
+        self.field = 0;
+        self.message = None;
+    }
+
+    /// Select the previous category (wrapping), resetting the field cursor.
+    fn prev_category(&mut self) {
+        self.category = (self.category + SETTINGS_CATEGORIES.len() - 1) % SETTINGS_CATEGORIES.len();
+        self.field = 0;
+        self.message = None;
+    }
+
+    /// Move focus into the selected category's fields (no-op for an empty category).
+    fn enter_fields(&mut self) {
+        if !self.current_fields().is_empty() {
+            self.focus = SettingsFocus::Fields;
+            self.field = 0;
+        }
+    }
+
+    /// Return focus to the category list.
+    fn back_to_categories(&mut self) {
+        self.focus = SettingsFocus::Categories;
+    }
+
+    /// Move to the next field within the category (wrapping).
+    fn next_field(&mut self) {
+        let n = self.current_fields().len();
+        if n > 0 {
+            self.field = (self.field + 1) % n;
+        }
+    }
+
+    /// Move to the previous field within the category (wrapping).
+    fn prev_field(&mut self) {
+        let n = self.current_fields().len();
+        if n > 0 {
+            self.field = (self.field + n - 1) % n;
+        }
     }
 
     /// Cycle the theme selection by `+1`/`-1`, wrapping. The change hot-applies
@@ -450,20 +583,33 @@ pub struct ConfigModal {
 impl ConfigModal {
     /// Open the modal on the Profiles section, seeding the Settings form from the
     /// live UI settings (so a switch to Settings shows the current values).
-    pub fn new(theme_name: &str, refresh_secs: Option<u64>, open_browser_command: &str) -> Self {
+    pub fn new(
+        theme_name: &str,
+        refresh_secs: Option<u64>,
+        open_browser_command: &str,
+        log_level: &str,
+        log_file: &str,
+    ) -> Self {
         Self {
             section: ConfigSection::Profiles,
             profiles: ProfilesPane::new(),
-            settings: SettingsPane::new(theme_name, refresh_secs, open_browser_command),
+            settings: SettingsPane::new(
+                theme_name,
+                refresh_secs,
+                open_browser_command,
+                log_level,
+                log_file,
+            ),
         }
     }
 }
 
 impl Default for ConfigModal {
     /// A modal seeded with default settings (the `default` theme, no auto-refresh,
-    /// the OS default opener) — used by tests / when no live settings are handy.
+    /// the OS default opener, no log overrides) — used by tests / when no live
+    /// settings are handy.
     fn default() -> Self {
-        Self::new("default", None, "")
+        Self::new("default", None, "", "", "")
     }
 }
 
@@ -523,66 +669,77 @@ impl ConfigModal {
     /// from here — only `Esc` does, unlike the Profiles list.)
     fn handle_settings_key(&mut self, key: KeyEvent) -> ModalOutcome {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
-        // The section toggle and close are handled before the `settings` borrow so
-        // the Tab arm can touch `self.section` cleanly.
-        match key.code {
-            KeyCode::Tab | KeyCode::BackTab => {
-                self.section = ConfigSection::Profiles;
-                return ModalOutcome::None;
-            }
-            KeyCode::Esc => return ModalOutcome::Close,
-            _ => {}
+        // Section toggle is handled before the `settings` borrow so the Tab arm can
+        // touch `self.section` cleanly. (Esc is context-sensitive — handled below.)
+        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) {
+            self.section = ConfigSection::Profiles;
+            return ModalOutcome::None;
+        }
+        // Enter / Ctrl+S save the whole form from either pane (validate first).
+        if key.code == KeyCode::Enter || (ctrl && key.code == KeyCode::Char('s')) {
+            return match self.settings.validate() {
+                Ok(()) => ModalOutcome::SaveSettings,
+                Err(e) => {
+                    self.settings.message = Some(e);
+                    ModalOutcome::None
+                }
+            };
         }
         let s = &mut self.settings;
-        match key.code {
-            KeyCode::Up => {
-                s.focus_prev();
-                ModalOutcome::None
-            }
-            KeyCode::Down => {
-                s.focus_next();
-                ModalOutcome::None
-            }
-            // Enter always saves; Ctrl+S also saves (so a save is reachable while a
-            // text row is focused without leaving it). A bare `s` falls through to
-            // text editing below.
-            KeyCode::Enter => match s.validate() {
-                Ok(()) => ModalOutcome::SaveSettings,
-                Err(e) => {
-                    s.message = Some(e);
+        match s.focus {
+            // Left pane: pick a category, `→` enters its fields, `Esc` closes.
+            SettingsFocus::Categories => match key.code {
+                KeyCode::Esc => ModalOutcome::Close,
+                KeyCode::Up => {
+                    s.prev_category();
                     ModalOutcome::None
                 }
-            },
-            KeyCode::Char('s') if ctrl => match s.validate() {
-                Ok(()) => ModalOutcome::SaveSettings,
-                Err(e) => {
-                    s.message = Some(e);
+                KeyCode::Down => {
+                    s.next_category();
                     ModalOutcome::None
                 }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    s.enter_fields();
+                    ModalOutcome::None
+                }
+                _ => ModalOutcome::None,
             },
-            // The theme row cycles with Left/Right or Space; the change hot-applies.
-            KeyCode::Left if s.focus == setting::THEME => {
-                s.cycle_theme(false);
-                ModalOutcome::ChangeTheme(s.theme_name().to_string())
-            }
-            KeyCode::Right | KeyCode::Char(' ') if s.focus == setting::THEME => {
-                s.cycle_theme(true);
-                ModalOutcome::ChangeTheme(s.theme_name().to_string())
-            }
-            // Otherwise: text editing on the focused text row. The theme row has no
-            // text field, so non-cycle keys there are inert.
-            _ => {
-                let field = match s.focus {
-                    setting::REFRESH => Some(&mut s.refresh),
-                    setting::BROWSER => Some(&mut s.browser),
-                    _ => None, // the theme row: no text field
-                };
-                if let Some(input) = field
-                    && input.handle_key(key)
+            // Right pane: `↑/↓` move fields, `Esc` steps back to the categories,
+            // the theme field cycles with `←/→/Space`, text fields edit in place.
+            SettingsFocus::Fields => {
+                if key.code == KeyCode::Esc {
+                    s.back_to_categories();
+                    return ModalOutcome::None;
+                }
+                if s.focused_field() == Some(SettingId::Theme)
+                    && matches!(
+                        key.code,
+                        KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
+                    )
                 {
-                    s.message = None;
+                    s.cycle_theme(!matches!(key.code, KeyCode::Left));
+                    return ModalOutcome::ChangeTheme(s.theme_name().to_string());
                 }
-                ModalOutcome::None
+                match key.code {
+                    KeyCode::Up => {
+                        s.prev_field();
+                        ModalOutcome::None
+                    }
+                    KeyCode::Down => {
+                        s.next_field();
+                        ModalOutcome::None
+                    }
+                    // Text editing on the focused text field (theme has none).
+                    _ => {
+                        if let Some(id) = s.focused_field()
+                            && let Some(input) = s.input_mut(id)
+                            && input.handle_key(key)
+                        {
+                            s.message = None;
+                        }
+                        ModalOutcome::None
+                    }
+                }
             }
         }
     }
@@ -1186,9 +1343,9 @@ mod tests {
 
     // ---- Settings section ----------------------------------------------------
 
-    /// Open a modal and switch it to the Settings section.
+    /// Open a modal and switch it to the Settings section (Categories pane).
     fn on_settings(theme: &str, refresh: Option<u64>, browser: &str) -> ConfigModal {
-        let mut m = ConfigModal::new(theme, refresh, browser);
+        let mut m = ConfigModal::new(theme, refresh, browser, "", "");
         m.handle_key(key(KeyCode::Tab), &[], ""); // Profiles list → Settings
         assert_eq!(m.section, ConfigSection::Settings);
         m
@@ -1208,11 +1365,23 @@ mod tests {
     }
 
     #[test]
+    fn settings_seeds_and_reads_log_fields() {
+        let mut m = ConfigModal::new("default", None, "", "nbox=debug", "/tmp/x.log");
+        m.handle_key(key(KeyCode::Tab), &[], "");
+        assert_eq!(m.settings.log_level_value().as_deref(), Some("nbox=debug"));
+        assert_eq!(m.settings.log_file_value().as_deref(), Some("/tmp/x.log"));
+        // Empty seeds read back as None.
+        let blank = on_settings("default", None, "");
+        assert_eq!(blank.settings.log_level_value(), None);
+        assert_eq!(blank.settings.log_file_value(), None);
+    }
+
+    #[test]
     fn settings_tab_switches_back_to_profiles_and_esc_closes() {
         let mut m = on_settings("default", None, "");
         m.handle_key(key(KeyCode::Tab), &[], "");
         assert_eq!(m.section, ConfigSection::Profiles);
-        // Esc from Settings closes the whole modal.
+        // Esc from the Categories pane closes the whole modal.
         let mut m2 = on_settings("default", None, "");
         assert_eq!(
             m2.handle_key(key(KeyCode::Esc), &[], ""),
@@ -1221,22 +1390,44 @@ mod tests {
     }
 
     #[test]
-    fn settings_up_down_move_row_focus_and_wrap() {
+    fn settings_categories_and_fields_navigate() {
         let mut m = on_settings("default", None, "");
-        assert_eq!(m.settings.focus, setting::THEME);
+        // Starts in the Categories pane on the first category (Appearance).
+        assert_eq!(m.settings.focus, SettingsFocus::Categories);
+        assert_eq!(m.settings.category, 0);
+        // Down cycles through the categories (wrapping).
         m.handle_key(key(KeyCode::Down), &[], "");
-        assert_eq!(m.settings.focus, setting::REFRESH);
+        assert_eq!(m.settings.category, 1); // Behavior
         m.handle_key(key(KeyCode::Down), &[], "");
-        assert_eq!(m.settings.focus, setting::BROWSER);
-        m.handle_key(key(KeyCode::Down), &[], ""); // wraps to THEME
-        assert_eq!(m.settings.focus, setting::THEME);
-        m.handle_key(key(KeyCode::Up), &[], ""); // wraps to BROWSER
-        assert_eq!(m.settings.focus, setting::BROWSER);
+        assert_eq!(m.settings.category, 2); // Logging
+        m.handle_key(key(KeyCode::Down), &[], ""); // wraps
+        assert_eq!(m.settings.category, 0);
+        m.handle_key(key(KeyCode::Up), &[], ""); // wraps back to Logging
+        assert_eq!(m.settings.category, 2);
+        // Back to Behavior, then → enters its fields; Down moves; Esc returns.
+        m.handle_key(key(KeyCode::Up), &[], "");
+        assert_eq!(m.settings.category, 1);
+        m.handle_key(key(KeyCode::Right), &[], "");
+        assert_eq!(m.settings.focus, SettingsFocus::Fields);
+        assert_eq!(m.settings.focused_field(), Some(SettingId::RefreshSecs));
+        m.handle_key(key(KeyCode::Down), &[], "");
+        assert_eq!(
+            m.settings.focused_field(),
+            Some(SettingId::OpenBrowserCommand)
+        );
+        m.handle_key(key(KeyCode::Esc), &[], "");
+        assert_eq!(m.settings.focus, SettingsFocus::Categories);
     }
 
     #[test]
     fn settings_theme_cycles_and_emits_change_theme() {
         let mut m = on_settings("default", None, "");
+        // Enter the Appearance fields (theme) before cycling.
+        assert_eq!(
+            m.handle_key(key(KeyCode::Right), &[], ""),
+            ModalOutcome::None
+        );
+        assert_eq!(m.settings.focused_field(), Some(SettingId::Theme));
         // Right cycles forward to the next theme and emits a hot-apply outcome.
         let out = m.handle_key(key(KeyCode::Right), &[], "");
         assert_eq!(m.settings.theme_name(), Theme::list()[1]);
@@ -1251,18 +1442,16 @@ mod tests {
     }
 
     #[test]
-    fn settings_typing_routes_to_the_focused_text_row() {
+    fn settings_typing_routes_to_the_focused_field() {
         let mut m = on_settings("default", None, "");
-        // Move to refresh_secs and type digits.
-        m.handle_key(key(KeyCode::Down), &[], "");
+        // Behavior → refresh_secs: enter the fields and type digits.
+        m.handle_key(key(KeyCode::Down), &[], ""); // → Behavior
+        m.handle_key(key(KeyCode::Right), &[], ""); // enter fields (refresh_secs)
         for c in "45".chars() {
             m.handle_key(key(KeyCode::Char(c)), &[], "");
         }
         assert_eq!(m.settings.refresh_secs(), Some(45));
-        // The theme row took no text (it's a cycle, not a field).
-        assert_eq!(m.settings.theme_name(), "default");
-        // Move to the browser row and type a command (incl. an 's', which only
-        // means "save" with Ctrl).
+        // Down → open command; type a command (incl. an 's', which only saves with Ctrl).
         m.handle_key(key(KeyCode::Down), &[], "");
         for c in "open -a Safari".chars() {
             m.handle_key(key(KeyCode::Char(c)), &[], "");
@@ -1287,7 +1476,8 @@ mod tests {
     #[test]
     fn settings_save_rejects_non_numeric_refresh() {
         let mut m = on_settings("default", None, "");
-        m.handle_key(key(KeyCode::Down), &[], ""); // → refresh row
+        m.handle_key(key(KeyCode::Down), &[], ""); // → Behavior
+        m.handle_key(key(KeyCode::Right), &[], ""); // enter fields (refresh_secs)
         for c in "abc".chars() {
             m.handle_key(key(KeyCode::Char(c)), &[], "");
         }
@@ -1306,8 +1496,9 @@ mod tests {
     #[test]
     fn settings_refresh_secs_zero_and_empty_are_off() {
         let mut m = on_settings("default", Some(10), "");
+        m.handle_key(key(KeyCode::Down), &[], ""); // → Behavior
+        m.handle_key(key(KeyCode::Right), &[], ""); // enter fields (refresh_secs)
         // Clear the field (Ctrl+U) → empty → off.
-        m.handle_key(key(KeyCode::Down), &[], "");
         m.handle_key(ctrl('u'), &[], "");
         assert_eq!(m.settings.refresh_secs(), None);
         // An explicit 0 is also off.

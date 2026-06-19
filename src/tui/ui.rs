@@ -1,7 +1,7 @@
 //! TUI rendering.
 
 use ratatui::Frame;
-use ratatui::layout::{Alignment, Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table};
@@ -578,96 +578,115 @@ fn render_config(
 /// two text rows render their (live) inputs. The no-op `confirm_writes` knob is
 /// intentionally absent.
 fn render_config_settings(frame: &mut Frame, area: Rect, modal: &mut ConfigModal, theme: &Theme) {
-    use crate::tui::config_modal::setting;
+    use crate::tui::config_modal::{SETTINGS_CATEGORIES, SettingId, SettingsFocus};
 
-    let s = &mut modal.settings;
+    // Body (two columns: categories | fields) + a message line + a help line.
     let rows = Layout::vertical([
-        Constraint::Length(1), // theme
-        Constraint::Length(1), // refresh_secs
-        Constraint::Length(1), // open_browser_command
-        Constraint::Length(1), // blank
-        Constraint::Length(1), // message
-        Constraint::Min(1),    // help
+        Constraint::Min(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
     ])
     .split(area);
+    let cols = Layout::horizontal([Constraint::Length(16), Constraint::Min(1)]).split(rows[0]);
+    let (cat_area, field_area) = (cols[0], cols[1]);
 
-    // A focusable label cell: `> label` when focused, `  label` otherwise.
-    let label = |row: usize, text: &str| {
-        let cursor = if s.focus == row { "> " } else { "  " };
-        Span::styled(
-            format!("{cursor}{text:<14}"),
-            Style::default().fg(if s.focus == row {
-                theme.header
+    let s = &mut modal.settings;
+    // Copy the immutable bits out first so the field loop can borrow inputs mutably.
+    let focus = s.focus;
+    let selected_cat = s.category;
+    let selected_field = s.field;
+    let theme_name = s.theme_name();
+    let message = s.message.clone();
+    let fields = s.current_fields();
+    let cats_focused = focus == SettingsFocus::Categories;
+
+    // Left column: the category list (an accent gutter marks the selection).
+    let cat_lines: Vec<Line> = SETTINGS_CATEGORIES
+        .iter()
+        .enumerate()
+        .map(|(i, (name, _))| {
+            let selected = i == selected_cat;
+            let marker = if selected { "▌ " } else { "  " };
+            let style = if selected && cats_focused {
+                Style::default()
+                    .fg(theme.accent)
+                    .add_modifier(Modifier::BOLD)
+            } else if selected {
+                Style::default().fg(theme.header)
             } else {
-                theme.text_dim
-            }),
-        )
-    };
+                Style::default().fg(theme.text_dim)
+            };
+            Line::from(Span::styled(format!("{marker}{name}"), style))
+        })
+        .collect();
+    frame.render_widget(Paragraph::new(cat_lines), cat_area);
 
-    // theme — a cycle; show the selection and the hint.
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            label(setting::THEME, "theme"),
-            Span::styled(s.theme_name(), Style::default().fg(theme.accent)),
-            Span::styled(
-                "  (←/→ or Space cycles)",
-                Style::default().fg(theme.text_dim),
-            ),
-        ])),
-        rows[0],
-    );
-
-    // refresh_secs — a numeric text field.
-    frame.render_widget(
-        Paragraph::new(label(setting::REFRESH, "refresh_secs")),
-        Rect::new(rows[1].x, rows[1].y, 16.min(rows[1].width), 1),
-    );
-    let refresh_area = Rect::new(
-        rows[1].x.saturating_add(16),
-        rows[1].y,
-        rows[1].width.saturating_sub(16),
-        1,
-    );
-    let refresh_cursor =
-        s.refresh
-            .render_with_focus(frame, refresh_area, ' ', theme, s.focus == setting::REFRESH);
-
-    // open_browser_command — a free-text field.
-    frame.render_widget(
-        Paragraph::new(label(setting::BROWSER, "open command")),
-        Rect::new(rows[2].x, rows[2].y, 16.min(rows[2].width), 1),
-    );
-    let browser_area = Rect::new(
-        rows[2].x.saturating_add(16),
-        rows[2].y,
-        rows[2].width.saturating_sub(16),
-        1,
-    );
-    let browser_cursor =
-        s.browser
-            .render_with_focus(frame, browser_area, ' ', theme, s.focus == setting::BROWSER);
-
-    // Place the real terminal cursor on the focused text row (the theme row has
-    // no text cursor).
-    match s.focus {
-        setting::REFRESH => frame.set_cursor_position(refresh_cursor),
-        setting::BROWSER => frame.set_cursor_position(browser_cursor),
-        _ => {}
+    // Right column: the selected category's fields.
+    let label_w = 16u16.min(field_area.width);
+    let mut cursor: Option<Position> = None;
+    for (i, &id) in fields.iter().enumerate() {
+        let y = field_area
+            .y
+            .saturating_add(u16::try_from(i).unwrap_or(u16::MAX));
+        if y >= field_area.bottom() {
+            break;
+        }
+        let focused = focus == SettingsFocus::Fields && i == selected_field;
+        let label_style = Style::default().fg(if focused {
+            theme.header
+        } else {
+            theme.text_dim
+        });
+        let marker = if focused { "> " } else { "  " };
+        frame.render_widget(
+            Paragraph::new(Span::styled(
+                format!("{marker}{:<14}", id.label()),
+                label_style,
+            )),
+            Rect::new(field_area.x, y, label_w, 1),
+        );
+        let value_area = Rect::new(
+            field_area.x.saturating_add(label_w),
+            y,
+            field_area.width.saturating_sub(label_w),
+            1,
+        );
+        if id == SettingId::Theme {
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(theme_name, Style::default().fg(theme.accent)),
+                    Span::styled("  (←/→/Space)", Style::default().fg(theme.text_dim)),
+                ])),
+                value_area,
+            );
+        } else if let Some(input) = s.input_mut(id) {
+            let pos = input.render_with_focus(frame, value_area, ' ', theme, focused);
+            if focused {
+                cursor = Some(pos);
+            }
+        }
+    }
+    if let Some(pos) = cursor {
+        frame.set_cursor_position(pos);
     }
 
-    if let Some(msg) = &s.message {
+    // Message line (validation / info).
+    if let Some(msg) = &message {
         frame.render_widget(
             Paragraph::new(Span::styled(msg.clone(), Style::default().fg(theme.error))),
-            rows[4],
+            rows[1],
         );
     }
 
+    // Help line, context-sensitive to the focused pane.
+    let help = if cats_focused {
+        "↑/↓ category   → fields   Enter save   Tab section   Esc close"
+    } else {
+        "↑/↓ field   Esc back   Enter/Ctrl+S save   Tab section"
+    };
     frame.render_widget(
-        Paragraph::new(Span::styled(
-            "↑/↓: field  Enter/Ctrl+S: save  Tab: section  Esc: close",
-            Style::default().fg(theme.text_dim),
-        )),
-        rows[5],
+        Paragraph::new(Span::styled(help, Style::default().fg(theme.text_dim))),
+        rows[2],
     );
 }
 

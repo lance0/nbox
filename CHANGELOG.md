@@ -17,6 +17,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   cached per client and shared across clones, so repeated TUI searches do not
   re-run introspection. GraphQL pagination is capped at NetBox's maximum page
   size, and list decode errors include the GraphQL list name for easier debugging.
+- Settings now cover **`log_level` and `log_file`** (a new *Logging* category in the
+  Config modal). Set the tracing filter (e.g. `nbox=debug`) and a log-file path from
+  the TUI; both persist to `config.toml` (format-preserving) and apply on the next
+  launch (tracing initializes at startup).
 
 ### Changed
 - The TUI profile switcher (`P` / `Ctrl+P`) now cycles profiles in **config-file
@@ -30,6 +34,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   footer nav hints with accented keys + dim labels. Cosmetic only.
 - TUI list, preview, and detail panes now have one column of inner padding, so
   their content no longer touches the pane borders. Cosmetic only.
+- The Config modal's Settings section is now a **two-pane categories ▏ fields**
+  layout (Appearance / Behavior / Logging): `↑/↓` pick a category, `→` enters its
+  fields, `Esc` steps back, `Enter`/`Ctrl+S` save. Scales as settings grow without
+  a cramped single column.
 - The update notifier now ships in the **default** build, so a released binary
   tells you when a newer version is available. It checks GitHub on a background
   thread, only on a TTY and never in `--json`/piped output, so scripts are

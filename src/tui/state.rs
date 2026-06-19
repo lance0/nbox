@@ -318,6 +318,12 @@ pub struct App {
     /// the OS default). Carried on each [`AppCommand::OpenBrowser`] so `o` uses the
     /// just-changed value without a restart. Never holds a token or a URL.
     pub open_browser_command: String,
+    /// Live top-level `log_level` / `log_file`, seeded from config so the Settings
+    /// section edits start from the configured values. These persist on save but
+    /// apply on the next launch (tracing inits at startup), so they're seed/persist
+    /// only — not consulted at runtime here.
+    pub log_level: Option<String>,
+    pub log_file: Option<String>,
     /// All configured profiles, in config order, that the session can switch
     /// between without restarting. Empty/one-element ⇒ cycling is a graceful
     /// no-op. Populated at launch via [`App::set_profiles`].
@@ -493,6 +499,8 @@ impl App {
             netbox_version,
             refresh_secs: None,
             open_browser_command: String::new(),
+            log_level: None,
+            log_file: None,
             profiles: Vec::new(),
             profile_index: 0,
             pending_profile: None,
@@ -550,12 +558,20 @@ impl App {
         self.initial_theme = self.theme.name().to_string();
     }
 
-    /// Seed the live UI settings (`refresh_secs`, `open_browser_command`) from the
-    /// loaded config at launch, so the Settings section edits — and the `o` open
-    /// path — start from the configured values. Called once in `tui::run_tui`.
-    pub fn set_ui_settings(&mut self, refresh_secs: Option<u64>, open_browser_command: String) {
+    /// Seed the live UI settings from the loaded config at launch, so the Settings
+    /// section edits — and the `o` open path — start from the configured values.
+    /// Called once in `tui::run_tui`.
+    pub fn set_ui_settings(
+        &mut self,
+        refresh_secs: Option<u64>,
+        open_browser_command: String,
+        log_level: Option<String>,
+        log_file: Option<String>,
+    ) {
         self.refresh_secs = refresh_secs;
         self.open_browser_command = open_browser_command;
+        self.log_level = log_level;
+        self.log_file = log_file;
     }
 
     /// Seed the footer status line + its severity at launch. Used by first-run
@@ -987,6 +1003,8 @@ impl App {
                 self.theme.name(),
                 self.refresh_secs,
                 &self.open_browser_command,
+                self.log_level.as_deref().unwrap_or(""),
+                self.log_file.as_deref().unwrap_or(""),
             ))));
         }
     }
@@ -1082,6 +1100,8 @@ impl App {
         let theme_name = modal.settings.theme_name().to_string();
         let new_refresh = modal.settings.refresh_secs();
         let new_browser = modal.settings.browser_command();
+        let new_log_level = modal.settings.log_level_value();
+        let new_log_file = modal.settings.log_file_value();
 
         let refresh_changed = new_refresh != self.refresh_secs;
 
@@ -1089,16 +1109,21 @@ impl App {
         // failure can't leave the file with theme updated but the rest stale. The
         // token is never involved here. Theme is skipped under NO_COLOR so we never
         // write a colored theme into the user's config (exit-time persist guard).
+        // log_level/log_file span the top-level keys, so this uses the combined
+        // `SettingField` writer (still one atomic, comment-preserving write).
         if let Some(path) = self.config_path.clone() {
-            let mut fields = Vec::with_capacity(3);
+            use crate::config::{SettingField, UiField};
+            let mut fields = Vec::with_capacity(5);
             if !self.theme.is_no_color() {
-                fields.push(crate::config::UiField::Theme(theme_name.clone()));
+                fields.push(SettingField::Ui(UiField::Theme(theme_name.clone())));
             }
-            fields.push(crate::config::UiField::RefreshSecs(new_refresh));
-            fields.push(crate::config::UiField::OpenBrowserCommand(
+            fields.push(SettingField::Ui(UiField::RefreshSecs(new_refresh)));
+            fields.push(SettingField::Ui(UiField::OpenBrowserCommand(
                 new_browser.clone(),
-            ));
-            if let Err(e) = crate::config::save_ui_fields(&path, &fields) {
+            )));
+            fields.push(SettingField::LogLevel(new_log_level.clone()));
+            fields.push(SettingField::LogFile(new_log_file.clone()));
+            if let Err(e) = crate::config::save_setting_fields(&path, &fields) {
                 self.set_status(format!("save failed: {e:#}"), Severity::Error);
                 return Vec::new();
             }
@@ -1106,8 +1131,12 @@ impl App {
 
         // Adopt the live values: the browser command applies to the next `o`; the
         // refresh interval re-arms the ticker. Theme already hot-applied on cycle.
+        // log_level/log_file persist now but apply on the next launch (tracing
+        // inits at startup); keep the live copies in sync so reopening shows them.
         self.open_browser_command = new_browser;
         self.refresh_secs = new_refresh;
+        self.log_level = new_log_level;
+        self.log_file = new_log_file;
 
         self.set_status("settings saved", Severity::Success);
         self.modal = None;
@@ -5357,8 +5386,9 @@ mod tests {
         let mut a = app_with_profiles(&["a"]);
         assert_eq!(a.theme.name(), "default");
         open_settings(&mut a);
-        // Right on the theme row cycles + hot-applies live to App.theme.
-        a.handle_event(press(KeyCode::Right));
+        // Right enters the Appearance fields (theme); Right again cycles + hot-applies.
+        a.handle_event(press(KeyCode::Right)); // enter fields
+        a.handle_event(press(KeyCode::Right)); // cycle theme
         assert_eq!(a.theme.name(), Theme::list()[1]);
         assert_eq!(a.status, format!("theme: {}", a.theme.name()));
         assert_eq!(a.status_ttl, Some(TRANSIENT_STATUS_TICKS));
@@ -5373,6 +5403,7 @@ mod tests {
         a.set_no_color();
         assert!(a.theme.is_no_color());
         open_settings(&mut a);
+        a.handle_event(press(KeyCode::Right)); // enter Appearance fields
         a.handle_event(press(KeyCode::Right)); // try to cycle the theme
         assert!(
             a.theme.is_no_color(),
@@ -5384,16 +5415,18 @@ mod tests {
     #[test]
     fn settings_save_persists_each_ui_field_and_hot_applies() {
         let (mut a, _dir, path) = app_with_config(&["a"]);
-        a.set_ui_settings(None, String::new());
+        a.set_ui_settings(None, String::new(), None, None);
         open_settings(&mut a);
-        // theme: cycle once (hot-applies live + will persist on save).
-        a.handle_event(press(KeyCode::Right));
+        // Appearance → theme: enter fields, cycle once (hot-applies + persists).
+        a.handle_event(press(KeyCode::Right)); // enter Appearance fields
+        a.handle_event(press(KeyCode::Right)); // cycle theme
         let themed = a.theme.name().to_string();
-        // refresh_secs: focus the row and type 30.
-        a.handle_event(press(KeyCode::Down));
+        // Behavior → refresh_secs + open command.
+        a.handle_event(press(KeyCode::Esc)); // back to categories
+        a.handle_event(press(KeyCode::Down)); // → Behavior
+        a.handle_event(press(KeyCode::Right)); // enter fields (refresh_secs)
         type_form(&mut a, "30");
-        // open command: focus the row and type a command.
-        a.handle_event(press(KeyCode::Down));
+        a.handle_event(press(KeyCode::Down)); // → open command
         type_form(&mut a, "firefox --new-tab");
         // Save (Enter).
         let cmds = a.handle_event(press(KeyCode::Enter));
@@ -5416,13 +5449,36 @@ mod tests {
     }
 
     #[test]
+    fn settings_save_persists_log_level_and_file() {
+        let (mut a, _dir, path) = app_with_config(&["a"]);
+        a.set_ui_settings(None, String::new(), None, None);
+        open_settings(&mut a);
+        // Logging is the third category.
+        a.handle_event(press(KeyCode::Down)); // → Behavior
+        a.handle_event(press(KeyCode::Down)); // → Logging
+        a.handle_event(press(KeyCode::Right)); // enter fields (log_level)
+        type_form(&mut a, "nbox=debug");
+        a.handle_event(press(KeyCode::Down)); // → log_file
+        type_form(&mut a, "/tmp/nbox.log");
+        a.handle_event(press(KeyCode::Enter)); // save
+
+        assert!(a.modal.is_none());
+        assert_eq!(a.log_level.as_deref(), Some("nbox=debug"));
+        assert_eq!(a.log_file.as_deref(), Some("/tmp/nbox.log"));
+        let cfg = crate::config::load(&path).unwrap();
+        assert_eq!(cfg.log_level.as_deref(), Some("nbox=debug"));
+        assert_eq!(cfg.log_file.as_deref(), Some("/tmp/nbox.log"));
+    }
+
+    #[test]
     fn settings_save_emits_rearm_only_when_the_interval_changed() {
         let (mut a, _dir, _path) = app_with_config(&["a"]);
-        a.set_ui_settings(Some(15), String::new());
+        a.set_ui_settings(Some(15), String::new(), None, None);
         open_settings(&mut a);
         // Change only the browser command (not the interval).
-        a.handle_event(press(KeyCode::Down)); // refresh row
-        a.handle_event(press(KeyCode::Down)); // browser row
+        a.handle_event(press(KeyCode::Down)); // → Behavior
+        a.handle_event(press(KeyCode::Right)); // enter fields (refresh_secs)
+        a.handle_event(press(KeyCode::Down)); // → open command
         type_form(&mut a, "xdg-open");
         let cmds = a.handle_event(press(KeyCode::Enter));
         assert_eq!(a.refresh_secs, Some(15), "interval unchanged");
@@ -5433,9 +5489,10 @@ mod tests {
     #[test]
     fn settings_ctrl_s_also_saves() {
         let (mut a, _dir, _path) = app_with_config(&["a"]);
-        a.set_ui_settings(None, String::new());
+        a.set_ui_settings(None, String::new(), None, None);
         open_settings(&mut a);
-        a.handle_event(press(KeyCode::Down));
+        a.handle_event(press(KeyCode::Down)); // → Behavior
+        a.handle_event(press(KeyCode::Right)); // enter fields (refresh_secs)
         type_form(&mut a, "5");
         let cmds = a.handle_event(ctrl_press('s'));
         assert!(a.modal.is_none());
