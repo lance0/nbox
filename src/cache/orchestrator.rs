@@ -163,6 +163,20 @@ impl Cache {
         }
     }
 
+    /// A handle to the same cache (same store + partition) under a new policy —
+    /// used to hot-apply a settings change to `enabled` / `ttl_secs` without
+    /// dropping the warm entries.
+    #[must_use]
+    pub fn with_config(&self, config: CacheConfig) -> Self {
+        Self {
+            store: self.store.clone(),
+            partition: self.partition.clone(),
+            config,
+            inflight: self.inflight.clone(),
+            clock: self.clock.clone(),
+        }
+    }
+
     pub fn enabled(&self) -> bool {
         self.config.enabled
     }

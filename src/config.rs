@@ -672,6 +672,10 @@ pub enum SettingField {
     LogLevel(Option<String>),
     /// Top-level `log_file`; `None`/empty clears it.
     LogFile(Option<String>),
+    /// `[cache].enabled` — the read-cache on/off switch.
+    CacheEnabled(bool),
+    /// `[cache].ttl_secs` — the read-cache de-dupe TTL in seconds.
+    CacheTtl(u64),
 }
 
 /// Apply one [`SettingField`] to a format-preserving document.
@@ -680,7 +684,25 @@ pub fn set_setting_field(doc: &mut DocumentMut, field: &SettingField) {
         SettingField::Ui(f) => set_ui_field(doc, f),
         SettingField::LogLevel(v) => set_top_string(doc, "log_level", v.as_deref()),
         SettingField::LogFile(v) => set_top_string(doc, "log_file", v.as_deref()),
+        SettingField::CacheEnabled(on) => {
+            if let Some(table) = cache_table(doc) {
+                table["enabled"] = value(*on);
+            }
+        }
+        SettingField::CacheTtl(secs) => {
+            if let Some(table) = cache_table(doc) {
+                table["ttl_secs"] = value(i64::try_from(*secs).unwrap_or(i64::MAX));
+            }
+        }
     }
+}
+
+/// The `[cache]` table in a format-preserving document, creating it if absent.
+/// Mirrors `set_ui_field`'s table handling so comments and other keys survive.
+fn cache_table(doc: &mut DocumentMut) -> Option<&mut Table> {
+    doc.entry("cache")
+        .or_insert_with(|| Item::Table(Table::new()))
+        .as_table_mut()
 }
 
 /// Persist several settings in ONE format-preserving write — like

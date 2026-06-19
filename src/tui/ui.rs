@@ -1312,6 +1312,18 @@ fn render_config_settings(frame: &mut Frame, area: Rect, modal: &mut ConfigModal
                 ])),
                 value_area,
             );
+        } else if id == SettingId::CacheEnabled {
+            let on = s.cache_enabled();
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(
+                        if on { "on" } else { "off" },
+                        Style::default().fg(if on { theme.accent } else { theme.text_dim }),
+                    ),
+                    Span::styled("  (←/→/Space)", Style::default().fg(theme.text_dim)),
+                ])),
+                value_area,
+            );
         } else if let Some(input) = s.input_mut(id) {
             let pos = input.render_with_focus(frame, value_area, ' ', theme, focused);
             if focused {

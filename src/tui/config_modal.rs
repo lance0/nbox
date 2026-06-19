@@ -347,6 +347,10 @@ pub enum SettingId {
     LogLevel,
     /// Top-level `log_file` — a path (empty = stderr only; applies next launch).
     LogFile,
+    /// `[cache].enabled` — a toggle (Left/Right/Space), hot-applied on save.
+    CacheEnabled,
+    /// `[cache].ttl_secs` — numeric text (the read-cache de-dupe window).
+    CacheTtl,
 }
 
 impl SettingId {
@@ -358,6 +362,8 @@ impl SettingId {
             SettingId::OpenBrowserCommand => "open command",
             SettingId::LogLevel => "log_level",
             SettingId::LogFile => "log_file",
+            SettingId::CacheEnabled => "cache",
+            SettingId::CacheTtl => "cache_ttl",
         }
     }
 }
@@ -371,6 +377,7 @@ pub const SETTINGS_CATEGORIES: &[(&str, &[SettingId])] = &[
         "Behavior",
         &[SettingId::RefreshSecs, SettingId::OpenBrowserCommand],
     ),
+    ("Cache", &[SettingId::CacheEnabled, SettingId::CacheTtl]),
     ("Logging", &[SettingId::LogLevel, SettingId::LogFile]),
 ];
 
@@ -408,6 +415,10 @@ pub struct SettingsPane {
     pub log_level: TextInput,
     /// `log_file` as typed (empty = stderr only; a path).
     pub log_file: TextInput,
+    /// `[cache].enabled` — the read-cache on/off toggle.
+    pub cache_enabled: bool,
+    /// `[cache].ttl_secs` as typed (digits; the engine clamps to 5–300s).
+    pub cache_ttl: TextInput,
     /// A transient info / validation line shown under the form.
     pub message: Option<String>,
 }
@@ -420,6 +431,8 @@ impl SettingsPane {
         open_browser_command: &str,
         log_level: &str,
         log_file: &str,
+        cache_enabled: bool,
+        cache_ttl_secs: u64,
     ) -> Self {
         let mut refresh = TextInput::new("seconds (empty = off)");
         if let Some(secs) = refresh_secs.filter(|s| *s > 0) {
@@ -437,6 +450,8 @@ impl SettingsPane {
         if !log_file.is_empty() {
             log_file_in.set_value(log_file);
         }
+        let mut cache_ttl = TextInput::new("seconds (5–300)");
+        cache_ttl.set_value(cache_ttl_secs.to_string());
         Self {
             focus: SettingsFocus::Categories,
             category: 0,
@@ -446,6 +461,8 @@ impl SettingsPane {
             browser,
             log_level: log_level_in,
             log_file: log_file_in,
+            cache_enabled,
+            cache_ttl,
             message: None,
         }
     }
@@ -496,14 +513,34 @@ impl SettingsPane {
         (!t.is_empty()).then(|| t.to_string())
     }
 
-    /// The `TextInput` backing a field, if it has one (theme is a cycle, not text).
+    /// The working cache on/off state.
+    pub fn cache_enabled(&self) -> bool {
+        self.cache_enabled
+    }
+
+    /// The typed cache TTL in seconds; empty/invalid ⇒ the 30s default (the engine
+    /// then clamps to 5–300). Validation on save rejects non-numeric text.
+    pub fn cache_ttl_secs(&self) -> u64 {
+        let t = self.cache_ttl.value().trim();
+        t.parse::<u64>().unwrap_or(30)
+    }
+
+    /// Flip the cache on/off toggle (Left/Right/Space on the `cache` row).
+    fn toggle_cache_enabled(&mut self) {
+        self.cache_enabled = !self.cache_enabled;
+        self.message = None;
+    }
+
+    /// The `TextInput` backing a field, if it has one (theme and the cache toggle
+    /// are non-text controls).
     pub fn input_mut(&mut self, id: SettingId) -> Option<&mut TextInput> {
         match id {
-            SettingId::Theme => None,
+            SettingId::Theme | SettingId::CacheEnabled => None,
             SettingId::RefreshSecs => Some(&mut self.refresh),
             SettingId::OpenBrowserCommand => Some(&mut self.browser),
             SettingId::LogLevel => Some(&mut self.log_level),
             SettingId::LogFile => Some(&mut self.log_file),
+            SettingId::CacheTtl => Some(&mut self.cache_ttl),
         }
     }
 
@@ -569,6 +606,10 @@ impl SettingsPane {
         if !t.is_empty() && t.parse::<u64>().is_err() {
             return Err("refresh_secs must be a whole number of seconds".to_string());
         }
+        let c = self.cache_ttl.value().trim();
+        if !c.is_empty() && c.parse::<u64>().is_err() {
+            return Err("cache_ttl must be a whole number of seconds".to_string());
+        }
         Ok(())
     }
 }
@@ -589,6 +630,8 @@ impl ConfigModal {
         open_browser_command: &str,
         log_level: &str,
         log_file: &str,
+        cache_enabled: bool,
+        cache_ttl_secs: u64,
     ) -> Self {
         Self {
             section: ConfigSection::Profiles,
@@ -599,6 +642,8 @@ impl ConfigModal {
                 open_browser_command,
                 log_level,
                 log_file,
+                cache_enabled,
+                cache_ttl_secs,
             ),
         }
     }
@@ -606,10 +651,10 @@ impl ConfigModal {
 
 impl Default for ConfigModal {
     /// A modal seeded with default settings (the `default` theme, no auto-refresh,
-    /// the OS default opener, no log overrides) — used by tests / when no live
-    /// settings are handy.
+    /// the OS default opener, no log overrides, cache on at 30s) — used by tests /
+    /// when no live settings are handy.
     fn default() -> Self {
-        Self::new("default", None, "", "", "")
+        Self::new("default", None, "", "", "", true, 30)
     }
 }
 
@@ -711,14 +756,19 @@ impl ConfigModal {
                     s.back_to_categories();
                     return ModalOutcome::None;
                 }
-                if s.focused_field() == Some(SettingId::Theme)
-                    && matches!(
-                        key.code,
-                        KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
-                    )
-                {
+                let is_cycle_key = matches!(
+                    key.code,
+                    KeyCode::Left | KeyCode::Right | KeyCode::Char(' ')
+                );
+                if s.focused_field() == Some(SettingId::Theme) && is_cycle_key {
                     s.cycle_theme(!matches!(key.code, KeyCode::Left));
                     return ModalOutcome::ChangeTheme(s.theme_name().to_string());
+                }
+                // The cache on/off toggle flips with the same keys; it's applied on
+                // save, so no live outcome (unlike the theme cycle).
+                if s.focused_field() == Some(SettingId::CacheEnabled) && is_cycle_key {
+                    s.toggle_cache_enabled();
+                    return ModalOutcome::None;
                 }
                 match key.code {
                     KeyCode::Up => {
@@ -1345,7 +1395,7 @@ mod tests {
 
     /// Open a modal and switch it to the Settings section (Categories pane).
     fn on_settings(theme: &str, refresh: Option<u64>, browser: &str) -> ConfigModal {
-        let mut m = ConfigModal::new(theme, refresh, browser, "", "");
+        let mut m = ConfigModal::new(theme, refresh, browser, "", "", true, 30);
         m.handle_key(key(KeyCode::Tab), &[], ""); // Profiles list → Settings
         assert_eq!(m.section, ConfigSection::Settings);
         m
@@ -1366,7 +1416,7 @@ mod tests {
 
     #[test]
     fn settings_seeds_and_reads_log_fields() {
-        let mut m = ConfigModal::new("default", None, "", "nbox=debug", "/tmp/x.log");
+        let mut m = ConfigModal::new("default", None, "", "nbox=debug", "/tmp/x.log", true, 30);
         m.handle_key(key(KeyCode::Tab), &[], "");
         assert_eq!(m.settings.log_level_value().as_deref(), Some("nbox=debug"));
         assert_eq!(m.settings.log_file_value().as_deref(), Some("/tmp/x.log"));
@@ -1395,18 +1445,22 @@ mod tests {
         // Starts in the Categories pane on the first category (Appearance).
         assert_eq!(m.settings.focus, SettingsFocus::Categories);
         assert_eq!(m.settings.category, 0);
-        // Down cycles through the categories (wrapping).
+        // Down cycles through the categories (wrapping at the last).
         m.handle_key(key(KeyCode::Down), &[], "");
         assert_eq!(m.settings.category, 1); // Behavior
         m.handle_key(key(KeyCode::Down), &[], "");
-        assert_eq!(m.settings.category, 2); // Logging
+        assert_eq!(m.settings.category, 2); // Cache
+        m.handle_key(key(KeyCode::Down), &[], "");
+        assert_eq!(m.settings.category, 3); // Logging
         m.handle_key(key(KeyCode::Down), &[], ""); // wraps
         assert_eq!(m.settings.category, 0);
         m.handle_key(key(KeyCode::Up), &[], ""); // wraps back to Logging
-        assert_eq!(m.settings.category, 2);
+        assert_eq!(m.settings.category, 3);
         // Back to Behavior, then → enters its fields; Down moves; Esc returns.
         m.handle_key(key(KeyCode::Up), &[], "");
-        assert_eq!(m.settings.category, 1);
+        assert_eq!(m.settings.category, 2); // Cache
+        m.handle_key(key(KeyCode::Up), &[], "");
+        assert_eq!(m.settings.category, 1); // Behavior
         m.handle_key(key(KeyCode::Right), &[], "");
         assert_eq!(m.settings.focus, SettingsFocus::Fields);
         assert_eq!(m.settings.focused_field(), Some(SettingId::RefreshSecs));

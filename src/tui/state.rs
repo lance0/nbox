@@ -1470,6 +1470,8 @@ impl App {
                 &self.open_browser_command,
                 self.log_level.as_deref().unwrap_or(""),
                 self.log_file.as_deref().unwrap_or(""),
+                self.cache.enabled(),
+                self.cache.ttl_secs(),
             ))));
         }
     }
@@ -1635,6 +1637,8 @@ impl App {
         let new_browser = modal.settings.browser_command();
         let new_log_level = modal.settings.log_level_value();
         let new_log_file = modal.settings.log_file_value();
+        let new_cache_enabled = modal.settings.cache_enabled();
+        let new_cache_ttl = modal.settings.cache_ttl_secs();
 
         let refresh_changed = new_refresh != self.refresh_secs;
 
@@ -1646,7 +1650,7 @@ impl App {
         // `SettingField` writer (still one atomic, comment-preserving write).
         if let Some(path) = self.config_path.clone() {
             use crate::config::{SettingField, UiField};
-            let mut fields = Vec::with_capacity(5);
+            let mut fields = Vec::with_capacity(7);
             if !self.theme.is_no_color() {
                 fields.push(SettingField::Ui(UiField::Theme(theme_name.clone())));
             }
@@ -1656,6 +1660,8 @@ impl App {
             )));
             fields.push(SettingField::LogLevel(new_log_level.clone()));
             fields.push(SettingField::LogFile(new_log_file.clone()));
+            fields.push(SettingField::CacheEnabled(new_cache_enabled));
+            fields.push(SettingField::CacheTtl(new_cache_ttl));
             if let Err(e) = crate::config::save_setting_fields(&path, &fields) {
                 self.set_status(format!("save failed: {e:#}"), Severity::Error);
                 return Vec::new();
@@ -1670,6 +1676,13 @@ impl App {
         self.refresh_secs = new_refresh;
         self.log_level = new_log_level;
         self.log_file = new_log_file;
+        // Hot-apply the cache policy: rebuild it over the same store + partition so
+        // the new on/off + TTL take effect immediately (warm entries are kept).
+        let cache_cfg = crate::cache::CacheConfig::from_settings(&crate::config::CacheSettings {
+            enabled: new_cache_enabled,
+            ttl_secs: new_cache_ttl,
+        });
+        self.cache = self.cache.with_config(cache_cfg);
 
         self.set_status("settings saved", Severity::Success);
         self.modal = None;
@@ -6716,8 +6729,9 @@ mod tests {
         let (mut a, _dir, path) = app_with_config(&["a"]);
         a.set_ui_settings(None, String::new(), None, None);
         open_settings(&mut a);
-        // Logging is the third category.
+        // Logging is the fourth category (Appearance, Behavior, Cache, Logging).
         a.handle_event(press(KeyCode::Down)); // → Behavior
+        a.handle_event(press(KeyCode::Down)); // → Cache
         a.handle_event(press(KeyCode::Down)); // → Logging
         a.handle_event(press(KeyCode::Right)); // enter fields (log_level)
         type_form(&mut a, "nbox=debug");
@@ -6731,6 +6745,35 @@ mod tests {
         let cfg = crate::config::load(&path).unwrap();
         assert_eq!(cfg.log_level.as_deref(), Some("nbox=debug"));
         assert_eq!(cfg.log_file.as_deref(), Some("/tmp/nbox.log"));
+    }
+
+    #[test]
+    fn settings_save_persists_and_hot_applies_cache() {
+        let (mut a, _dir, path) = app_with_config(&["a"]);
+        // Start from a known cache policy (on, 30s).
+        a.set_cache(crate::cache::Cache::from_settings(
+            "p".into(),
+            &crate::config::CacheSettings {
+                enabled: true,
+                ttl_secs: 30,
+            },
+        ));
+        assert!(a.cache.enabled());
+        open_settings(&mut a);
+        // Cache is the third category (Appearance, Behavior, Cache, Logging).
+        a.handle_event(press(KeyCode::Down)); // → Behavior
+        a.handle_event(press(KeyCode::Down)); // → Cache
+        a.handle_event(press(KeyCode::Right)); // enter fields (cache on/off)
+        a.handle_event(press(KeyCode::Char(' '))); // toggle the cache off
+        a.handle_event(press(KeyCode::Enter)); // save
+
+        assert!(a.modal.is_none());
+        // Hot-applied to the running session…
+        assert!(!a.cache.enabled(), "cache disabled live");
+        // …and persisted (with the TTL written alongside).
+        let cfg = crate::config::load(&path).unwrap();
+        assert!(!cfg.cache.enabled);
+        assert_eq!(cfg.cache.ttl_secs, 30);
     }
 
     #[test]
