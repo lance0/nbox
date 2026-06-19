@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layout (Appearance / Behavior / Logging): `↑/↓` pick a category, `→` enters its
   fields, `Esc` steps back, `Enter`/`Ctrl+S` save. Scales as settings grow without
   a cramped single column.
+- TUI results table polish: the **KIND** column is now colored by NetBox domain
+  (hosts / addressing / locations / circuits / tenancy) so it's scannable, and the
+  selected row uses a solid gutter bar (`▌`) instead of `>`. Cosmetic only.
 - The update notifier now ships in the **default** build, so a released binary
   tells you when a newer version is available. It checks GitHub on a background
   thread, only on a TTY and never in `--json`/piped output, so scripts are

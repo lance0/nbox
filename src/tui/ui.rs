@@ -2,7 +2,7 @@
 
 use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Position, Rect};
-use ratatui::style::{Modifier, Style};
+use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table};
 
@@ -313,19 +313,38 @@ fn kv_line<'a>(line: &'a str, width: usize, theme: &Theme) -> Line<'a> {
 }
 
 /// The styled (text, style) pairs for a result row's three cells, in column
-/// order: KIND / DISPLAY / SITE. The kind tag is dimmed to recede behind the
-/// display label; the SITE cell is colored via [`Theme::status_style`] when its
-/// value reads like a status (so a status surfaced through the subtitle keeps
-/// T4's palette) and stays neutral text otherwise; the display is plain. Pure
-/// (no widgets), so the cell text + color decisions are unit-testable.
+/// A scannable color for a result's kind tag, grouped by NetBox domain so the
+/// KIND column reads at a glance (hosts vs addressing vs locations vs circuits vs
+/// tenancy). Falls back to dim text for anything unmapped; under `NO_COLOR` every
+/// theme color is `Reset`, so this stays uncolored too. Pure + testable.
+fn kind_accent(kind: &str, theme: &Theme) -> Color {
+    match kind {
+        "device" | "vm" | "cluster" => theme.accent,
+        "ip" | "prefix" | "aggregate" | "ip-range" | "ip_range" | "asn" | "vlan" => {
+            theme.graph_secondary
+        }
+        "site" | "rack" => theme.header,
+        "circuit" | "provider" => theme.warning,
+        "tenant" | "contact" => theme.graph_primary,
+        _ => theme.text_dim,
+    }
+}
+
+/// order: KIND / DISPLAY / SITE. The kind tag is colored by domain (see
+/// [`kind_accent`]) so the column is scannable; the SITE cell is colored via
+/// [`Theme::status_style`] when its value reads like a status (so a status
+/// surfaced through the subtitle keeps T4's palette) and stays neutral text
+/// otherwise; the display is plain. Pure (no widgets), so the cell text + color
+/// decisions are unit-testable.
 fn result_row_styled(
     result: &crate::netbox::search::SearchResult,
     theme: &Theme,
 ) -> [(String, Style); 3] {
     let [kind, display, site] = result_row_cells(result);
+    let kind_style = Style::default().fg(kind_accent(&kind, theme));
     let site_style = theme.status_style(&site);
     [
-        (kind, Style::default().fg(theme.text_dim)),
+        (kind, kind_style),
         (display, Style::default()),
         (site, site_style),
     ]
@@ -367,7 +386,7 @@ fn results_table<'a>(rows: Vec<Row<'a>>, block: Block<'a>, theme: &Theme) -> Tab
         .header(results_header(theme))
         .block(block)
         .style(Style::default().fg(theme.text))
-        .highlight_symbol("> ")
+        .highlight_symbol("▌ ")
         .row_highlight_style(Style::default().fg(theme.text).bg(theme.highlight_bg))
 }
 
@@ -1198,6 +1217,22 @@ mod tests {
     }
 
     #[test]
+    fn kind_accent_groups_kinds_by_domain() {
+        let t = Theme::default_theme();
+        // Hosts/compute share the accent; addressing shares graph_secondary.
+        assert_eq!(kind_accent("device", &t), t.accent);
+        assert_eq!(kind_accent("vm", &t), t.accent);
+        assert_eq!(kind_accent("prefix", &t), t.graph_secondary);
+        assert_eq!(kind_accent("ip", &t), t.graph_secondary);
+        // Locations, circuits, tenancy each get their own color.
+        assert_eq!(kind_accent("site", &t), t.header);
+        assert_eq!(kind_accent("circuit", &t), t.warning);
+        assert_eq!(kind_accent("tenant", &t), t.graph_primary);
+        // Anything unmapped falls back to dim text.
+        assert_eq!(kind_accent("mystery", &t), t.text_dim);
+    }
+
+    #[test]
     fn body_lines_pads_labels_into_a_uniform_column() {
         let theme = Theme::default_theme();
         // "name" (4) and "platform" (8) pad to the same label-cell width so both
@@ -1452,8 +1487,9 @@ mod tests {
         assert_eq!(cells[0].0, "device");
         assert_eq!(cells[1].0, "edge01");
         assert_eq!(cells[2].0, "iad1");
-        // The kind cell recedes (dim); the display uses the table's base text.
-        assert_eq!(cells[0].1.fg, Some(theme.text_dim));
+        // The kind cell is colored by domain (device → accent); the display uses
+        // the table's base text.
+        assert_eq!(cells[0].1.fg, Some(theme.accent));
         assert_eq!(cells[1].1.fg, None);
     }
 
