@@ -52,14 +52,17 @@ The read surface is broad and stable today (full history in `CHANGELOG.md`):
 
 Polish the read experience. No writes here.
 
-- ☐ **TUI search filters** — surface the CLI's `--status` / `--site` / scope / `--vrf` filters in the
-  TUI (filter chips / palette) so the TUI is as capable a search as the CLI.
-- ☐ **Dashboard / overview home** — a landing screen: counts by status, top-utilized prefixes, recent
+- ☑ **TUI search filters** — surface the CLI's `--status` / `--site` / scope / `--vrf` filters in the
+  TUI (filter chips + palette + `f` modal) so the TUI is as capable a search as the CLI.
+- ☑ **Dashboard / overview home** — a landing screen: counts by status, top-utilized prefixes, recent
   journal/changelog activity.
-- ☐ **Hierarchical prefix tree** — expand/collapse children with inline utilization (netbox#21396/#21255).
-- ☐ **TUI context preservation** — scroll position + active filters retained per view across navigation.
-- ☐ **Profile cycle order** — cycle profiles in config-file order (an order-preserving map) rather than
+- ☑ **Hierarchical prefix tree** — expand/collapse children with inline utilization (netbox#21396/#21255).
+- ☑ **TUI context preservation** — scroll position + active filters retained per view across navigation.
+- ☑ **Profile cycle order** — cycle profiles in config-file order (an order-preserving map) rather than
   alphabetical.
+- ☐ **Cross-object navigation** — jump between related objects from a detail (device↔IP↔prefix↔VLAN↔site,
+  device→rack) without re-searching; an object-level back-stack to walk the drill path. Lands TUI-open +
+  cross-nav for racks (see *full rack integration* below).
 - ☐ **Demo recording** — an asciinema/VHS cast for the README.
 - ☑ **Release `0.2.0`** — banked the large read surface accumulated since `0.1.1` (MCP HTTP/OAuth, the new
   read commands, MCP resources, the in-app config layer, three hardening rounds).
@@ -135,6 +138,10 @@ Consolidated future scope:
 
 ## Later / under consideration
 
+- ☐ **Full rack integration** — racks are CLI-only today (`nbox rack <ref>`); the cross-object-navigation
+  work makes them openable + a cross-nav target in the TUI. Still to explore: promote `Rack` to a
+  first-class **searchable** `ObjectKind` (global search fan-out, `/` + `nbox search`), plus rack
+  elevation/unit context. Decide whether rack-as-search-result earns its place or stays drill-only.
 - ☐ Multi-pane TUI refinement (nav | results | detail) per the DESIGN mockup, building on the current
   list/preview split.
 - ☐ VRF-pivoted navigation in the TUI (a dedicated VRF view) — the `--vrf` filter, VRF-scoped prefix

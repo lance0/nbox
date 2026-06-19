@@ -42,6 +42,11 @@ pub enum ObjectKind {
     Provider,
     Vm,
     Cluster,
+    /// A rack. Not (yet) a search result — it's drill-only: openable in the TUI
+    /// and a cross-navigation target (e.g. a device's rack). Promoting it to a
+    /// searchable kind is tracked in the roadmap. Kept last so the search-result
+    /// ordering of the existing kinds is undisturbed.
+    Rack,
 }
 
 impl ObjectKind {
@@ -62,6 +67,7 @@ impl ObjectKind {
             ObjectKind::Provider => "provider",
             ObjectKind::Vm => "vm",
             ObjectKind::Cluster => "cluster",
+            ObjectKind::Rack => "rack",
         }
     }
 }
@@ -652,6 +658,7 @@ impl NetBoxClient {
             ObjectKind::Provider => format!("circuits/providers/{id}/"),
             ObjectKind::Vm => format!("virtualization/virtual-machines/{id}/"),
             ObjectKind::Cluster => format!("virtualization/clusters/{id}/"),
+            ObjectKind::Rack => format!("dcim/racks/{id}/"),
         };
         self.base_url()
             .join(&path)

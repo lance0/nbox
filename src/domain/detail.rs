@@ -34,7 +34,7 @@ use crate::error::NboxError;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::models::circuits::{Circuit, Provider};
 use crate::netbox::models::common::BriefObject;
-use crate::netbox::models::dcim::{Device, Site};
+use crate::netbox::models::dcim::{Device, Rack, Site};
 use crate::netbox::models::ipam::{Aggregate, Asn, IpAddress, IpRange, Prefix, Vlan, VlanGroup};
 use crate::netbox::models::tenancy::{Contact, Tenant};
 use crate::netbox::models::virtualization::{Cluster, VirtualMachine};
@@ -431,8 +431,105 @@ pub struct DetailTab {
     pub body: String,
 }
 
+/// A navigable reference from one detail object to a related one — the data
+/// behind the TUI's `R` "related objects" jump list. `kind` + `id` address the
+/// target (drives a `LoadDetail`); `relation` names the edge ("site", "vlan", …);
+/// `label` is the target's display name. Only relations whose target has a detail
+/// view are emitted (e.g. a VRF/rack/role has no detail kind, so it's skipped).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ObjectLink {
+    pub kind: ObjectKind,
+    pub id: u64,
+    pub relation: &'static str,
+    pub label: String,
+}
+
+/// Push a link for an optional related [`BriefObject`] (skipped when absent).
+fn push_link(
+    links: &mut Vec<ObjectLink>,
+    relation: &'static str,
+    kind: ObjectKind,
+    obj: Option<&BriefObject>,
+) {
+    if let Some(o) = obj {
+        links.push(ObjectLink {
+            kind,
+            id: o.id,
+            relation,
+            label: o.label(),
+        });
+    }
+}
+
+fn device_links(d: &Device) -> Vec<ObjectLink> {
+    let mut l = Vec::new();
+    push_link(&mut l, "site", ObjectKind::Site, d.site.as_ref());
+    push_link(&mut l, "rack", ObjectKind::Rack, d.rack.as_ref());
+    push_link(&mut l, "tenant", ObjectKind::Tenant, d.tenant.as_ref());
+    push_link(
+        &mut l,
+        "primary IPv4",
+        ObjectKind::IpAddress,
+        d.primary_ip4.as_ref(),
+    );
+    push_link(
+        &mut l,
+        "primary IPv6",
+        ObjectKind::IpAddress,
+        d.primary_ip6.as_ref(),
+    );
+    l
+}
+
+fn site_links(s: &Site) -> Vec<ObjectLink> {
+    let mut l = Vec::new();
+    push_link(&mut l, "tenant", ObjectKind::Tenant, s.tenant.as_ref());
+    l
+}
+
+fn rack_links(r: &Rack) -> Vec<ObjectLink> {
+    let mut l = Vec::new();
+    push_link(&mut l, "site", ObjectKind::Site, r.site.as_ref());
+    push_link(&mut l, "tenant", ObjectKind::Tenant, r.tenant.as_ref());
+    l
+}
+
+fn vlan_links(v: &Vlan) -> Vec<ObjectLink> {
+    let mut l = Vec::new();
+    push_link(&mut l, "site", ObjectKind::Site, v.site.as_ref());
+    push_link(&mut l, "tenant", ObjectKind::Tenant, v.tenant.as_ref());
+    l
+}
+
+fn prefix_links(p: &Prefix) -> Vec<ObjectLink> {
+    let mut l = Vec::new();
+    // The polymorphic scope is navigable only when it's a site (the one scope
+    // type with a detail view).
+    if p.scope_type.as_deref() == Some("dcim.site") {
+        push_link(&mut l, "site", ObjectKind::Site, p.scope.as_ref());
+    }
+    push_link(&mut l, "vlan", ObjectKind::Vlan, p.vlan.as_ref());
+    push_link(&mut l, "tenant", ObjectKind::Tenant, p.tenant.as_ref());
+    l
+}
+
+fn ip_links(ip: &IpAddress, parent: Option<&Prefix>) -> Vec<ObjectLink> {
+    let mut l = Vec::new();
+    if let Some(pp) = parent {
+        l.push(ObjectLink {
+            kind: ObjectKind::Prefix,
+            id: pp.id,
+            relation: "parent prefix",
+            label: pp.prefix.clone(),
+        });
+    }
+    push_link(&mut l, "tenant", ObjectKind::Tenant, ip.tenant.as_ref());
+    l
+}
+
 /// A rendered detail screen: the object's identity, a title, the summary body,
-/// and any switchable tabs (empty for objects without sub-resources).
+/// any switchable tabs (empty for objects without sub-resources), and the
+/// navigable links to related objects (the `R` jump list; empty when none).
 #[derive(Debug, Clone)]
 pub struct DetailView {
     pub kind: ObjectKind,
@@ -440,6 +537,7 @@ pub struct DetailView {
     pub title: String,
     pub body: String,
     pub tabs: Vec<DetailTab>,
+    pub links: Vec<ObjectLink>,
 }
 
 impl DetailView {
@@ -450,11 +548,17 @@ impl DetailView {
             title,
             body,
             tabs: Vec::new(),
+            links: Vec::new(),
         }
     }
 
     fn with_tabs(mut self, tabs: Vec<DetailTab>) -> Self {
         self.tabs = tabs;
+        self
+    }
+
+    fn with_links(mut self, links: Vec<ObjectLink>) -> Self {
+        self.links = links;
         self
     }
 }
@@ -483,6 +587,7 @@ async fn load_device_detail(
 /// Load and render the detail for a search result (`kind` + `id`).
 pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Result<DetailView> {
     let mut tabs = Vec::new();
+    let mut links = Vec::new();
     let (title, body) = match kind {
         ObjectKind::Device => {
             let d: Device = client
@@ -491,14 +596,22 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
                     &[("exclude", "config_context".to_string())],
                 )
                 .await?;
+            links = device_links(&d);
             let (title, body, device_tabs) = load_device_detail(client, d).await?;
             tabs = device_tabs;
             (title, body)
         }
         ObjectKind::Site => {
             let s: Site = client.get(&format!("/api/dcim/sites/{id}/"), &[]).await?;
+            links = site_links(&s);
             let v = SiteView::from_model(s);
             (format!("site {}", v.name), v.to_key_values().render())
+        }
+        ObjectKind::Rack => {
+            let r: Rack = client.get(&format!("/api/dcim/racks/{id}/"), &[]).await?;
+            links = rack_links(&r);
+            let v = RackView::from_model(r);
+            (format!("rack {}", v.name), v.to_key_values().render())
         }
         ObjectKind::IpAddress => {
             let ip: IpAddress = client
@@ -512,6 +625,7 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
                 .to_string();
             let vrf_id = ip.vrf.as_ref().map(|v| v.id);
             let parent = most_specific(client.prefixes_containing(&host, vrf_id).await?);
+            links = ip_links(&ip, parent.as_ref());
             let v = IpView::build(ip, parent);
             (format!("ip {}", v.address), v.to_key_values().render())
         }
@@ -519,6 +633,7 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             let p: Prefix = client
                 .get(&format!("/api/ipam/prefixes/{id}/"), &[])
                 .await?;
+            links = prefix_links(&p);
             let cidr = p.prefix.clone();
             let vrf_id = p.vrf.as_ref().map(|v| v.id);
             let children = client.prefix_children(&cidr, vrf_id, SECTION_CAP).await?;
@@ -528,6 +643,7 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
         }
         ObjectKind::Vlan => {
             let vlan: Vlan = client.get(&format!("/api/ipam/vlans/{id}/"), &[]).await?;
+            links = vlan_links(&vlan);
             let prefixes = client.vlan_prefixes(vlan.id, SECTION_CAP).await?;
             let group = vlan_group_scope(client, &vlan).await?;
             let v = VlanView::build(vlan, prefixes, group);
@@ -604,7 +720,9 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             (format!("cluster {}", v.name), v.to_key_values().render())
         }
     };
-    Ok(DetailView::new(kind, id, title, body).with_tabs(tabs))
+    Ok(DetailView::new(kind, id, title, body)
+        .with_tabs(tabs)
+        .with_links(links))
 }
 
 /// A `not_found` closure for the TUI palette path: a typed
@@ -623,6 +741,7 @@ pub async fn load_detail_by_ref(
     value: &str,
 ) -> Result<DetailView> {
     let mut tabs = Vec::new();
+    let mut links = Vec::new();
     let (id, title, body) = match kind {
         ObjectKind::Device => {
             let d = client
@@ -630,6 +749,7 @@ pub async fn load_detail_by_ref(
                 .await?
                 .with_context(|| format!("no device matched \"{value}\""))?;
             let id = d.id;
+            links = device_links(&d);
             let (title, body, device_tabs) = load_device_detail(client, d).await?;
             tabs = device_tabs;
             (id, title, body)
@@ -640,8 +760,19 @@ pub async fn load_detail_by_ref(
                 .await?
                 .with_context(|| format!("no site matched \"{value}\""))?;
             let id = s.id;
+            links = site_links(&s);
             let v = SiteView::from_model(s);
             (id, format!("site {}", v.name), v.to_key_values().render())
+        }
+        ObjectKind::Rack => {
+            let r = client
+                .rack_by_ref(value)
+                .await?
+                .with_context(|| format!("no rack matched \"{value}\""))?;
+            let id = r.id;
+            links = rack_links(&r);
+            let v = RackView::from_model(r);
+            (id, format!("rack {}", v.name), v.to_key_values().render())
         }
         ObjectKind::IpAddress => {
             // Route through the SAME ambiguity-aware resolver the CLI/MCP use
@@ -667,6 +798,7 @@ pub async fn load_detail_by_ref(
                 .to_string();
             let vrf_id = ip.vrf.as_ref().map(|v| v.id);
             let parent = most_specific(client.prefixes_containing(&host, vrf_id).await?);
+            links = ip_links(&ip, parent.as_ref());
             let v = IpView::build(ip, parent);
             (id, format!("ip {}", v.address), v.to_key_values().render())
         }
@@ -676,6 +808,7 @@ pub async fn load_detail_by_ref(
                 .await?
                 .with_context(|| format!("no prefix matched \"{value}\""))?;
             let id = p.id;
+            links = prefix_links(&p);
             let cidr = p.prefix.clone();
             let vrf_id = p.vrf.as_ref().map(|v| v.id);
             let children = client.prefix_children(&cidr, vrf_id, SECTION_CAP).await?;
@@ -689,6 +822,7 @@ pub async fn load_detail_by_ref(
                 .await?
                 .with_context(|| format!("no VLAN matched \"{value}\""))?;
             let id = vlan.id;
+            links = vlan_links(&vlan);
             let prefixes = client.vlan_prefixes(vlan.id, SECTION_CAP).await?;
             let group = vlan_group_scope(client, &vlan).await?;
             let v = VlanView::build(vlan, prefixes, group);
@@ -801,7 +935,9 @@ pub async fn load_detail_by_ref(
             )
         }
     };
-    Ok(DetailView::new(kind, id, title, body).with_tabs(tabs))
+    Ok(DetailView::new(kind, id, title, body)
+        .with_tabs(tabs)
+        .with_links(links))
 }
 
 #[cfg(test)]
@@ -897,5 +1033,78 @@ mod tests {
             err.downcast_ref::<NboxError>(),
             Some(NboxError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn device_links_cover_site_rack_tenant_and_primary_ips() {
+        use serde_json::json;
+        let d: Device = serde_json::from_value(json!({
+            "id": 1, "url": "u", "name": "edge01",
+            "site": {"id": 5, "name": "iad1", "display": "iad1"},
+            "rack": {"id": 7, "name": "R1", "display": "R1"},
+            "tenant": {"id": 9, "name": "acme", "display": "acme"},
+            "primary_ip4": {"id": 11, "display": "10.0.0.1/24"},
+        }))
+        .unwrap();
+        let got: Vec<(ObjectKind, u64, &str)> = device_links(&d)
+            .iter()
+            .map(|l| (l.kind, l.id, l.relation))
+            .collect();
+        assert!(got.contains(&(ObjectKind::Site, 5, "site")));
+        assert!(
+            got.contains(&(ObjectKind::Rack, 7, "rack")),
+            "device→rack link"
+        );
+        assert!(got.contains(&(ObjectKind::Tenant, 9, "tenant")));
+        assert!(got.contains(&(ObjectKind::IpAddress, 11, "primary IPv4")));
+        // No primary IPv6 in the fixture → no such link (absent relations skipped).
+        assert!(!got.iter().any(|(_, _, r)| *r == "primary IPv6"));
+    }
+
+    #[test]
+    fn prefix_links_navigate_site_scope_and_vlan_but_not_vrf() {
+        use serde_json::json;
+        let p: Prefix = serde_json::from_value(json!({
+            "id": 2, "url": "u", "prefix": "10.0.0.0/16",
+            "scope_type": "dcim.site",
+            "scope": {"id": 5, "name": "iad1", "display": "iad1"},
+            "vlan": {"id": 8, "display": "vlan 100"},
+            "vrf": {"id": 3, "name": "blue", "display": "blue"},
+            "tenant": {"id": 9, "name": "acme", "display": "acme"},
+        }))
+        .unwrap();
+        let got: Vec<(ObjectKind, &str)> = prefix_links(&p)
+            .iter()
+            .map(|l| (l.kind, l.relation))
+            .collect();
+        assert!(
+            got.contains(&(ObjectKind::Site, "site")),
+            "site scope navigable"
+        );
+        assert!(got.contains(&(ObjectKind::Vlan, "vlan")));
+        assert!(got.contains(&(ObjectKind::Tenant, "tenant")));
+        // A VRF has no detail kind, so it is never emitted as a link.
+        assert!(!got.iter().any(|(_, r)| *r == "vrf"));
+    }
+
+    #[test]
+    fn ip_links_navigate_to_parent_prefix() {
+        use serde_json::json;
+        let addr = ip(1, "10.0.0.5/24", None);
+        let parent: Prefix =
+            serde_json::from_value(json!({"id": 42, "url": "u", "prefix": "10.0.0.0/24"})).unwrap();
+        let with_parent = ip_links(&addr, Some(&parent));
+        assert!(
+            with_parent.iter().any(|l| l.kind == ObjectKind::Prefix
+                && l.id == 42
+                && l.relation == "parent prefix"),
+            "an IP links to its most-specific parent prefix"
+        );
+        // No parent resolved → no parent-prefix link.
+        assert!(
+            !ip_links(&addr, None)
+                .iter()
+                .any(|l| l.relation == "parent prefix")
+        );
     }
 }
