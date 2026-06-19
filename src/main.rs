@@ -43,8 +43,8 @@ async fn main() {
     );
     let log_guard = nbox::init_logging(&choice);
 
-    // Kick off the update check (if enabled) before doing work, then report it
-    // after, so a quick command isn't delayed by the network round-trip.
+    // Kick off the update check before doing work, then report it after, so a quick
+    // command isn't delayed by the (once-a-day, disk-cached) network round-trip.
     #[cfg(feature = "updates")]
     let update = {
         let json = cli.json;

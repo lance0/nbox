@@ -171,6 +171,10 @@ pub enum AppEvent {
         id: RequestId,
         result: anyhow::Result<String>,
     },
+    /// The background update check finished: `Some(version)` when a newer release
+    /// is available (drives the TUI banner), `None` when up to date or the check
+    /// was skipped. Fired at most once per session.
+    UpdateAvailable(Option<String>),
     Status(String),
 }
 
@@ -614,6 +618,15 @@ pub struct App {
     /// last request settles. Confined behind the cheese adapter.
     pub spinner: Spinner,
 
+    /// A newer release version (raw, may carry a leading `v`) when the background
+    /// update check found one and the user hasn't dismissed the banner with `u`.
+    /// `None` ⇒ no banner. Only ever populated when the `updates` feature is built.
+    pub update_available: Option<String>,
+    /// The install-appropriate upgrade command shown in the banner (e.g.
+    /// `brew upgrade nbox`). Set once at launch by `build_tui_app`; empty in lean
+    /// builds. A plain string so `ui.rs` needs no dependency on the `updates` module.
+    pub update_command: &'static str,
+
     pub should_quit: bool,
 }
 
@@ -695,6 +708,8 @@ impl App {
             prefix_tree_viewport: 0,
             pending: 0,
             spinner: Spinner::new(),
+            update_available: None,
+            update_command: "",
             should_quit: false,
         }
     }
@@ -1084,6 +1099,12 @@ impl App {
                 }
                 Vec::new()
             }
+            AppEvent::UpdateAvailable(version) => {
+                // Store raw; the banner strips a leading `v` at render (xfr's fix).
+                // `None` (up to date / skipped) just leaves the banner off.
+                self.update_available = version;
+                Vec::new()
+            }
             AppEvent::Status(message) => {
                 // An async status push (e.g. "copied …"/"opened …"): classify it
                 // so confirmations and failures still get the right color.
@@ -1166,6 +1187,8 @@ impl App {
             // `S` opens the Config modal (Profiles section); also the palette
             // `config` verb. Free key — no clash with the bound set.
             KeyCode::Char('S') => self.open_config_modal(),
+            // Dismiss the update banner (no-op when none is showing).
+            KeyCode::Char('u') => self.update_available = None,
             // `Esc` on Home clears an active search (back to recents); otherwise it
             // navigates back. `b` is always plain back/navigation (kept distinct so
             // it never clears the search out from under an in-flight detail load).
@@ -3326,6 +3349,22 @@ mod tests {
             tabs: Vec::new(),
             links: Vec::new(),
         }
+    }
+
+    #[test]
+    fn update_available_sets_banner_and_u_dismisses_it() {
+        let mut a = app();
+        assert!(a.update_available.is_none());
+        // A newer release drives the banner (raw version stored; the banner strips
+        // the leading `v` at render).
+        a.handle_event(AppEvent::UpdateAvailable(Some("v0.3.0".into())));
+        assert_eq!(a.update_available.as_deref(), Some("v0.3.0"));
+        // `u` dismisses it.
+        a.handle_event(press(KeyCode::Char('u')));
+        assert!(a.update_available.is_none());
+        // An up-to-date / skipped result leaves no banner.
+        a.handle_event(AppEvent::UpdateAvailable(None));
+        assert!(a.update_available.is_none());
     }
 
     #[test]

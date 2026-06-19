@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **TUI update banner.** When the background update check finds a newer release, the
+  TUI shows a dismissible (`u`) banner across the top with the install-appropriate
+  upgrade command — parity with the CLI notice, which already printed one. Help and
+  the banner both note the `u` dismiss key.
 - **Racks are now searchable.** `nbox search` / the TUI `/` search / MCP `nbox_search`
   fan out to `dcim/racks/` (REST and GraphQL backends), so a rack surfaces as a
   ranked result (subtitle = its site) you can open like any other kind. Racks honor
@@ -55,6 +59,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   map (`indexmap` + `toml`'s `preserve_order`), so `[profiles.*]` keep their TOML
   document order everywhere they're listed (`profile list`, `config show`, and the
   switcher). No config change needed.
+- The update check now hits GitHub **at most once a day** (disk-cached via
+  update-informer) instead of a network round-trip on every invocation, and
+  recognizes a **container** install — suggesting `docker pull ghcr.io/lance0/nbox`
+  alongside the existing Homebrew / Cargo / downloaded-binary upgrade hints.
 - TUI header and footer now render as proper status bars: a subtle per-theme
   background fill (`chrome_bg`, added to every theme), the profile emphasized with
   the NetBox URL/version dim and the mode right-aligned in the header, and the

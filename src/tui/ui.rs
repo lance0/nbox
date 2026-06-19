@@ -55,34 +55,38 @@ fn list_position(selected: usize, len: usize) -> Option<String> {
 
 /// Render the whole UI for the current frame.
 pub fn render(frame: &mut Frame, app: &mut App) {
-    // A one-line filter chips bar slots between the header and the body, but only
-    // when at least one filter is active (zero-cost when empty, like the scroll
-    // hints). The layout grows by that row only then.
+    // Rows are stacked top-down, each optional row taking space only when it
+    // applies (zero-cost otherwise, like the scroll hints): an update banner at
+    // the very top when a newer release was found, the header, a filter chips bar
+    // when any filter is active, the body, and the footer.
+    let show_update = app.update_available.is_some();
     let filters_on = any_filter_active(&app.filters);
-    let areas = if filters_on {
-        Layout::vertical([
-            Constraint::Length(1), // header
-            Constraint::Length(1), // filter chips
-            Constraint::Min(1),    // body
-            Constraint::Length(1), // footer
-        ])
-        .split(frame.area())
-    } else {
-        Layout::vertical([
-            Constraint::Length(1),
-            Constraint::Min(1),
-            Constraint::Length(1),
-        ])
-        .split(frame.area())
-    };
 
-    render_header(frame, areas[0], app);
-    let (body_area, footer_area) = if filters_on {
-        render_filter_bar(frame, areas[1], &app.filters, &app.theme);
-        (areas[2], areas[3])
-    } else {
-        (areas[1], areas[2])
-    };
+    let mut constraints = Vec::with_capacity(5);
+    if show_update {
+        constraints.push(Constraint::Length(1)); // update banner
+    }
+    constraints.push(Constraint::Length(1)); // header
+    if filters_on {
+        constraints.push(Constraint::Length(1)); // filter chips
+    }
+    constraints.push(Constraint::Min(1)); // body
+    constraints.push(Constraint::Length(1)); // footer
+    let areas = Layout::vertical(constraints).split(frame.area());
+
+    let mut row = 0;
+    if show_update {
+        render_update_banner(frame, areas[row], app);
+        row += 1;
+    }
+    render_header(frame, areas[row], app);
+    row += 1;
+    if filters_on {
+        render_filter_bar(frame, areas[row], &app.filters, &app.theme);
+        row += 1;
+    }
+    let body_area = areas[row];
+    let footer_area = areas[row + 1];
 
     match app.screen {
         Screen::Home => render_home(frame, body_area, app),
@@ -144,6 +148,35 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
             .style(bar)
             .alignment(Alignment::Right),
         cols[1],
+    );
+}
+
+/// A full-width update banner at the very top when the background check found a
+/// newer release. Mirrors ttl/xfr: the install-appropriate upgrade command plus a
+/// `u` dismiss hint, on the theme's warning color. Only rendered when
+/// `update_available` is set; `u` clears it (see `handle_normal_key`).
+fn render_update_banner(frame: &mut Frame, area: Rect, app: &App) {
+    let Some(version) = &app.update_available else {
+        return;
+    };
+    let theme = &app.theme;
+    // Strip a leading `v` so we never render `→ vv0.2.0` (xfr's fix).
+    let new = version.strip_prefix('v').unwrap_or(version);
+    let current = env!("CARGO_PKG_VERSION");
+    let bar = Style::default().bg(theme.warning).fg(Color::Black);
+    // Fill the row so the warning color spans edge to edge behind the text.
+    frame.render_widget(Block::default().style(bar), area);
+    let mut text = format!(" Update available: v{current} → v{new}");
+    if !app.update_command.is_empty() {
+        text.push_str("   ");
+        text.push_str(app.update_command);
+    }
+    text.push_str("   press u to dismiss ");
+    frame.render_widget(
+        Paragraph::new(Span::styled(text, bar.add_modifier(Modifier::BOLD)))
+            .style(bar)
+            .alignment(Alignment::Center),
+        area,
     );
 }
 
@@ -874,6 +907,7 @@ pub fn help_bindings() -> Vec<Vec<(&'static str, &'static str)>> {
             ("T", "prefix tree"),
             ("P / C-P", "switch profile"),
             ("S", "config / profiles"),
+            ("u", "dismiss update"),
             ("i p c v s", "device tabs"),
             ("b / Esc", "back / clear search"),
             ("? / F1", "toggle help"),

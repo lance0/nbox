@@ -56,6 +56,21 @@ async fn event_loop(
     // it (abort + respawn) at a new interval without a restart. `None` ⇒ off.
     let mut refresh_ticker = arm_refresh(&tx, refresh_secs);
 
+    // Kick off the background update check once at startup (only when the `updates`
+    // feature is built). The result arrives as an `AppEvent` that drives the
+    // dismissible banner; the disk-cached, once-a-day check never blocks the loop.
+    #[cfg(feature = "updates")]
+    {
+        let tx = tx.clone();
+        tokio::spawn(async move {
+            let version = tokio::task::spawn_blocking(crate::update::check_for_update)
+                .await
+                .ok()
+                .flatten();
+            let _ = tx.send(AppEvent::UpdateAvailable(version)).await;
+        });
+    }
+
     while !app.should_quit {
         terminal.draw(|frame| ui::render(frame, app))?;
 

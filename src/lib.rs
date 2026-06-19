@@ -830,6 +830,12 @@ async fn build_tui_app(
         cache_partition,
         &cfg.cache,
     ));
+    // Seed the install-appropriate upgrade command the update banner shows
+    // (feature-gated; a lean build never checks and shows no banner).
+    #[cfg(feature = "updates")]
+    {
+        app.update_command = crate::update::InstallMethod::detect().update_command();
+    }
     // Seed the live UI settings the Settings section edits and the `o` open path
     // reads (auto-refresh interval + custom browser-open command).
     app.set_ui_settings(
