@@ -116,7 +116,11 @@ sha2 = { version = "0.10", optional = true }
 libc = "0.2"
 
 [features]
-default = ["clipboard", "http", "keyring"]
+# The default set is the canonical shipped binary — every cross-platform user
+# feature on (clipboard, http/MCP, native keyring, the update notifier). nbox ships
+# a single binary; `--no-default-features` is a dev-only lean stdio build, and the
+# D-Bus `keyring-secret-service` backend stays opt-in so the musl build links clean.
+default = ["clipboard", "http", "keyring", "updates"]
 clipboard = ["dep:arboard"]
 cache = ["dep:rusqlite"]
 updates = ["dep:update-informer"]

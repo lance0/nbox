@@ -147,6 +147,15 @@ Consolidated future scope:
 - ☐ GraphQL capability probing v2 if schema churn demands it: dynamic `*Filter` discovery and/or a
   short TTL cache keyed by instance/profile to avoid re-probing when users bounce between profiles
   pointing at the same NetBox.
+- ☐ **Local cache — flagship direction (2026-06-19).** A local cache so users don't hammer their
+  NetBox instance: cache search/detail/list responses with a tuned TTL + invalidation, and surface
+  freshness to the user (cache age, manual refresh, perhaps an offline mode). `rusqlite` with the
+  `bundled` SQLite feature (self-contained C, links on musl) so it ships in the single binary.
+  Reverses the earlier "likely cut" stance.
+- ☐ **Single binary.** Ship one canonical full-featured binary per platform: the default feature set
+  carries every cross-platform user feature (`http`, native `keyring`, `clipboard`, `updates`), no
+  feature-variant artifacts. `--no-default-features` stays a dev-only lean build;
+  `keyring-secret-service` (D-Bus) stays off so the musl static build links clean.
 - ☐ Batch queries from a file (audits).
 - ☐ Configurable client concurrency for very large instances — `search` is a bounded fan-out and
   `list_all` is `max`-capped today; expose tuning only if a real instance needs it.
@@ -158,9 +167,6 @@ Consolidated future scope:
 
 **Reconsidering / likely cut**
 
-- Local SQLite cache (`cache` feature) — the value is freshness, and `nucleo` already covers
-  interactive speed; it adds a bundled-C dep + invalidation complexity. Parked unless a real
-  large-instance latency problem appears.
 - Plugin / custom-command system — cut; a non-goal.
 
 ---

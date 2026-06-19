@@ -30,6 +30,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   footer nav hints with accented keys + dim labels. Cosmetic only.
 - TUI list, preview, and detail panes now have one column of inner padding, so
   their content no longer touches the pane borders. Cosmetic only.
+- The update notifier now ships in the **default** build, so a released binary
+  tells you when a newer version is available. It checks GitHub on a background
+  thread, only on a TTY and never in `--json`/piped output, so scripts are
+  unaffected; `--no-default-features` still opts out. (Part of shipping one
+  canonical full-featured binary per platform.)
 
 ### Fixed
 - TUI footer/navigation UX: theme changes now apply visually without replacing the
