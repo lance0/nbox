@@ -149,6 +149,9 @@ Consolidated future scope:
   Navigation rail: browse-by-kind sections (Devices/Prefixes/IPs/VLANs/Sites/Racks) with domain-colored
   bullets and live per-kind counts, plus Recent; `Enter` lists a kind into Results (search stays on `/`),
   `Tab` cycles the three panes. Built on the list/preview split.
+- ☐ **3-pane polish (follow-ups).** Right-align the Nav counts; remember the last browsed kind and
+  restore it on launch (persist to prefs); show a count on the Recent row. Optional: live-browse on Nav
+  `j`/`k` (debounced) instead of requiring `Enter`; a `Browse` (`b`?) hint in the footer when Nav-focused.
 - ☐ VRF-pivoted navigation in the TUI (a dedicated VRF view) — the `--vrf` filter, VRF-scoped prefix
   sections, and exact VRF-by-RD lookup already ship; this is the navigation layer on top.
 - ☐ GraphQL detail views after the TUI detail experience settles — start with device detail as a
