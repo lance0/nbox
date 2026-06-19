@@ -25,7 +25,7 @@ use crate::netbox::pagination::Page;
 use crate::util::format::api_to_web_url;
 
 /// The kind of object a [`SearchResult`] refers to.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum ObjectKind {
     Device,
@@ -161,12 +161,12 @@ pub struct SearchOutcome {
 }
 
 /// A normalized search hit.
-#[derive(Debug, Clone, Serialize, JsonSchema)]
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema)]
 pub struct SearchResult {
     pub kind: ObjectKind,
     pub id: u64,
     pub display: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub subtitle: Option<String>,
     pub url: String,
     pub score: i32,

@@ -12,6 +12,7 @@
 //! object by kind + id (or reference) and render it with switchable tabs.
 
 use anyhow::{Context, Result};
+use serde::{Deserialize, Serialize};
 
 use crate::domain::aggregate_view::AggregateView;
 use crate::domain::asn_view::AsnView;
@@ -424,7 +425,7 @@ pub async fn cluster_view_by_ref(
 }
 
 /// A switchable section on a detail screen (e.g. a device's interfaces).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetailTab {
     pub key: char,
     pub label: String,
@@ -436,11 +437,11 @@ pub struct DetailTab {
 /// target (drives a `LoadDetail`); `relation` names the edge ("site", "vlan", …);
 /// `label` is the target's display name. Only relations whose target has a detail
 /// view are emitted (e.g. a VRF/rack/role has no detail kind, so it's skipped).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectLink {
     pub kind: ObjectKind,
     pub id: u64,
-    pub relation: &'static str,
+    pub relation: String,
     pub label: String,
 }
 
@@ -455,7 +456,7 @@ fn push_link(
         links.push(ObjectLink {
             kind,
             id: o.id,
-            relation,
+            relation: relation.to_string(),
             label: o.label(),
         });
     }
@@ -519,7 +520,7 @@ fn ip_links(ip: &IpAddress, parent: Option<&Prefix>) -> Vec<ObjectLink> {
         l.push(ObjectLink {
             kind: ObjectKind::Prefix,
             id: pp.id,
-            relation: "parent prefix",
+            relation: "parent prefix".to_string(),
             label: pp.prefix.clone(),
         });
     }
@@ -530,7 +531,7 @@ fn ip_links(ip: &IpAddress, parent: Option<&Prefix>) -> Vec<ObjectLink> {
 /// A rendered detail screen: the object's identity, a title, the summary body,
 /// any switchable tabs (empty for objects without sub-resources), and the
 /// navigable links to related objects (the `R` jump list; empty when none).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetailView {
     pub kind: ObjectKind,
     pub id: u64,
@@ -1046,9 +1047,10 @@ mod tests {
             "primary_ip4": {"id": 11, "display": "10.0.0.1/24"},
         }))
         .unwrap();
-        let got: Vec<(ObjectKind, u64, &str)> = device_links(&d)
+        let links = device_links(&d);
+        let got: Vec<(ObjectKind, u64, &str)> = links
             .iter()
-            .map(|l| (l.kind, l.id, l.relation))
+            .map(|l| (l.kind, l.id, l.relation.as_str()))
             .collect();
         assert!(got.contains(&(ObjectKind::Site, 5, "site")));
         assert!(
@@ -1073,9 +1075,10 @@ mod tests {
             "tenant": {"id": 9, "name": "acme", "display": "acme"},
         }))
         .unwrap();
-        let got: Vec<(ObjectKind, &str)> = prefix_links(&p)
+        let links = prefix_links(&p);
+        let got: Vec<(ObjectKind, &str)> = links
             .iter()
-            .map(|l| (l.kind, l.relation))
+            .map(|l| (l.kind, l.relation.as_str()))
             .collect();
         assert!(
             got.contains(&(ObjectKind::Site, "site")),
@@ -1106,5 +1109,39 @@ mod tests {
                 .iter()
                 .any(|l| l.relation == "parent prefix")
         );
+    }
+
+    /// The cache serializes assembled detail views to JSON bytes, so a view must
+    /// survive a round-trip with its tabs and links intact.
+    #[test]
+    fn detail_view_json_roundtrips_for_caching() {
+        let view = DetailView::new(
+            ObjectKind::Device,
+            7,
+            "device edge01".into(),
+            "summary".into(),
+        )
+        .with_tabs(vec![DetailTab {
+            key: 'i',
+            label: "interfaces".into(),
+            body: "eth0".into(),
+        }])
+        .with_links(vec![ObjectLink {
+            kind: ObjectKind::Site,
+            id: 5,
+            relation: "site".into(),
+            label: "iad1".into(),
+        }]);
+
+        let bytes = serde_json::to_vec(&view).expect("serialize");
+        let back: DetailView = serde_json::from_slice(&bytes).expect("deserialize");
+
+        assert_eq!(back.kind, ObjectKind::Device);
+        assert_eq!(back.id, 7);
+        assert_eq!(back.title, "device edge01");
+        assert_eq!(back.tabs.len(), 1);
+        assert_eq!(back.tabs[0].key, 'i');
+        assert_eq!(back.links[0].relation, "site");
+        assert_eq!(back.links[0].kind, ObjectKind::Site);
     }
 }

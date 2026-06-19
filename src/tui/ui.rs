@@ -2011,13 +2011,13 @@ mod tests {
                 ObjectLink {
                     kind: ObjectKind::Site,
                     id: 5,
-                    relation: "site",
+                    relation: "site".into(),
                     label: "iad1".into(),
                 },
                 ObjectLink {
                     kind: ObjectKind::Rack,
                     id: 7,
-                    relation: "rack",
+                    relation: "rack".into(),
                     label: "R1".into(),
                 },
             ],
