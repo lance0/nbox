@@ -12,6 +12,7 @@ pub mod endpoints;
 pub mod graphql;
 pub mod models;
 pub mod pagination;
+pub mod prefix_tree;
 pub mod query;
 pub mod search;
 pub mod status;

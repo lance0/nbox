@@ -70,6 +70,11 @@ pub struct Prefix {
     pub description: Option<String>,
     #[serde(default)]
     pub children: Option<u64>,
+    /// Tree-nesting depth within the prefix hierarchy, as annotated by NetBox
+    /// (`_depth` in the API). Present in the default (tree-ordered) listing;
+    /// absent (→ `None`) otherwise. Drives the prefix-tree view's indentation.
+    #[serde(default, rename = "_depth")]
+    pub depth: Option<u64>,
     /// Prefix utilization, when the NetBox version/serializer provides it.
     /// Kept as a permissive value (number or string) so absence never breaks
     /// deserialization; the view coerces it to a percentage when numeric.
@@ -311,13 +316,16 @@ mod tests {
             "scope_type": "dcim.site",
             "scope_id": 1,
             "scope": {"id": 1, "name": "iad1", "display": "iad1"},
-            "children": 4
+            "children": 4,
+            "_depth": 2
         }))
         .unwrap();
         assert_eq!(p.prefix, "10.44.208.0/24");
         assert_eq!(p.scope_type.as_deref(), Some("dcim.site"));
         assert_eq!(p.scope.unwrap().label(), "iad1");
         assert_eq!(p.children, Some(4));
+        // NetBox's tree-depth annotation is `_depth`; a listing without it → None.
+        assert_eq!(p.depth, Some(2));
     }
 
     #[test]
