@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Racks are now searchable.** `nbox search` / the TUI `/` search / MCP `nbox_search`
+  fan out to `dcim/racks/` (REST and GraphQL backends), so a rack surfaces as a
+  ranked result (subtitle = its site) you can open like any other kind. Racks honor
+  the `status`/`tenant`/`role`/`tag` filters and the site/region/site-group/location
+  scope (by resolved `*_id`, like devices). A `rack <name|id>` palette lookup was
+  added too. Racks were previously CLI-only (`nbox rack <ref>`) and a drill-only
+  TUI target.
 - Profile-level GraphQL search backend. Set `backend = "graphql"` on a profile to
   run `nbox search` through NetBox's `/graphql/` endpoint while keeping REST as
   the default and as the backend for detail lookups, journals, raw reads, and

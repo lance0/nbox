@@ -138,10 +138,11 @@ Consolidated future scope:
 
 ## Later / under consideration
 
-- ☐ **Full rack integration** — racks are CLI-only today (`nbox rack <ref>`); the cross-object-navigation
-  work makes them openable + a cross-nav target in the TUI. Still to explore: promote `Rack` to a
-  first-class **searchable** `ObjectKind` (global search fan-out, `/` + `nbox search`), plus rack
-  elevation/unit context. Decide whether rack-as-search-result earns its place or stays drill-only.
+- ☑ **Full rack integration** — racks are now a first-class **searchable** `ObjectKind`: they appear in
+  the global search fan-out (REST + GraphQL), `/` + `nbox search`, MCP `nbox_search`, and a `rack`
+  palette lookup, honoring the site/region/site-group/location scope (like devices, via `*_id`). They
+  were already openable + a cross-nav target in the TUI (`nbox rack <ref>`, device→rack). ☐ Remaining:
+  rack elevation/unit context (the U-by-U visual).
 - ☐ Multi-pane TUI refinement (nav | results | detail) per the DESIGN mockup, building on the current
   list/preview split.
 - ☐ VRF-pivoted navigation in the TUI (a dedicated VRF view) — the `--vrf` filter, VRF-scoped prefix

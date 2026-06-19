@@ -17,7 +17,7 @@ use crate::netbox::client::{MAX_PAGE_SIZE, NetBoxClient};
 use crate::netbox::endpoints::Endpoint;
 use crate::netbox::graphql::GraphqlCapabilities;
 use crate::netbox::models::circuits::{Circuit, Provider};
-use crate::netbox::models::dcim::{Device, Site};
+use crate::netbox::models::dcim::{Device, Rack, Site};
 use crate::netbox::models::ipam::{Aggregate, Asn, IpAddress, IpRange, Prefix, Vlan};
 use crate::netbox::models::tenancy::{Contact, Tenant};
 use crate::netbox::models::virtualization::{Cluster, VirtualMachine};
@@ -42,10 +42,9 @@ pub enum ObjectKind {
     Provider,
     Vm,
     Cluster,
-    /// A rack. Not (yet) a search result — it's drill-only: openable in the TUI
-    /// and a cross-navigation target (e.g. a device's rack). Promoting it to a
-    /// searchable kind is tracked in the roadmap. Kept last so the search-result
-    /// ordering of the existing kinds is undisturbed.
+    /// A rack. Searchable by name (honoring the site/region/site-group/location
+    /// scope), openable in the TUI, and a cross-navigation target (e.g. a device's
+    /// rack). Kept last to preserve the existing variants' order.
     Rack,
 }
 
@@ -256,7 +255,7 @@ fn endpoint_params(
 }
 
 impl NetBoxClient {
-    /// Search across devices, sites, IPs, prefixes, VLANs, circuits,
+    /// Search across devices, sites, racks, IPs, prefixes, VLANs, circuits,
     /// aggregates, ASNs, IP ranges, tenants, contacts, providers, virtual
     /// machines, and clusters in parallel.
     ///
@@ -266,12 +265,18 @@ impl NetBoxClient {
     /// failure — some endpoints down, others returning data — is reported via
     /// [`SearchOutcome::errors`] for the caller to act on.
     pub async fn search(&self, req: SearchRequest) -> Result<SearchOutcome> {
+        // Both fan-outs are large futures; box them at this public entry point so
+        // spawned call sites can await `search()` normally (clippy::large_futures).
         if self.backend() == BackendKind::Graphql {
-            // Keep the large GraphQL fan-out future boxed at this public entry
-            // point so spawned call sites can await `search()` normally.
             return Box::pin(self.search_graphql(req)).await;
         }
+        Box::pin(self.search_rest(req)).await
+    }
 
+    /// The REST search fan-out (the default backend). Split out from
+    /// [`search`](Self::search) so its large `join!` future stays behind a
+    /// `Box::pin`, mirroring `search_graphql`.
+    async fn search_rest(&self, req: SearchRequest) -> Result<SearchOutcome> {
         let q = req.query.trim().to_string();
         let f = &req.filters;
 
@@ -307,6 +312,7 @@ impl NetBoxClient {
             providers,
             vms,
             clusters,
+            racks,
         ) = tokio::join!(
             self.search_devices(&q, f, scope.as_ref()),
             self.search_sites(&q, f, scope.as_ref()),
@@ -322,6 +328,7 @@ impl NetBoxClient {
             self.search_providers(&q, f, scope.as_ref()),
             self.search_vms(&q, f, scope.as_ref()),
             self.search_clusters(&q, f, scope.as_ref()),
+            self.search_racks(&q, f, scope.as_ref()),
         );
 
         let mut merged = Vec::new();
@@ -342,6 +349,7 @@ impl NetBoxClient {
             ("providers", providers),
             ("vms", vms),
             ("clusters", clusters),
+            ("racks", racks),
         ];
         for (name, branch) in branches {
             match branch {
@@ -398,6 +406,7 @@ impl NetBoxClient {
             providers,
             vms,
             clusters,
+            racks,
         ) = tokio::join!(
             self.gql_search_devices(&caps, &q, f, scope.as_ref(), req.limit),
             self.gql_search_sites(&caps, &q, f, scope.as_ref(), req.limit),
@@ -413,6 +422,7 @@ impl NetBoxClient {
             self.gql_search_providers(&caps, &q, f, scope.as_ref(), req.limit),
             self.gql_search_vms(&caps, &q, f, scope.as_ref(), req.limit),
             self.gql_search_clusters(&caps, &q, f, scope.as_ref(), req.limit),
+            self.gql_search_racks(&caps, &q, f, scope.as_ref(), req.limit),
         );
 
         let mut merged = Vec::new();
@@ -433,6 +443,7 @@ impl NetBoxClient {
             ("providers", providers),
             ("vms", vms),
             ("clusters", clusters),
+            ("racks", racks),
         ] {
             match branch {
                 Ok(mut items) => merged.append(&mut items),
@@ -1391,6 +1402,62 @@ impl NetBoxClient {
             .collect())
     }
 
+    async fn gql_search_racks(
+        &self,
+        caps: &GraphqlCapabilities,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        // Racks carry the same per-scope id filters as devices, so reuse the
+        // `GqlNamedSite` shape and apply the resolved scope via its friendly key.
+        let Some(mut filters) = Self::gql_filters(
+            caps,
+            "rack_list",
+            q,
+            f,
+            &["status", "tenant", "role", "tag"],
+        ) else {
+            return Ok(Vec::new());
+        };
+        if let Some(scope) = scope
+            && !Self::gql_add_filter(
+                caps,
+                "rack_list",
+                &mut filters,
+                Self::gql_scope_filter_key(scope),
+                json!(scope.id),
+            )
+        {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<GqlNamedSite> = self
+            .graphql_list(
+                caps,
+                "rack_list",
+                Value::Object(filters),
+                "id name display site { id name display slug }",
+                limit,
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| {
+                let id = r.id()?;
+                let name = r.name.or(r.display)?;
+                Some(SearchResult {
+                    kind: ObjectKind::Rack,
+                    id,
+                    score: score_match(q, &name),
+                    subtitle: r.site.and_then(GqlBrief::label),
+                    url: self.gql_web_url(ObjectKind::Rack, id),
+                    display: name,
+                })
+            })
+            .collect())
+    }
+
     async fn search_devices(
         &self,
         q: &str,
@@ -1930,6 +1997,47 @@ impl NetBoxClient {
                     .map(super::models::common::BriefObject::label),
                 url: api_to_web_url(&c.url),
                 display: c.name,
+            })
+            .collect())
+    }
+
+    async fn search_racks(
+        &self,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+    ) -> Result<Vec<SearchResult>> {
+        // Racks expose clean id filters for every scope kind
+        // (`site_id`/`region_id`/`site_group_id`/`location_id`), like devices, so
+        // honor all four out-of-band by the resolved id (the plain `?site=` slug
+        // param would silently miss a `--site` given as an id or display name).
+        let rack_scope: Option<(&'static str, u64)> = match scope.map(|s| s.content_type) {
+            Some("dcim.site") => scope.map(|s| ("site_id", s.id)),
+            Some("dcim.region") => scope.map(|s| ("region_id", s.id)),
+            Some("dcim.sitegroup") => scope.map(|s| ("site_group_id", s.id)),
+            Some("dcim.location") => scope.map(|s| ("location_id", s.id)),
+            _ => None,
+        };
+        let Some(mut params) = endpoint_params(q, f, &["status", "tenant", "role", "tag"]) else {
+            return Ok(Vec::new());
+        };
+        if let Some((key, id)) = rack_scope {
+            params.push((key, id.to_string()));
+        }
+        let page: Page<Rack> = self.list(Endpoint::Racks, params).await?;
+        Ok(page
+            .results
+            .into_iter()
+            .map(|r| SearchResult {
+                kind: ObjectKind::Rack,
+                id: r.id,
+                score: score_match(q, &r.name),
+                subtitle: r
+                    .site
+                    .as_ref()
+                    .map(super::models::common::BriefObject::label),
+                url: api_to_web_url(&r.url),
+                display: r.name,
             })
             .collect())
     }

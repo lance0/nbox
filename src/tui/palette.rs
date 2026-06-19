@@ -81,6 +81,7 @@ pub fn parse(input: &str) -> Result<PaletteCommand, String> {
         "prefix" => lookup(ObjectKind::Prefix, "prefix <cidr>"),
         "vlan" => lookup(ObjectKind::Vlan, "vlan <vid|name>"),
         "site" => lookup(ObjectKind::Site, "site <name|slug>"),
+        "rack" => lookup(ObjectKind::Rack, "rack <name|id>"),
         "find" | "search" => {
             if rest.is_empty() {
                 Err("usage: find <query>".into())
@@ -168,6 +169,13 @@ mod tests {
             PaletteCommand::Lookup {
                 kind: ObjectKind::IpAddress,
                 value: "10.44.208.55".into()
+            }
+        );
+        assert_eq!(
+            parse("rack R1-42").unwrap(),
+            PaletteCommand::Lookup {
+                kind: ObjectKind::Rack,
+                value: "R1-42".into()
             }
         );
     }

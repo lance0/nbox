@@ -63,8 +63,8 @@ pub enum Command {
     /// Launch the interactive TUI.
     Tui,
 
-    /// Search devices, sites, IPs, prefixes, VLANs, circuits, aggregates, ASNs,
-    /// IP ranges, tenants, contacts, providers, VMs, and clusters.
+    /// Search devices, sites, racks, IPs, prefixes, VLANs, circuits, aggregates,
+    /// ASNs, IP ranges, tenants, contacts, providers, VMs, and clusters.
     Search {
         /// Free-text query.
         query: String,

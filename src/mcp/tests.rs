@@ -209,6 +209,7 @@ async fn search_returns_results_and_errors() {
         "/api/circuits/providers/",
         "/api/virtualization/virtual-machines/",
         "/api/virtualization/clusters/",
+        "/api/dcim/racks/",
     ] {
         Mock::given(method("GET"))
             .and(path(p))
@@ -300,6 +301,7 @@ async fn search_reports_partial_endpoint_errors() {
         "/api/circuits/providers/",
         "/api/virtualization/virtual-machines/",
         "/api/virtualization/clusters/",
+        "/api/dcim/racks/",
     ] {
         mount_empty(&mock, p).await;
     }
