@@ -614,6 +614,55 @@ pub fn save_ui_fields(path: &Path, fields: &[UiField]) -> Result<()> {
     Ok(())
 }
 
+/// Set or clear a single top-level (non-`[ui]`) string key in a format-preserving
+/// document: a present, non-empty value writes `key = "value"`; `None`/empty
+/// removes the key. Used for the global `log_level` / `log_file` settings, which
+/// live at the document root rather than under `[ui]`.
+pub fn set_top_string(doc: &mut DocumentMut, key: &str, val: Option<&str>) {
+    match val.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(v) => doc[key] = value(v),
+        None => {
+            doc.as_table_mut().remove(key);
+        }
+    }
+}
+
+/// A single setting the Settings section can persist — either a `[ui]` field or a
+/// top-level key (`log_level` / `log_file`). One enum so the whole form saves in
+/// ONE format-preserving write (see [`save_setting_fields`]): comments and every
+/// unrelated key/section stay intact across the save — and across `cargo install`
+/// upgrades, since the file is edited in place, never rewritten wholesale.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SettingField {
+    /// A `[ui]` field (theme / refresh_secs / open_browser_command).
+    Ui(UiField),
+    /// Top-level `log_level`; `None`/empty clears it.
+    LogLevel(Option<String>),
+    /// Top-level `log_file`; `None`/empty clears it.
+    LogFile(Option<String>),
+}
+
+/// Apply one [`SettingField`] to a format-preserving document.
+pub fn set_setting_field(doc: &mut DocumentMut, field: &SettingField) {
+    match field {
+        SettingField::Ui(f) => set_ui_field(doc, f),
+        SettingField::LogLevel(v) => set_top_string(doc, "log_level", v.as_deref()),
+        SettingField::LogFile(v) => set_top_string(doc, "log_file", v.as_deref()),
+    }
+}
+
+/// Persist several settings in ONE format-preserving write — like
+/// [`save_ui_fields`] but spanning `[ui]` and the top-level log keys, so the
+/// Settings form's whole save is atomic and comment/key-preserving.
+pub fn save_setting_fields(path: &Path, fields: &[SettingField]) -> Result<()> {
+    let mut doc = load_doc_or_new(path)?;
+    for field in fields {
+        set_setting_field(&mut doc, field);
+    }
+    write_doc(path, &doc)?;
+    Ok(())
+}
+
 /// Build the argv for a custom browser-open command, or `None` to fall back to the
 /// OS default. PURE + testable: when `command` is blank, returns `None` (the
 /// caller uses `open::that`); otherwise splits the command on whitespace into
@@ -1497,6 +1546,60 @@ url = \"https://a\"
         assert_eq!(cfg.ui.theme, "nord");
         assert_eq!(cfg.ui.refresh_secs, Some(20));
         assert_eq!(cfg.ui.open_browser_command, "firefox");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn save_setting_fields_preserves_comments_unknown_keys_and_writes_log_fields() {
+        // Upgrade-safety (the user's explicit requirement): a save must never blow
+        // away the user's file. Comments, unknown/future keys, and unrelated
+        // sections all survive, and the write is format-preserving (toml_edit), not
+        // a wholesale rewrite.
+        let dir = std::env::temp_dir().join(format!("nbox-setfields-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("config.toml");
+        std::fs::write(
+            &path,
+            "# my notes\n\
+             active_profile = \"a\"\n\
+             future_key = \"keep\"  # unknown to this build\n\
+             \n\
+             [ui]\n\
+             theme = \"default\"\n\
+             \n\
+             [profiles.a]\n\
+             url = \"https://a\"\n",
+        )
+        .unwrap();
+        save_setting_fields(
+            &path,
+            &[
+                SettingField::Ui(UiField::Theme("nord".into())),
+                SettingField::LogLevel(Some("debug".into())),
+                SettingField::LogFile(Some("/tmp/nbox.log".into())),
+            ],
+        )
+        .unwrap();
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(out.contains("# my notes"), "top comment preserved");
+        assert!(
+            out.contains("# unknown to this build"),
+            "inline comment preserved"
+        );
+        assert!(
+            out.contains("future_key = \"keep\""),
+            "unknown/future key preserved across the save"
+        );
+        assert!(out.contains("[profiles.a]"), "profile section preserved");
+        let cfg: Config = toml::from_str(&out).unwrap();
+        assert_eq!(cfg.ui.theme, "nord");
+        assert_eq!(cfg.log_level.as_deref(), Some("debug"));
+        assert_eq!(cfg.log_file.as_deref(), Some("/tmp/nbox.log"));
+        // Clearing a log field removes just that key; the other stays.
+        save_setting_fields(&path, &[SettingField::LogLevel(None)]).unwrap();
+        let out2 = std::fs::read_to_string(&path).unwrap();
+        assert!(!out2.contains("log_level"), "None clears the key");
+        assert!(out2.contains("log_file"), "the other log key is untouched");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
