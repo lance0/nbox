@@ -29,9 +29,8 @@ use the next SemVer version in both `Cargo.toml` and `Cargo.lock`.
 
 ## Cut a release
 
-The toolchain floor is **Rust 1.95** (`rust-version` in `Cargo.toml`; the `cache`
-feature pulls `libsqlite3-sys`, whose build script needs `cfg_select!`, stable
-since 1.95). CI enforces it via the `msrv` job.
+The toolchain floor is **Rust 1.88** (`rust-version` in `Cargo.toml`; set by the
+`let`-chains used throughout, stable since 1.88). CI enforces it via the `msrv` job.
 
 1. **Pre-flight (CI enforces these):**
    ```bash

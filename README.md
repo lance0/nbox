@@ -179,16 +179,23 @@ git clone https://github.com/lance0/nbox
 cd nbox && cargo install --path .
 ```
 
-### Optional Features
+### Build Features
+
+`cargo install nbox` builds the **canonical single binary** — clipboard, the MCP
+server (stdio + HTTP transport), OS-keyring token storage, and update checks are
+all on by default. There are no feature-variant builds to choose between.
 
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `clipboard` | Yes | Copy values with `y` in the TUI (via `arboard`) |
-| `cache` | No | Local SQLite cache (`rusqlite`) |
-| `updates` | No | GitHub update notifications |
+| `http` | Yes | `nbox serve --http` loopback MCP transport (+ OIDC) |
+| `keyring` | Yes | OS-keyring token storage (`nbox config token`) |
+| `updates` | Yes | GitHub update notifications |
+| `keyring-secret-service` | No | Linux D-Bus (Secret Service) keyring backend — for desktop packagers |
 
 ```bash
-cargo install nbox --features cache,updates
+# Lean stdio-only build (drops all of the above):
+cargo install nbox --no-default-features
 ```
 
 ### Shell Completions

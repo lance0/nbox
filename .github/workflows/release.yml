@@ -89,13 +89,16 @@ jobs:
         if: ${{ !matrix.cross && contains(matrix.target, 'musl') }}
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
+      # The default feature set IS the canonical single binary (clipboard, http,
+      # keyring, updates) — every platform ships the same features, no variants.
+      # `keyring-secret-service` (D-Bus) stays off so the musl build links static.
       - name: Build (native)
         if: ${{ !matrix.cross }}
-        run: cargo build --release --locked --features updates --target ${{ matrix.target }}
+        run: cargo build --release --locked --target ${{ matrix.target }}
 
       - name: Build (cross)
         if: matrix.cross
-        run: cross build --release --locked --features updates --target ${{ matrix.target }}
+        run: cross build --release --locked --target ${{ matrix.target }}
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
@@ -142,7 +145,7 @@ jobs:
             ${{ runner.os }}-cargo-
 
       - name: Build
-        run: cargo build --release --locked --features updates
+        run: cargo build --release --locked
 
       - name: Generate completions and man pages
         run: |

@@ -71,6 +71,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   thread, only on a TTY and never in `--json`/piped output, so scripts are
   unaffected; `--no-default-features` still opts out. (Part of shipping one
   canonical full-featured binary per platform.)
+- **MSRV lowered to Rust 1.88** (was 1.95). The 1.95 floor was a leftover from the
+  (since-removed) on-disk cache feature's `rusqlite`/`libsqlite3-sys`; the only
+  remaining things forcing 1.95 were two `Duration::from_mins(1)` calls, now
+  written as `from_secs(60)`. nbox now builds on the floor the `let`-chains set
+  (1.88). Release builds derive the canonical feature set from `default` (the
+  redundant `--features updates` is gone — `updates` is already a default feature).
 
 ### Fixed
 - TUI footer/navigation UX: theme changes now apply visually without replacing the
@@ -83,6 +89,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   of hugging the terminal's left edge.
 - TUI detail actions: `o` and `y` now target the loaded detail object on the
   Detail screen instead of falling through to the hidden Home selection.
+- Docs referenced a removed `cache` build feature (`cargo install nbox --features
+  cache,...`) that no longer exists and would fail; the README and CONTRIBUTING
+  now document the actual single-binary feature set.
 
 ## [0.2.0] - 2026-06-18
 

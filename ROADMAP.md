@@ -171,10 +171,12 @@ Consolidated future scope:
   object (and vice versa). Cache is now complete across surfaces (TUI detail + preview, settings toggle,
   MCP reads + clear; CLI intentionally none). Optional follow-up: ☐ MCP `cached_at`/age annotation
   (short TTL + the clear tool already cover most of it).
-- ☐ **Single binary.** Ship one canonical full-featured binary per platform: the default feature set
+- ☑ **Single binary.** One canonical full-featured binary per platform: the default feature set
   carries every cross-platform user feature (`http`, native `keyring`, `clipboard`, `updates`), no
   feature-variant artifacts. `--no-default-features` stays a dev-only lean build;
-  `keyring-secret-service` (D-Bus) stays off so the musl static build links clean.
+  `keyring-secret-service` (D-Bus) stays off so the musl static build links clean. Release builds derive
+  the feature set from `default` (no redundant `--features` flags). MSRV dropped 1.95 → 1.88 (the 1.95
+  floor was a leftover of the removed on-disk cache; stale `cache`-feature docs cleaned up).
 - ☐ Batch queries from a file (audits).
 - ☐ Configurable client concurrency for very large instances — `search` is a bounded fan-out and
   `list_all` is `max`-capped today; expose tuning only if a real instance needs it.

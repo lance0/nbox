@@ -241,7 +241,7 @@ impl RateLimiter {
         }
         Some(Self {
             limit: per_minute,
-            window: Duration::from_mins(1),
+            window: Duration::from_secs(60),
             state: Mutex::new(HashMap::new()),
         })
     }
