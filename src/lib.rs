@@ -26,6 +26,7 @@ use crate::netbox::search::{SearchFilters, SearchRequest};
 use crate::output::Format;
 use crate::output::plain::KeyValues;
 
+pub mod cache;
 pub mod cli;
 pub mod config;
 pub mod domain;
