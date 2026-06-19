@@ -445,12 +445,43 @@ pub async fn vrf_view_by_ref(
     Ok(VrfView::from_model(vrf))
 }
 
-/// A switchable section on a detail screen (e.g. a device's interfaces).
+/// One navigable row within a detail section: the display `text` and, when the
+/// row addresses an openable object, the `target` that `Enter` jumps to (the same
+/// `LoadDetail` jump the `R` modal uses). Rows with no target (headings, footers,
+/// "(none)" placeholders) still render but aren't selectable.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DetailRow {
+    pub text: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target: Option<(ObjectKind, u64)>,
+}
+
+impl DetailRow {
+    /// A selectable row that opens `kind`/`id` on `Enter`.
+    pub fn link(text: String, kind: ObjectKind, id: u64) -> Self {
+        Self {
+            text,
+            target: Some((kind, id)),
+        }
+    }
+
+    /// A plain, non-selectable row (heading, footer, placeholder).
+    pub fn plain(text: String) -> Self {
+        Self { text, target: None }
+    }
+}
+
+/// A switchable section on a detail screen (e.g. a device's interfaces). A
+/// section is rendered as scrollable text from `body`, unless `rows` is non-empty,
+/// in which case it's an interactive list (`j`/`k` move, `Enter` opens the row's
+/// target) — `body` is then the same content flattened to text for plain output.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetailTab {
     pub key: char,
     pub label: String,
     pub body: String,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub rows: Vec<DetailRow>,
 }
 
 /// A navigable reference from one detail object to a related one — the data
@@ -560,6 +591,18 @@ pub struct DetailView {
     pub body: String,
     pub tabs: Vec<DetailTab>,
     pub links: Vec<ObjectLink>,
+    /// A persistent header card rendered above the tab bar (fixed, not scrolled).
+    /// Empty for objects that don't use one — they render exactly as before.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub header: Vec<String>,
+    /// Label for the summary slot (`detail_tab == 0`) in the tab bar. Empty means
+    /// the default "summary"; a routing-context view sets e.g. "prefixes·12".
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub summary_label: String,
+    /// Navigable rows for the summary slot. When non-empty the summary renders as
+    /// an interactive list (like a [`DetailTab`] with rows) instead of `body` text.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub summary_rows: Vec<DetailRow>,
 }
 
 impl DetailView {
@@ -571,6 +614,9 @@ impl DetailView {
             body,
             tabs: Vec::new(),
             links: Vec::new(),
+            header: Vec::new(),
+            summary_label: String::new(),
+            summary_rows: Vec::new(),
         }
     }
 
@@ -581,6 +627,18 @@ impl DetailView {
 
     fn with_links(mut self, links: Vec<ObjectLink>) -> Self {
         self.links = links;
+        self
+    }
+
+    fn with_header(mut self, header: Vec<String>) -> Self {
+        self.header = header;
+        self
+    }
+
+    /// Set the summary slot's tab label and its navigable rows in one call.
+    fn with_summary(mut self, label: String, rows: Vec<DetailRow>) -> Self {
+        self.summary_label = label;
+        self.summary_rows = rows;
         self
     }
 }
@@ -601,6 +659,7 @@ async fn load_device_detail(
             key,
             label: label.to_string(),
             body,
+            rows: Vec::new(),
         })
         .collect();
     Ok((format!("device {name}"), detail.summary_plain(), tabs))
@@ -620,6 +679,7 @@ async fn rack_elevation_tab(client: &NetBoxClient, rack_id: u64, u_height: u32) 
         key: 'e',
         label: "elevation".to_string(),
         body,
+        rows: Vec::new(),
     }
 }
 
@@ -643,10 +703,10 @@ fn util_bar(pct: u8) -> String {
     bar
 }
 
-/// The compact VRF header card: identity + routing metadata in up to two lines
-/// (RD, tenant, route-target counts, enforce-unique; then the description). The
-/// full route targets live in the `targets` tab, not here.
-fn vrf_header_lines(v: &VrfView) -> String {
+/// The compact VRF header card: identity + routing metadata as fixed lines (RD,
+/// tenant, route-target counts, enforce-unique; then the description). The full
+/// route targets live in the `targets` tab, not here. Rendered above the tab bar.
+fn vrf_header_lines(v: &VrfView) -> Vec<String> {
     let mut top: Vec<String> = vec![format!("RD {}", v.rd.as_deref().unwrap_or("—"))];
     if let Some(t) = &v.tenant {
         top.push(format!("Tenant {t}"));
@@ -661,65 +721,85 @@ fn vrf_header_lines(v: &VrfView) -> String {
     if let Some(eu) = v.enforce_unique {
         top.push(format!("enforce-uniq {}", if eu { "✓" } else { "✗" }));
     }
-    let mut out = top.join("   ");
+    let mut lines = vec![top.join("   ")];
     if let Some(d) = &v.description {
-        out.push('\n');
-        out.push_str(d);
+        lines.push(d.clone());
     }
-    out
+    lines
 }
 
-/// Render VRF-scoped prefixes as an indented tree (NetBox returns them in tree
-/// order with a per-VRF depth). A utilization bar is shown only when one is known
-/// (a leaf has none) — otherwise the row falls back to its status/description so
-/// it never displays a fake 0% bar.
-fn vrf_prefix_section(nodes: &[PrefixNode], total: u64) -> String {
-    use std::fmt::Write as _;
+/// Build the VRF-scoped prefixes as navigable rows: an indented tree (NetBox
+/// returns prefixes in tree order with a per-VRF depth), each row opening that
+/// prefix's detail on `Enter`. A utilization bar shows only when one is known (a
+/// leaf has none) — otherwise the row falls back to status/description so it never
+/// shows a fake 0% bar.
+fn vrf_prefix_rows(nodes: &[PrefixNode], total: u64) -> Vec<DetailRow> {
     if nodes.is_empty() {
-        return "Prefixes (0)\n  (none in this VRF)".to_string();
+        return vec![DetailRow::plain("(no prefixes in this VRF)".to_string())];
     }
-    let mut out = format!("Prefixes ({total})\n");
-    for n in nodes {
-        let label = format!("{}{}", "  ".repeat(n.depth as usize + 1), n.prefix);
-        let status = n.status.as_deref().unwrap_or("");
-        let tail = match n.utilization {
-            Some(pct) => format!("{}  {pct}%", util_bar(pct)),
-            None if !n.description.is_empty() => n.description.clone(),
-            None => String::new(),
-        };
-        let _ = writeln!(out, "{label:<28}{status:<10}{tail}");
-    }
+    let mut rows: Vec<DetailRow> = nodes
+        .iter()
+        .map(|n| {
+            let label = format!("{}{}", "  ".repeat(n.depth as usize + 1), n.prefix);
+            let status = n.status.as_deref().unwrap_or("");
+            let tail = match n.utilization {
+                Some(pct) => format!("{}  {pct}%", util_bar(pct)),
+                None if !n.description.is_empty() => n.description.clone(),
+                None => String::new(),
+            };
+            DetailRow::link(
+                format!("{label:<28}{status:<10}{tail}")
+                    .trim_end()
+                    .to_string(),
+                ObjectKind::Prefix,
+                n.id,
+            )
+        })
+        .collect();
     if total as usize > nodes.len() {
-        let shown = nodes.len();
-        let _ = write!(out, "  … {} more (showing {shown})", total as usize - shown);
+        rows.push(DetailRow::plain(format!(
+            "… {} more (showing {})",
+            total as usize - nodes.len(),
+            nodes.len()
+        )));
     }
-    out
+    rows
 }
 
-/// Render the VRF-scoped IP addresses as a flat list (address + status/DNS).
-fn vrf_addresses_section(ips: &[IpAddress], total: u64) -> String {
-    use std::fmt::Write as _;
+/// Build the VRF-scoped IP addresses as navigable rows (address + status/DNS),
+/// each opening that address's detail on `Enter`.
+fn vrf_address_rows(ips: &[IpAddress], total: u64) -> Vec<DetailRow> {
     if ips.is_empty() {
-        return "Addresses (0)\n  (none in this VRF)".to_string();
+        return vec![DetailRow::plain("(no addresses in this VRF)".to_string())];
     }
-    let mut out = format!("Addresses ({total})\n");
-    for ip in ips {
-        let note = ip
-            .dns_name
-            .as_deref()
-            .filter(|s| !s.is_empty())
-            .map(ToString::to_string)
-            .or_else(|| ip.status.as_ref().map(|c| c.value.clone()))
-            .unwrap_or_default();
-        let _ = writeln!(out, "  {:<24}{note}", ip.address);
-    }
+    let mut rows: Vec<DetailRow> = ips
+        .iter()
+        .map(|ip| {
+            let note = ip
+                .dns_name
+                .as_deref()
+                .filter(|s| !s.is_empty())
+                .map(ToString::to_string)
+                .or_else(|| ip.status.as_ref().map(|c| c.value.clone()))
+                .unwrap_or_default();
+            DetailRow::link(
+                format!("{:<24}{note}", ip.address).trim_end().to_string(),
+                ObjectKind::IpAddress,
+                ip.id,
+            )
+        })
+        .collect();
     if total as usize > ips.len() {
-        let _ = write!(out, "  … {} more", total as usize - ips.len());
+        rows.push(DetailRow::plain(format!(
+            "… {} more",
+            total as usize - ips.len()
+        )));
     }
-    out
+    rows
 }
 
-/// Render the VRF's import/export route targets.
+/// Render the VRF's import/export route targets as plain text (route targets have
+/// no detail view, so this tab isn't navigable).
 fn vrf_targets_section(v: &VrfView) -> String {
     use std::fmt::Write as _;
     if v.import_targets.is_empty() && v.export_targets.is_empty() {
@@ -737,48 +817,54 @@ fn vrf_targets_section(v: &VrfView) -> String {
     out
 }
 
-/// Build a VRF's routing-context detail: a compact header card + its prefix tree
-/// as the body, with `addresses` and `targets` tabs. The scoped sections are
-/// fetched best-effort and capped at [`VRF_SECTION_CAP`].
-async fn load_vrf_detail(
-    client: &NetBoxClient,
-    vrf: Vrf,
-) -> Result<(String, String, Vec<DetailTab>)> {
-    let vrf_id = vrf.id;
+/// Flatten navigable rows to a plain-text body (one row per line) — the text
+/// fallback that non-interactive renderers and serialized views read.
+fn rows_to_text(rows: &[DetailRow]) -> String {
+    rows.iter()
+        .map(|r| r.text.as_str())
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Build a VRF's routing-context detail: a fixed header card over the VRF's
+/// prefix tree (the summary slot, navigable), plus `addresses` (navigable) and
+/// `targets` tabs. Scoped sections are fetched best-effort, capped at
+/// [`VRF_SECTION_CAP`]. Returns the complete [`DetailView`].
+async fn load_vrf_detail_view(client: &NetBoxClient, vrf: Vrf) -> Result<DetailView> {
+    let id = vrf.id;
+    let links = vrf_links(&vrf);
     let name = vrf.name.clone();
     let view = VrfView::from_model(vrf);
+    let header = vrf_header_lines(&view);
 
     let prefixes: Vec<Prefix> = client
         .list_all(
             Endpoint::Prefixes,
-            vec![("vrf_id", vrf_id.to_string())],
+            vec![("vrf_id", id.to_string())],
             VRF_SECTION_CAP,
         )
         .await
         .unwrap_or_default();
     let prefix_total = view.prefix_count.unwrap_or(prefixes.len() as u64);
-    let nodes = build_nodes(prefixes);
+    let prefix_rows = vrf_prefix_rows(&build_nodes(prefixes), prefix_total);
 
     let ips: Vec<IpAddress> = client
         .list_all(
             Endpoint::IpAddresses,
-            vec![("vrf_id", vrf_id.to_string())],
+            vec![("vrf_id", id.to_string())],
             VRF_SECTION_CAP,
         )
         .await
         .unwrap_or_default();
     let ip_total = view.ipaddress_count.unwrap_or(ips.len() as u64);
+    let address_rows = vrf_address_rows(&ips, ip_total);
 
-    let body = format!(
-        "{}\n\n{}",
-        vrf_header_lines(&view),
-        vrf_prefix_section(&nodes, prefix_total)
-    );
     let tabs = vec![
         DetailTab {
             key: 'a',
             label: format!("addresses·{ip_total}"),
-            body: vrf_addresses_section(&ips, ip_total),
+            body: rows_to_text(&address_rows),
+            rows: address_rows,
         },
         DetailTab {
             key: 't',
@@ -787,9 +873,20 @@ async fn load_vrf_detail(
                 view.import_targets.len() + view.export_targets.len()
             ),
             body: vrf_targets_section(&view),
+            rows: Vec::new(),
         },
     ];
-    Ok((format!("vrf {name}"), body, tabs))
+
+    Ok(DetailView::new(
+        ObjectKind::Vrf,
+        id,
+        format!("vrf {name}"),
+        rows_to_text(&prefix_rows),
+    )
+    .with_tabs(tabs)
+    .with_links(links)
+    .with_header(header)
+    .with_summary(format!("prefixes·{prefix_total}"), prefix_rows))
 }
 
 pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Result<DetailView> {
@@ -932,10 +1029,9 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
         }
         ObjectKind::Vrf => {
             let vrf: Vrf = client.get(&format!("/api/ipam/vrfs/{id}/"), &[]).await?;
-            links = vrf_links(&vrf);
-            let (title, body, vrf_tabs) = load_vrf_detail(client, vrf).await?;
-            tabs = vrf_tabs;
-            (title, body)
+            // The VRF view sets a header card + navigable summary rows, so it
+            // builds the whole DetailView itself rather than the (title, body) pair.
+            return load_vrf_detail_view(client, vrf).await;
         }
     };
     Ok(DetailView::new(kind, id, title, body)
@@ -1161,11 +1257,8 @@ pub async fn load_detail_by_ref(
                 .vrf_by_ref(value)
                 .await?
                 .with_context(|| format!("no vrf matched \"{value}\""))?;
-            let id = vrf.id;
-            links = vrf_links(&vrf);
-            let (title, body, vrf_tabs) = load_vrf_detail(client, vrf).await?;
-            tabs = vrf_tabs;
-            (id, title, body)
+            // The VRF view builds the whole DetailView itself (header + rows).
+            return load_vrf_detail_view(client, vrf).await;
         }
     };
     Ok(DetailView::new(kind, id, title, body)
@@ -1357,6 +1450,7 @@ mod tests {
             key: 'i',
             label: "interfaces".into(),
             body: "eth0".into(),
+            rows: Vec::new(),
         }])
         .with_links(vec![ObjectLink {
             kind: ObjectKind::Site,

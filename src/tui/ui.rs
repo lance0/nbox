@@ -1614,49 +1614,127 @@ fn render_config_profiles(
 }
 
 fn render_detail(frame: &mut Frame, area: Rect, app: &mut App) {
-    // Inner height (rows for content) is the pane minus the top/bottom borders.
-    // Stash it so the pure scroll handler can clamp at the bottom, and re-clamp
-    // the current offset in case the pane just shrank under it.
     let inner_height = area.height.saturating_sub(2);
-    app.sync_detail_viewport(inner_height);
-
-    let theme = &app.theme;
-    let title = match &app.detail {
-        Some(d) => d.title.as_str(),
-        None => "Detail",
+    // A routing-context view (e.g. a VRF) carries a header card that stays fixed
+    // above the tab bar while the section scrolls; the band holds the card lines, a
+    // divider, the tab bar, and a spacer. Other details have no header and render
+    // exactly as before (the tab bar scrolls with the body).
+    let has_header = app.detail.as_ref().is_some_and(|d| !d.header.is_empty());
+    let has_tabs = app.detail.as_ref().is_some_and(|d| !d.tabs.is_empty());
+    let band_h: u16 = if has_header {
+        let hlen = u16::try_from(app.detail.as_ref().map_or(0, |d| d.header.len())).unwrap_or(0);
+        hlen + 1 + if has_tabs { 2 } else { 0 }
+    } else {
+        0
     };
+    // The scroll area is the inner height minus the fixed band; stash it so the
+    // pure scroll/selection handlers clamp against the right viewport.
+    let scroll_h = inner_height.saturating_sub(band_h);
+    app.sync_detail_viewport(scroll_h);
+
+    let theme = app.theme.clone();
+    let title = app.detail.as_ref().map_or("Detail", |d| d.title.as_str());
     // The detail screen is the active view, so it wears the focused-border color
     // — the same focused/normal convention the home panes use (see `pane_border`).
     let mut block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {title} "))
-        .border_style(pane_border(theme, true))
+        .border_style(pane_border(&theme, true))
         .padding(Padding::horizontal(1));
-    // A scroll-position hint in the title corner when the body overflows, so a
+    // A scroll-position hint in the title corner when the section overflows, so a
     // long detail reads as scrollable rather than silently clipped.
-    if let Some(hint) = scroll_hint(app.detail_scroll, app.detail_content_lines(), inner_height) {
+    if let Some(hint) = scroll_hint(app.detail_scroll, app.detail_content_lines(), scroll_h) {
         block = block.title(Line::from(hint).right_aligned().style(theme.text_dim));
     }
 
-    let mut lines: Vec<Line> = Vec::new();
-    if let Some(d) = &app.detail
-        && !d.tabs.is_empty()
-    {
-        lines.push(tab_bar(app, d));
-        lines.push(Line::from(""));
+    if !has_header {
+        let mut lines: Vec<Line> = Vec::new();
+        if let Some(d) = &app.detail
+            && !d.tabs.is_empty()
+        {
+            lines.push(tab_bar(app, d));
+            lines.push(Line::from(""));
+        }
+        lines.extend(body_lines(app.detail_body(), &theme));
+        frame.render_widget(
+            Paragraph::new(lines)
+                .block(block)
+                .style(Style::default().fg(theme.text))
+                .scroll((app.detail_scroll, 0)),
+            area,
+        );
+        return;
     }
-    lines.extend(body_lines(app.detail_body(), theme));
 
+    // Header present: fixed band over a scrollable section.
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+    let chunks = Layout::vertical([Constraint::Length(band_h), Constraint::Min(0)]).split(inner);
+    let (band_area, body_area) = (chunks[0], chunks[1]);
+
+    let mut band: Vec<Line> = Vec::new();
+    if let Some(d) = &app.detail {
+        for (i, h) in d.header.iter().enumerate() {
+            let st = if i == 0 {
+                Style::default().fg(theme.text).add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text_dim)
+            };
+            band.push(Line::from(Span::styled(h.clone(), st)));
+        }
+        band.push(Line::from(Span::styled(
+            "─".repeat(band_area.width as usize),
+            Style::default()
+                .fg(theme.border)
+                .add_modifier(Modifier::DIM),
+        )));
+        if !d.tabs.is_empty() {
+            band.push(tab_bar(app, d));
+            band.push(Line::from(""));
+        }
+    }
     frame.render_widget(
-        Paragraph::new(lines)
-            .block(block)
+        Paragraph::new(band).style(Style::default().fg(theme.text)),
+        band_area,
+    );
+
+    // The section body: navigable rows (with the selection gutter/highlight) when
+    // it's an interactive list, else plain scrollable text.
+    let rows = app.active_detail_rows();
+    let body: Vec<Line> = if rows.is_empty() {
+        body_lines(app.detail_body(), &theme)
+    } else {
+        rows.iter()
+            .enumerate()
+            .map(|(i, r)| {
+                let selectable = r.target.is_some();
+                let selected = selectable && i == app.detail_row;
+                let gutter = if selected { "▌" } else { " " };
+                let st = if selected {
+                    Style::default().fg(theme.text).bg(theme.highlight_bg)
+                } else if selectable {
+                    Style::default().fg(theme.text)
+                } else {
+                    Style::default().fg(theme.text_dim)
+                };
+                Line::from(vec![
+                    Span::styled(gutter, Style::default().fg(theme.accent)),
+                    Span::styled(r.text.clone(), st),
+                ])
+            })
+            .collect()
+    };
+    frame.render_widget(
+        Paragraph::new(body)
             .style(Style::default().fg(theme.text))
             .scroll((app.detail_scroll, 0)),
-        area,
+        body_area,
     );
 }
 
-/// A tab bar like `[summary]  i:interfaces  p:ips`, active tab highlighted.
+/// A tab bar like `[summary]  a:addresses  t:targets`, active tab highlighted.
+/// The summary slot's label is `detail.summary_label` when set (e.g. a VRF's
+/// "prefixes·12"), otherwise the default "summary".
 fn tab_bar<'a>(app: &App, detail: &'a crate::domain::detail::DetailView) -> Line<'a> {
     let theme = &app.theme;
     let style = |active: bool| {
@@ -1666,7 +1744,15 @@ fn tab_bar<'a>(app: &App, detail: &'a crate::domain::detail::DetailView) -> Line
             Style::default().fg(theme.text_dim)
         }
     };
-    let mut spans = vec![Span::styled(" summary ", style(app.detail_tab == 0))];
+    let summary = if detail.summary_label.is_empty() {
+        "summary".to_string()
+    } else {
+        detail.summary_label.clone()
+    };
+    let mut spans = vec![Span::styled(
+        format!(" {summary} "),
+        style(app.detail_tab == 0),
+    )];
     for (i, tab) in detail.tabs.iter().enumerate() {
         spans.push(Span::raw(" "));
         spans.push(Span::styled(

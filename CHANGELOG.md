@@ -15,10 +15,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   resolved by `nbox open vrf/<ref>`, journalled (`nbox journal vrf/<ref>`), and
   fetched over MCP (`nbox_get` / `nbox://vrf/<ref>`). The VRF view normalizes RD,
   tenant, enforce-unique, import/export route targets, and the prefix/address
-  counts. In the TUI the detail opens as a routing context: a compact header card
+  counts. In the TUI the detail opens as a routing context: a fixed header card
   (RD · tenant · route-target counts · enforce-unique) over the VRF's prefix tree,
-  with `addresses` and `targets` tabs. Previously VRF was only a search *filter*
-  (`--vrf`) and an exact-by-RD lookup, never a navigable object.
+  with `addresses` and `targets` tabs. The prefix and address rows are navigable —
+  `j`/`k` move a cursor and `Enter` opens that prefix/IP (`b`/`Esc` returns), the
+  same drill the related-objects (`R`) jump performs. Previously VRF was only a
+  search *filter* (`--vrf`) and an exact-by-RD lookup, never a navigable object.
+- **Navigable detail sections.** Detail tabs can now be interactive lists (a row
+  cursor with `Enter` to open), not just scrollable text — the foundation the VRF
+  view's prefix tree and address list are built on. Sections without navigable rows
+  scroll exactly as before.
 - **Three-pane home (Navigation rail).** The home screen is now Nav │ Results │
   Detail. The left Nav rail browses by kind — Devices / Prefixes / IPs / VLANs /
   Sites / Racks — each with a domain-colored bullet and a **live object count**,

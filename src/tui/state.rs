@@ -11,7 +11,7 @@ use ratatui::widgets::TableState;
 
 use crate::cache::{Cache, Freshness};
 use crate::config::ProfileConfig;
-use crate::domain::detail::{DetailView, ObjectLink};
+use crate::domain::detail::{DetailRow, DetailView, ObjectLink};
 use crate::netbox::auth::AuthScheme;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::dashboard::DashboardData;
@@ -625,6 +625,11 @@ pub struct App {
     detail_view_state: std::collections::HashMap<(ObjectKind, u64), (usize, u16)>,
     /// Active detail tab: 0 = summary, n>0 = `detail.tabs[n-1]`.
     pub detail_tab: usize,
+    /// Selected row in an interactive detail section (a section with navigable
+    /// rows — e.g. a VRF's prefix tree). Indexes the active section's rows; `Enter`
+    /// opens the selected row's target. Ignored for plain text sections (which
+    /// scroll instead). Reset to the first selectable row on load and tab switch.
+    pub detail_row: usize,
     /// Vertical scroll offset (in lines) of the detail body. The pure scroll
     /// keys (j/k/g/G/PgUp/PgDn) own this; the render path feeds it straight to
     /// `Paragraph::scroll`. Reset to 0 on navigation and on a tab switch.
@@ -783,6 +788,7 @@ impl App {
             recent: Vec::new(),
             detail: None,
             detail_tab: 0,
+            detail_row: 0,
             detail_scroll: 0,
             detail_viewport: 0,
             preview_for: None,
@@ -1069,6 +1075,9 @@ impl App {
                             self.detail_view_state.get(&key).copied().unwrap_or((0, 0));
                         self.detail_tab = tab.min(max_tab);
                         self.detail_scroll = scroll.min(self.detail_max_scroll());
+                        // Position the row cursor on the first selectable row of the
+                        // active section (a no-op for plain text sections).
+                        self.reset_detail_row();
                         self.clear_status();
                     }
                     Err(e) => self.set_status(format!("error: {e:#}"), Severity::Error),
@@ -1398,12 +1407,32 @@ impl App {
             KeyCode::BackTab if self.screen == Screen::Home => self.cycle_focus(false),
             KeyCode::Tab if self.screen == Screen::Detail => self.cycle_detail_tab(true),
             KeyCode::BackTab if self.screen == Screen::Detail => self.cycle_detail_tab(false),
+            // A detail section's letter key jumps to that tab. Dynamic (driven by
+            // the loaded object's tabs) and placed ahead of the single-letter
+            // global actions so a VRF's `t` (targets) wins over `t` (theme) while
+            // on that detail; a key that isn't a tab of the current object falls
+            // through to its global binding.
+            KeyCode::Char(c) if !ctrl && self.detail_has_tab_key(c) => self.select_detail_tab(c),
             // The Nav pane owns movement when focused: j/k move the section cursor.
             KeyCode::Char('j') | KeyCode::Down if self.on_nav() => self.nav_move(true),
             KeyCode::Char('k') | KeyCode::Up if self.on_nav() => self.nav_move(false),
             KeyCode::Char('g') | KeyCode::Home if self.on_nav() => self.nav_selected = 0,
             KeyCode::Char('G') | KeyCode::End if self.on_nav() => {
                 self.nav_selected = NAV_SECTIONS.len() - 1;
+            }
+            // An interactive detail section (e.g. a VRF's prefix tree) takes the
+            // movement keys to move its row cursor, ahead of the body-scroll route.
+            KeyCode::Char('j') | KeyCode::Down if self.detail_list_active() => {
+                self.detail_row_move(true);
+            }
+            KeyCode::Char('k') | KeyCode::Up if self.detail_list_active() => {
+                self.detail_row_move(false);
+            }
+            KeyCode::Char('g') | KeyCode::Home if self.detail_list_active() => {
+                self.detail_row_first();
+            }
+            KeyCode::Char('G') | KeyCode::End if self.detail_list_active() => {
+                self.detail_row_last();
             }
             // Movement keys route to whatever owns scrolling/selection right now:
             // the detail screen scrolls its body; on Home the focused pane decides
@@ -1461,6 +1490,26 @@ impl App {
                         force: false,
                     }];
                 }
+                // In an interactive detail section, Enter opens the selected row —
+                // pushing the current object onto the back-stack so `b`/`Esc`
+                // returns, the same jump the `R` related-objects modal performs.
+                if self.screen == Screen::Detail
+                    && let Some((kind, id)) = self.detail_row_target()
+                {
+                    if self.fence_during_switch() {
+                        return Vec::new();
+                    }
+                    if let Some(d) = &self.detail {
+                        self.detail_nav.push((d.kind, d.id));
+                    }
+                    self.set_status("loading…", Severity::Info);
+                    return vec![AppCommand::LoadDetail {
+                        kind,
+                        id,
+                        req: 0,
+                        force: false,
+                    }];
+                }
             }
             // Related-objects jump list (cross-object navigation) — detail only.
             KeyCode::Char('R') if self.screen == Screen::Detail => self.open_related_modal(),
@@ -1476,9 +1525,6 @@ impl App {
                 if let Some(target) = self.action_target() {
                     return vec![AppCommand::Copy(target.label)];
                 }
-            }
-            KeyCode::Char(c @ ('i' | 'p' | 'c' | 'v' | 's' | 'e')) if !ctrl => {
-                self.select_detail_tab(c);
             }
             _ => {}
         }
@@ -3031,6 +3077,16 @@ impl App {
 
     /// Switch the active detail tab by its key (`i`/`p`/`c`/`v`); pressing the
     /// active tab's key again returns to the summary. No-op off the detail screen.
+    /// True when the active detail object has a tab bound to `key` — the guard for
+    /// the contextual tab-jump keymap (so it only claims keys that are real tabs).
+    fn detail_has_tab_key(&self, key: char) -> bool {
+        self.screen == Screen::Detail
+            && self
+                .detail
+                .as_ref()
+                .is_some_and(|d| d.tabs.iter().any(|t| t.key == key))
+    }
+
     fn select_detail_tab(&mut self, key: char) {
         if self.screen != Screen::Detail {
             return;
@@ -3040,8 +3096,10 @@ impl App {
         {
             let target = pos + 1;
             self.detail_tab = if self.detail_tab == target { 0 } else { target };
-            // Each tab (and the summary) starts scrolled to the top.
+            // Each tab (and the summary) starts scrolled to the top, cursor on the
+            // first selectable row of the new section.
             self.detail_scroll = 0;
+            self.reset_detail_row();
         }
     }
 
@@ -3065,8 +3123,99 @@ impl App {
         } else {
             (self.detail_tab + n - 1) % n
         };
-        // Each tab (and the summary) starts scrolled to the top.
+        // Each tab (and the summary) starts scrolled to the top, cursor on the
+        // first selectable row of the new section.
         self.detail_scroll = 0;
+        self.reset_detail_row();
+    }
+
+    // --- Interactive detail rows ---------------------------------------------
+    //
+    // Some detail sections (e.g. a VRF's prefix tree, its addresses) are lists of
+    // navigable rows rather than scrollable text: `j`/`k` move a cursor and `Enter`
+    // opens the selected row's target — the same drill the `R` modal does, reusing
+    // the `b`/`Esc` back-stack. A section with no navigable rows scrolls as before.
+
+    /// The active detail section's rows (summary slot when `detail_tab == 0`, else
+    /// the tab's). Empty for plain text sections. Public for the renderer.
+    pub fn active_detail_rows(&self) -> &[DetailRow] {
+        const EMPTY: &[DetailRow] = &[];
+        match &self.detail {
+            Some(d) if self.detail_tab == 0 => &d.summary_rows,
+            Some(d) => d.tabs.get(self.detail_tab - 1).map_or(EMPTY, |t| &t.rows),
+            None => EMPTY,
+        }
+    }
+
+    /// Row indices in the active section that can be opened (have a target).
+    fn selectable_detail_rows(&self) -> Vec<usize> {
+        self.active_detail_rows()
+            .iter()
+            .enumerate()
+            .filter(|(_, r)| r.target.is_some())
+            .map(|(i, _)| i)
+            .collect()
+    }
+
+    /// True when the detail screen's active section is an interactive list — at
+    /// least one selectable row. Movement keys then move the cursor (not scroll).
+    fn detail_list_active(&self) -> bool {
+        self.screen == Screen::Detail
+            && self.active_detail_rows().iter().any(|r| r.target.is_some())
+    }
+
+    /// Place the cursor on the first selectable row of the active section (or 0).
+    fn reset_detail_row(&mut self) {
+        self.detail_row = self.selectable_detail_rows().first().copied().unwrap_or(0);
+    }
+
+    /// The (kind, id) the selected detail row opens, if any.
+    fn detail_row_target(&self) -> Option<(ObjectKind, u64)> {
+        self.active_detail_rows()
+            .get(self.detail_row)
+            .and_then(|r| r.target)
+    }
+
+    /// Move the cursor to the next/previous selectable row, keeping it on screen.
+    fn detail_row_move(&mut self, forward: bool) {
+        let sel = self.selectable_detail_rows();
+        let next = if forward {
+            sel.iter().copied().find(|&i| i > self.detail_row)
+        } else {
+            sel.iter().rev().copied().find(|&i| i < self.detail_row)
+        };
+        if let Some(i) = next {
+            self.detail_row = i;
+            self.ensure_detail_row_visible();
+        }
+    }
+
+    fn detail_row_first(&mut self) {
+        if let Some(&i) = self.selectable_detail_rows().first() {
+            self.detail_row = i;
+            self.ensure_detail_row_visible();
+        }
+    }
+
+    fn detail_row_last(&mut self) {
+        if let Some(&i) = self.selectable_detail_rows().last() {
+            self.detail_row = i;
+            self.ensure_detail_row_visible();
+        }
+    }
+
+    /// Scroll the list just enough to keep the selected row within the viewport.
+    /// In a list section the scroll offset indexes rows directly (the header/tab
+    /// bar sit in a fixed band above the scroll area), so the row index is the
+    /// target line.
+    fn ensure_detail_row_visible(&mut self) {
+        let vp = self.detail_viewport.max(1);
+        let row = u16::try_from(self.detail_row).unwrap_or(u16::MAX);
+        if row < self.detail_scroll {
+            self.detail_scroll = row;
+        } else if row >= self.detail_scroll.saturating_add(vp) {
+            self.detail_scroll = row.saturating_sub(vp).saturating_add(1);
+        }
     }
 
     /// The body text for the active detail tab (summary when `detail_tab` is 0).
@@ -3085,6 +3234,17 @@ impl App {
     /// body's lines, plus the two-row tab bar (the bar + a blank spacer) when a
     /// device view has tabs. Mirrors what `render_detail` paints.
     pub fn detail_content_lines(&self) -> usize {
+        // A header card lifts the header + tab bar into a fixed band (see
+        // `render_detail`), so the scroll area is just the active section's content
+        // — its navigable rows, or its body lines for a plain text section.
+        if matches!(&self.detail, Some(d) if !d.header.is_empty()) {
+            let rows = self.active_detail_rows();
+            return if rows.is_empty() {
+                self.detail_body().lines().count()
+            } else {
+                rows.len()
+            };
+        }
         let body_lines = self.detail_body().lines().count();
         let tab_rows = match &self.detail {
             Some(d) if !d.tabs.is_empty() => 2,
@@ -3560,6 +3720,9 @@ mod tests {
             body: String::new(),
             tabs: Vec::new(),
             links: Vec::new(),
+            header: Vec::new(),
+            summary_label: String::new(),
+            summary_rows: Vec::new(),
         }
     }
 
@@ -3674,6 +3837,110 @@ mod tests {
     fn detail_loaded(a: &mut App, result: anyhow::Result<DetailView>) {
         let req = a.detail_gen;
         a.handle_event(AppEvent::DetailLoaded { req, result });
+    }
+
+    #[test]
+    fn detail_rows_navigate_and_open() {
+        use crate::domain::detail::{DetailRow, DetailTab};
+        let mut a = app();
+        detail_loaded(
+            &mut a,
+            Ok(DetailView {
+                kind: ObjectKind::Vrf,
+                id: 4,
+                title: "vrf customer-prod".into(),
+                body: String::new(),
+                tabs: vec![DetailTab {
+                    key: 'a',
+                    label: "addresses·1".into(),
+                    body: String::new(),
+                    rows: vec![DetailRow::link(
+                        "10.0.0.1".into(),
+                        ObjectKind::IpAddress,
+                        11,
+                    )],
+                }],
+                links: Vec::new(),
+                header: vec!["RD 65000:100".into()],
+                summary_label: "prefixes·2".into(),
+                summary_rows: vec![
+                    DetailRow::link("10.0.0.0/24".into(), ObjectKind::Prefix, 21),
+                    DetailRow::link("10.0.1.0/24".into(), ObjectKind::Prefix, 22),
+                    DetailRow::plain("… 1 more".into()),
+                ],
+            }),
+        );
+        a.sync_detail_viewport(10);
+        // The cursor lands on the first selectable summary row.
+        assert_eq!(a.detail_row, 0);
+        // `j` advances to the next selectable row …
+        a.handle_event(press(KeyCode::Char('j')));
+        assert_eq!(a.detail_row, 1);
+        // … and stops before the non-selectable footer row.
+        a.handle_event(press(KeyCode::Char('j')));
+        assert_eq!(a.detail_row, 1);
+        // Enter opens the selected prefix (pushing the VRF onto the back-stack).
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(
+            matches!(
+                cmds.as_slice(),
+                [AppCommand::LoadDetail {
+                    kind: ObjectKind::Prefix,
+                    id: 22,
+                    ..
+                }]
+            ),
+            "got: {cmds:?}"
+        );
+        assert_eq!(a.detail_nav.last(), Some(&(ObjectKind::Vrf, 4)));
+    }
+
+    #[test]
+    fn detail_tab_switch_resets_row_cursor() {
+        use crate::domain::detail::{DetailRow, DetailTab};
+        let mut a = app();
+        detail_loaded(
+            &mut a,
+            Ok(DetailView {
+                kind: ObjectKind::Vrf,
+                id: 4,
+                title: "vrf v".into(),
+                body: String::new(),
+                tabs: vec![DetailTab {
+                    key: 'a',
+                    label: "addresses·2".into(),
+                    body: String::new(),
+                    rows: vec![
+                        DetailRow::link("10.0.0.1".into(), ObjectKind::IpAddress, 11),
+                        DetailRow::link("10.0.0.2".into(), ObjectKind::IpAddress, 12),
+                    ],
+                }],
+                links: Vec::new(),
+                header: vec!["RD 65000:100".into()],
+                summary_label: "prefixes·2".into(),
+                summary_rows: vec![
+                    DetailRow::link("10.0.0.0/24".into(), ObjectKind::Prefix, 21),
+                    DetailRow::link("10.0.1.0/24".into(), ObjectKind::Prefix, 22),
+                ],
+            }),
+        );
+        a.sync_detail_viewport(10);
+        a.handle_event(press(KeyCode::Char('j')));
+        assert_eq!(a.detail_row, 1);
+        // Switching to the addresses tab resets the cursor to its first row, and
+        // Enter there opens that address.
+        a.handle_event(press(KeyCode::Char('a')));
+        assert_eq!(a.detail_tab, 1);
+        assert_eq!(a.detail_row, 0);
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(matches!(
+            cmds.as_slice(),
+            [AppCommand::LoadDetail {
+                kind: ObjectKind::IpAddress,
+                id: 11,
+                ..
+            }]
+        ));
     }
 
     #[test]
@@ -4095,6 +4362,9 @@ mod tests {
                 body: "name: edge01".into(),
                 tabs: Vec::new(),
                 links: Vec::new(),
+                header: Vec::new(),
+                summary_label: String::new(),
+                summary_rows: Vec::new(),
             }),
         );
         assert_eq!(a.screen, Screen::Detail);
@@ -4145,6 +4415,9 @@ mod tests {
                 body: "asn: 64500\nrir: ARIN".into(),
                 tabs: Vec::new(),
                 links: Vec::new(),
+                header: Vec::new(),
+                summary_label: String::new(),
+                summary_rows: Vec::new(),
             }),
         );
         assert_eq!(a.screen, Screen::Detail);
@@ -4171,6 +4444,9 @@ mod tests {
                     body: String::new(),
                     tabs: Vec::new(),
                     links: Vec::new(),
+                    header: Vec::new(),
+                    summary_label: String::new(),
+                    summary_rows: Vec::new(),
                 }),
             );
             a.handle_event(press(KeyCode::Char('b')));
@@ -4412,6 +4688,9 @@ mod tests {
             body: String::new(),
             tabs: Vec::new(),
             links,
+            header: Vec::new(),
+            summary_label: String::new(),
+            summary_rows: Vec::new(),
         }
     }
 
@@ -4644,6 +4923,9 @@ mod tests {
                 body: String::new(),
                 tabs: Vec::new(),
                 links: Vec::new(),
+                header: Vec::new(),
+                summary_label: String::new(),
+                summary_rows: Vec::new(),
             }),
         );
         assert_eq!(a.screen, Screen::Detail);
@@ -5070,6 +5352,9 @@ mod tests {
                 body,
                 tabs: Vec::new(),
                 links: Vec::new(),
+                header: Vec::new(),
+                summary_label: String::new(),
+                summary_rows: Vec::new(),
             }),
         );
         a.sync_detail_viewport(viewport);
@@ -5201,6 +5486,9 @@ mod tests {
                 body: String::new(),
                 tabs: Vec::new(),
                 links: Vec::new(),
+                header: Vec::new(),
+                summary_label: String::new(),
+                summary_rows: Vec::new(),
             }),
         );
         a.sync_detail_viewport(10);
@@ -5230,6 +5518,9 @@ mod tests {
                 body: "a\nb\nc".into(),
                 tabs: Vec::new(),
                 links: Vec::new(),
+                header: Vec::new(),
+                summary_label: String::new(),
+                summary_rows: Vec::new(),
             }),
         );
         assert_eq!(a.detail_viewport, 0);
@@ -5257,6 +5548,9 @@ mod tests {
                 body: "fresh".into(),
                 tabs: Vec::new(),
                 links: Vec::new(),
+                header: Vec::new(),
+                summary_label: String::new(),
+                summary_rows: Vec::new(),
             }),
         );
         assert_eq!(a.detail_scroll, 0);
@@ -5283,8 +5577,12 @@ mod tests {
                     key: 'i',
                     label: "interfaces".into(),
                     body: long("iface"),
+                    rows: Vec::new(),
                 }],
                 links: Vec::new(),
+                header: Vec::new(),
+                summary_label: String::new(),
+                summary_rows: Vec::new(),
             }),
         );
         a.sync_detail_viewport(10);
@@ -5323,8 +5621,12 @@ mod tests {
                     key: 'i',
                     label: "interfaces".into(),
                     body: "iface body".into(),
+                    rows: Vec::new(),
                 }],
                 links: Vec::new(),
+                header: Vec::new(),
+                summary_label: String::new(),
+                summary_rows: Vec::new(),
             }),
         );
         a.sync_detail_viewport(10);
@@ -5358,6 +5660,7 @@ mod tests {
             key,
             label: label.into(),
             body: format!("{label} body"),
+            rows: Vec::new(),
         };
         let mut a = app();
         detail_loaded(
@@ -5369,6 +5672,9 @@ mod tests {
                 body: "summary".into(),
                 tabs: vec![tab('i', "interfaces"), tab('p', "ips"), tab('v', "vlans")],
                 links: Vec::new(),
+                header: Vec::new(),
+                summary_label: String::new(),
+                summary_rows: Vec::new(),
             }),
         );
         assert_eq!(a.screen, Screen::Detail);
@@ -5399,6 +5705,7 @@ mod tests {
             key,
             label: label.into(),
             body: format!("{label} body"),
+            rows: Vec::new(),
         };
         let mut a = app();
         detail_loaded(
@@ -5410,6 +5717,9 @@ mod tests {
                 body: "summary".into(),
                 tabs: vec![tab('i', "interfaces"), tab('p', "ips")],
                 links: Vec::new(),
+                header: Vec::new(),
+                summary_label: String::new(),
+                summary_rows: Vec::new(),
             }),
         );
         assert_eq!(a.detail_tab, 0, "starts on summary");
@@ -5441,6 +5751,9 @@ mod tests {
             body: body.into(),
             tabs: Vec::new(),
             links: Vec::new(),
+            header: Vec::new(),
+            summary_label: String::new(),
+            summary_rows: Vec::new(),
         }
     }
 
