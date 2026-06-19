@@ -204,12 +204,24 @@ pub struct ProfileConfig {
 ///
 /// REST remains the default and full-coverage backend. GraphQL is opt-in and may
 /// fall back to REST for operations NetBox does not expose through GraphQL.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum BackendKind {
     #[default]
     Rest,
     Graphql,
+}
+
+impl BackendKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rest => "rest",
+            Self::Graphql => "graphql",
+        }
+    }
 }
 
 impl ProfileConfig {

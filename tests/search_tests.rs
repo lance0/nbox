@@ -121,6 +121,105 @@ async fn mount_graphql_device_result(server: &MockServer) {
         .await;
 }
 
+fn graphql_list_field(name: &str, filter: &str) -> serde_json::Value {
+    json!({
+        "name": name,
+        "args": [
+            {
+                "name": "filters",
+                "type": {"kind": "INPUT_OBJECT", "name": filter}
+            },
+            {
+                "name": "pagination",
+                "type": {"kind": "INPUT_OBJECT", "name": "PaginationInput"}
+            }
+        ]
+    })
+}
+
+fn graphql_input_field(name: &str) -> serde_json::Value {
+    json!({
+        "name": name,
+        "type": {"kind": "INPUT_OBJECT", "name": "StringLookup"}
+    })
+}
+
+async fn mount_graphql_capabilities(
+    server: &MockServer,
+    fields: Vec<serde_json::Value>,
+    first_batch: serde_json::Value,
+    second_batch: serde_json::Value,
+) {
+    Mock::given(method("POST"))
+        .and(path("/graphql/"))
+        .and(body_string_contains("__schema"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "__schema": {
+                    "queryType": {
+                        "fields": fields
+                    }
+                }
+            }
+        })))
+        .mount(server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/graphql/"))
+        .and(body_string_contains("__type"))
+        .and(body_string_contains("DeviceFilter"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": first_batch
+        })))
+        .mount(server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/graphql/"))
+        .and(body_string_contains("__type"))
+        .and(body_string_contains("ASNFilter"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": second_batch
+        })))
+        .mount(server)
+        .await;
+}
+
+async fn mount_graphql_scope_refs(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/regions/"))
+        .and(query_param("slug", "scope-ref"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 7, "url": "http://nb/api/dcim/regions/7/", "name": "scope-ref", "slug": "scope-ref"}]
+        })))
+        .mount(server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/sites/"))
+        .and(query_param("slug", "iad1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 9, "url": "http://nb/api/dcim/sites/9/", "name": "iad1", "slug": "iad1"}]
+        })))
+        .mount(server)
+        .await;
+}
+
+async fn mount_graphql_vrf_ref(server: &MockServer) {
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/vrfs/3/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 3,
+            "url": "http://nb/api/ipam/vrfs/3/",
+            "name": "blue",
+            "rd": "65000:3"
+        })))
+        .mount(server)
+        .await;
+}
+
 fn graphql_request_query(request: &wiremock::Request) -> Option<String> {
     request
         .body_json::<serde_json::Value>()
@@ -128,6 +227,18 @@ fn graphql_request_query(request: &wiremock::Request) -> Option<String> {
         .get("query")?
         .as_str()
         .map(str::to_string)
+}
+
+fn graphql_request_for(requests: &[wiremock::Request], list_name: &str) -> serde_json::Value {
+    requests
+        .iter()
+        .filter_map(|request| request.body_json::<serde_json::Value>().ok())
+        .find(|body| {
+            body.get("query")
+                .and_then(serde_json::Value::as_str)
+                .is_some_and(|query| query.contains(list_name))
+        })
+        .unwrap_or_else(|| panic!("{list_name} query was sent"))
 }
 
 #[tokio::test]
@@ -332,6 +443,358 @@ async fn graphql_backend_propagates_graphql_errors() {
     assert!(
         format!("{err:#}").contains("field exploded"),
         "got: {err:#}"
+    );
+}
+
+#[tokio::test]
+async fn graphql_backend_null_data_without_errors_fails_closed() {
+    let server = MockServer::start().await;
+    mount_graphql_device_schema(&server).await;
+    Mock::given(method("POST"))
+        .and(path("/graphql/"))
+        .and(body_string_contains("device_list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": null
+        })))
+        .mount(&server)
+        .await;
+
+    let err = graphql_client(&server)
+        .search(SearchRequest {
+            query: "edge".into(),
+            limit: 10,
+            filters: SearchFilters::default(),
+        })
+        .await
+        .expect_err("null GraphQL data should fail the search branch");
+
+    assert!(
+        format!("{err:#}").contains("GraphQL response did not include data"),
+        "got: {err:#}"
+    );
+}
+
+#[tokio::test]
+async fn graphql_backend_prefix_and_cluster_use_polymorphic_scope_filters() {
+    let server = MockServer::start().await;
+    mount_graphql_scope_refs(&server).await;
+    mount_graphql_capabilities(
+        &server,
+        vec![
+            graphql_list_field("prefix_list", "PrefixFilter"),
+            graphql_list_field("cluster_list", "ClusterFilter"),
+        ],
+        json!({
+            "prefix": {
+                "inputFields": [
+                    graphql_input_field("q"),
+                    graphql_input_field("scope_type"),
+                    graphql_input_field("scope_id")
+                ]
+            }
+        }),
+        json!({
+            "cluster": {
+                "inputFields": [
+                    graphql_input_field("q"),
+                    graphql_input_field("scope_type"),
+                    graphql_input_field("scope_id")
+                ]
+            }
+        }),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql/"))
+        .and(body_string_contains("prefix_list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "prefix_list": [{
+                    "id": "11",
+                    "prefix": "10.20.0.0/16",
+                    "display": "10.20.0.0/16",
+                    "scope": {"id": "7", "name": "scope-ref", "display": "scope-ref", "slug": "scope-ref"}
+                }]
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql/"))
+        .and(body_string_contains("cluster_list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "cluster_list": [{
+                    "id": "12",
+                    "name": "cluster-a",
+                    "display": "cluster-a",
+                    "type": null,
+                    "scope": {"id": "7", "name": "scope-ref", "display": "scope-ref", "slug": "scope-ref"}
+                }]
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let results = graphql_client(&server)
+        .search(SearchRequest {
+            query: "scope".into(),
+            limit: 10,
+            filters: SearchFilters {
+                region: Some("scope-ref".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap()
+        .results;
+
+    assert!(
+        results.iter().any(|r| r.kind == ObjectKind::Prefix),
+        "got: {results:?}"
+    );
+    assert!(
+        results.iter().any(|r| r.kind == ObjectKind::Cluster),
+        "got: {results:?}"
+    );
+    let requests = server.received_requests().await.unwrap();
+    for list_name in ["prefix_list", "cluster_list"] {
+        let body = graphql_request_for(&requests, list_name);
+        assert_eq!(
+            body["variables"]["filters"]["scope_type"],
+            json!({"exact": "dcim.region"}),
+            "{list_name} should carry scope_type: {body:#}"
+        );
+        assert_eq!(
+            body["variables"]["filters"]["scope_id"],
+            json!({"exact": 7}),
+            "{list_name} should carry scope_id: {body:#}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn graphql_backend_ip_and_prefix_use_vrf_id_filter() {
+    let server = MockServer::start().await;
+    mount_graphql_vrf_ref(&server).await;
+    mount_graphql_capabilities(
+        &server,
+        vec![
+            graphql_list_field("ip_address_list", "IPAddressFilter"),
+            graphql_list_field("prefix_list", "PrefixFilter"),
+        ],
+        json!({
+            "ip": {
+                "inputFields": [
+                    graphql_input_field("q"),
+                    graphql_input_field("vrf_id")
+                ]
+            },
+            "prefix": {
+                "inputFields": [
+                    graphql_input_field("q"),
+                    graphql_input_field("vrf_id")
+                ]
+            }
+        }),
+        json!({}),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql/"))
+        .and(body_string_contains("ip_address_list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "ip_address_list": [{
+                    "id": "21",
+                    "address": "10.0.0.10/24",
+                    "display": "10.0.0.10/24",
+                    "dns_name": ""
+                }]
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql/"))
+        .and(body_string_contains("prefix_list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "prefix_list": [{
+                    "id": "22",
+                    "prefix": "10.0.0.0/24",
+                    "display": "10.0.0.0/24",
+                    "scope": null
+                }]
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let results = graphql_client(&server)
+        .search(SearchRequest {
+            query: "10.0".into(),
+            limit: 10,
+            filters: SearchFilters {
+                vrf: Some("3".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap()
+        .results;
+
+    assert!(
+        results.iter().any(|r| r.kind == ObjectKind::IpAddress),
+        "got: {results:?}"
+    );
+    assert!(
+        results.iter().any(|r| r.kind == ObjectKind::Prefix),
+        "got: {results:?}"
+    );
+    let requests = server.received_requests().await.unwrap();
+    for list_name in ["ip_address_list", "prefix_list"] {
+        let body = graphql_request_for(&requests, list_name);
+        assert_eq!(
+            body["variables"]["filters"]["vrf_id"],
+            json!({"exact": 3}),
+            "{list_name} should carry vrf_id: {body:#}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn graphql_backend_vlan_and_vm_use_site_id_filter() {
+    let server = MockServer::start().await;
+    mount_graphql_scope_refs(&server).await;
+    mount_graphql_capabilities(
+        &server,
+        vec![
+            graphql_list_field("vlan_list", "VLANFilter"),
+            graphql_list_field("virtual_machine_list", "VirtualMachineFilter"),
+        ],
+        json!({
+            "vlan": {
+                "inputFields": [
+                    graphql_input_field("q"),
+                    graphql_input_field("site_id")
+                ]
+            }
+        }),
+        json!({
+            "virtualMachine": {
+                "inputFields": [
+                    graphql_input_field("q"),
+                    graphql_input_field("site_id")
+                ]
+            }
+        }),
+    )
+    .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql/"))
+        .and(body_string_contains("vlan_list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "vlan_list": [{
+                    "id": "31",
+                    "vid": 1234,
+                    "name": "ci-vlan",
+                    "display": "ci-vlan",
+                    "site": {"id": "9", "name": "iad1", "display": "iad1", "slug": "iad1"},
+                    "group": null
+                }]
+            }
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/graphql/"))
+        .and(body_string_contains("virtual_machine_list"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "data": {
+                "virtual_machine_list": [{
+                    "id": "32",
+                    "name": "vm01",
+                    "display": "vm01",
+                    "cluster": null,
+                    "site": {"id": "9", "name": "iad1", "display": "iad1", "slug": "iad1"}
+                }]
+            }
+        })))
+        .mount(&server)
+        .await;
+
+    let results = graphql_client(&server)
+        .search(SearchRequest {
+            query: "ci".into(),
+            limit: 10,
+            filters: SearchFilters {
+                site: Some("iad1".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap()
+        .results;
+
+    assert!(
+        results.iter().any(|r| r.kind == ObjectKind::Vlan),
+        "got: {results:?}"
+    );
+    assert!(
+        results.iter().any(|r| r.kind == ObjectKind::Vm),
+        "got: {results:?}"
+    );
+    let requests = server.received_requests().await.unwrap();
+    for list_name in ["vlan_list", "virtual_machine_list"] {
+        let body = graphql_request_for(&requests, list_name);
+        assert_eq!(
+            body["variables"]["filters"]["site_id"],
+            json!({"exact": 9}),
+            "{list_name} should carry site_id: {body:#}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn graphql_backend_unsupported_filter_skips_without_unfiltered_query() {
+    let server = MockServer::start().await;
+    mount_graphql_capabilities(
+        &server,
+        vec![graphql_list_field("aggregate_list", "AggregateFilter")],
+        json!({
+            "aggregate": {
+                "inputFields": [
+                    graphql_input_field("q")
+                ]
+            }
+        }),
+        json!({}),
+    )
+    .await;
+
+    let outcome = graphql_client(&server)
+        .search(SearchRequest {
+            query: "10".into(),
+            limit: 10,
+            filters: SearchFilters {
+                role: Some("leaf".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+
+    assert!(outcome.results.is_empty(), "got: {:?}", outcome.results);
+    assert!(outcome.errors.is_empty(), "errors: {:?}", outcome.errors);
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests
+            .iter()
+            .filter_map(graphql_request_query)
+            .all(|query| !query.contains("aggregate_list")),
+        "aggregate_list should be skipped instead of queried without the unsupported role filter: {requests:#?}"
     );
 }
 

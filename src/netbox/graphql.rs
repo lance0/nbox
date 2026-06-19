@@ -106,6 +106,22 @@ impl GraphqlCapabilities {
     #[must_use]
     pub fn filter_value(&self, filter_type: &str, name: &str, value: Value) -> Option<Value> {
         let field = self.filters.get(filter_type)?.get(name)?;
+        if name == "scope_type" && field.named_type.as_deref() == Some("ContentTypeFilter") {
+            let Value::String(content_type) = value else {
+                return None;
+            };
+            let (app_label, model) = content_type.split_once('.')?;
+            return Some(json!({
+                "app_label": { "exact": app_label },
+                "model": { "exact": model },
+            }));
+        }
+        if field.named_type.as_deref() == Some("TreeNodeFilter") {
+            return Some(json!({
+                "id": coerce_list_item(value),
+                "match_type": "EXACT",
+            }));
+        }
         let value = normalize_filter_value(name, value, field);
         match field.shape {
             FilterShape::Scalar => Some(value),
@@ -299,13 +315,6 @@ impl GraphqlCapabilities {
         let mut filters = HashMap::new();
         for batch in batches {
             for (name, input) in batch.inputs() {
-                let Some(input) = input else {
-                    tracing::warn!(
-                        filter_type = name,
-                        "NetBox GraphQL filter type missing from introspection; filtered searches for this branch may be skipped"
-                    );
-                    continue;
-                };
                 let Some(fields) = input.input_fields else {
                     tracing::warn!(
                         filter_type = name,
@@ -339,23 +348,51 @@ impl GraphqlCapabilities {
 }
 
 impl FilterResponse {
-    fn inputs(self) -> [(&'static str, Option<InputType>); 14] {
-        [
-            ("DeviceFilter", self.device),
-            ("SiteFilter", self.site),
-            ("IPAddressFilter", self.ip),
-            ("PrefixFilter", self.prefix),
-            ("VLANFilter", self.vlan),
-            ("CircuitFilter", self.circuit),
-            ("AggregateFilter", self.aggregate),
-            ("ASNFilter", self.asn),
-            ("IPRangeFilter", self.ip_range),
-            ("TenantFilter", self.tenant),
-            ("ContactFilter", self.contact),
-            ("ProviderFilter", self.provider),
-            ("VirtualMachineFilter", self.virtual_machine),
-            ("ClusterFilter", self.cluster),
-        ]
+    fn inputs(self) -> Vec<(&'static str, InputType)> {
+        let mut inputs = Vec::new();
+        if let Some(input) = self.device {
+            inputs.push(("DeviceFilter", input));
+        }
+        if let Some(input) = self.site {
+            inputs.push(("SiteFilter", input));
+        }
+        if let Some(input) = self.ip {
+            inputs.push(("IPAddressFilter", input));
+        }
+        if let Some(input) = self.prefix {
+            inputs.push(("PrefixFilter", input));
+        }
+        if let Some(input) = self.vlan {
+            inputs.push(("VLANFilter", input));
+        }
+        if let Some(input) = self.circuit {
+            inputs.push(("CircuitFilter", input));
+        }
+        if let Some(input) = self.aggregate {
+            inputs.push(("AggregateFilter", input));
+        }
+        if let Some(input) = self.asn {
+            inputs.push(("ASNFilter", input));
+        }
+        if let Some(input) = self.ip_range {
+            inputs.push(("IPRangeFilter", input));
+        }
+        if let Some(input) = self.tenant {
+            inputs.push(("TenantFilter", input));
+        }
+        if let Some(input) = self.contact {
+            inputs.push(("ContactFilter", input));
+        }
+        if let Some(input) = self.provider {
+            inputs.push(("ProviderFilter", input));
+        }
+        if let Some(input) = self.virtual_machine {
+            inputs.push(("VirtualMachineFilter", input));
+        }
+        if let Some(input) = self.cluster {
+            inputs.push(("ClusterFilter", input));
+        }
+        inputs
     }
 }
 
@@ -404,6 +441,49 @@ mod tests {
         assert_eq!(
             caps.filter_value("DeviceFilter", "id", json!(1)),
             Some(json!({ "exact": 1 }))
+        );
+    }
+
+    #[test]
+    fn content_type_filter_splits_scope_type_into_app_and_model() {
+        let mut caps = GraphqlCapabilities::default();
+        caps.filters.insert(
+            "PrefixFilter".into(),
+            HashMap::from([(
+                "scope_type".into(),
+                FilterField {
+                    shape: FilterShape::Lookup,
+                    named_type: Some("ContentTypeFilter".into()),
+                },
+            )]),
+        );
+
+        assert_eq!(
+            caps.filter_value("PrefixFilter", "scope_type", json!("dcim.sitegroup")),
+            Some(json!({
+                "app_label": { "exact": "dcim" },
+                "model": { "exact": "sitegroup" }
+            }))
+        );
+    }
+
+    #[test]
+    fn tree_node_filter_shapes_id_with_exact_match_type() {
+        let mut caps = GraphqlCapabilities::default();
+        caps.filters.insert(
+            "DeviceFilter".into(),
+            HashMap::from([(
+                "location_id".into(),
+                FilterField {
+                    shape: FilterShape::Lookup,
+                    named_type: Some("TreeNodeFilter".into()),
+                },
+            )]),
+        );
+
+        assert_eq!(
+            caps.filter_value("DeviceFilter", "location_id", json!(7)),
+            Some(json!({ "id": "7", "match_type": "EXACT" }))
         );
     }
 

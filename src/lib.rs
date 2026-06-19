@@ -819,6 +819,7 @@ async fn run_status(ctx: &Ctx) -> Result<()> {
 
     let report = serde_json::json!({
         "netbox_url": url,
+        "backend": client.backend(),
         "netbox_version": status.netbox_version,
         "django_version": status.django_version,
         "python_version": status.python_version,
@@ -827,6 +828,7 @@ async fn run_status(ctx: &Ctx) -> Result<()> {
     emit(ctx, &report, || {
         let mut kv = KeyValues::new();
         kv.push("netbox_url", url.clone())
+            .push("backend", client.backend().as_str())
             .push("netbox_version", status.netbox_version.clone())
             .push_opt("django", status.django_version.clone())
             .push_opt("python", status.python_version.clone());

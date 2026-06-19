@@ -218,7 +218,7 @@ a directory — `nbox man man/` — to write the full set instead (`nbox.1` plus
 
 ```bash
 nbox                              # launch the TUI
-nbox status                       # connection + NetBox/Django/Python versions
+nbox status                       # connection + backend + NetBox/Django/Python versions
 nbox search <query> [--limit N] [--status/--site/--region/--site-group/--location/--tenant/--role/--tag <v>] [--vrf <id|rd|name>] [--cols a,b,c] [--partial]
                                   # --site/--region/--site-group/--location resolve the ref once and filter
                                   # scope-capable endpoints by resolved id (prefixes/clusters via
@@ -414,7 +414,7 @@ The tools are all annotated read-only:
 
 | Tool | What |
 |------|------|
-| `nbox_status` | Connection + NetBox/Django/Python versions. |
+| `nbox_status` | Connection + backend + NetBox/Django/Python versions. |
 | `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/providers/aggregates/ASNs/IP-ranges/tenants/contacts/VMs/clusters; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; filters IP/prefix results only). |
 | `nbox_get` | Fetch one object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster) + `ref`; `vrf`/`site`/`group` disambiguate. |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |
