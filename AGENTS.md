@@ -77,7 +77,7 @@ stderr. Every tool is annotated read-only.
 
 | Tool | Purpose |
 | ---- | ------- |
-| `nbox_status` | Connection + active backend + NetBox/Django/Python versions (call first to confirm reachability). |
+| `nbox_status` | Connection + active backend capabilities + NetBox/Django/Python versions (call first to confirm reachability and inspect `capabilities`). |
 | `nbox_search` | Search devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP ranges/tenants/contacts/providers/VMs/clusters; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag` (one scope filter at a time), `vrf` (id\|rd\|name; filters IP/prefix results only). Find a reference before `nbox_get`. |
 | `nbox_get` | One object: `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster) + `ref`; `vrf`/`site`/`group` disambiguate (an ambiguous ref returns the candidates). |
 | `nbox_get_interface` | One interface on a device: config, addresses, cable-path trace. |

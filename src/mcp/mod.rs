@@ -31,6 +31,7 @@ use crate::domain::interface_view::InterfaceView;
 use crate::domain::journal_view::JournalView;
 use crate::domain::tag_view::TagsView;
 use crate::error::NboxError;
+use crate::netbox::capabilities::NetBoxCapabilities;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::search::{SearchFilters, SearchRequest, SearchResult};
 
@@ -231,6 +232,8 @@ pub struct StatusReport {
     pub django_version: Option<String>,
     /// The Python runtime version NetBox runs on (`null` if unreported).
     pub python_version: Option<String>,
+    /// Backend/version capability summary for this connected profile.
+    pub capabilities: NetBoxCapabilities,
 }
 
 /// `nbox_search` result: ranked hits plus any per-endpoint failures.
@@ -392,12 +395,14 @@ impl NboxMcp {
     )]
     async fn nbox_status(&self) -> Result<Json<StatusReport>, ErrorData> {
         let status = self.client.status().await.map_err(to_mcp_error)?;
+        let capabilities = self.client.capabilities(&status).await;
         Ok(Json(StatusReport {
             netbox_url: self.client.base_url().as_str().to_string(),
             backend: self.client.backend(),
             netbox_version: status.netbox_version,
             django_version: status.django_version,
             python_version: status.python_version,
+            capabilities,
         }))
     }
 

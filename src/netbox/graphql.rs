@@ -98,6 +98,15 @@ impl GraphqlCapabilities {
             .and_then(|fields| fields.get(name).map(|field| field.shape))
     }
 
+    #[must_use]
+    pub fn filter_named_type(&self, filter_type: &str, name: &str) -> Option<&str> {
+        self.filters
+            .get(filter_type)?
+            .get(name)?
+            .named_type
+            .as_deref()
+    }
+
     /// Shape a filter value for the current NetBox schema.
     ///
     /// Pre-4.5 schemas often expose IDs/enums as scalars or string lists, while

@@ -297,8 +297,32 @@ fn status_report_json_honors_all_flags() {
         "netbox_version": "4.2.0",
         "django_version": "5.0.9",
         "python_version": "3.11.2",
+        "capabilities": {
+            "backend": "rest",
+            "version": {
+                "netbox": "4.2.0",
+                "minimum_supported": "4.2",
+                "compatible": true
+            },
+            "rest": {
+                "available": true,
+                "search": true,
+                "detail": true,
+                "page_size": 100,
+                "exclude_config_context": true
+            },
+            "graphql": {
+                "configured": false,
+                "probed": false,
+                "available": false
+            }
+        }
     });
-    assert_object_flags(&report, &["netbox_url", "netbox_version"], "django_version");
+    assert_object_flags(
+        &report,
+        &["netbox_url", "netbox_version", "capabilities"],
+        "django_version",
+    );
 }
 
 #[test]

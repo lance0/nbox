@@ -99,6 +99,11 @@ impl NetBoxClient {
         self.page_size
     }
 
+    /// Whether list calls for devices/VMs omit config context.
+    pub fn exclude_config_context(&self) -> bool {
+        self.exclude_config_context
+    }
+
     /// The configured NetBox base URL.
     pub fn base_url(&self) -> &Url {
         &self.base_url

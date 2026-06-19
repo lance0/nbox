@@ -220,6 +220,10 @@ async fn status_returns_versions() {
     assert_eq!(value["backend"], "rest");
     assert_eq!(value["django_version"], "5.0.9");
     assert_eq!(value["python_version"], "3.12.3");
+    assert_eq!(value["capabilities"]["backend"], "rest");
+    assert_eq!(value["capabilities"]["version"]["compatible"], true);
+    assert_eq!(value["capabilities"]["rest"]["search"], true);
+    assert_eq!(value["capabilities"]["graphql"]["configured"], false);
     // The configured base URL is echoed back (the mock's URI, trailing slash).
     assert_eq!(value["netbox_url"], format!("{}/", mock.uri()));
 }
