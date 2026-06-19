@@ -367,18 +367,22 @@ pub enum AppCommand {
 }
 
 impl AppCommand {
-    /// True when this command kicks off a network fetch whose result returns as
-    /// an `AppEvent` (Search/LoadDetail/LoadPreview/LoadByRef/SwitchProfile).
-    /// These bump the in-flight counter so the footer spinner runs until the
-    /// matching result event lands. `OpenBrowser`/`Copy` are fire-and-forget side
-    /// effects (their async `Status` push isn't a tracked fetch), so they don't
-    /// count as loading.
+    /// True when this command kicks off a *user-visible* network wait whose result
+    /// returns as an `AppEvent`: a search, a detail open, a dashboard/tree load, a
+    /// profile switch, a test-connect. These bump the in-flight counter so the
+    /// footer spinner runs until the matching result lands.
+    ///
+    /// `LoadPreview` is deliberately excluded: the preview pane reloads on every
+    /// selection change as you scroll the results, and pulsing the global spinner
+    /// for that background work makes simple navigation feel noisy. A preview
+    /// failure surfaces in the preview pane itself, not via the spinner.
+    /// `OpenBrowser`/`Copy` are fire-and-forget (their async `Status` push isn't a
+    /// tracked fetch).
     fn is_fetch(&self) -> bool {
         matches!(
             self,
             AppCommand::Search { .. }
                 | AppCommand::LoadDetail { .. }
-                | AppCommand::LoadPreview { .. }
                 | AppCommand::LoadByRef { .. }
                 | AppCommand::LoadDashboard { .. }
                 | AppCommand::LoadPrefixTree { .. }
@@ -969,13 +973,11 @@ impl App {
                 Vec::new()
             }
             AppEvent::PreviewLoaded { kind, id, result } => {
-                // The preview load settled — count it down even if its body is
-                // dropped as stale below (the request itself is no longer in
-                // flight, so the spinner must not hang on a moved cursor).
-                self.end_request();
-                // Stale-response suppression: only adopt this load if it still
-                // matches the highlighted result. A response for a selection the
-                // user has already scrolled past is dropped.
+                // Preview loads aren't counted as in-flight (they don't drive the
+                // spinner — see `AppCommand::is_fetch`), so there's nothing to
+                // settle here. Stale-response suppression still applies: only adopt
+                // this load if it still matches the highlighted result; a response
+                // for a selection the user has already scrolled past is dropped.
                 if self.preview_selection() == Some((kind, id)) {
                     match result {
                         Ok(view) => {
@@ -2393,7 +2395,8 @@ impl App {
         self.last_query = None;
         self.pending_reselect = None;
         self.search_input.reset();
-        self.set_status("search cleared", Severity::Info);
+        // A confirmation, not state — fade it so it doesn't sit on the footer.
+        self.set_transient_status("search cleared", Severity::Info);
     }
 
     /// Set the transient status message together with its severity, so the
@@ -3497,39 +3500,37 @@ mod tests {
     }
 
     #[test]
-    fn preview_load_sets_loading_until_preview_arrives() {
+    fn preview_load_does_not_drive_the_spinner() {
         let mut a = app();
         set_results(&mut a, results_n(3));
-        // The settle of SearchComplete left us idle…
         assert!(!a.loading());
-        // …the debounce flush issues a preview fetch → loading.
+        // The debounce flush issues a preview fetch — background work that must
+        // NOT pulse the spinner (scrolling the list stays calm).
         let cmds = preview_tick(&mut a);
         assert!(matches!(cmds.as_slice(), [AppCommand::LoadPreview { .. }]));
-        assert!(a.loading());
+        assert!(!a.loading(), "preview loads don't raise the spinner");
         a.handle_event(AppEvent::PreviewLoaded {
             kind: ObjectKind::Device,
             id: 1,
             result: Ok(preview_view(1, "body")),
         });
         assert!(!a.loading());
+        assert!(a.preview.is_some(), "preview body adopted");
     }
 
     #[test]
-    fn stale_preview_response_still_clears_loading() {
-        // A preview response that's dropped as stale (cursor moved on) must still
-        // count the request down — otherwise the spinner would hang forever.
+    fn stale_preview_response_is_dropped() {
+        // A preview response for a selection the cursor has moved past is dropped;
+        // previews never touch the spinner regardless.
         let mut a = app();
         set_results(&mut a, results_n(3));
         let _ = preview_tick(&mut a); // LoadPreview for id 1
-        assert!(a.loading());
-        // A response for a *different* selection is dropped as stale…
+        assert!(!a.loading(), "previews don't drive the spinner");
         a.handle_event(AppEvent::PreviewLoaded {
             kind: ObjectKind::Device,
             id: 2,
             result: Ok(preview_view(2, "stale")),
         });
-        // …but the in-flight request is still accounted as settled.
-        assert!(!a.loading());
         assert!(a.preview.is_none(), "stale body not adopted");
     }
 
@@ -3545,28 +3546,22 @@ mod tests {
 
     #[test]
     fn concurrent_fetches_require_all_to_resolve_before_idle() {
-        // A refresh search and a preview load are both in flight; idle is only
-        // reached once *both* have resolved (the counter, not a bool, tracks it).
+        // Two user-visible fetches in flight (a refresh search + a detail open);
+        // idle is only reached once *both* resolve (the counter, not a bool).
         let mut a = app();
         set_results(&mut a, results_n(3)); // settles to idle
         a.last_query = Some("edge".into());
         // A refresh tick dispatches a Search (counts as one).
         let refresh = a.handle_event(AppEvent::Tick);
         assert!(matches!(refresh.as_slice(), [AppCommand::Search { .. }]));
-        // The debounce flush dispatches a preview load (counts as a second).
-        let preview = preview_tick(&mut a);
-        assert!(matches!(
-            preview.as_slice(),
-            [AppCommand::LoadPreview { .. }]
-        ));
+        assert_eq!(a.pending, 1);
+        // Opening a detail is a second tracked fetch.
+        let open = a.handle_event(press(KeyCode::Enter));
+        assert!(matches!(open.as_slice(), [AppCommand::LoadDetail { .. }]));
         assert_eq!(a.pending, 2);
         assert!(a.loading());
-        // The preview resolves first — still loading (search outstanding).
-        a.handle_event(AppEvent::PreviewLoaded {
-            kind: ObjectKind::Device,
-            id: 1,
-            result: Ok(preview_view(1, "body")),
-        });
+        // The detail resolves first — still loading (search outstanding).
+        detail_loaded(&mut a, Ok(detail_view(ObjectKind::Device, 1)));
         assert_eq!(a.pending, 1);
         assert!(a.loading(), "still loading: the search is outstanding");
         // The search resolves — now idle.
@@ -3583,9 +3578,10 @@ mod tests {
         a.handle_event(AppEvent::PreviewTick);
         assert_eq!(a.spinner.frame(), resting, "idle spinner is still");
 
-        // Put a fetch in flight, then ticks animate the spinner.
+        // Put a real fetch in flight (a refresh search), then ticks animate it.
         set_results(&mut a, results_n(3));
-        let _ = preview_tick(&mut a); // dispatch a LoadPreview → loading
+        a.last_query = Some("edge".into());
+        let _ = a.handle_event(AppEvent::Tick); // dispatch a Search → loading
         assert!(a.loading());
         let before = a.spinner.frame().to_string();
         a.handle_event(AppEvent::PreviewTick);
@@ -3595,12 +3591,8 @@ mod tests {
             "loading spinner advances on tick"
         );
 
-        // Resolve it: the spinner resets and stops advancing again.
-        a.handle_event(AppEvent::PreviewLoaded {
-            kind: ObjectKind::Device,
-            id: 1,
-            result: Ok(preview_view(1, "body")),
-        });
+        // Resolve it: the spinner stops advancing again.
+        set_results(&mut a, results_n(3));
         assert!(!a.loading());
         let idle = a.spinner.frame().to_string();
         a.handle_event(AppEvent::PreviewTick);

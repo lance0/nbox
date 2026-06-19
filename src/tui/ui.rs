@@ -1615,25 +1615,29 @@ fn footer_input_area(area: Rect) -> Rect {
 fn footer_line(app: &App) -> Line<'static> {
     let theme = &app.theme;
     let mut spans: Vec<Span> = Vec::new();
-    let mut has_state = false;
 
+    // Always reserve the spinner's two columns so the status/count never shifts
+    // when a load toggles the spinner: the glyph while loading, two blanks idle.
     if app.loading() {
         spans.push(app.spinner.span(theme));
         spans.push(Span::raw(" "));
-        has_state = true;
+    } else {
+        spans.push(Span::raw("  "));
     }
+
+    let mut has_text = false;
     if !app.status.is_empty() {
         spans.push(Span::styled(
             app.status.clone(),
             theme.message_style(app.status_severity),
         ));
+        has_text = true;
     } else if app.loading() {
         spans.push(Span::styled(
             "loading…",
             Style::default().fg(theme.text_dim),
         ));
-    } else {
-        has_state = false;
+        has_text = true;
     }
 
     // On the detail screen, show how old a cache-served object is ("cached Ns
@@ -1642,7 +1646,7 @@ fn footer_line(app: &App) -> Line<'static> {
         && let Some(f) = app.detail_freshness
         && f.source == Source::Cache
     {
-        if has_state || !app.status.is_empty() {
+        if has_text {
             spans.push(Span::raw("  "));
         }
         spans.push(Span::styled(
@@ -2248,8 +2252,8 @@ mod tests {
         let text = line_text(&footer_line(&a));
 
         assert!(
-            text.starts_with("theme: nord"),
-            "status owns the left edge: {text}"
+            text.trim_start().starts_with("theme: nord"),
+            "status leads (after the reserved spinner slot): {text}"
         );
         assert!(text.contains("/ search"), "nav remains present: {text}");
         let status_idx = text.find("theme: nord").expect("status present");
