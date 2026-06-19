@@ -1180,9 +1180,12 @@ impl App {
             // named one. Reconnects + re-probes the instance off the render thread.
             KeyCode::Char('p') if ctrl => return self.cycle_profile(false),
             KeyCode::Char('P') => return self.cycle_profile(true),
-            // Tab / Shift+Tab cycle focus between the home split's panes.
+            // Tab / Shift+Tab cycle focus between the home split's panes, and on the
+            // detail screen cycle the section tabs (summary → interfaces → …).
             KeyCode::Tab if self.screen == Screen::Home => self.toggle_focus(),
             KeyCode::BackTab if self.screen == Screen::Home => self.toggle_focus(),
+            KeyCode::Tab if self.screen == Screen::Detail => self.cycle_detail_tab(true),
+            KeyCode::BackTab if self.screen == Screen::Detail => self.cycle_detail_tab(false),
             // Movement keys route to whatever owns scrolling/selection right now:
             // the detail screen scrolls its body; on Home the focused pane decides
             // (List → move the selection, Preview → scroll the preview body).
@@ -2719,6 +2722,30 @@ impl App {
             // Each tab (and the summary) starts scrolled to the top.
             self.detail_scroll = 0;
         }
+    }
+
+    /// Cycle the active detail tab with `Tab`/`Shift-Tab`: summary (index 0) →
+    /// each section → wrap. Gives the summary a place in the rotation (the
+    /// per-section letters `i`/`p`/… have no summary equivalent). A no-op off the
+    /// detail screen or when the object has no sections (summary only).
+    fn cycle_detail_tab(&mut self, forward: bool) {
+        if self.screen != Screen::Detail {
+            return;
+        }
+        let Some(detail) = &self.detail else {
+            return;
+        };
+        let n = detail.tabs.len() + 1; // summary + each section
+        if n <= 1 {
+            return;
+        }
+        self.detail_tab = if forward {
+            (self.detail_tab + 1) % n
+        } else {
+            (self.detail_tab + n - 1) % n
+        };
+        // Each tab (and the summary) starts scrolled to the top.
+        self.detail_scroll = 0;
     }
 
     /// The body text for the active detail tab (summary when `detail_tab` is 0).
@@ -4960,6 +4987,39 @@ mod tests {
         // A tab key with no matching section is a no-op (no cables here).
         a.handle_event(press(KeyCode::Char('c')));
         assert_eq!(a.detail_tab, 0);
+    }
+
+    #[test]
+    fn tab_cycles_detail_sections_including_summary() {
+        use crate::domain::detail::DetailTab;
+        let tab = |key, label: &str| DetailTab {
+            key,
+            label: label.into(),
+            body: format!("{label} body"),
+        };
+        let mut a = app();
+        detail_loaded(
+            &mut a,
+            Ok(DetailView {
+                kind: ObjectKind::Device,
+                id: 1,
+                title: "device edge01".into(),
+                body: "summary".into(),
+                tabs: vec![tab('i', "interfaces"), tab('p', "ips")],
+                links: Vec::new(),
+            }),
+        );
+        assert_eq!(a.detail_tab, 0, "starts on summary");
+        // Tab cycles summary(0) → i(1) → p(2) → wraps back to summary.
+        a.handle_event(press(KeyCode::Tab));
+        assert_eq!(a.detail_tab, 1);
+        a.handle_event(press(KeyCode::Tab));
+        assert_eq!(a.detail_tab, 2);
+        a.handle_event(press(KeyCode::Tab));
+        assert_eq!(a.detail_tab, 0, "wraps back to summary");
+        // Shift-Tab steps backward (to the last section).
+        a.handle_event(press(KeyCode::BackTab));
+        assert_eq!(a.detail_tab, 2);
     }
 
     // --- Home split: focus + preview ----------------------------------------

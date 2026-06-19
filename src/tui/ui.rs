@@ -787,7 +787,7 @@ pub fn help_bindings() -> Vec<Vec<(&'static str, &'static str)>> {
             ("/", "search"),
             (":", "command palette"),
             ("f / F", "filter / clear"),
-            ("Tab / S-Tab", "switch pane"),
+            ("Tab / S-Tab", "switch pane / detail tabs"),
             ("j / k", "move / scroll"),
             ("g / G", "top / bottom"),
             ("PgUp / PgDn", "page up / down"),
@@ -1607,7 +1607,7 @@ fn footer_nav(app: &App) -> &'static str {
             " / search · j/k move · Enter open · D dash · T tree · S settings · Tab preview · o/y open/copy · r refresh · t theme · ? help · q quit "
         }
         Screen::Detail => {
-            " j/k scroll · g/G top/bottom · R related · i/p/c/v/s tabs · o/y open/copy · b back · r refresh · ? help · q quit "
+            " j/k scroll · Tab/i/p/c/v/s tabs · R related · o/y open/copy · b back · r refresh · ? help · q quit "
         }
         Screen::Dashboard => {
             " r refresh · b/Esc back · T tree · S settings · / search · ? help · q quit "
