@@ -1,9 +1,9 @@
-# NetBox 4.2 integration fixture for nbox.
+# NetBox integration fixture for nbox.
 #
-# Boots ONE pinned NetBox 4.2.x plus its Postgres and Redis, exposes the API on
-# a fixed host port, and provisions a DETERMINISTIC superuser API token that the
-# seed script, the gated Rust tests, and CI all share. Read-only smoke target:
-# no worker/housekeeping containers (nbox never enqueues background jobs).
+# Boots one pinned NetBox image plus its Postgres and Redis, exposes the API on a
+# fixed host port, and provisions a DETERMINISTIC superuser API token that the
+# seed script, the gated Rust tests, and CI all share. Read-only smoke target: no
+# worker/housekeeping containers (nbox never enqueues background jobs).
 #
 # Usage (see README.md in this directory):
 #   docker compose -f tests/integration/docker-compose.yml up -d
@@ -43,9 +43,9 @@ services:
       retries: 30
 
   netbox:
-    # EXACT, non-floating tag. v4.2.9 is the latest 4.2.x patch at authoring time.
-    # Bump deliberately (and re-run the smoke test) when adopting a newer 4.2.x.
-    image: netboxcommunity/netbox:v4.2.9
+    # EXACT, non-floating default. CI can override NETBOX_IMAGE for other pinned
+    # lines (for example, GraphQL compatibility against 4.5).
+    image: ${NETBOX_IMAGE:-netboxcommunity/netbox:v4.2.9}
     depends_on:
       postgres:
         condition: service_healthy
@@ -78,6 +78,10 @@ services:
       SUPERUSER_EMAIL: admin@example.com
       SUPERUSER_PASSWORD: admin
       SUPERUSER_API_TOKEN: "0123456789abcdef0123456789abcdef0fedcba9"
+      # NetBox 4.5+ requires at least one pepper to create/use v2 API tokens.
+      # netbox-docker maps API_TOKEN_PEPPER_1 into NetBox's API_TOKEN_PEPPERS
+      # config dict. Static is fine here: this is an ephemeral CI fixture.
+      API_TOKEN_PEPPER_1: "0123456789abcdefghijklmnopqrstuvwxyz0123456789abcdefghij"
     ports:
       # NetBox's nginx-unit serves the app on 8080 inside the container; expose
       # it on host 8000 (NBOX_URL=http://localhost:8000).

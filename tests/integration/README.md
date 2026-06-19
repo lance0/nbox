@@ -1,9 +1,9 @@
 # NetBox integration fixture
 
-End-to-end checks that run the compiled `nbox` binary against a real, pinned
-NetBox 4.2.x. This catches what the offline wiremock suite can't: polymorphic
-scope filters, pagination offset windows, available-prefix/IP shapes, and the
-serializer/detail-model shapes of the live API.
+End-to-end checks that run the compiled `nbox` binary against real, pinned NetBox
+fixtures. This catches what the offline wiremock suite can't: polymorphic scope
+filters, pagination offset windows, available-prefix/IP shapes, GraphQL schema
+drift, and the serializer/detail-model shapes of the live API.
 
 These are heavy, so they live behind a separate workflow
 (`.github/workflows/netbox-integration.yml`) and the Rust tests are all
@@ -11,13 +11,15 @@ These are heavy, so they live behind a separate workflow
 
 ## Pieces
 
-- `docker-compose.yml` — boots ONE pinned NetBox (`netboxcommunity/netbox:v4.2.9`)
-  plus Postgres and Redis. The API is exposed on host port **8000**
-  (`http://localhost:8000`). Postgres runs on a `tmpfs`, so every `up` starts
-  from a clean DB.
+- `docker-compose.yml` — boots one pinned NetBox image (default
+  `netboxcommunity/netbox:v4.2.9`, override with `NETBOX_IMAGE`) plus Postgres
+  and Redis. The API is exposed on host port **8000** (`http://localhost:8000`).
+  Postgres runs on a `tmpfs`, so every `up` starts from a clean DB.
 - `wait-for-ready.sh` — polls `/api/status/` until NetBox answers 200 (or times
   out). First boot runs migrations + superuser creation, so this can take a
   couple of minutes on a cold image.
+- `resolve-token.sh` — prints the NetBox 4.5+ v2 API token assembled from the
+  generated public key and the deterministic fixture secret.
 - `seed.py` — creates the fixture (stdlib only, no pip installs). Idempotent.
 - `../it_netbox.rs` — the gated Rust tests.
 
@@ -34,6 +36,13 @@ The NetBox image's entrypoint creates the superuser and a `Token` with this exac
 key on first boot (via `SUPERUSER_API_TOKEN` in `docker-compose.yml`). Because
 the DB is ephemeral (`tmpfs`), this is always the token in play. The tests and
 seed read it from `NETBOX_TOKEN`, falling back to this default.
+
+NetBox 4.5+ stores the deterministic secret behind a generated v2 token key.
+For those images, wait until first boot finishes, then export the resolved token:
+
+```sh
+export NETBOX_TOKEN="$(./tests/integration/resolve-token.sh)"
+```
 
 ## Fixture created by `seed.py`
 
@@ -60,7 +69,7 @@ docker compose -f tests/integration/docker-compose.yml up -d
 
 NBOX_URL=http://localhost:8000 \
   NETBOX_TOKEN=0123456789abcdef0123456789abcdef0fedcba9 \
-  cargo test --test it_netbox -- --ignored
+  cargo test --test it_netbox -- --ignored --skip graphql_backend
 
 docker compose -f tests/integration/docker-compose.yml down -v
 ```
@@ -68,8 +77,21 @@ docker compose -f tests/integration/docker-compose.yml down -v
 `NBOX_URL` and `NETBOX_TOKEN` default to the values above, so exporting them is
 optional when using this compose file unchanged.
 
+For the GraphQL compatibility lane against NetBox 4.5:
+
+```sh
+NETBOX_IMAGE=netboxcommunity/netbox:v4.5.10-4.0.2 \
+  docker compose -f tests/integration/docker-compose.yml up -d
+NETBOX_READY_HTTP_CODES=200,403 ./tests/integration/wait-for-ready.sh
+export NETBOX_TOKEN="$(./tests/integration/resolve-token.sh)"
+./tests/integration/wait-for-ready.sh
+./tests/integration/seed.py
+cargo test --test it_netbox graphql_backend -- --ignored --test-threads=1
+docker compose -f tests/integration/docker-compose.yml down -v
+```
+
 ## Bumping the NetBox version
 
-Change the `netbox` image tag in `docker-compose.yml` to a specific 4.2.x patch
-(never a floating tag), re-run the local flow above to confirm it's still green,
-then commit.
+Set `NETBOX_IMAGE` to a specific pinned tag, re-run the local flow above to
+confirm it's still green, then commit the new workflow/default only if it is
+intentional.

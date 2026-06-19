@@ -217,6 +217,7 @@ async fn status_returns_versions() {
     let value = serde_json::to_value(&report).expect("serialize report");
 
     assert_eq!(value["netbox_version"], "4.5.5");
+    assert_eq!(value["backend"], "rest");
     assert_eq!(value["django_version"], "5.0.9");
     assert_eq!(value["python_version"], "3.12.3");
     // The configured base URL is echoed back (the mock's URI, trailing slash).

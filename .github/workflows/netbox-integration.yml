@@ -1,8 +1,8 @@
 name: NetBox Integration
 
-# Heavy end-to-end checks against a REAL, pinned NetBox 4.2.x. Kept separate from
-# the fast `ci.yml` (fmt/clippy/build/unit tests) because it boots a full NetBox
-# stack and seeds a fixture. The gated tests in `tests/it_netbox.rs` are
+# Heavy end-to-end checks against REAL, pinned NetBox fixtures. Kept separate
+# from the fast `ci.yml` (fmt/clippy/build/unit tests) because it boots a full
+# NetBox stack and seeds a fixture. The gated tests in `tests/it_netbox.rs` are
 # `#[ignore]`d, so they never run in the normal suite — only here, via
 # `--ignored`.
 #
@@ -49,9 +49,52 @@ jobs:
         run: ./tests/integration/seed.py
 
       - name: Run gated integration tests
-        run: cargo test --test it_netbox -- --ignored
+        run: cargo test --test it_netbox -- --ignored --skip graphql_backend
 
       # Always surface NetBox logs on failure to debug a flaky boot/seed.
+      - name: Dump NetBox logs on failure
+        if: failure()
+        run: docker compose -f tests/integration/docker-compose.yml logs --no-color netbox
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f tests/integration/docker-compose.yml down -v
+
+  netbox-45-graphql:
+    name: live NetBox 4.5 GraphQL search
+    runs-on: ubuntu-latest
+    env:
+      NETBOX_IMAGE: netboxcommunity/netbox:v4.5.10-4.0.2
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build nbox
+        run: cargo build --all-features --verbose
+
+      - name: Boot NetBox 4.5 fixture
+        run: docker compose -f tests/integration/docker-compose.yml up -d
+
+      - name: Wait for NetBox 4.5 to finish first boot
+        run: NETBOX_READY_HTTP_CODES=200,403 ./tests/integration/wait-for-ready.sh 420
+
+      - name: Resolve NetBox 4.5 API token
+        run: echo "NETBOX_TOKEN=$(./tests/integration/resolve-token.sh)" >> "$GITHUB_ENV"
+
+      - name: Wait for NetBox to be ready
+        run: ./tests/integration/wait-for-ready.sh 60
+
+      - name: Seed the fixture
+        run: ./tests/integration/seed.py
+
+      - name: Run gated GraphQL integration tests
+        run: cargo test --test it_netbox graphql_backend -- --ignored --test-threads=1
+
       - name: Dump NetBox logs on failure
         if: failure()
         run: docker compose -f tests/integration/docker-compose.yml logs --no-color netbox

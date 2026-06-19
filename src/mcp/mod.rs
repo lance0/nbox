@@ -25,6 +25,7 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::config::BackendKind;
 use crate::domain::detail;
 use crate::domain::interface_view::InterfaceView;
 use crate::domain::journal_view::JournalView;
@@ -213,7 +214,7 @@ pub struct ListTagsArgs {
     pub limit: Option<usize>,
 }
 
-/// `nbox_status` result: connection target plus NetBox/Django/Python versions.
+/// `nbox_status` result: connection target, active backend, and versions.
 ///
 /// The version keys mirror the previous `serde_json::json!` shape exactly: they
 /// are always present, with `null` when NetBox omits the value (no
@@ -222,6 +223,8 @@ pub struct ListTagsArgs {
 pub struct StatusReport {
     /// The NetBox base URL the server is connected to.
     pub netbox_url: String,
+    /// The active read backend for this profile.
+    pub backend: BackendKind,
     /// The NetBox application version.
     pub netbox_version: String,
     /// The Django framework version NetBox runs on (`null` if unreported).
@@ -384,13 +387,14 @@ impl NboxMcp {
     /// reachability and the NetBox/Django/Python versions. No parameters.
     #[tool(
         name = "nbox_status",
-        description = "Show NetBox connection and version info (NetBox/Django/Python versions). Use to confirm reachability before other lookups.",
+        description = "Show NetBox connection, active backend, and version info (NetBox/Django/Python versions). Use to confirm reachability before other lookups.",
         annotations(read_only_hint = true)
     )]
     async fn nbox_status(&self) -> Result<Json<StatusReport>, ErrorData> {
         let status = self.client.status().await.map_err(to_mcp_error)?;
         Ok(Json(StatusReport {
             netbox_url: self.client.base_url().as_str().to_string(),
+            backend: self.client.backend(),
             netbox_version: status.netbox_version,
             django_version: status.django_version,
             python_version: status.python_version,

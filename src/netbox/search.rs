@@ -1182,7 +1182,7 @@ impl NetBoxClient {
                 caps,
                 "contact_list",
                 Value::Object(filters),
-                "id name display email group { id name display slug }",
+                "id name display email",
                 limit,
             )
             .await?;
@@ -1195,10 +1195,7 @@ impl NetBoxClient {
                     kind: ObjectKind::Contact,
                     id,
                     score: score_match(q, &display),
-                    subtitle: c
-                        .group
-                        .and_then(GqlBrief::label)
-                        .or_else(|| non_empty(c.email)),
+                    subtitle: non_empty(c.email),
                     url: self.gql_web_url(ObjectKind::Contact, id),
                     display,
                 })
@@ -2119,7 +2116,6 @@ struct GqlContact {
     name: Option<String>,
     display: Option<String>,
     email: Option<String>,
-    group: Option<GqlBrief>,
 }
 
 impl GqlId for GqlContact {
