@@ -909,6 +909,7 @@ pub fn help_bindings() -> Vec<Vec<(&'static str, &'static str)>> {
             ("S", "config / profiles"),
             ("u", "dismiss update"),
             ("i p c v s", "device tabs"),
+            ("e", "rack elevation"),
             ("b / Esc", "back / clear search"),
             ("? / F1", "toggle help"),
             ("q", "quit"),

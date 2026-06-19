@@ -1327,7 +1327,9 @@ impl App {
                     return vec![AppCommand::Copy(target.label)];
                 }
             }
-            KeyCode::Char(c @ ('i' | 'p' | 'c' | 'v' | 's')) if !ctrl => self.select_detail_tab(c),
+            KeyCode::Char(c @ ('i' | 'p' | 'c' | 'v' | 's' | 'e')) if !ctrl => {
+                self.select_detail_tab(c);
+            }
             _ => {}
         }
         Vec::new()

@@ -586,6 +586,22 @@ async fn load_device_detail(
 }
 
 /// Load and render the detail for a search result (`kind` + `id`).
+/// Build a rack's `e` (elevation) detail tab — the framed front elevation.
+/// Best-effort: a fetch error surfaces in the tab body instead of failing the
+/// whole rack detail (the summary still loads).
+async fn rack_elevation_tab(client: &NetBoxClient, rack_id: u64, u_height: u32) -> DetailTab {
+    let body =
+        match crate::netbox::rack_elevation::load_rack_elevation(client, rack_id, u_height).await {
+            Ok(elevation) => elevation.render(),
+            Err(e) => format!("(elevation unavailable: {e:#})"),
+        };
+    DetailTab {
+        key: 'e',
+        label: "elevation".to_string(),
+        body,
+    }
+}
+
 pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Result<DetailView> {
     let mut tabs = Vec::new();
     let mut links = Vec::new();
@@ -611,7 +627,11 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
         ObjectKind::Rack => {
             let r: Rack = client.get(&format!("/api/dcim/racks/{id}/"), &[]).await?;
             links = rack_links(&r);
+            let u_height = r.u_height;
             let v = RackView::from_model(r);
+            if let Some(uh) = u_height.filter(|h| *h > 0) {
+                tabs.push(rack_elevation_tab(client, id, uh).await);
+            }
             (format!("rack {}", v.name), v.to_key_values().render())
         }
         ObjectKind::IpAddress => {
@@ -772,7 +792,11 @@ pub async fn load_detail_by_ref(
                 .with_context(|| format!("no rack matched \"{value}\""))?;
             let id = r.id;
             links = rack_links(&r);
+            let u_height = r.u_height;
             let v = RackView::from_model(r);
+            if let Some(uh) = u_height.filter(|h| *h > 0) {
+                tabs.push(rack_elevation_tab(client, id, uh).await);
+            }
             (id, format!("rack {}", v.name), v.to_key_values().render())
         }
         ObjectKind::IpAddress => {

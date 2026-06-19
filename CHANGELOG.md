@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Rack elevation.** A rack's detail now has an `e` (elevation) tab: a framed,
+  U-by-U front view (from NetBox's `/dcim/racks/{id}/elevation/` endpoint) where
+  each device fills its U span with the name on the top row, and any devices
+  assigned to the rack without a mounted position are listed below as "not racked".
+  Reachable via `e` or by cycling detail tabs with Tab.
+
 ## [0.3.0] - 2026-06-19
 
 ### Added

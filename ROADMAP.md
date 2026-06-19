@@ -141,8 +141,10 @@ Consolidated future scope:
 - ☑ **Full rack integration** — racks are now a first-class **searchable** `ObjectKind`: they appear in
   the global search fan-out (REST + GraphQL), `/` + `nbox search`, MCP `nbox_search`, and a `rack`
   palette lookup, honoring the site/region/site-group/location scope (like devices, via `*_id`). They
-  were already openable + a cross-nav target in the TUI (`nbox rack <ref>`, device→rack). ☐ Remaining:
-  rack elevation/unit context (the U-by-U visual).
+  were already openable + a cross-nav target in the TUI (`nbox rack <ref>`, device→rack). ☑ **Rack
+  elevation** — the rack detail has an `e` (elevation) tab: a framed, U-by-U front view from NetBox's
+  `/elevation/` endpoint (devices fill their U span, name on the top row), with rack-assigned-but-
+  unpositioned devices listed below. ☐ Optional: rear face + a CLI `--elevation`.
 - ☐ Multi-pane TUI refinement (nav | results | detail) per the DESIGN mockup, building on the current
   list/preview split.
 - ☐ VRF-pivoted navigation in the TUI (a dedicated VRF view) — the `--vrf` filter, VRF-scoped prefix
