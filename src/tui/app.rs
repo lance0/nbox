@@ -163,7 +163,15 @@ fn dispatch(command: AppCommand, client: NetBoxClient, cache: Cache, tx: mpsc::S
         }
         AppCommand::LoadPreview { kind, id } => {
             tokio::spawn(async move {
-                let result = load_detail(&client, kind, id).await;
+                // Share the detail cache key: scrolling back over a seen row is an
+                // instant hit, and a preview warms the cache so opening that object
+                // (LoadDetail, same key) is instant too. Never force — a preview is
+                // always happy with a within-TTL copy.
+                let key = CacheKey::detail(kind, id);
+                let result = cache
+                    .get_or_fetch(&key, || load_detail(&client, kind, id))
+                    .await
+                    .map(|c| c.value);
                 // Tag with (kind, id) so a stale response (cursor moved on) can
                 // be dropped by the pure handler.
                 let _ = tx.send(AppEvent::PreviewLoaded { kind, id, result }).await;
