@@ -160,9 +160,9 @@ Consolidated future scope:
   switch always bust; a dim "cached Ns ago" footer chip surfaces age. Shipped for TUI **detail**
   navigation; configurable via `config.toml [cache]`. An on-disk SQLite version was built then
   deliberately walked back (staleness + a large on-disk cache are the wrong trade for an infra tool).
-  Remaining: ☐ Settings-modal toggle for `enabled`/`ttl_secs`; ☐ CLI `--no-cache` / `nbox cache clear`;
-  ☐ MCP `cached_at` annotation; ☐ **preview-pane caching** (route the results preview through the same
-  cache so scrolling back over seen rows is instant and warms detail opens).
+  ☑ Settings-modal toggle for `enabled`/`ttl_secs` (hot-applied). Remaining: ☐ CLI `--no-cache` /
+  `nbox cache clear`; ☐ MCP `cached_at` annotation; ☐ **preview-pane caching** (route the results
+  preview through the same cache so scrolling back over seen rows is instant and warms detail opens).
 - ☐ **Single binary.** Ship one canonical full-featured binary per platform: the default feature set
   carries every cross-platform user feature (`http`, native `keyring`, `clipboard`, `updates`), no
   feature-variant artifacts. `--no-default-features` stays a dev-only lean build;
