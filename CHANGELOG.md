@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the far-left footer slot (spinner, result counts, errors, theme notices), with
   context-specific navigation hints following it; transient theme notices clear
   back to the nav-only resting state.
+- TUI search/command line: the `/` and `:` input is now inset one column from
+  each edge, so its sigil aligns with the header and the `/ search` hint instead
+  of hugging the terminal's left edge.
 - TUI detail actions: `o` and `y` now target the loaded detail object on the
   Detail screen instead of falling through to the hidden Home selection.
 

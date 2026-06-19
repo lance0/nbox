@@ -861,16 +861,25 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &mut App) {
     // draws the `sigil value` line itself (with a visible cursor) and reports
     // where the terminal cursor should sit, which we then place. The borrow of
     // `app.theme` is cloned out first so the input can borrow `app` mutably.
+    //
+    // The editor is inset one column on each side (`footer_input_area`) so the
+    // `/`/`:` sigil lands at the same column as the header and the normal-mode
+    // `/ search` hint — the footer reads as morphing in place rather than the
+    // sigil snapping to the terminal edge.
     match app.mode {
         Mode::Search => {
             let theme = app.theme.clone();
-            let pos = app.search_input.render(frame, area, '/', &theme);
+            let pos = app
+                .search_input
+                .render(frame, footer_input_area(area), '/', &theme);
             frame.set_cursor_position(pos);
             return;
         }
         Mode::Command => {
             let theme = app.theme.clone();
-            let pos = app.command_input.render(frame, area, ':', &theme);
+            let pos = app
+                .command_input
+                .render(frame, footer_input_area(area), ':', &theme);
             frame.set_cursor_position(pos);
             return;
         }
@@ -882,6 +891,18 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &mut App) {
         Paragraph::new(line).style(Style::default().fg(app.theme.text)),
         area,
     );
+}
+
+/// Inset a footer rect by one column on each side so the Search/Command line
+/// editor's sigil aligns with the header and the normal-mode nav hint (column 1)
+/// rather than hugging the terminal edge. Width floors at 0 on a tiny terminal.
+fn footer_input_area(area: Rect) -> Rect {
+    Rect {
+        x: area.x.saturating_add(1),
+        y: area.y,
+        width: area.width.saturating_sub(2),
+        height: area.height,
+    }
 }
 
 /// Context-sensitive normal-mode footer. Live state (spinner, result count,
@@ -1068,6 +1089,24 @@ mod tests {
         assert_eq!(label_width(&body), LABEL_CAP);
         // A body with no key/value rows needs no column.
         assert_eq!(label_width("just a header line"), 0);
+    }
+
+    #[test]
+    fn footer_input_area_insets_one_column_each_side() {
+        // The search/command editor sits one column in from each edge, so the
+        // sigil aligns with the header instead of hugging the terminal edge.
+        let full = Rect::new(0, 23, 80, 1);
+        let inset = footer_input_area(full);
+        assert_eq!(inset.x, 1, "left-padded by one column");
+        assert_eq!(inset.width, 78, "one column trimmed off each side");
+        assert_eq!((inset.y, inset.height), (23, 1), "row is unchanged");
+    }
+
+    #[test]
+    fn footer_input_area_floors_width_on_a_tiny_terminal() {
+        // A 1-column footer can't be inset twice; width saturates at 0, no panic.
+        let inset = footer_input_area(Rect::new(0, 0, 1, 1));
+        assert_eq!(inset.width, 0);
     }
 
     #[test]
