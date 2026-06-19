@@ -152,8 +152,12 @@ Consolidated future scope:
 - ☐ **3-pane polish (follow-ups).** Right-align the Nav counts; remember the last browsed kind and
   restore it on launch (persist to prefs); show a count on the Recent row. Optional: live-browse on Nav
   `j`/`k` (debounced) instead of requiring `Enter`; a `Browse` (`b`?) hint in the footer when Nav-focused.
-- ☐ VRF-pivoted navigation in the TUI (a dedicated VRF view) — the `--vrf` filter, VRF-scoped prefix
-  sections, and exact VRF-by-RD lookup already ship; this is the navigation layer on top.
+- ☑ **VRF-pivoted navigation (a dedicated VRF view).** VRF is now a first-class `ObjectKind`:
+  searchable (REST + GraphQL), browsable from the Nav rail with a live count, `nbox vrf <name|rd|id>`,
+  palette `vrf`, `open`/`journal` resolvers, and MCP `nbox_get`/`nbox://vrf/<ref>`. The TUI detail is a
+  routing context — a fixed header card (RD/tenant/RT/enforce) over the VRF's prefix tree (navigable
+  summary slot) with navigable `addresses` and a `targets` tab. Built on the new navigable-detail-row
+  mechanism (a `DetailRow { text, target }`; `Enter` opens, `b`/`Esc` returns).
 - ☐ GraphQL detail views after the TUI detail experience settles — start with device detail as a
   read-only GraphQL query alternative to the REST fan-out; only pursue if the fan-out becomes a
   latency problem, and don't build both surfaces indefinitely.

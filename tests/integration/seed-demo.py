@@ -169,6 +169,39 @@ def main():
         ensure("ipam/ip-addresses", {"address": addr},
                {"address": addr, "status": "active", "dns_name": dns})
 
+    # --- A VRF as a routing context (shows off the VRF view) ------------------
+    # Two route targets, a customer VRF that imports both / exports one, and a
+    # small prefix tree + addresses scoped to it so the detail has a real tree.
+    rts = {}
+    for rt in ("65000:100", "65000:200"):
+        rts[rt] = ensure("ipam/route-targets", {"name": rt}, {"name": rt})["id"]
+    vrf = ensure("ipam/vrfs", {"name": "customer-prod"}, {
+        "name": "customer-prod",
+        "rd": "65000:100",
+        "tenant": tenant,
+        "enforce_unique": True,
+        "description": "Production customer routing instance",
+        "import_targets": [rts["65000:100"], rts["65000:200"]],
+        "export_targets": [rts["65000:100"]],
+    })["id"]
+    for prefix, status, descr in [
+        ("10.20.0.0/16", "container", "customer supernet"),
+        ("10.20.1.0/24", "active", "web tier"),
+        ("10.20.2.0/24", "active", "app tier"),
+        ("10.20.10.0/24", "reserved", "db tier"),
+        ("10.20.20.0/24", "active", "mgmt"),
+    ]:
+        ensure("ipam/prefixes", {"prefix": prefix, "vrf_id": vrf},
+               {"prefix": prefix, "vrf": vrf, "status": status, "description": descr})
+    for addr, dns in [
+        ("10.20.1.10/24", "web-01.customer"),
+        ("10.20.1.11/24", "web-02.customer"),
+        ("10.20.2.10/24", "app-01.customer"),
+        ("10.20.10.10/24", "db-01.customer"),
+    ]:
+        ensure("ipam/ip-addresses", {"address": addr, "vrf_id": vrf},
+               {"address": addr, "vrf": vrf, "status": "active", "dns_name": dns})
+
     # --- Journal entries (dashboard "recent" + device journal tab) ------------
     core = find_one("dcim/devices", name="core-rtr-01")
     if core and not find_one("extras/journal-entries", assigned_object_id=core["id"]):
