@@ -8,6 +8,8 @@ use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Tab
 
 use std::collections::HashSet;
 
+use unicode_width::UnicodeWidthStr;
+
 use crate::cache::Source;
 use crate::netbox::prefix_tree::{self, PrefixTreeData};
 use crate::netbox::search::SearchFilters;
@@ -1636,7 +1638,6 @@ fn footer_line(app: &App) -> Line<'static> {
 
     // On the detail screen, show how old a cache-served object is ("cached Ns
     // ago"). A freshly-fetched object (`Origin`) shows nothing — it's current.
-    let mut has_fresh = false;
     if app.screen == Screen::Detail
         && let Some(f) = app.detail_freshness
         && f.source == Source::Cache
@@ -1648,15 +1649,24 @@ fn footer_line(app: &App) -> Line<'static> {
             format!("cached {}", fmt_age(f.age)),
             Style::default().fg(theme.text_dim),
         ));
-        has_fresh = true;
     }
 
-    if has_state || !app.status.is_empty() || has_fresh {
-        spans.push(Span::raw("    "));
-    }
+    // Reserve a fixed-width slot for the transient state so its width changing —
+    // the spinner flicking on for an instant cache hit, a status appearing — can't
+    // shift the navigation that follows. Filler pads a short/empty state to a
+    // stable column; a guaranteed ≥2-col gap keeps a longer status off the nav.
+    let state_width: usize = spans.iter().map(|s| s.content.width()).sum();
+    let pad = STATE_MIN_WIDTH.saturating_sub(state_width).max(2);
+    spans.push(Span::raw(" ".repeat(pad)));
     spans.extend(nav_spans(footer_nav(app), theme));
     Line::from(spans)
 }
+
+/// Reserved width (columns) for the footer's transient state region, so the nav
+/// keeps a stable start column as the spinner/status come and go. Covers the
+/// frequent cases (spinner + `loading…`, a result count, the freshness chip); a
+/// rarer long status simply pushes the nav right by its overflow.
+const STATE_MIN_WIDTH: usize = 18;
 
 /// A compact relative age for the footer freshness chip. The cache TTL caps at
 /// five minutes, so seconds and whole minutes cover every case.
@@ -2275,6 +2285,26 @@ mod tests {
             !text.contains("cached"),
             "origin-fetched shows no age: {text}"
         );
+    }
+
+    #[test]
+    fn footer_nav_column_is_stable_when_spinner_toggles() {
+        // The display column where the nav starts must not move when the spinner
+        // appears/disappears — otherwise the footer jitters on instant cache hits.
+        let nav_col = |a: &App| -> usize {
+            let text = line_text(&footer_line(a));
+            let idx = text.find("/ search").expect("home nav present");
+            text[..idx].width()
+        };
+        let mut a = app();
+        let idle = nav_col(&a);
+        a.pending = 1; // spinner on
+        let loading = nav_col(&a);
+        assert_eq!(idle, loading, "spinner must not shift the nav column");
+        // A short status (within the reserved slot) also keeps the column.
+        a.pending = 0;
+        a.status = "12 result(s)".into();
+        assert_eq!(nav_col(&a), idle, "a short status keeps the nav column");
     }
 
     #[test]
