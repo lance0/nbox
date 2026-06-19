@@ -182,6 +182,8 @@ pub enum AppEvent {
         kind: ObjectKind,
         result: anyhow::Result<Vec<SearchResult>>,
     },
+    /// Per-kind object counts for the Nav pane labels (background; last write wins).
+    NavCounts(Vec<(ObjectKind, u32)>),
     /// A full-detail load (from Enter / a palette lookup), tagged with the detail
     /// channel's request id so a stale (older-id) response can be dropped.
     DetailLoaded {
@@ -383,6 +385,10 @@ pub enum AppCommand {
     LoadPrefixTree {
         req: RequestId,
     },
+    /// Fetch per-kind object counts for the Nav pane labels (background, no
+    /// spinner). Idempotent — a late result just overwrites, so it carries no
+    /// request-id guard.
+    LoadNavCounts,
     /// Load the highlighted result's detail into the live preview pane. Carries
     /// its (kind, id) so the response can be matched against the selection it
     /// was issued for (stale ones are dropped on arrival).
@@ -558,6 +564,10 @@ pub struct App {
     /// or `None` when Results holds a search / the recents fallback. Drives the
     /// Results pane title.
     pub browse_kind: Option<ObjectKind>,
+    /// Per-kind object totals shown in the Nav pane labels. Populated by a
+    /// background count probe at launch (and after a profile switch); a kind absent
+    /// from the map just shows no number.
+    pub nav_counts: std::collections::HashMap<ObjectKind, u32>,
     pub history: Vec<Screen>,
     pub status: String,
     /// Severity of the current `status` message, so the footer can color it via
@@ -751,6 +761,7 @@ impl App {
             focus: Focus::List,
             nav_selected: NAV_SECTIONS.len() - 1, // Recent, matching the default view
             browse_kind: None,
+            nav_counts: std::collections::HashMap::new(),
             history: Vec::new(),
             status: String::new(),
             status_severity: Severity::Info,
@@ -906,7 +917,8 @@ impl App {
                 // monotonic switch id, stamped at initiation in `switch_to_index`
                 // (it also sets the pending/high-water state). Neither rides the
                 // per-channel search/detail request-id guard.
-                AppCommand::LoadPreview { .. }
+                AppCommand::LoadNavCounts
+                | AppCommand::LoadPreview { .. }
                 | AppCommand::OpenBrowser { .. }
                 | AppCommand::Copy(_)
                 | AppCommand::ArmRefresh(_)
@@ -1183,6 +1195,8 @@ impl App {
                                 Severity::Success,
                             );
                         }
+                        // Refresh the Nav counts for the newly-connected instance.
+                        return vec![AppCommand::LoadNavCounts];
                     }
                     // The new instance was unreachable/incompatible: the old client
                     // is still valid, so a failed switch is a no-op + error toast.
@@ -1219,6 +1233,11 @@ impl App {
                 // Store raw; the banner strips a leading `v` at render (xfr's fix).
                 // `None` (up to date / skipped) just leaves the banner off.
                 self.update_available = version;
+                Vec::new()
+            }
+            AppEvent::NavCounts(counts) => {
+                // Background nav-label totals; last write wins (no stale guard).
+                self.nav_counts = counts.into_iter().collect();
                 Vec::new()
             }
             AppEvent::Status(message) => {
@@ -2941,6 +2960,9 @@ impl App {
         self.view.clear();
         self.recent.clear();
         self.selected = 0;
+        self.browse_kind = None;
+        // Old instance's counts are moot; a LoadNavCounts refetch repopulates them.
+        self.nav_counts.clear();
         self.detail = None;
         self.detail_view_state.clear();
         self.detail_tab = 0;
@@ -5514,6 +5536,17 @@ mod tests {
             result: Ok(vec![result_of(ObjectKind::Device, 1, "old")]),
         });
         assert!(a.results.is_empty(), "a superseded browse must be dropped");
+    }
+
+    #[test]
+    fn nav_counts_event_populates_the_map() {
+        let mut a = app();
+        a.handle_event(AppEvent::NavCounts(vec![
+            (ObjectKind::Device, 13),
+            (ObjectKind::Rack, 1),
+        ]));
+        assert_eq!(a.nav_counts.get(&ObjectKind::Device), Some(&13));
+        assert_eq!(a.nav_counts.get(&ObjectKind::Rack), Some(&1));
     }
 
     #[test]

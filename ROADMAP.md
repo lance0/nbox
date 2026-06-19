@@ -145,8 +145,10 @@ Consolidated future scope:
   elevation** — the rack detail has an `e` (elevation) tab: a framed, U-by-U front view from NetBox's
   `/elevation/` endpoint (devices fill their U span, name on the top row), with rack-assigned-but-
   unpositioned devices listed below. ☐ Optional: rear face + a CLI `--elevation`.
-- ☐ Multi-pane TUI refinement (nav | results | detail) per the DESIGN mockup, building on the current
-  list/preview split.
+- ☑ **Multi-pane TUI** (nav │ results │ detail) per the DESIGN mockup. The home screen gained a left
+  Navigation rail: browse-by-kind sections (Devices/Prefixes/IPs/VLANs/Sites/Racks) with domain-colored
+  bullets and live per-kind counts, plus Recent; `Enter` lists a kind into Results (search stays on `/`),
+  `Tab` cycles the three panes. Built on the list/preview split.
 - ☐ VRF-pivoted navigation in the TUI (a dedicated VRF view) — the `--vrf` filter, VRF-scoped prefix
   sections, and exact VRF-by-RD lookup already ship; this is the navigation layer on top.
 - ☐ GraphQL detail views after the TUI detail experience settles — start with device detail as a

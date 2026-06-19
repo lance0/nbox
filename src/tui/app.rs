@@ -71,6 +71,15 @@ async fn event_loop(
         });
     }
 
+    // Kick off the Nav-pane count probe once at startup (background, no spinner);
+    // a profile switch issues its own refresh via `LoadNavCounts`.
+    dispatch(
+        AppCommand::LoadNavCounts,
+        app.client.clone(),
+        app.cache.clone(),
+        tx.clone(),
+    );
+
     while !app.should_quit {
         terminal.draw(|frame| ui::render(frame, app))?;
 
@@ -184,6 +193,12 @@ fn dispatch(command: AppCommand, client: NetBoxClient, cache: Cache, tx: mpsc::S
             tokio::spawn(async move {
                 let result = crate::netbox::prefix_tree::load_prefix_tree(&client).await;
                 let _ = tx.send(AppEvent::PrefixTreeLoaded { req, result }).await;
+            });
+        }
+        AppCommand::LoadNavCounts => {
+            tokio::spawn(async move {
+                let counts = crate::netbox::browse::nav_counts(&client).await;
+                let _ = tx.send(AppEvent::NavCounts(counts)).await;
             });
         }
         AppCommand::LoadPreview { kind, id } => {

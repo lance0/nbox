@@ -8,6 +8,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Three-pane home (Navigation rail).** The home screen is now Nav │ Results │
+  Detail. The left Nav rail browses by kind — Devices / Prefixes / IPs / VLANs /
+  Sites / Racks — each with a domain-colored bullet and a **live object count**,
+  plus a Recent entry. `Enter` lists a kind into Results (search stays on `/`); the
+  Results title names the kind. `Tab` / `Shift-Tab` cycle the three panes.
 - **Rack elevation.** A rack's detail now has an `e` (elevation) tab: a framed,
   U-by-U front view (from NetBox's `/dcim/racks/{id}/elevation/` endpoint) where
   each device fills its U span with the name on the top row, and any devices

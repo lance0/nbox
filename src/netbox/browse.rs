@@ -13,6 +13,7 @@ use crate::netbox::endpoints::Endpoint;
 use crate::netbox::models::common::BriefObject;
 use crate::netbox::models::dcim::{Device, Rack, Site};
 use crate::netbox::models::ipam::{IpAddress, Prefix, Vlan};
+use crate::netbox::pagination::Page;
 use crate::netbox::search::{ObjectKind, SearchResult};
 use crate::util::format::api_to_web_url;
 
@@ -115,4 +116,37 @@ pub async fn browse(
     };
     out.sort_by(|a, b| a.display.cmp(&b.display));
     Ok(out)
+}
+
+/// The total object count for an endpoint (a one-row page read of NetBox's
+/// `count` field — cheap; no rows are pulled).
+async fn count(client: &NetBoxClient, endpoint: Endpoint) -> Result<u32> {
+    let page: Page<serde_json::Value> = client
+        .get(endpoint.path(), &[("limit", "1".to_string())])
+        .await?;
+    Ok(u32::try_from(page.count).unwrap_or(u32::MAX))
+}
+
+/// Per-kind totals for the Nav pane labels, fetched concurrently and best-effort:
+/// a kind whose count probe fails is simply omitted (its label shows no number).
+pub async fn nav_counts(client: &NetBoxClient) -> Vec<(ObjectKind, u32)> {
+    let (devices, prefixes, ips, vlans, sites, racks) = tokio::join!(
+        count(client, Endpoint::Devices),
+        count(client, Endpoint::Prefixes),
+        count(client, Endpoint::IpAddresses),
+        count(client, Endpoint::Vlans),
+        count(client, Endpoint::Sites),
+        count(client, Endpoint::Racks),
+    );
+    [
+        (ObjectKind::Device, devices),
+        (ObjectKind::Prefix, prefixes),
+        (ObjectKind::IpAddress, ips),
+        (ObjectKind::Vlan, vlans),
+        (ObjectKind::Site, sites),
+        (ObjectKind::Rack, racks),
+    ]
+    .into_iter()
+    .filter_map(|(kind, res)| res.ok().map(|c| (kind, c)))
+    .collect()
 }

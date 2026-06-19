@@ -671,11 +671,19 @@ fn render_home_nav(frame: &mut Frame, area: Rect, app: &App) {
         } else {
             Style::default().fg(theme.text)
         };
-        lines.push(Line::from(vec![
+        let mut spans = vec![
             Span::styled(gutter, Style::default().fg(theme.accent)),
             Span::styled("● ", Style::default().fg(bullet_color)),
             Span::styled(section.label(), label_style),
-        ]));
+        ];
+        // Live per-kind total, dim, once the count probe has reported one.
+        if let Some(n) = section.object_kind().and_then(|k| app.nav_counts.get(&k)) {
+            spans.push(Span::styled(
+                format!(" {n}"),
+                Style::default().fg(theme.text_dim),
+            ));
+        }
+        lines.push(Line::from(spans));
     }
     frame.render_widget(Paragraph::new(lines).block(block), area);
 }
