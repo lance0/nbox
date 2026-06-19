@@ -4,11 +4,11 @@
 //! `%APPDATA%\nbox\config.toml` (Windows). We read with `toml` and mutate with
 //! `toml_edit` so user comments and formatting survive `profile add`/`use`.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, Table, value};
 
@@ -73,8 +73,10 @@ pub struct Config {
     #[serde(default)]
     pub serve: ServeConfig,
 
+    /// An order-preserving map so the profiles keep their TOML document order
+    /// (the TUI profile switcher cycles in config-file order, not alphabetical).
     #[serde(default)]
-    pub profiles: BTreeMap<String, ProfileConfig>,
+    pub profiles: IndexMap<String, ProfileConfig>,
 }
 
 /// `nbox serve` (MCP server) settings. The CLI flags (`--http`, `--http-token`)
@@ -1000,6 +1002,21 @@ page_size = 250
         assert_eq!(work.backend(), BackendKind::Graphql);
         assert_eq!(work.page_size, Some(250));
         assert_eq!(work.verify_tls, None);
+    }
+
+    #[test]
+    fn profiles_preserve_config_file_order_not_alphabetical() {
+        // Declared out of alphabetical order on purpose: the `IndexMap` must keep
+        // TOML document order so the TUI switcher (`P`/`Ctrl+P`) cycles in file
+        // order. A `BTreeMap` would re-sort these to alpha and break that.
+        let cfg: Config = toml::from_str(
+            "[profiles.zebra]\nurl = \"https://z\"\n\
+             [profiles.alpha]\nurl = \"https://a\"\n\
+             [profiles.mike]\nurl = \"https://m\"\n",
+        )
+        .unwrap();
+        let order: Vec<&str> = cfg.profiles.keys().map(String::as_str).collect();
+        assert_eq!(order, ["zebra", "alpha", "mike"]);
     }
 
     #[test]

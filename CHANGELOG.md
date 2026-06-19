@@ -18,6 +18,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   re-run introspection. GraphQL pagination is capped at NetBox's maximum page
   size, and list decode errors include the GraphQL list name for easier debugging.
 
+### Changed
+- The TUI profile switcher (`P` / `Ctrl+P`) now cycles profiles in **config-file
+  order** instead of alphabetical. Profiles are loaded into an order-preserving
+  map (`indexmap` + `toml`'s `preserve_order`), so `[profiles.*]` keep their TOML
+  document order everywhere they're listed (`profile list`, `config show`, and the
+  switcher). No config change needed.
+
 ## [0.2.0] - 2026-06-18
 
 ### Added
