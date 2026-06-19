@@ -935,7 +935,17 @@ impl App {
             // `S` opens the Config modal (Profiles section); also the palette
             // `config` verb. Free key — no clash with the bound set.
             KeyCode::Char('S') => self.open_config_modal(),
-            KeyCode::Esc | KeyCode::Char('b') => self.go_back(),
+            // `Esc` on Home clears an active search (back to recents); otherwise it
+            // navigates back. `b` is always plain back/navigation (kept distinct so
+            // it never clears the search out from under an in-flight detail load).
+            KeyCode::Esc => {
+                if self.screen == Screen::Home && self.search_active() {
+                    self.clear_search();
+                } else {
+                    self.go_back();
+                }
+            }
+            KeyCode::Char('b') => self.go_back(),
             KeyCode::Char('/') => {
                 self.mode = Mode::Search;
                 self.search_input.reset();
@@ -1837,6 +1847,10 @@ impl App {
             }
             PaletteCommand::Filter(pairs) => self.set_filters(pairs),
             PaletteCommand::ClearFilters => self.clear_filters(),
+            PaletteCommand::ClearSearch => {
+                self.clear_search();
+                Vec::new()
+            }
         }
     }
 
@@ -1851,6 +1865,32 @@ impl App {
     /// Pop back to the previous screen, or Home if the stack is empty.
     fn go_back(&mut self) {
         self.screen = self.history.pop().unwrap_or(Screen::Home);
+    }
+
+    /// Whether a search is currently showing — results on screen or a remembered
+    /// query. Drives whether `Esc`/`b` on Home clears the search vs. navigates back.
+    fn search_active(&self) -> bool {
+        !self.results.is_empty() || self.last_query.is_some()
+    }
+
+    /// Clear the active search: drop the results + query, suppress any in-flight
+    /// search (bump the high-water mark so a late `SearchComplete` lands stale), and
+    /// reset the `/` input — returning Home to the recents list. The counterpart to
+    /// `F` (clear filters); recents and the active filters are left intact.
+    fn clear_search(&mut self) {
+        self.request_seq += 1;
+        self.search_gen = self.request_seq;
+        self.results.clear();
+        self.view.clear();
+        self.selected = 0;
+        self.preview = None;
+        self.preview_for = None;
+        self.preview_dirty = false;
+        self.preview_scroll = 0;
+        self.last_query = None;
+        self.pending_reselect = None;
+        self.search_input.reset();
+        self.set_status("search cleared", Severity::Info);
     }
 
     /// Set the transient status message together with its severity, so the
@@ -3278,6 +3318,30 @@ mod tests {
             cmds.as_slice(),
             [AppCommand::LoadByRef { kind: ObjectKind::Device, value, .. }] if value == "edge01"
         ));
+    }
+
+    #[test]
+    fn esc_on_home_clears_an_active_search() {
+        let mut a = app();
+        set_results(&mut a, vec![result(1, "edge01")]);
+        a.last_query = Some("edge".into());
+        assert!(a.search_active());
+        // Esc on Home with results clears the search (back to recents), not go_back.
+        a.handle_event(press(KeyCode::Esc));
+        assert!(a.results.is_empty(), "results cleared");
+        assert_eq!(a.last_query, None, "query forgotten");
+        assert!(!a.search_active());
+        assert_eq!(a.screen, Screen::Home);
+    }
+
+    #[test]
+    fn palette_clear_search_resets_results() {
+        let mut a = app();
+        set_results(&mut a, vec![result(1, "edge01")]);
+        a.last_query = Some("edge".into());
+        a.apply_palette(PaletteCommand::ClearSearch);
+        assert!(a.results.is_empty());
+        assert_eq!(a.last_query, None);
     }
 
     #[test]

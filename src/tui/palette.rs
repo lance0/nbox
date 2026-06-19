@@ -26,6 +26,8 @@ pub enum PaletteCommand {
     Filter(Vec<(String, String)>),
     /// Clear all active search filters.
     ClearFilters,
+    /// Clear the active search (results + query), back to the recents list.
+    ClearSearch,
 }
 
 /// The filter keys the TUI accepts, mirroring the CLI/MCP allowlist — shown in
@@ -142,6 +144,7 @@ pub fn parse(input: &str) -> Result<PaletteCommand, String> {
             Ok(PaletteCommand::Filter(pairs))
         }
         "clear-filters" => Ok(PaletteCommand::ClearFilters),
+        "clear-search" | "clear" => Ok(PaletteCommand::ClearSearch),
         // Anything else: treat the whole input as a search query.
         _ => Ok(PaletteCommand::Search(input.to_string())),
     }
@@ -254,5 +257,11 @@ mod tests {
         assert!(parse("filter bogus=1").is_err(), "unknown key");
         assert!(parse("filter status").is_err(), "missing '='");
         assert!(parse("unfilter bogus").is_err(), "unknown key");
+    }
+
+    #[test]
+    fn parses_clear_search() {
+        assert_eq!(parse("clear-search").unwrap(), PaletteCommand::ClearSearch);
+        assert_eq!(parse("clear").unwrap(), PaletteCommand::ClearSearch);
     }
 }

@@ -32,6 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   in the accent), so what's applied is always visible. A discoverable **`f` filter
   modal** edits them all (the four scope filters collapse into one type+value row,
   so only one scope is ever set), and **`F`** clears every filter.
+- **Clear the search** from the TUI: `Esc` on the home screen (when results are
+  showing) clears the search back to the recents list, and the palette
+  `clear-search` (alias `clear`) does the same — the counterpart to `F`. `b` stays
+  plain back-navigation.
 
 ### Changed
 - The TUI profile switcher (`P` / `Ctrl+P`) now cycles profiles in **config-file

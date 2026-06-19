@@ -482,7 +482,7 @@ pub fn help_bindings() -> Vec<Vec<(&'static str, &'static str)>> {
             ("P / C-P", "switch profile"),
             ("S", "config / profiles"),
             ("i p c v s", "device tabs"),
-            ("b / Esc", "back"),
+            ("b / Esc", "back / clear search"),
             ("? / F1", "toggle help"),
             ("q", "quit"),
         ],
