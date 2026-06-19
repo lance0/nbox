@@ -762,21 +762,20 @@ async fn build_vrf_detail(client: &NetBoxClient, vrf: Vrf) -> Result<VrfDetail> 
     {
         client.graphql_vrf_bundle(id, VRF_SECTION_CAP).await?
     } else {
-        let prefixes = client
-            .list_all(
+        // REST: fetch the two child collections concurrently — they're
+        // independent and this halves the detail's latency on a high-RTT link.
+        tokio::try_join!(
+            client.list_all(
                 Endpoint::Prefixes,
                 vec![("vrf_id", id.to_string())],
                 VRF_SECTION_CAP,
-            )
-            .await?;
-        let addresses = client
-            .list_all(
+            ),
+            client.list_all(
                 Endpoint::IpAddresses,
                 vec![("vrf_id", id.to_string())],
                 VRF_SECTION_CAP,
-            )
-            .await?;
-        (prefixes, addresses)
+            ),
+        )?
     };
 
     let prefix_total = summary.prefix_count.unwrap_or(prefixes.len() as u64);
