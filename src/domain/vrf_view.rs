@@ -80,6 +80,136 @@ impl VrfView {
     }
 }
 
+/// A backend-neutral VRF routing-context view: the VRF summary plus its scoped
+/// prefixes (as a tree), addresses, and counts. REST and GraphQL both fill this
+/// identical shape, so the CLI/MCP/TUI never depend on which backend produced it.
+#[derive(Debug, Clone, Serialize)]
+pub struct VrfDetail {
+    pub summary: VrfView,
+    pub prefixes: Vec<VrfPrefixRow>,
+    pub addresses: Vec<VrfAddressRow>,
+    /// Total prefixes in the VRF (may exceed `prefixes.len()` when capped).
+    pub prefix_total: u64,
+    /// Total addresses in the VRF (may exceed `addresses.len()` when capped).
+    pub address_total: u64,
+}
+
+/// One prefix in a VRF's tree: enough to render the indented tree row and to
+/// open the prefix on `Enter` (TUI) or list it (CLI/JSON).
+#[derive(Debug, Clone, Serialize)]
+pub struct VrfPrefixRow {
+    pub id: u64,
+    pub prefix: String,
+    /// Per-VRF tree depth (0 = top level), driving indentation.
+    pub depth: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub description: String,
+    /// Utilization percent when known (a container's child coverage); leaves have none.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub utilization: Option<u8>,
+}
+
+/// One IP address scoped to a VRF.
+#[derive(Debug, Clone, Serialize)]
+pub struct VrfAddressRow {
+    pub id: u64,
+    pub address: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dns_name: Option<String>,
+}
+
+/// A 7-cell utilization bar (`▓▓▓░░░░`), matching the prefix view's bar style.
+fn util_bar(pct: u8) -> String {
+    const WIDTH: usize = 7;
+    let filled = ((f64::from(pct).clamp(0.0, 100.0) / 100.0) * WIDTH as f64).round() as usize;
+    let filled = filled.min(WIDTH);
+    let mut bar = String::with_capacity(WIDTH * 3);
+    for i in 0..WIDTH {
+        bar.push_str(if i < filled { "▓" } else { "░" });
+    }
+    bar
+}
+
+impl VrfPrefixRow {
+    /// The aligned tree row: indented CIDR, status, then a utilization bar when
+    /// known (else the description) — the single source of the row text shared by
+    /// CLI plain output and the TUI's navigable rows.
+    #[must_use]
+    pub fn display_line(&self) -> String {
+        let label = format!("{}{}", "  ".repeat(self.depth as usize), self.prefix);
+        let status = self.status.as_deref().unwrap_or("");
+        let tail = match self.utilization {
+            Some(pct) => format!("{}  {pct}%", util_bar(pct)),
+            None if !self.description.is_empty() => self.description.clone(),
+            None => String::new(),
+        };
+        format!("{label:<28}{status:<10}{tail}")
+            .trim_end()
+            .to_string()
+    }
+}
+
+impl VrfAddressRow {
+    /// The aligned address row: address then DNS name or status.
+    #[must_use]
+    pub fn display_line(&self) -> String {
+        let note = self
+            .dns_name
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .or(self.status.as_deref())
+            .unwrap_or("");
+        format!("{:<24}{note}", self.address).trim_end().to_string()
+    }
+}
+
+impl VrfDetail {
+    /// Render summary fields plus the prefix tree, address, and route-target
+    /// sections for plain CLI output (mirrors how `prefix`/`vlan` show sections).
+    #[must_use]
+    pub fn to_plain(&self) -> String {
+        use std::fmt::Write as _;
+        let mut out = self.summary.to_key_values().render();
+
+        let _ = write!(out, "\n\nPrefixes ({})", self.prefix_total);
+        if self.prefixes.is_empty() {
+            out.push_str("\n  (none)");
+        } else {
+            for row in &self.prefixes {
+                let _ = write!(out, "\n  {}", row.display_line());
+            }
+            if self.prefix_total as usize > self.prefixes.len() {
+                let _ = write!(
+                    out,
+                    "\n  … {} more",
+                    self.prefix_total as usize - self.prefixes.len()
+                );
+            }
+        }
+
+        let _ = write!(out, "\n\nAddresses ({})", self.address_total);
+        if self.addresses.is_empty() {
+            out.push_str("\n  (none)");
+        } else {
+            for row in &self.addresses {
+                let _ = write!(out, "\n  {}", row.display_line());
+            }
+            if self.address_total as usize > self.addresses.len() {
+                let _ = write!(
+                    out,
+                    "\n  … {} more",
+                    self.address_total as usize - self.addresses.len()
+                );
+            }
+        }
+        out
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

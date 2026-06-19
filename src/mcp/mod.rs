@@ -700,7 +700,9 @@ impl NboxMcp {
             GetKind::Cluster => {
                 serde_json::to_value(detail::cluster_view_by_ref(c, r, &not_found).await?)?
             }
-            GetKind::Vrf => serde_json::to_value(detail::vrf_view_by_ref(c, r, &not_found).await?)?,
+            GetKind::Vrf => {
+                serde_json::to_value(detail::vrf_detail_by_ref(c, r, &not_found).await?)?
+            }
         };
         Ok(Json(value))
     }

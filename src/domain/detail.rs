@@ -14,6 +14,7 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::config::ApiSurface;
 use crate::domain::aggregate_view::AggregateView;
 use crate::domain::asn_view::AsnView;
 use crate::domain::circuit_view::CircuitView;
@@ -31,7 +32,7 @@ use crate::domain::site_view::SiteView;
 use crate::domain::tenant_view::TenantView;
 use crate::domain::vlan_view::VlanView;
 use crate::domain::vm_view::VmView;
-use crate::domain::vrf_view::VrfView;
+use crate::domain::vrf_view::{VrfAddressRow, VrfDetail, VrfPrefixRow, VrfView};
 use crate::error::NboxError;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
@@ -43,7 +44,7 @@ use crate::netbox::models::ipam::{
 };
 use crate::netbox::models::tenancy::{Contact, Tenant};
 use crate::netbox::models::virtualization::{Cluster, VirtualMachine};
-use crate::netbox::prefix_tree::{PrefixNode, build_nodes};
+use crate::netbox::prefix_tree::build_nodes;
 use crate::netbox::query;
 use crate::netbox::search::ObjectKind;
 
@@ -432,19 +433,6 @@ pub async fn cluster_view_by_ref(
     Ok(ClusterView::from_model(cluster))
 }
 
-/// `vrf <name|rd|id>`: resolve a VRF and build its flat view. Shared by CLI/MCP.
-pub async fn vrf_view_by_ref(
-    client: &NetBoxClient,
-    value: &str,
-    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
-) -> Result<VrfView> {
-    let vrf = client
-        .vrf_by_ref(value)
-        .await?
-        .ok_or_else(|| not_found("vrf", value))?;
-    Ok(VrfView::from_model(vrf))
-}
-
 /// One navigable row within a detail section: the display `text` and, when the
 /// row addresses an openable object, the `target` that `Enter` jumps to (the same
 /// `LoadDetail` jump the `R` modal uses). Rows with no target (headings, footers,
@@ -690,19 +678,6 @@ fn vrf_links(v: &Vrf) -> Vec<ObjectLink> {
     l
 }
 
-/// A 7-cell utilization bar (`▓▓▓░░░░`). Mirrors the prefix view's bar style so
-/// the VRF tree reads the same as a prefix detail.
-fn util_bar(pct: u8) -> String {
-    const WIDTH: usize = 7;
-    let filled = ((f64::from(pct).clamp(0.0, 100.0) / 100.0) * WIDTH as f64).round() as usize;
-    let filled = filled.min(WIDTH);
-    let mut bar = String::with_capacity(WIDTH * 3);
-    for i in 0..WIDTH {
-        bar.push_str(if i < filled { "▓" } else { "░" });
-    }
-    bar
-}
-
 /// The compact VRF header card: identity + routing metadata as fixed lines (RD,
 /// tenant, route-target counts, enforce-unique; then the description). The full
 /// route targets live in the `targets` tab, not here. Rendered above the tab bar.
@@ -726,76 +701,6 @@ fn vrf_header_lines(v: &VrfView) -> Vec<String> {
         lines.push(d.clone());
     }
     lines
-}
-
-/// Build the VRF-scoped prefixes as navigable rows: an indented tree (NetBox
-/// returns prefixes in tree order with a per-VRF depth), each row opening that
-/// prefix's detail on `Enter`. A utilization bar shows only when one is known (a
-/// leaf has none) — otherwise the row falls back to status/description so it never
-/// shows a fake 0% bar.
-fn vrf_prefix_rows(nodes: &[PrefixNode], total: u64) -> Vec<DetailRow> {
-    if nodes.is_empty() {
-        return vec![DetailRow::plain("(no prefixes in this VRF)".to_string())];
-    }
-    let mut rows: Vec<DetailRow> = nodes
-        .iter()
-        .map(|n| {
-            let label = format!("{}{}", "  ".repeat(n.depth as usize + 1), n.prefix);
-            let status = n.status.as_deref().unwrap_or("");
-            let tail = match n.utilization {
-                Some(pct) => format!("{}  {pct}%", util_bar(pct)),
-                None if !n.description.is_empty() => n.description.clone(),
-                None => String::new(),
-            };
-            DetailRow::link(
-                format!("{label:<28}{status:<10}{tail}")
-                    .trim_end()
-                    .to_string(),
-                ObjectKind::Prefix,
-                n.id,
-            )
-        })
-        .collect();
-    if total as usize > nodes.len() {
-        rows.push(DetailRow::plain(format!(
-            "… {} more (showing {})",
-            total as usize - nodes.len(),
-            nodes.len()
-        )));
-    }
-    rows
-}
-
-/// Build the VRF-scoped IP addresses as navigable rows (address + status/DNS),
-/// each opening that address's detail on `Enter`.
-fn vrf_address_rows(ips: &[IpAddress], total: u64) -> Vec<DetailRow> {
-    if ips.is_empty() {
-        return vec![DetailRow::plain("(no addresses in this VRF)".to_string())];
-    }
-    let mut rows: Vec<DetailRow> = ips
-        .iter()
-        .map(|ip| {
-            let note = ip
-                .dns_name
-                .as_deref()
-                .filter(|s| !s.is_empty())
-                .map(ToString::to_string)
-                .or_else(|| ip.status.as_ref().map(|c| c.value.clone()))
-                .unwrap_or_default();
-            DetailRow::link(
-                format!("{:<24}{note}", ip.address).trim_end().to_string(),
-                ObjectKind::IpAddress,
-                ip.id,
-            )
-        })
-        .collect();
-    if total as usize > ips.len() {
-        rows.push(DetailRow::plain(format!(
-            "… {} more",
-            total as usize - ips.len()
-        )));
-    }
-    rows
 }
 
 /// Render the VRF's import/export route targets as plain text (route targets have
@@ -826,58 +731,174 @@ fn rows_to_text(rows: &[DetailRow]) -> String {
         .join("\n")
 }
 
-/// Build a VRF's routing-context detail: a fixed header card over the VRF's
-/// prefix tree (the summary slot, navigable), plus `addresses` (navigable) and
-/// `targets` tabs. Scoped sections are fetched best-effort, capped at
-/// [`VRF_SECTION_CAP`]. Returns the complete [`DetailView`].
-async fn load_vrf_detail_view(client: &NetBoxClient, vrf: Vrf) -> Result<DetailView> {
+/// Sort key for tree order: address family, network address, then prefix length —
+/// reproduces NetBox's tree ordering (a container before its children) so the
+/// depth-based indentation is correct regardless of which backend supplied the
+/// rows.
+fn prefix_sort_key(cidr: &str) -> (u8, u128, u8) {
+    let (addr, len) = cidr.split_once('/').unwrap_or((cidr, ""));
+    let len: u8 = len.parse().unwrap_or(0);
+    match addr.parse::<std::net::IpAddr>() {
+        Ok(std::net::IpAddr::V4(a)) => (0, u128::from(u32::from(a)), len),
+        Ok(std::net::IpAddr::V6(a)) => (1, u128::from(a), len),
+        Err(_) => (2, u128::MAX, len),
+    }
+}
+
+/// Build the backend-neutral [`VrfDetail`]: the VRF summary plus its scoped
+/// prefixes (as a tree) and addresses. Children come from a single bundled
+/// GraphQL query when the VRF surface resolves to GraphQL, else canonical REST.
+/// A real GraphQL/transport error propagates (fail closed) rather than degrading
+/// to empty data — only a capability mismatch (handled by `effective_backend`)
+/// routes to REST.
+async fn build_vrf_detail(client: &NetBoxClient, vrf: Vrf) -> Result<VrfDetail> {
     let id = vrf.id;
-    let links = vrf_links(&vrf);
-    let name = vrf.name.clone();
-    let view = VrfView::from_model(vrf);
-    let header = vrf_header_lines(&view);
+    let summary = VrfView::from_model(vrf);
 
-    let prefixes: Vec<Prefix> = client
-        .list_all(
-            Endpoint::Prefixes,
-            vec![("vrf_id", id.to_string())],
-            VRF_SECTION_CAP,
-        )
+    let (mut prefixes, addresses): (Vec<Prefix>, Vec<IpAddress>) = if client
+        .effective_backend(ApiSurface::Vrf)
         .await
-        .unwrap_or_default();
-    let prefix_total = view.prefix_count.unwrap_or(prefixes.len() as u64);
-    let prefix_rows = vrf_prefix_rows(&build_nodes(prefixes), prefix_total);
+        .uses_graphql()
+    {
+        client.graphql_vrf_bundle(id, VRF_SECTION_CAP).await?
+    } else {
+        let prefixes = client
+            .list_all(
+                Endpoint::Prefixes,
+                vec![("vrf_id", id.to_string())],
+                VRF_SECTION_CAP,
+            )
+            .await?;
+        let addresses = client
+            .list_all(
+                Endpoint::IpAddresses,
+                vec![("vrf_id", id.to_string())],
+                VRF_SECTION_CAP,
+            )
+            .await?;
+        (prefixes, addresses)
+    };
 
-    let ips: Vec<IpAddress> = client
-        .list_all(
-            Endpoint::IpAddresses,
-            vec![("vrf_id", id.to_string())],
-            VRF_SECTION_CAP,
-        )
-        .await
-        .unwrap_or_default();
-    let ip_total = view.ipaddress_count.unwrap_or(ips.len() as u64);
-    let address_rows = vrf_address_rows(&ips, ip_total);
+    let prefix_total = summary.prefix_count.unwrap_or(prefixes.len() as u64);
+    let address_total = summary.ipaddress_count.unwrap_or(addresses.len() as u64);
+
+    // Sort into tree order (container before children) so depth indentation is
+    // correct regardless of backend, then derive per-node depth + container
+    // utilization via the shared tree builder.
+    prefixes.sort_by_key(|p| prefix_sort_key(&p.prefix));
+    let prefixes = build_nodes(prefixes)
+        .into_iter()
+        .map(|n| VrfPrefixRow {
+            id: n.id,
+            prefix: n.prefix,
+            depth: n.depth,
+            status: n.status,
+            description: n.description,
+            utilization: n.utilization,
+        })
+        .collect();
+
+    let addresses = addresses
+        .into_iter()
+        .map(|ip| VrfAddressRow {
+            id: ip.id,
+            address: ip.address,
+            status: ip.status.map(|c| c.value),
+            dns_name: ip.dns_name.filter(|s| !s.is_empty()),
+        })
+        .collect();
+
+    Ok(VrfDetail {
+        summary,
+        prefixes,
+        addresses,
+        prefix_total,
+        address_total,
+    })
+}
+
+/// `vrf <name|rd|id>`: resolve a VRF and build its routing-context detail. Shared
+/// by CLI/MCP. Identity (and not-found/ambiguous typed errors) stays REST.
+pub async fn vrf_detail_by_ref(
+    client: &NetBoxClient,
+    value: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<VrfDetail> {
+    let vrf = client
+        .vrf_by_ref(value)
+        .await?
+        .ok_or_else(|| not_found("vrf", value))?;
+    build_vrf_detail(client, vrf).await
+}
+
+/// Navigable rows from a VRF detail's prefix tree — each opens its prefix; a
+/// footer notes any capped overflow.
+fn vrf_prefix_detail_rows(detail: &VrfDetail) -> Vec<DetailRow> {
+    if detail.prefixes.is_empty() {
+        return vec![DetailRow::plain("(no prefixes in this VRF)".to_string())];
+    }
+    let mut rows: Vec<DetailRow> = detail
+        .prefixes
+        .iter()
+        .map(|p| DetailRow::link(p.display_line(), ObjectKind::Prefix, p.id))
+        .collect();
+    if detail.prefix_total as usize > detail.prefixes.len() {
+        rows.push(DetailRow::plain(format!(
+            "… {} more (showing {})",
+            detail.prefix_total as usize - detail.prefixes.len(),
+            detail.prefixes.len()
+        )));
+    }
+    rows
+}
+
+/// Navigable rows from a VRF detail's addresses.
+fn vrf_address_detail_rows(detail: &VrfDetail) -> Vec<DetailRow> {
+    if detail.addresses.is_empty() {
+        return vec![DetailRow::plain("(no addresses in this VRF)".to_string())];
+    }
+    let mut rows: Vec<DetailRow> = detail
+        .addresses
+        .iter()
+        .map(|a| DetailRow::link(a.display_line(), ObjectKind::IpAddress, a.id))
+        .collect();
+    if detail.address_total as usize > detail.addresses.len() {
+        rows.push(DetailRow::plain(format!(
+            "… {} more",
+            detail.address_total as usize - detail.addresses.len()
+        )));
+    }
+    rows
+}
+
+/// Map a backend-neutral [`VrfDetail`] to the TUI [`DetailView`]: a fixed header
+/// card over the prefix tree (navigable summary slot), with navigable `addresses`
+/// and a `targets` tab.
+fn vrf_detail_view(links: Vec<ObjectLink>, detail: VrfDetail) -> DetailView {
+    let id = detail.summary.id;
+    let name = detail.summary.name.clone();
+    let header = vrf_header_lines(&detail.summary);
+    let targets_body = vrf_targets_section(&detail.summary);
+    let target_count = detail.summary.import_targets.len() + detail.summary.export_targets.len();
+    let prefix_rows = vrf_prefix_detail_rows(&detail);
+    let address_rows = vrf_address_detail_rows(&detail);
 
     let tabs = vec![
         DetailTab {
             key: 'a',
-            label: format!("addresses·{ip_total}"),
+            label: format!("addresses·{}", detail.address_total),
             body: rows_to_text(&address_rows),
             rows: address_rows,
         },
         DetailTab {
             key: 't',
-            label: format!(
-                "targets·{}",
-                view.import_targets.len() + view.export_targets.len()
-            ),
-            body: vrf_targets_section(&view),
+            label: format!("targets·{target_count}"),
+            body: targets_body,
             rows: Vec::new(),
         },
     ];
 
-    Ok(DetailView::new(
+    DetailView::new(
         ObjectKind::Vrf,
         id,
         format!("vrf {name}"),
@@ -886,7 +907,15 @@ async fn load_vrf_detail_view(client: &NetBoxClient, vrf: Vrf) -> Result<DetailV
     .with_tabs(tabs)
     .with_links(links)
     .with_header(header)
-    .with_summary(format!("prefixes·{prefix_total}"), prefix_rows))
+    .with_summary(format!("prefixes·{}", detail.prefix_total), prefix_rows)
+}
+
+/// Build a VRF's routing-context [`DetailView`] (TUI): resolve identity + links
+/// (REST) then the backend-neutral detail bundle.
+async fn load_vrf_detail_view(client: &NetBoxClient, vrf: Vrf) -> Result<DetailView> {
+    let links = vrf_links(&vrf);
+    let detail = build_vrf_detail(client, vrf).await?;
+    Ok(vrf_detail_view(links, detail))
 }
 
 pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Result<DetailView> {

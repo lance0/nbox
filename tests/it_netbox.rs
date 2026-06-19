@@ -45,7 +45,8 @@ fn netbox_token() -> String {
 
 /// A throwaway config file holding one profile that points at the live NetBox.
 /// `page_size` is configurable so the pagination test can force multiple pages,
-/// and `backend` lets GraphQL-smoke tests exercise the opt-in search path.
+/// and `backend` sets the per-surface API preference (`[profiles.ci.api]
+/// search = …`) so GraphQL-smoke tests exercise the opt-in search path.
 /// The `NamedTempFile` is returned so it lives as long as the test needs it.
 fn temp_config_with_backend(page_size: usize, backend: &str) -> NamedTempFile {
     let mut config = NamedTempFile::new().expect("create temp config");
@@ -56,9 +57,11 @@ fn temp_config_with_backend(page_size: usize, backend: &str) -> NamedTempFile {
          [profiles.ci]\n\
          url = \"{url}\"\n\
          token_env = \"NETBOX_TOKEN_UNUSED\"\n\
-         backend = \"{backend}\"\n\
          page_size = {page_size}\n\
-         verify_tls = false\n",
+         verify_tls = false\n\
+         \n\
+         [profiles.ci.api]\n\
+         search = \"{backend}\"\n",
         url = netbox_url(),
         backend = backend,
     )

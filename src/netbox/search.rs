@@ -613,6 +613,69 @@ impl NetBoxClient {
             .with_context(|| format!("deserializing GraphQL {list_name} rows"))
     }
 
+    /// Fetch a VRF's prefixes + IP addresses in a single GraphQL query (the VRF
+    /// detail "bundle"), normalized into the REST wire models so the downstream
+    /// `VrfDetail` build is byte-identical to the REST path. The caller resolves
+    /// the VRF id and its header over REST first (identity stays canonical); this
+    /// fetches only the children. A real GraphQL/transport error propagates (fail
+    /// closed) rather than degrading to empty data.
+    pub(crate) async fn graphql_vrf_bundle(
+        &self,
+        vrf_id: u64,
+        limit: usize,
+    ) -> Result<(Vec<Prefix>, Vec<IpAddress>)> {
+        let caps = self.graphql_capabilities().await?;
+        let mut prefix_filters = Map::new();
+        let mut ip_filters = Map::new();
+        Self::gql_add_filter(
+            &caps,
+            "prefix_list",
+            &mut prefix_filters,
+            "vrf_id",
+            json!(vrf_id),
+        );
+        Self::gql_add_filter(
+            &caps,
+            "ip_address_list",
+            &mut ip_filters,
+            "vrf_id",
+            json!(vrf_id),
+        );
+        let prefix_type = caps
+            .list("prefix_list")
+            .and_then(|f| f.filter_type())
+            .context("GraphQL schema is missing the prefix_list filter type")?;
+        let ip_type = caps
+            .list("ip_address_list")
+            .and_then(|f| f.filter_type())
+            .context("GraphQL schema is missing the ip_address_list filter type")?;
+        let page = limit.clamp(1, MAX_PAGE_SIZE);
+        let prefix_pag = gql_pagination(&caps, "prefix_list", page);
+        let ip_pag = gql_pagination(&caps, "ip_address_list", page);
+
+        let query = format!(
+            "query($pf: {prefix_type}, $if: {ip_type}) {{ \
+             prefix_list(filters: $pf{prefix_pag}) {{ id prefix _depth status description }} \
+             ip_address_list(filters: $if{ip_pag}) {{ id address status dns_name description }} }}"
+        );
+        let data: Map<String, Value> = self
+            .graphql(
+                &query,
+                json!({ "pf": Value::Object(prefix_filters), "if": Value::Object(ip_filters) }),
+            )
+            .await?;
+
+        let prefixes = gql_rows(&data, "prefix_list")
+            .iter()
+            .filter_map(gql_row_to_prefix)
+            .collect();
+        let addresses = gql_rows(&data, "ip_address_list")
+            .iter()
+            .filter_map(gql_row_to_ip)
+            .collect();
+        Ok((prefixes, addresses))
+    }
+
     fn gql_filters(
         caps: &GraphqlCapabilities,
         list_name: &str,
@@ -2138,6 +2201,63 @@ impl NetBoxClient {
     }
 }
 
+/// Pagination clause for a GraphQL list field, empty when it isn't paginated.
+fn gql_pagination(caps: &GraphqlCapabilities, list_name: &str, limit: usize) -> String {
+    match caps.list(list_name) {
+        Some(field) if field.has_pagination() => {
+            format!(", pagination: {{offset: 0, limit: {limit}}}")
+        }
+        _ => String::new(),
+    }
+}
+
+/// The rows array for a GraphQL `*_list` field in a combined-query response.
+fn gql_rows<'a>(data: &'a Map<String, Value>, key: &str) -> &'a [Value] {
+    data.get(key)
+        .and_then(Value::as_array)
+        .map_or(&[], Vec::as_slice)
+}
+
+/// Reshape a GraphQL string `status` (e.g. `"active"`) into the REST `Choice`
+/// object shape (`{value,label}`) so it deserializes into the wire model.
+fn gql_status_value(row: &Value) -> Value {
+    match row.get("status").and_then(Value::as_str) {
+        Some(s) => json!({ "value": s, "label": s }),
+        None => Value::Null,
+    }
+}
+
+/// Convert one GraphQL `prefix_list` row into the REST [`Prefix`] wire model
+/// (only the fields the VRF tree needs), reusing its `Deserialize`.
+fn gql_row_to_prefix(row: &Value) -> Option<Prefix> {
+    let id: u64 = row.get("id")?.as_str()?.parse().ok()?;
+    let prefix = row.get("prefix")?.as_str()?.to_string();
+    serde_json::from_value(json!({
+        "id": id,
+        "url": "",
+        "prefix": prefix,
+        "status": gql_status_value(row),
+        "description": row.get("description").and_then(Value::as_str),
+        "_depth": row.get("_depth").and_then(Value::as_u64),
+    }))
+    .ok()
+}
+
+/// Convert one GraphQL `ip_address_list` row into the REST [`IpAddress`] model.
+fn gql_row_to_ip(row: &Value) -> Option<IpAddress> {
+    let id: u64 = row.get("id")?.as_str()?.parse().ok()?;
+    let address = row.get("address")?.as_str()?.to_string();
+    serde_json::from_value(json!({
+        "id": id,
+        "url": "",
+        "address": address,
+        "status": gql_status_value(row),
+        "dns_name": row.get("dns_name").and_then(Value::as_str),
+        "description": row.get("description").and_then(Value::as_str),
+    }))
+    .ok()
+}
+
 #[derive(Debug, Deserialize)]
 struct GqlBrief {
     id: Option<String>,
@@ -2398,6 +2518,51 @@ impl GqlId for GqlCluster {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn gql_row_to_prefix_reshapes_status_id_and_depth() {
+        // GraphQL gives string id, string status, and `_depth`; the wire model
+        // wants numeric id, a Choice{value,label} status, and `depth`.
+        let row = json!({
+            "id": "34", "prefix": "10.20.0.0/16", "_depth": 0,
+            "status": "container", "description": "supernet"
+        });
+        let p = gql_row_to_prefix(&row).expect("prefix");
+        assert_eq!(p.id, 34);
+        assert_eq!(p.prefix, "10.20.0.0/16");
+        assert_eq!(p.depth, Some(0));
+        assert_eq!(
+            p.status.as_ref().map(|c| c.value.as_str()),
+            Some("container")
+        );
+        assert_eq!(p.description.as_deref(), Some("supernet"));
+
+        // A null status (GraphQL can omit it) stays None, not an error.
+        let row = json!({"id": "35", "prefix": "10.20.1.0/24", "_depth": 1, "status": null});
+        let p = gql_row_to_prefix(&row).expect("prefix");
+        assert!(p.status.is_none());
+        assert_eq!(p.depth, Some(1));
+    }
+
+    #[test]
+    fn gql_row_to_ip_reshapes_fields() {
+        let row = json!({
+            "id": "6", "address": "10.20.1.10/24", "status": "active",
+            "dns_name": "web-01.customer"
+        });
+        let ip = gql_row_to_ip(&row).expect("ip");
+        assert_eq!(ip.id, 6);
+        assert_eq!(ip.address, "10.20.1.10/24");
+        assert_eq!(ip.status.as_ref().map(|c| c.value.as_str()), Some("active"));
+        assert_eq!(ip.dns_name.as_deref(), Some("web-01.customer"));
+    }
+
+    #[test]
+    fn gql_row_to_prefix_rejects_nonnumeric_id() {
+        // A non-numeric id (shouldn't happen, but be defensive) drops the row
+        // rather than panicking.
+        assert!(gql_row_to_prefix(&json!({"id": "abc", "prefix": "10.0.0.0/8"})).is_none());
+    }
 
     #[test]
     fn scoring_orders_exact_prefix_contains() {

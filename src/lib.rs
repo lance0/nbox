@@ -1251,11 +1251,12 @@ async fn run_cluster(ctx: &Ctx, value: &str) -> Result<()> {
     emit(ctx, &view, || view.to_key_values().print())
 }
 
-/// `nbox vrf <name|rd|id>` — show a VRF.
+/// `nbox vrf <name|rd|id>` — show a VRF as a routing context (summary + its
+/// prefix tree, addresses, and route targets).
 async fn run_vrf(ctx: &Ctx, value: &str) -> Result<()> {
     let client = connect(ctx)?;
-    let view = detail::vrf_view_by_ref(&client, value, &not_found).await?;
-    emit(ctx, &view, || view.to_key_values().print())
+    let detail = detail::vrf_detail_by_ref(&client, value, &not_found).await?;
+    emit(ctx, &detail, || println!("{}", detail.to_plain()))
 }
 
 /// `nbox open <kind/ref>` — resolve an object and open it in the browser.
