@@ -6,6 +6,7 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table};
 
+use crate::netbox::search::SearchFilters;
 use crate::tui::config_modal::{ConfigModal, ConfigSection, ProfilesMode, TestState};
 use crate::tui::state::{App, Focus, Modal, Mode, Screen, result_row_cells};
 use crate::tui::theme::Theme;
@@ -48,21 +49,41 @@ fn list_position(selected: usize, len: usize) -> Option<String> {
 
 /// Render the whole UI for the current frame.
 pub fn render(frame: &mut Frame, app: &mut App) {
-    let areas = Layout::vertical([
-        Constraint::Length(1),
-        Constraint::Min(1),
-        Constraint::Length(1),
-    ])
-    .split(frame.area());
+    // A one-line filter chips bar slots between the header and the body, but only
+    // when at least one filter is active (zero-cost when empty, like the scroll
+    // hints). The layout grows by that row only then.
+    let filters_on = any_filter_active(&app.filters);
+    let areas = if filters_on {
+        Layout::vertical([
+            Constraint::Length(1), // header
+            Constraint::Length(1), // filter chips
+            Constraint::Min(1),    // body
+            Constraint::Length(1), // footer
+        ])
+        .split(frame.area())
+    } else {
+        Layout::vertical([
+            Constraint::Length(1),
+            Constraint::Min(1),
+            Constraint::Length(1),
+        ])
+        .split(frame.area())
+    };
 
     render_header(frame, areas[0], app);
+    let (body_area, footer_area) = if filters_on {
+        render_filter_bar(frame, areas[1], &app.filters, &app.theme);
+        (areas[2], areas[3])
+    } else {
+        (areas[1], areas[2])
+    };
 
     match app.screen {
-        Screen::Home => render_home(frame, areas[1], app),
-        Screen::Detail => render_detail(frame, areas[1], app),
+        Screen::Home => render_home(frame, body_area, app),
+        Screen::Detail => render_detail(frame, body_area, app),
     }
 
-    render_footer(frame, areas[2], app);
+    render_footer(frame, footer_area, app);
 
     // A modal floats over the whole frame, on top of the live screen — it's an
     // overlay, not its own page (mirrors ttl/xfr). Drawn last so it sits above
@@ -114,6 +135,49 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
             .alignment(Alignment::Right),
         cols[1],
     );
+}
+
+/// True when any search filter is set — drives whether the chips bar row exists.
+fn any_filter_active(f: &SearchFilters) -> bool {
+    f.status.is_some()
+        || f.site.is_some()
+        || f.region.is_some()
+        || f.site_group.is_some()
+        || f.location.is_some()
+        || f.tenant.is_some()
+        || f.role.is_some()
+        || f.tag.is_some()
+        || f.vrf.is_some()
+}
+
+/// The filter chips bar: each active filter as a bold `[key=value]` chip on the
+/// chrome bar — scope filters (mutually exclusive) in the header color, the rest in
+/// the accent — with a dim palette hint. Only rendered when a filter is active.
+fn render_filter_bar(frame: &mut Frame, area: Rect, f: &SearchFilters, theme: &Theme) {
+    let bar = Style::default().bg(theme.chrome_bg);
+    frame.render_widget(Block::default().style(bar), area);
+    let mut spans = vec![Span::styled(" filters: ", bar.fg(theme.text_dim))];
+    for (k, v, scope) in [
+        ("status", &f.status, false),
+        ("site", &f.site, true),
+        ("region", &f.region, true),
+        ("site-group", &f.site_group, true),
+        ("location", &f.location, true),
+        ("tenant", &f.tenant, false),
+        ("role", &f.role, false),
+        ("tag", &f.tag, false),
+        ("vrf", &f.vrf, false),
+    ] {
+        if let Some(v) = v {
+            let color = if scope { theme.header } else { theme.accent };
+            spans.push(Span::styled(
+                format!("[{k}={v}] "),
+                bar.fg(color).add_modifier(Modifier::BOLD),
+            ));
+        }
+    }
+    spans.push(Span::styled("  :clear-filters", bar.fg(theme.text_dim)));
+    frame.render_widget(Paragraph::new(Line::from(spans)).style(bar), area);
 }
 
 fn render_home(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -1230,6 +1294,19 @@ mod tests {
         assert_eq!(kind_accent("tenant", &t), t.graph_primary);
         // Anything unmapped falls back to dim text.
         assert_eq!(kind_accent("mystery", &t), t.text_dim);
+    }
+
+    #[test]
+    fn any_filter_active_detects_a_set_filter() {
+        let mut f = SearchFilters::default();
+        assert!(!any_filter_active(&f), "no filters set");
+        f.status = Some("active".into());
+        assert!(any_filter_active(&f), "a status filter counts");
+        let g = SearchFilters {
+            vrf: Some("mgmt".into()),
+            ..SearchFilters::default()
+        };
+        assert!(any_filter_active(&g), "a vrf filter counts");
     }
 
     #[test]

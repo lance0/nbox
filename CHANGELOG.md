@@ -27,7 +27,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `unfilter <key>`, and `filter` (or `clear-filters`) to clear. Filters ride every
   search through the existing resolver (scope mutual-exclusion, VRF-by-ref,
   per-endpoint allowlist), so unknown keys are rejected and the TUI never sends an
-  unknown query param. Setting a filter re-runs the last query.
+  unknown query param. Setting a filter re-runs the last query. Active filters show
+  as a **chips bar** above the results (scope filters in the header color, the rest
+  in the accent), so what's applied is always visible.
 
 ### Changed
 - The TUI profile switcher (`P` / `Ctrl+P`) now cycles profiles in **config-file
