@@ -11,7 +11,7 @@ use std::collections::HashSet;
 use crate::netbox::prefix_tree::{self, PrefixNode, PrefixTreeData};
 use crate::netbox::search::SearchFilters;
 use crate::tui::config_modal::{ConfigModal, ConfigSection, ProfilesMode, TestState};
-use crate::tui::state::{App, Focus, Modal, Mode, Screen, result_row_cells};
+use crate::tui::state::{App, Focus, Modal, Mode, RelatedModal, Screen, result_row_cells};
 use crate::tui::theme::Theme;
 
 /// Column widths for the results table. KIND is fixed-width so the kind tags line
@@ -107,6 +107,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
             render_config(frame, area, modal, &names, &active, &theme);
         }
         Some(Modal::Filter(modal)) => render_filter(frame, area, modal, &theme),
+        Some(Modal::Related(modal)) => render_related(frame, area, modal, &theme),
         None => {}
     }
 }
@@ -796,6 +797,7 @@ pub fn help_bindings() -> Vec<Vec<(&'static str, &'static str)>> {
         vec![
             ("o", "open in browser"),
             ("y", "copy"),
+            ("R", "related objects"),
             ("t", "cycle theme"),
             ("r", "refresh"),
             ("D", "dashboard"),
@@ -916,6 +918,78 @@ fn centered_popup(area: Rect, content_w: u16, content_h: u16) -> Rect {
     let popup_x = area.x + area.width.saturating_sub(popup_w) / 2;
     let popup_y = area.y + area.height.saturating_sub(popup_h) / 2;
     Rect::new(popup_x, popup_y, popup_w, popup_h)
+}
+
+/// The related-objects modal's help line (also drives its min width).
+const RELATED_HELP: &str = "↑/↓ select · Enter open · Esc close";
+
+/// Build the related-objects pick-list as styled lines: `▌ relation  label` per
+/// link, the selected row's relation bolded and the label in its kind color. Pure
+/// (no widgets), so the selection marker + coloring are unit-testable.
+fn related_lines<'a>(modal: &'a RelatedModal, theme: &Theme) -> Vec<Line<'a>> {
+    modal
+        .links
+        .iter()
+        .enumerate()
+        .map(|(i, l)| {
+            let selected = i == modal.selected;
+            let marker = if selected { "▌ " } else { "  " };
+            let rel_style = if selected {
+                Style::default()
+                    .fg(theme.header)
+                    .add_modifier(Modifier::BOLD)
+            } else {
+                Style::default().fg(theme.text_dim)
+            };
+            Line::from(vec![
+                Span::styled(marker, Style::default().fg(theme.accent)),
+                Span::styled(format!("{:<13}", l.relation), rel_style),
+                Span::styled(
+                    l.label.clone(),
+                    Style::default().fg(kind_accent(l.kind.as_str(), theme)),
+                ),
+            ])
+        })
+        .collect()
+}
+
+/// Render the centered `R` related-objects modal: a pick-list of the current
+/// detail's navigable relations (`relation  label`, the label in its kind color),
+/// the selected row marked with the `▌` gutter. `Enter` jumps; `Esc` closes.
+fn render_related(frame: &mut Frame, area: Rect, modal: &RelatedModal, theme: &Theme) {
+    let content_w = modal
+        .links
+        .iter()
+        .map(|l| l.relation.len() + 2 + l.label.chars().count())
+        .max()
+        .unwrap_or(0)
+        .max(RELATED_HELP.chars().count());
+    let content_w = u16::try_from(content_w).unwrap_or(40);
+    let rows = u16::try_from(modal.links.len()).unwrap_or(1).max(1);
+    let popup = centered_popup(area, content_w, rows + 1);
+    frame.render_widget(Clear, popup);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" Related objects ")
+        .title(
+            Line::from(" Esc: close ")
+                .right_aligned()
+                .style(theme.text_dim),
+        )
+        .border_style(Style::default().fg(theme.border_focused));
+    let inner = block.inner(popup);
+    frame.render_widget(block, popup);
+
+    let areas = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).split(inner);
+    frame.render_widget(Paragraph::new(related_lines(modal, theme)), areas[0]);
+    frame.render_widget(
+        Paragraph::new(Span::styled(
+            RELATED_HELP,
+            Style::default().fg(theme.text_dim),
+        )),
+        areas[1],
+    );
 }
 
 /// Render the centered `f` filter modal: a small form over the active filters.
@@ -1533,7 +1607,7 @@ fn footer_nav(app: &App) -> &'static str {
             " / search · j/k move · Enter open · D dash · T tree · S settings · Tab preview · o/y open/copy · r refresh · t theme · ? help · q quit "
         }
         Screen::Detail => {
-            " j/k scroll · g/G top/bottom · i/p/c/v/s tabs · o/y open/copy · b back · r refresh · t theme · ? help · q quit "
+            " j/k scroll · g/G top/bottom · R related · i/p/c/v/s tabs · o/y open/copy · b back · r refresh · ? help · q quit "
         }
         Screen::Dashboard => {
             " r refresh · b/Esc back · T tree · S settings · / search · ? help · q quit "
@@ -1817,6 +1891,47 @@ mod tests {
             "tree footer mentions collapse"
         );
         assert!(nav.contains("Enter open"), "tree footer mentions open");
+    }
+
+    #[test]
+    fn detail_footer_advertises_related_jump() {
+        let mut a = app();
+        a.screen = Screen::Detail;
+        assert!(
+            footer_nav(&a).contains("R related"),
+            "detail footer surfaces R"
+        );
+    }
+
+    #[test]
+    fn related_lines_mark_selection_and_color_by_kind() {
+        use crate::domain::detail::ObjectLink;
+        use crate::netbox::search::ObjectKind;
+        let theme = Theme::default_theme();
+        let modal = RelatedModal {
+            links: vec![
+                ObjectLink {
+                    kind: ObjectKind::Site,
+                    id: 5,
+                    relation: "site",
+                    label: "iad1".into(),
+                },
+                ObjectLink {
+                    kind: ObjectKind::Rack,
+                    id: 7,
+                    relation: "rack",
+                    label: "R1".into(),
+                },
+            ],
+            selected: 1,
+        };
+        let lines = related_lines(&modal, &theme);
+        assert_eq!(lines.len(), 2);
+        // Unselected row gets the blank gutter; the selected row gets `▌`.
+        assert!(line_text(&lines[0]).starts_with("  site"));
+        assert!(line_text(&lines[1]).starts_with("▌ rack"));
+        // The label is colored by its kind (rack groups with the dcim color).
+        assert_eq!(last_fg(&lines[1]), Some(kind_accent("rack", &theme)));
     }
 
     #[test]

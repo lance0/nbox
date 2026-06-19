@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::TableState;
 
 use crate::config::ProfileConfig;
-use crate::domain::detail::DetailView;
+use crate::domain::detail::{DetailView, ObjectLink};
 use crate::netbox::auth::AuthScheme;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::dashboard::DashboardData;
@@ -36,6 +36,42 @@ pub enum Modal {
     /// The `f` filter modal: a discoverable editor for the active search filters.
     /// Boxed for the same size reason as `Config`.
     Filter(Box<FilterModal>),
+    /// The `R` related-objects modal on a detail screen: a pick-list of the
+    /// object's navigable relations (site/tenant/rack/parent prefix/…); Enter
+    /// jumps to the selected one (drilling the NetBox graph without re-searching).
+    Related(Box<RelatedModal>),
+}
+
+/// State for the `R` related-objects jump list: the current detail's navigable
+/// links and the cursor over them. Pure; the selection is clamped on every move.
+pub struct RelatedModal {
+    pub links: Vec<ObjectLink>,
+    pub selected: usize,
+}
+
+impl RelatedModal {
+    fn new(links: Vec<ObjectLink>) -> Self {
+        Self { links, selected: 0 }
+    }
+
+    fn move_selection(&mut self, delta: isize) {
+        if self.links.is_empty() {
+            self.selected = 0;
+            return;
+        }
+        let max = self.links.len() - 1;
+        let cur = self.selected.min(max);
+        self.selected = if delta >= 0 {
+            cur.saturating_add(usize::try_from(delta).unwrap_or(0))
+                .min(max)
+        } else {
+            cur.saturating_sub(delta.unsigned_abs())
+        };
+    }
+
+    fn selected_link(&self) -> Option<&ObjectLink> {
+        self.links.get(self.selected)
+    }
 }
 
 /// Which screen is in the body area.
@@ -518,6 +554,12 @@ pub struct App {
     /// The last dashboard load error, shown on the dashboard when a load fails.
     pub dashboard_error: Option<String>,
 
+    /// The object-level back-stack for cross-object navigation: each related-link
+    /// jump (the `R` modal) pushes the object you jumped *from*, so `b`/`Esc` walks
+    /// back through the drill path one object at a time. Cleared when a fresh detail
+    /// is opened from a non-detail screen (a new drill path starts).
+    pub detail_nav: Vec<(ObjectKind, u64)>,
+
     /// High-water mark for the prefix-tree load; a `PrefixTreeLoaded` with an
     /// older id is dropped (latest-wins, like search/detail/dashboard).
     pub prefix_tree_gen: RequestId,
@@ -618,6 +660,7 @@ impl App {
             dashboard_gen: 0,
             dashboard: None,
             dashboard_error: None,
+            detail_nav: Vec::new(),
             prefix_tree_gen: 0,
             prefix_tree: None,
             prefix_tree_error: None,
@@ -828,6 +871,12 @@ impl App {
                 match result {
                     Ok(view) => {
                         self.record_recent(view.kind, view.id, view.title.clone());
+                        // A detail opened from a non-detail screen starts a fresh
+                        // drill path; a detail→detail load (a related-link jump or a
+                        // back-stack walk) keeps the path it already pushed/popped.
+                        if self.screen != Screen::Detail {
+                            self.detail_nav.clear();
+                        }
                         self.navigate_to(Screen::Detail);
                         // Snapshot the outgoing detail, then restore this object's
                         // saved tab/scroll (summary/top if it's the first visit).
@@ -1060,7 +1109,7 @@ impl App {
                 if self.screen == Screen::Home {
                     self.should_quit = true;
                 } else {
-                    self.go_back();
+                    return self.go_back();
                 }
             }
             KeyCode::Char('?') | KeyCode::F(1) => self.modal = Some(Modal::Help),
@@ -1074,10 +1123,10 @@ impl App {
                 if self.screen == Screen::Home && self.search_active() {
                     self.clear_search();
                 } else {
-                    self.go_back();
+                    return self.go_back();
                 }
             }
-            KeyCode::Char('b') => self.go_back(),
+            KeyCode::Char('b') => return self.go_back(),
             KeyCode::Char('/') => {
                 self.mode = Mode::Search;
                 self.search_input.reset();
@@ -1181,6 +1230,8 @@ impl App {
                     }];
                 }
             }
+            // Related-objects jump list (cross-object navigation) — detail only.
+            KeyCode::Char('R') if self.screen == Screen::Detail => self.open_related_modal(),
             KeyCode::Char('o') => {
                 if let Some(target) = self.action_target() {
                     return vec![AppCommand::OpenBrowser {
@@ -1336,6 +1387,22 @@ impl App {
         }
     }
 
+    /// Open the `R` related-objects modal for the current detail. A no-op while
+    /// another modal is open; a gentle status when the object has no navigable
+    /// relations (so `R` never opens an empty list).
+    fn open_related_modal(&mut self) {
+        if self.modal.is_some() {
+            return;
+        }
+        let Some(detail) = &self.detail else { return };
+        if detail.links.is_empty() {
+            self.set_transient_status("no related objects", Severity::Info);
+            return;
+        }
+        let links = detail.links.clone();
+        self.modal = Some(Modal::Related(Box::new(RelatedModal::new(links))));
+    }
+
     fn open_config_modal(&mut self) {
         if self.modal.is_none() {
             self.modal = Some(Modal::Config(Box::new(ConfigModal::new(
@@ -1360,7 +1427,49 @@ impl App {
             }
             Some(Modal::Config(_)) => self.handle_config_modal_key(key),
             Some(Modal::Filter(_)) => self.handle_filter_modal_key(key),
+            Some(Modal::Related(_)) => self.handle_related_modal_key(key),
             None => Vec::new(),
+        }
+    }
+
+    /// Drive the related-objects modal: ↑/↓ (j/k) move the selection, Enter jumps
+    /// to the selected object (pushing the current one onto the detail back-stack
+    /// so `b`/`Esc` returns to it), Esc/q closes.
+    fn handle_related_modal_key(&mut self, key: KeyEvent) -> Vec<AppCommand> {
+        let Some(Modal::Related(modal)) = &mut self.modal else {
+            return Vec::new();
+        };
+        match key.code {
+            KeyCode::Up | KeyCode::Char('k') => {
+                modal.move_selection(-1);
+                Vec::new()
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                modal.move_selection(1);
+                Vec::new()
+            }
+            KeyCode::Esc | KeyCode::Char('q') => {
+                self.modal = None;
+                Vec::new()
+            }
+            KeyCode::Enter => {
+                let target = modal.selected_link().map(|l| (l.kind, l.id));
+                self.modal = None;
+                let Some((kind, id)) = target else {
+                    return Vec::new();
+                };
+                // Don't jump against the old client mid-switch.
+                if self.fence_during_switch() {
+                    return Vec::new();
+                }
+                // Remember the object we're leaving so `b`/`Esc` walks back to it.
+                if let Some(d) = &self.detail {
+                    self.detail_nav.push((d.kind, d.id));
+                }
+                self.set_status("loading…", Severity::Info);
+                vec![AppCommand::LoadDetail { kind, id, req: 0 }]
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -2167,12 +2276,21 @@ impl App {
         }
     }
 
-    /// Pop back to the previous screen, or Home if the stack is empty.
-    fn go_back(&mut self) {
+    /// Go back one step. On a detail screen with a cross-object drill path, this
+    /// walks back to the previous *object* (reloading it); otherwise it pops back
+    /// to the previous *screen* (or Home). Returns the reload command, if any.
+    fn go_back(&mut self) -> Vec<AppCommand> {
         if self.screen == Screen::Detail {
             self.save_detail_view_state();
+            // Walk the object-level back-stack first (a related-link drill path),
+            // staying on the detail screen and reloading the previous object.
+            if let Some((kind, id)) = self.detail_nav.pop() {
+                self.set_status("loading…", Severity::Info);
+                return vec![AppCommand::LoadDetail { kind, id, req: 0 }];
+            }
         }
         self.screen = self.history.pop().unwrap_or(Screen::Home);
+        Vec::new()
     }
 
     /// Snapshot the loaded detail's tab + scroll under its `(kind, id)`, so
@@ -2977,6 +3095,7 @@ fn object_web_url(base_url: &str, kind: ObjectKind, id: u64) -> String {
         ObjectKind::Provider => format!("circuits/providers/{id}/"),
         ObjectKind::Vm => format!("virtualization/virtual-machines/{id}/"),
         ObjectKind::Cluster => format!("virtualization/clusters/{id}/"),
+        ObjectKind::Rack => format!("dcim/racks/{id}/"),
     };
 
     let mut base = base_url.to_string();
@@ -3545,6 +3664,7 @@ mod tests {
                 title: "device edge01".into(),
                 body: "name: edge01".into(),
                 tabs: Vec::new(),
+                links: Vec::new(),
             }),
         );
         assert_eq!(a.screen, Screen::Detail);
@@ -3594,6 +3714,7 @@ mod tests {
                 title: "asn 64500".into(),
                 body: "asn: 64500\nrir: ARIN".into(),
                 tabs: Vec::new(),
+                links: Vec::new(),
             }),
         );
         assert_eq!(a.screen, Screen::Detail);
@@ -3619,6 +3740,7 @@ mod tests {
                     title: title.into(),
                     body: String::new(),
                     tabs: Vec::new(),
+                    links: Vec::new(),
                 }),
             );
             a.handle_event(press(KeyCode::Char('b')));
@@ -3852,6 +3974,119 @@ mod tests {
         );
     }
 
+    fn detail_with_links(kind: ObjectKind, id: u64, links: Vec<ObjectLink>) -> DetailView {
+        DetailView {
+            kind,
+            id,
+            title: format!("{} {id}", kind.as_str()),
+            body: String::new(),
+            tabs: Vec::new(),
+            links,
+        }
+    }
+
+    #[test]
+    fn r_opens_related_modal_and_enter_jumps_with_back_stack() {
+        let mut a = app();
+        detail_loaded(
+            &mut a,
+            Ok(detail_with_links(
+                ObjectKind::Device,
+                1,
+                vec![
+                    ObjectLink {
+                        kind: ObjectKind::Site,
+                        id: 5,
+                        relation: "site",
+                        label: "iad1".into(),
+                    },
+                    ObjectLink {
+                        kind: ObjectKind::Rack,
+                        id: 7,
+                        relation: "rack",
+                        label: "R1".into(),
+                    },
+                ],
+            )),
+        );
+        assert_eq!(a.screen, Screen::Detail);
+
+        // `R` opens the related-objects modal.
+        a.handle_event(press(KeyCode::Char('R')));
+        assert!(matches!(a.modal, Some(Modal::Related(_))));
+
+        // Move to the rack and Enter: jump to it, push the device onto the stack.
+        a.handle_event(press(KeyCode::Down));
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(
+            matches!(
+                cmds.as_slice(),
+                [AppCommand::LoadDetail {
+                    kind: ObjectKind::Rack,
+                    id: 7,
+                    ..
+                }]
+            ),
+            "Enter jumps to the selected (rack) object, got {cmds:?}"
+        );
+        assert!(a.modal.is_none(), "the modal closes on jump");
+        assert_eq!(
+            a.detail_nav,
+            vec![(ObjectKind::Device, 1)],
+            "the object jumped from is on the back-stack"
+        );
+
+        // The rack detail lands; the stack is preserved while on it.
+        detail_loaded(
+            &mut a,
+            Ok(detail_with_links(ObjectKind::Rack, 7, Vec::new())),
+        );
+        assert_eq!(a.detail_nav, vec![(ObjectKind::Device, 1)]);
+
+        // `b` walks back to the device and pops the stack.
+        let back = a.handle_event(press(KeyCode::Char('b')));
+        assert!(
+            matches!(
+                back.as_slice(),
+                [AppCommand::LoadDetail {
+                    kind: ObjectKind::Device,
+                    id: 1,
+                    ..
+                }]
+            ),
+            "b reloads the previous object, got {back:?}"
+        );
+        assert!(a.detail_nav.is_empty(), "the back-stack is popped");
+    }
+
+    #[test]
+    fn r_with_no_related_objects_is_a_noop() {
+        let mut a = app();
+        detail_loaded(
+            &mut a,
+            Ok(detail_with_links(ObjectKind::Asn, 3, Vec::new())),
+        );
+        a.handle_event(press(KeyCode::Char('R')));
+        assert!(
+            a.modal.is_none(),
+            "R opens nothing when there are no relations"
+        );
+    }
+
+    #[test]
+    fn opening_a_detail_from_home_clears_the_back_stack() {
+        let mut a = app();
+        a.detail_nav.push((ObjectKind::Site, 99)); // a stale path from before
+        detail_loaded(
+            &mut a,
+            Ok(detail_with_links(ObjectKind::Device, 1, Vec::new())),
+        );
+        assert!(
+            a.detail_nav.is_empty(),
+            "a fresh detail from a non-detail screen starts a new drill path"
+        );
+    }
+
     #[test]
     fn palette_clear_search_resets_results() {
         let mut a = app();
@@ -3978,6 +4213,7 @@ mod tests {
                 title: "device edge99".into(),
                 body: String::new(),
                 tabs: Vec::new(),
+                links: Vec::new(),
             }),
         );
         assert_eq!(a.screen, Screen::Detail);
@@ -4403,6 +4639,7 @@ mod tests {
                 title: "device edge01".into(),
                 body,
                 tabs: Vec::new(),
+                links: Vec::new(),
             }),
         );
         a.sync_detail_viewport(viewport);
@@ -4533,6 +4770,7 @@ mod tests {
                 title: "device edge01".into(),
                 body: String::new(),
                 tabs: Vec::new(),
+                links: Vec::new(),
             }),
         );
         a.sync_detail_viewport(10);
@@ -4561,6 +4799,7 @@ mod tests {
                 title: "t".into(),
                 body: "a\nb\nc".into(),
                 tabs: Vec::new(),
+                links: Vec::new(),
             }),
         );
         assert_eq!(a.detail_viewport, 0);
@@ -4587,6 +4826,7 @@ mod tests {
                 title: "device edge02".into(),
                 body: "fresh".into(),
                 tabs: Vec::new(),
+                links: Vec::new(),
             }),
         );
         assert_eq!(a.detail_scroll, 0);
@@ -4614,6 +4854,7 @@ mod tests {
                     label: "interfaces".into(),
                     body: long("iface"),
                 }],
+                links: Vec::new(),
             }),
         );
         a.sync_detail_viewport(10);
@@ -4653,6 +4894,7 @@ mod tests {
                     label: "interfaces".into(),
                     body: "iface body".into(),
                 }],
+                links: Vec::new(),
             }),
         );
         a.sync_detail_viewport(10);
@@ -4696,6 +4938,7 @@ mod tests {
                 title: "device edge01".into(),
                 body: "summary".into(),
                 tabs: vec![tab('i', "interfaces"), tab('p', "ips"), tab('v', "vlans")],
+                links: Vec::new(),
             }),
         );
         assert_eq!(a.screen, Screen::Detail);
@@ -4734,6 +4977,7 @@ mod tests {
             title: format!("device {id}"),
             body: body.into(),
             tabs: Vec::new(),
+            links: Vec::new(),
         }
     }
 
