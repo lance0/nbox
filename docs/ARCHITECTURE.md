@@ -48,6 +48,18 @@ CLI args ─► lib::run ─► query/search ─► netbox::client ─► NetBox
 The TUI replaces the last step with the ratatui render loop, reusing the same
 `domain` view models via `domain::detail`.
 
+## Output contracts
+
+Scriptable JSON is a compatibility surface. The broad `tests/output_flags_tests.rs`
+suite checks that every JSON-producing command shares `--fields`, `--raw`, and
+`--envelope` behavior. File-backed goldens in `tests/golden/` pin representative
+machine-facing shapes (`status`, `search`, detail views) exactly as rendered by
+`output::json::render_with`.
+
+When a JSON shape changes intentionally, update the matching golden file in the
+same commit. An unexpected golden diff should be treated as a contract review,
+not a formatting chore.
+
 ## Exit codes
 
 Stable contract (also in AGENTS.md): `0` success · `1` generic · `2` usage ·

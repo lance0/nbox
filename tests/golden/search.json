@@ -1,0 +1,18 @@
+[
+  {
+    "display": "edge01",
+    "id": 7,
+    "kind": "device",
+    "score": 100,
+    "subtitle": "den1",
+    "url": "https://netbox.example.com/dcim/devices/7/"
+  },
+  {
+    "display": "10.44.208.0/24",
+    "id": 42,
+    "kind": "prefix",
+    "score": 50,
+    "subtitle": "den1",
+    "url": "https://netbox.example.com/ipam/prefixes/42/"
+  }
+]
