@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::TableState;
 
+use crate::cache::{Cache, Freshness};
 use crate::config::ProfileConfig;
 use crate::domain::detail::{DetailView, ObjectLink};
 use crate::netbox::auth::AuthScheme;
@@ -141,6 +142,13 @@ pub enum AppEvent {
         kind: ObjectKind,
         id: u64,
         result: anyhow::Result<DetailView>,
+    },
+    /// Freshness for the detail that just loaded (additive to `DetailLoaded`, so
+    /// the cache stays invisible to the load path). Tagged with the detail request
+    /// id so a stale one is ignored; drives the footer's "cached Ns ago".
+    DetailFreshness {
+        req: RequestId,
+        freshness: Freshness,
     },
     /// A profile switch finished re-probing the new instance: on success carries
     /// the rebuilt client and the new instance's `/api/status/` version; on
@@ -286,6 +294,9 @@ pub enum AppCommand {
         id: u64,
         /// The detail channel's request id, for stale-`DetailLoaded` suppression.
         req: RequestId,
+        /// Bust the cache for this object before loading — set by an explicit
+        /// refresh (`r` / auto-tick), so a refresh never re-serves a cached copy.
+        force: bool,
     },
     /// Load the overview dashboard (status counts / top prefixes / recent journal).
     /// Tagged with a request id so a stale `DashboardLoaded` is dropped.
@@ -310,6 +321,9 @@ pub enum AppCommand {
         /// The detail channel's request id (shared with `LoadDetail`, since both
         /// resolve back through `DetailLoaded`), for stale-response suppression.
         req: RequestId,
+        /// Bust the cache for the resolved object before loading (see
+        /// [`AppCommand::LoadDetail::force`]).
+        force: bool,
     },
     /// Open `url` in the browser, honoring the live `open_browser_command`
     /// (carried so the next `o` uses a just-changed setting). When `command` is
@@ -377,6 +391,12 @@ impl AppCommand {
 /// The whole TUI application state.
 pub struct App {
     pub client: NetBoxClient,
+    /// The read cache shared with the dispatch tasks. Defaults to a disabled
+    /// no-op (so tests see no caching); the real one is installed by `run_tui`.
+    pub cache: Cache,
+    /// Freshness of the detail currently shown (set from `DetailFreshness`,
+    /// rendered in the footer). `None` until a detail is loaded / when it errors.
+    pub detail_freshness: Option<Freshness>,
     pub theme: Theme,
     pub theme_index: usize,
     pub initial_theme: String,
@@ -605,6 +625,8 @@ impl App {
     ) -> Self {
         Self {
             client,
+            cache: Cache::disabled(),
+            detail_freshness: None,
             theme: Theme::by_name(theme_name),
             theme_index: Theme::index_of(theme_name),
             initial_theme: Theme::by_name(theme_name).name().to_string(),
@@ -722,6 +744,11 @@ impl App {
         self.profiles = profiles;
     }
 
+    /// Install the live read cache (called once by `run_tui` after connecting).
+    pub fn set_cache(&mut self, cache: Cache) {
+        self.cache = cache;
+    }
+
     /// Apply an event, returning any commands to dispatch. The commands handed
     /// back are accounted into the in-flight counter (each fetch bumps it) so the
     /// footer spinner runs until the matching result event lands.
@@ -753,6 +780,9 @@ impl App {
                     self.request_seq += 1;
                     *req = self.request_seq;
                     self.detail_gen = self.request_seq;
+                    // A new detail load is starting; drop the previous freshness
+                    // badge so it can't linger over the incoming object.
+                    self.detail_freshness = None;
                 }
                 AppCommand::LoadDashboard { req } => {
                     self.request_seq += 1;
@@ -959,6 +989,15 @@ impl App {
                 }
                 Vec::new()
             }
+            AppEvent::DetailFreshness { req, freshness } => {
+                // Adopt freshness only for the newest detail request (a stale one
+                // belongs to a superseded load). Not a fetch settle — `DetailLoaded`
+                // already counted it down.
+                if self.is_current_detail(req) {
+                    self.detail_freshness = Some(freshness);
+                }
+                Vec::new()
+            }
             AppEvent::ProfileSwitched { id, name, result } => {
                 // The reconnect+re-probe settled — count it down even when dropped
                 // as stale below, so the spinner can't hang on a superseded switch.
@@ -993,6 +1032,15 @@ impl App {
                             self.base_url.clone_from(&self.profiles[idx].config.url);
                         }
                         self.profile_name.clone_from(&name);
+                        // Re-key the cache to the new connection so a switch can
+                        // never serve the previous profile's cached views. The
+                        // store is shared, so switching back stays warm.
+                        let partition = crate::cache::profile_partition(
+                            &self.profile_name,
+                            self.client.base_url().as_str(),
+                            self.client.backend(),
+                        );
+                        self.cache = self.cache.with_partition(partition);
                         self.clear_for_profile_switch();
                         if let Some((_, message, severity)) = switch_notice {
                             self.set_status(format!("{message}; switched to '{name}'"), severity);
@@ -1216,7 +1264,12 @@ impl App {
                         return Vec::new();
                     }
                     self.set_status("loading…", Severity::Info);
-                    return vec![AppCommand::LoadDetail { kind, id, req: 0 }];
+                    return vec![AppCommand::LoadDetail {
+                        kind,
+                        id,
+                        req: 0,
+                        force: false,
+                    }];
                 }
                 // On the tree, Enter opens the selected prefix's detail.
                 if self.screen == Screen::PrefixTree
@@ -1230,6 +1283,7 @@ impl App {
                         kind: ObjectKind::Prefix,
                         id,
                         req: 0,
+                        force: false,
                     }];
                 }
             }
@@ -1470,7 +1524,12 @@ impl App {
                     self.detail_nav.push((d.kind, d.id));
                 }
                 self.set_status("loading…", Severity::Info);
-                vec![AppCommand::LoadDetail { kind, id, req: 0 }]
+                vec![AppCommand::LoadDetail {
+                    kind,
+                    id,
+                    req: 0,
+                    force: false,
+                }]
             }
             _ => Vec::new(),
         }
@@ -2211,6 +2270,7 @@ impl App {
                     kind,
                     value,
                     req: 0,
+                    force: false,
                 }]
             }
             PaletteCommand::Search(query) => {
@@ -2289,7 +2349,12 @@ impl App {
             // staying on the detail screen and reloading the previous object.
             if let Some((kind, id)) = self.detail_nav.pop() {
                 self.set_status("loading…", Severity::Info);
-                return vec![AppCommand::LoadDetail { kind, id, req: 0 }];
+                return vec![AppCommand::LoadDetail {
+                    kind,
+                    id,
+                    req: 0,
+                    force: false,
+                }];
             }
         }
         self.screen = self.history.pop().unwrap_or(Screen::Home);
@@ -2469,7 +2534,13 @@ impl App {
                 Some(d) => {
                     let (kind, id) = (d.kind, d.id);
                     self.set_status("refreshing…", Severity::Info);
-                    vec![AppCommand::LoadDetail { kind, id, req: 0 }]
+                    // An explicit refresh always busts the cache and refetches.
+                    vec![AppCommand::LoadDetail {
+                        kind,
+                        id,
+                        req: 0,
+                        force: true,
+                    }]
                 }
                 None => Vec::new(),
             },
@@ -3227,6 +3298,82 @@ mod tests {
         assert_eq!(
             result_row_cells(&r),
             ["device".to_string(), "core02".to_string(), String::new()]
+        );
+    }
+
+    fn detail_view(kind: ObjectKind, id: u64) -> DetailView {
+        DetailView {
+            kind,
+            id,
+            title: format!("{} {id}", kind.as_str()),
+            body: String::new(),
+            tabs: Vec::new(),
+            links: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn refresh_on_detail_forces_cache_bust() {
+        let mut a = app();
+        // Land on the detail screen with a loaded object.
+        a.handle_event(AppEvent::DetailLoaded {
+            req: a.detail_gen,
+            result: Ok(detail_view(ObjectKind::Device, 7)),
+        });
+        assert_eq!(a.screen, Screen::Detail);
+        // `r` must reload with force=true so a refresh never re-serves the cache.
+        let cmds = a.handle_event(press(KeyCode::Char('r')));
+        assert!(
+            matches!(
+                cmds.as_slice(),
+                [AppCommand::LoadDetail {
+                    kind: ObjectKind::Device,
+                    id: 7,
+                    force: true,
+                    ..
+                }]
+            ),
+            "refresh forces a cache bust, got {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn opening_detail_from_home_does_not_force_bust() {
+        let mut a = app();
+        set_results(&mut a, vec![result(7, "edge01")]);
+        // Normal navigation uses the cache (force=false).
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(matches!(
+            cmds.as_slice(),
+            [AppCommand::LoadDetail { force: false, .. }]
+        ));
+    }
+
+    #[test]
+    fn detail_freshness_adopted_when_current_ignored_when_stale() {
+        use crate::cache::Source;
+        let mut a = app();
+        a.detail_gen = 5;
+        a.handle_event(AppEvent::DetailFreshness {
+            req: 5,
+            freshness: Freshness {
+                source: Source::Cache,
+                age: 12,
+            },
+        });
+        assert_eq!(a.detail_freshness.map(|f| f.age), Some(12));
+        // A freshness for a superseded (older) detail request is ignored.
+        a.handle_event(AppEvent::DetailFreshness {
+            req: 4,
+            freshness: Freshness {
+                source: Source::Cache,
+                age: 99,
+            },
+        });
+        assert_eq!(
+            a.detail_freshness.map(|f| f.age),
+            Some(12),
+            "a stale freshness must not overwrite the current one"
         );
     }
 

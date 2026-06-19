@@ -10,17 +10,16 @@ use crate::config::BackendKind;
 use crate::netbox::search::ObjectKind;
 
 /// A stable identifier for one connection's cache partition: the profile name,
-/// its normalized base URL, the read backend, and the NetBox major.minor.
+/// its normalized base URL, and the read backend.
 ///
-/// Re-pointing a profile's URL, switching REST↔GraphQL, or a NetBox upgrade all
-/// change this string, so cached view models can never bleed across targets whose
-/// responses differ (e.g. 4.2 vs. 4.5, which serialize prefixes differently).
-/// Kept human-readable — it is the SQLite `profile` column, handy when poking at
-/// the cache file by hand.
-pub fn profile_partition(name: &str, base_url: &str, backend: BackendKind, api: &str) -> String {
+/// Re-pointing a profile's URL or switching REST↔GraphQL changes this string, so
+/// cached view models can never bleed across distinct targets. The NetBox version
+/// is deliberately *not* part of the key — cached values are nbox's own assembled
+/// structs (not NetBox's raw responses), so a version difference can't corrupt a
+/// deserialized view, and leaving it out keeps reads stable across a probe.
+pub fn profile_partition(name: &str, base_url: &str, backend: BackendKind) -> String {
     let url = base_url.trim_end_matches('/');
-    let api = if api.is_empty() { "?" } else { api };
-    format!("{name}|{url}|{}|{api}", backend.as_str())
+    format!("{name}|{url}|{}", backend.as_str())
 }
 
 /// A within-profile cache key: a namespace plus an object reference. Opaque and
@@ -58,28 +57,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn partition_separates_url_backend_and_api() {
-        let a = profile_partition("prod", "https://nb.example/", BackendKind::Rest, "4.5");
-        let b = profile_partition("prod", "https://nb.example/", BackendKind::Rest, "4.2");
-        let c = profile_partition("prod", "https://nb.example/", BackendKind::Graphql, "4.5");
-        let d = profile_partition("prod", "https://other.example/", BackendKind::Rest, "4.5");
-        // Every distinguishing axis yields a distinct partition.
-        assert_ne!(a, b, "api version segregates");
+    fn partition_separates_url_and_backend() {
+        let a = profile_partition("prod", "https://nb.example/", BackendKind::Rest);
+        let c = profile_partition("prod", "https://nb.example/", BackendKind::Graphql);
+        let d = profile_partition("prod", "https://other.example/", BackendKind::Rest);
         assert_ne!(a, c, "backend segregates");
         assert_ne!(a, d, "base url segregates");
     }
 
     #[test]
     fn partition_is_trailing_slash_insensitive() {
-        let with = profile_partition("p", "https://nb/", BackendKind::Rest, "4.5");
-        let without = profile_partition("p", "https://nb", BackendKind::Rest, "4.5");
+        let with = profile_partition("p", "https://nb/", BackendKind::Rest);
+        let without = profile_partition("p", "https://nb", BackendKind::Rest);
         assert_eq!(with, without);
-    }
-
-    #[test]
-    fn partition_tolerates_unknown_api() {
-        let k = profile_partition("p", "https://nb", BackendKind::Rest, "");
-        assert!(k.ends_with("|?"), "empty api renders as '?': {k}");
     }
 
     #[test]

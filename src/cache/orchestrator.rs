@@ -148,6 +148,21 @@ impl Cache {
         }
     }
 
+    /// A handle to the same cache under a different profile partition — used when
+    /// the TUI switches profiles. Shares the store (other profiles' entries stay
+    /// warm for a switch-back) but keys reads/writes under the new partition, so a
+    /// switch can never serve the previous profile's data.
+    #[must_use]
+    pub fn with_partition(&self, partition: String) -> Self {
+        Self {
+            store: self.store.clone(),
+            partition: Arc::from(partition),
+            config: self.config,
+            inflight: self.inflight.clone(),
+            clock: self.clock.clone(),
+        }
+    }
+
     pub fn enabled(&self) -> bool {
         self.config.enabled
     }

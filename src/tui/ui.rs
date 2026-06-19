@@ -8,6 +8,7 @@ use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Tab
 
 use std::collections::HashSet;
 
+use crate::cache::Source;
 use crate::netbox::prefix_tree::{self, PrefixTreeData};
 use crate::netbox::search::SearchFilters;
 use crate::tui::config_modal::{ConfigModal, ConfigSection, ProfilesMode, TestState};
@@ -1633,11 +1634,38 @@ fn footer_line(app: &App) -> Line<'static> {
         has_state = false;
     }
 
-    if has_state || !app.status.is_empty() {
+    // On the detail screen, show how old a cache-served object is ("cached Ns
+    // ago"). A freshly-fetched object (`Origin`) shows nothing — it's current.
+    let mut has_fresh = false;
+    if app.screen == Screen::Detail
+        && let Some(f) = app.detail_freshness
+        && f.source == Source::Cache
+    {
+        if has_state || !app.status.is_empty() {
+            spans.push(Span::raw("  "));
+        }
+        spans.push(Span::styled(
+            format!("cached {}", fmt_age(f.age)),
+            Style::default().fg(theme.text_dim),
+        ));
+        has_fresh = true;
+    }
+
+    if has_state || !app.status.is_empty() || has_fresh {
         spans.push(Span::raw("    "));
     }
     spans.extend(nav_spans(footer_nav(app), theme));
     Line::from(spans)
+}
+
+/// A compact relative age for the footer freshness chip. The cache TTL caps at
+/// five minutes, so seconds and whole minutes cover every case.
+fn fmt_age(secs: u64) -> String {
+    if secs < 60 {
+        format!("{secs}s ago")
+    } else {
+        format!("{}m ago", secs / 60)
+    }
 }
 
 /// Split a footer nav string (segments joined by ` · `) into styled spans: each
@@ -2217,6 +2245,44 @@ mod tests {
         let status_idx = text.find("theme: nord").expect("status present");
         let nav_idx = text.find("/ search").expect("nav present");
         assert!(status_idx < nav_idx, "status precedes navigation: {text}");
+    }
+
+    #[test]
+    fn footer_shows_cached_age_on_detail() {
+        use crate::cache::{Freshness, Source};
+        let mut a = app();
+        a.screen = Screen::Detail;
+        a.detail_freshness = Some(Freshness {
+            source: Source::Cache,
+            age: 42,
+        });
+        let text = line_text(&footer_line(&a));
+        assert!(text.contains("cached 42s ago"), "footer: {text}");
+    }
+
+    #[test]
+    fn footer_hides_age_for_freshly_fetched_detail() {
+        use crate::cache::{Freshness, Source};
+        let mut a = app();
+        a.screen = Screen::Detail;
+        // A just-fetched object is current — no "cached" chip.
+        a.detail_freshness = Some(Freshness {
+            source: Source::Origin,
+            age: 0,
+        });
+        let text = line_text(&footer_line(&a));
+        assert!(
+            !text.contains("cached"),
+            "origin-fetched shows no age: {text}"
+        );
+    }
+
+    #[test]
+    fn fmt_age_uses_seconds_then_minutes() {
+        assert_eq!(fmt_age(0), "0s ago");
+        assert_eq!(fmt_age(45), "45s ago");
+        assert_eq!(fmt_age(60), "1m ago");
+        assert_eq!(fmt_age(125), "2m ago");
     }
 
     #[test]

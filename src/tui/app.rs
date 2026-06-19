@@ -4,6 +4,7 @@ use anyhow::Result;
 use ratatui::DefaultTerminal;
 use tokio::sync::mpsc;
 
+use crate::cache::{Cache, CacheKey};
 use crate::domain::detail::{load_detail, load_detail_by_ref};
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::search::SearchRequest;
@@ -71,7 +72,7 @@ async fn event_loop(
                 }
                 refresh_ticker = arm_refresh(&tx, secs);
             } else {
-                dispatch(command, app.client.clone(), tx.clone());
+                dispatch(command, app.client.clone(), app.cache.clone(), tx.clone());
             }
         }
     }
@@ -88,7 +89,7 @@ fn arm_refresh(
         .map(|secs| spawn_ticks(tx.clone(), secs))
 }
 
-fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent>) {
+fn dispatch(command: AppCommand, client: NetBoxClient, cache: Cache, tx: mpsc::Sender<AppEvent>) {
     match command {
         AppCommand::Search {
             query,
@@ -107,10 +108,45 @@ fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent
                 let _ = tx.send(AppEvent::SearchComplete { req, result }).await;
             });
         }
-        AppCommand::LoadDetail { kind, id, req } => {
+        AppCommand::LoadDetail {
+            kind,
+            id,
+            req,
+            force,
+        } => {
             tokio::spawn(async move {
-                let result = load_detail(&client, kind, id).await;
-                let _ = tx.send(AppEvent::DetailLoaded { req, result }).await;
+                let key = CacheKey::detail(kind, id);
+                // An explicit refresh busts the entry first so it can't be re-served.
+                if force {
+                    cache.invalidate(&key);
+                }
+                match cache
+                    .get_or_fetch(&key, || load_detail(&client, kind, id))
+                    .await
+                {
+                    Ok(c) => {
+                        let _ = tx
+                            .send(AppEvent::DetailLoaded {
+                                req,
+                                result: Ok(c.value),
+                            })
+                            .await;
+                        let _ = tx
+                            .send(AppEvent::DetailFreshness {
+                                req,
+                                freshness: c.freshness,
+                            })
+                            .await;
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .send(AppEvent::DetailLoaded {
+                                req,
+                                result: Err(e),
+                            })
+                            .await;
+                    }
+                }
             });
         }
         AppCommand::LoadDashboard { req } => {
@@ -133,10 +169,44 @@ fn dispatch(command: AppCommand, client: NetBoxClient, tx: mpsc::Sender<AppEvent
                 let _ = tx.send(AppEvent::PreviewLoaded { kind, id, result }).await;
             });
         }
-        AppCommand::LoadByRef { kind, value, req } => {
+        AppCommand::LoadByRef {
+            kind,
+            value,
+            req,
+            force,
+        } => {
             tokio::spawn(async move {
-                let result = load_detail_by_ref(&client, kind, &value).await;
-                let _ = tx.send(AppEvent::DetailLoaded { req, result }).await;
+                let key = CacheKey::detail_ref(kind, &value);
+                if force {
+                    cache.invalidate(&key);
+                }
+                match cache
+                    .get_or_fetch(&key, || load_detail_by_ref(&client, kind, &value))
+                    .await
+                {
+                    Ok(c) => {
+                        let _ = tx
+                            .send(AppEvent::DetailLoaded {
+                                req,
+                                result: Ok(c.value),
+                            })
+                            .await;
+                        let _ = tx
+                            .send(AppEvent::DetailFreshness {
+                                req,
+                                freshness: c.freshness,
+                            })
+                            .await;
+                    }
+                    Err(e) => {
+                        let _ = tx
+                            .send(AppEvent::DetailLoaded {
+                                req,
+                                result: Err(e),
+                            })
+                            .await;
+                    }
+                }
             });
         }
         AppCommand::OpenBrowser { url, command } => {

@@ -790,6 +790,10 @@ async fn build_tui_app(
         })
         .collect();
 
+    // The cache partition keys cached view models to this connection (profile +
+    // URL + backend), computed before `name`/`base_url` are moved into the App.
+    let cache_partition = crate::cache::profile_partition(&name, &base_url, profile.backend());
+
     let mut app = tui::state::App::new(
         client,
         &theme_name,
@@ -799,6 +803,10 @@ async fn build_tui_app(
         Some(path.to_path_buf()),
     );
     app.set_profiles(profiles);
+    app.set_cache(crate::cache::Cache::from_settings(
+        cache_partition,
+        &cfg.cache,
+    ));
     // Seed the live UI settings the Settings section edits and the `o` open path
     // reads (auto-refresh interval + custom browser-open command).
     app.set_ui_settings(
