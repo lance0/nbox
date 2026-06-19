@@ -22,11 +22,17 @@ confirm_writes = true      # reserved for v0.2 writes
 url = "https://netbox.example.com"
 token_env = "NETBOX_TOKEN"   # nbox reads the token from this env var
 auth_scheme = "auto"         # auto | bearer | token (auto-detects v2 nbt_ tokens)
-backend = "rest"             # rest | graphql (GraphQL currently backs search)
 verify_tls = true
 timeout_secs = 15
 page_size = 100
 exclude_config_context = true   # drop the large config_context on devices/VMs
+
+# Per-surface backend. REST is canonical; opt a read surface into GraphQL here
+# (falls back to REST if the instance's GraphQL schema can't support it). Omit
+# the table for all-REST. `nbox status` shows the configured vs effective backend.
+[profiles.work.api]
+search = "graphql"           # rest | graphql
+# vrf = "graphql"            # rest | graphql
 
 [profiles.lab]
 url = "https://netbox.lab.example.com"

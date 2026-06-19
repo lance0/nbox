@@ -158,6 +158,14 @@ Consolidated future scope:
   routing context — a fixed header card (RD/tenant/RT/enforce) over the VRF's prefix tree (navigable
   summary slot) with navigable `addresses` and a `targets` tab. Built on the new navigable-detail-row
   mechanism (a `DetailRow { text, target }`; `Enter` opens, `b`/`Esc` returns).
+- ☑ **Per-surface API backends.** Replaced the coarse `backend` profile key with `[profiles.<name>.api]`
+  (`search`/`vrf` = `rest`|`graphql`). REST is canonical; a GraphQL surface is an opt-in accelerator
+  resolved against the live schema probe (`EffectiveBackend`, REST-fallback with reason). Surface-aware
+  capabilities + a per-surface `api` block in `nbox status`/MCP. VRF GraphQL fetches its prefix/address
+  bundle in one query; REST and GraphQL produce a byte-identical `VrfDetail`.
+- ☐ **Bundled GraphQL search.** The `search` surface still fans out one GraphQL POST per kind; collapse
+  it into a single query with aliased `*_list` fields (skipping unsupported branches) so GraphQL search
+  is a real round-trip win, not just a protocol swap.
 - ☐ GraphQL detail views after the TUI detail experience settles — start with device detail as a
   read-only GraphQL query alternative to the REST fan-out; only pursue if the fan-out becomes a
   latency problem, and don't build both surfaces indefinitely.

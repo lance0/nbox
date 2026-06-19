@@ -8,12 +8,14 @@ use serde_json::{Value, json};
 pub fn status_report() -> Value {
     json!({
         "netbox_url": "https://netbox.example.com/",
-        "backend": "graphql",
+        "api": {
+            "search": { "configured": "graphql", "effective": "graphql" },
+            "vrf": { "configured": "graphql", "effective": "graphql" }
+        },
         "netbox_version": "4.5.5",
         "django_version": "5.2.1",
         "python_version": "3.12.3",
         "capabilities": {
-            "backend": "graphql",
             "version": {
                 "netbox": "4.5.5",
                 "minimum_supported": "4.2",
@@ -27,32 +29,11 @@ pub fn status_report() -> Value {
                 "exclude_config_context": true
             },
             "graphql": {
-                "configured": true,
                 "probed": true,
                 "available": true,
-                "search": {
-                    "lists_found": 14,
-                    "paginated_lists": 14,
-                    "missing_lists": []
-                },
-                "filters": {
-                    "scope_type": {
-                        "shape": "lookup",
-                        "named_type": "ContentTypeFilter"
-                    },
-                    "scope_id": {
-                        "shape": "scalar",
-                        "named_type": "ID"
-                    },
-                    "site_id": {
-                        "shape": "scalar",
-                        "named_type": "ID"
-                    },
-                    "vrf_id": {
-                        "shape": "scalar",
-                        "named_type": "ID"
-                    },
-                    "tree_node_scope_ids": true
+                "surfaces": {
+                    "search": { "supported": true, "recommended": true, "missing": [] },
+                    "vrf": { "supported": true, "recommended": true, "missing": [] }
                 }
             }
         }

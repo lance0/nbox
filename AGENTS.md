@@ -52,6 +52,7 @@ nbox tenant <slug|name|id>
 nbox contact <name|id>
 nbox vm <name|id>
 nbox cluster <name|id>
+nbox vrf <name|rd|id>
 nbox search <query> [--limit N] [--status S] [--site <name|slug|id>] [--region <name|slug|id>] [--site-group <name|slug|id>] [--location <name|slug|id>] [--tenant SLUG] [--role SLUG] [--tag SLUG] [--vrf <id|rd|name>] [--cols a,b,c] [--partial]
 nbox tags
 nbox journal <kind> <ref>
@@ -79,7 +80,7 @@ stderr. Every tool is annotated read-only.
 | ---- | ------- |
 | `nbox_status` | Connection + active backend capabilities + NetBox/Django/Python versions (call first to confirm reachability and inspect `capabilities`). |
 | `nbox_search` | Search devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP ranges/tenants/contacts/providers/VMs/clusters; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag` (one scope filter at a time), `vrf` (id\|rd\|name; filters IP/prefix results only). Find a reference before `nbox_get`. |
-| `nbox_get` | One object: `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster) + `ref`; `vrf`/`site`/`group` disambiguate (an ambiguous ref returns the candidates). |
+| `nbox_get` | One object: `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf) + `ref`; `vrf`/`site`/`group` disambiguate (an ambiguous ref returns the candidates). |
 | `nbox_get_interface` | One interface on a device: config, addresses, cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix (nothing reserved); `count`, `vrf`. |
 | `nbox_next_prefix` | Available child prefix(es) in a prefix; `length` for a block of a size, else all free blocks; `vrf`. |
@@ -120,9 +121,13 @@ MCP prompts are later. See `docs/MCP.md`.
   (`nbox config token set`) → none. Env always overrides the keyring. Inspect the
   active source with `nbox config token status` (never prints the token). Select a
   profile with `--profile <name>` or set the active one.
-- Backend: REST is the default. A profile may set `backend = "graphql"` to use
-  GraphQL for `search`; nbox probes `/graphql/` and adapts to NetBox 4.2, 4.3,
-  and 4.5+ filter/pagination shapes. Non-search operations remain REST-backed.
+- Backends: REST is canonical. GraphQL is an opt-in per-surface accelerator set
+  under `[profiles.<name>.api]` (`search` and/or `vrf` = `rest`|`graphql`; missing
+  = REST). nbox probes `/graphql/`, adapts to NetBox 4.2/4.3/4.5+ filter/pagination
+  shapes, and falls back to REST (with the reason in `nbox status`) when a surface
+  isn't supported. The output shape is identical either way. The old coarse
+  `backend = …` key was removed and is rejected. Identity resolution and all other
+  operations remain REST-backed.
 - Logging: quiet by default (warnings to stderr). `--log-level` / `NBOX_LOG` /
   `RUST_LOG` set verbosity; `--log-file <PATH>` (or config `log_file`) also tees
   `tracing` output to a file. stdout stays data-only on every path.

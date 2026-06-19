@@ -7,7 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+- **BREAKING: per-surface API backends replace the coarse `backend` key.** The
+  profile-level `backend = "rest"|"graphql"` setting is **removed**; a config that
+  still sets it is rejected with a pointer to the new shape. Configure the backend
+  per read surface under `[profiles.<name>.api]` instead:
+  ```toml
+  [profiles.work.api]
+  search = "graphql"   # rest | graphql
+  vrf    = "graphql"   # rest | graphql
+  ```
+  A missing table/key means REST; unknown surfaces (e.g. `detail`) and invalid
+  values are config errors. REST stays canonical; a `graphql` surface is honored
+  only when the live schema probe supports it, otherwise it **falls back to REST**.
+  `nbox status` (CLI + MCP) drops the single `backend` field for a per-surface
+  `api` block (`configured`/`effective`/`reason`), and `capabilities.graphql` is
+  now surface-aware (`surfaces.{search,vrf}.{supported,recommended,missing}`).
+
 ### Added
+- **VRF GraphQL bundle.** With `[profiles.<name>.api] vrf = "graphql"`, the VRF
+  view fetches its prefixes + addresses in a single GraphQL query (the VRF
+  identity is still resolved over REST, preserving not-found/ambiguous exit codes).
+  REST and GraphQL produce a byte-identical `VrfDetail`. `nbox vrf` now prints the
+  full routing context (summary + prefix tree + addresses), and MCP `nbox_get vrf`
+  returns the same bundle.
 - **VRFs are now a first-class object.** A VRF can be looked up (`nbox vrf <name|rd|id>`),
   found in search (`nbox search` / TUI `/` / MCP `nbox_search`, REST and GraphQL —
   subtitle = its RD, falling back to the tenant), browsed from the TUI Nav rail

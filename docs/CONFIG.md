@@ -25,11 +25,15 @@ confirm_writes = true
 url = "https://netbox.example.com"
 token_env = "NETBOX_TOKEN"
 auth_scheme = "auto"          # auto | bearer | token
-backend = "rest"              # rest | graphql
 verify_tls = true
 timeout_secs = 15
 page_size = 100
 exclude_config_context = true
+
+# Per-surface backend (optional; omit for all-REST).
+[profiles.work.api]
+search = "graphql"            # rest | graphql
+# vrf = "graphql"             # rest | graphql
 ```
 
 `config_version` is written by `config init`. A config with a *newer* version
@@ -77,25 +81,40 @@ Bearer`) versus legacy v1 tokens (`Authorization: Token`). Force one with
 `bearer` or `token`. The token is never logged — request logging shows only the
 scheme marker.
 
-## Backend
+## Backends (per surface)
 
-`backend = "rest"` is the default and full-coverage path. It uses NetBox's REST
-API for search, detail lookups, journals, raw reads, and available IP/prefix
-queries.
+REST is the **canonical** backend — it covers every operation (search, detail
+lookups, journals, raw reads, available IP/prefix queries, and identity
+resolution). GraphQL is an **opt-in per-surface accelerator**, configured under
+`[profiles.<name>.api]`:
 
-`backend = "graphql"` opts that profile into the GraphQL search backend. nbox
-posts to `/graphql/`, probes the schema, and shapes filters from the advertised
-input types so NetBox 4.2, 4.3, and 4.5+ differences are handled:
+```toml
+[profiles.work.api]
+search = "graphql"   # rest | graphql — the multi-kind search fan-out
+vrf    = "graphql"   # rest | graphql — the VRF view's prefix/address bundle
+```
 
-- NetBox 4.2 list fields without a `pagination` argument are queried without
-  pagination.
-- NetBox 4.3+ list fields with `pagination` use offset pagination.
-- NetBox 4.5+ ID/enum lookup inputs use equality lookups such as
-  `status: { exact: STATUS_ACTIVE }`.
+Rules:
 
-REST remains the default fallback for non-search operations. Leave the key out,
-or set `backend = "rest"`, unless you specifically want to exercise GraphQL
-search on a profile.
+- A missing `[api]` table, or a missing key within it, means **REST** for that
+  surface. Unknown keys (e.g. the not-yet-implemented `detail`) and invalid
+  values are config errors.
+- A `graphql` preference is honored only when the live schema probe confirms the
+  surface is supported; otherwise nbox **falls back to REST** and `nbox status`
+  shows the reason. The output shape is identical either way.
+- GraphQL posts to `/graphql/`, probes the schema, and shapes filters from the
+  advertised input types, handling NetBox 4.2 (unpaginated lists), 4.3+ (offset
+  pagination), and 4.5+ (equality lookups like `status: { exact: STATUS_ACTIVE }`).
+
+> The coarse `backend = "rest"|"graphql"` profile key was **removed**. A config
+> that still sets it is rejected with a pointer to `[profiles.<name>.api]`.
+
+`nbox status` reports the configured vs effective backend per surface:
+
+```
+api search  graphql
+api vrf     rest (GraphQL vrf surface unavailable: missing vrf_list)
+```
 
 ## UI settings
 

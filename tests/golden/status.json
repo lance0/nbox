@@ -1,34 +1,29 @@
 {
-  "backend": "graphql",
+  "api": {
+    "search": {
+      "configured": "graphql",
+      "effective": "graphql"
+    },
+    "vrf": {
+      "configured": "graphql",
+      "effective": "graphql"
+    }
+  },
   "capabilities": {
-    "backend": "graphql",
     "graphql": {
       "available": true,
-      "configured": true,
-      "filters": {
-        "scope_id": {
-          "named_type": "ID",
-          "shape": "scalar"
-        },
-        "scope_type": {
-          "named_type": "ContentTypeFilter",
-          "shape": "lookup"
-        },
-        "site_id": {
-          "named_type": "ID",
-          "shape": "scalar"
-        },
-        "tree_node_scope_ids": true,
-        "vrf_id": {
-          "named_type": "ID",
-          "shape": "scalar"
-        }
-      },
       "probed": true,
-      "search": {
-        "lists_found": 14,
-        "missing_lists": [],
-        "paginated_lists": 14
+      "surfaces": {
+        "search": {
+          "missing": [],
+          "recommended": true,
+          "supported": true
+        },
+        "vrf": {
+          "missing": [],
+          "recommended": true,
+          "supported": true
+        }
       }
     },
     "rest": {

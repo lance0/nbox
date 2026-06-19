@@ -255,12 +255,14 @@ fn status_report_json_honors_all_flags() {
     // The exact value `run_status` hands to `emit` for `--json`.
     let report = json!({
         "netbox_url": "https://netbox.example.com",
-        "backend": "rest",
+        "api": {
+            "search": { "configured": "rest", "effective": "rest" },
+            "vrf": { "configured": "rest", "effective": "rest" }
+        },
         "netbox_version": "4.2.0",
         "django_version": "5.0.9",
         "python_version": "3.11.2",
         "capabilities": {
-            "backend": "rest",
             "version": {
                 "netbox": "4.2.0",
                 "minimum_supported": "4.2",
@@ -274,7 +276,6 @@ fn status_report_json_honors_all_flags() {
                 "exclude_config_context": true
             },
             "graphql": {
-                "configured": false,
                 "probed": false,
                 "available": false
             }

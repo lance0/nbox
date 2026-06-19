@@ -402,11 +402,16 @@ confirm_writes = true
 url = "https://netbox.example.com"
 token_env = "NETBOX_TOKEN"
 auth_scheme = "auto"          # auto | bearer | token
-backend = "rest"              # rest | graphql (GraphQL currently backs search)
 verify_tls = true
 timeout_secs = 15
 page_size = 100
 exclude_config_context = true
+
+# Per-surface backend (optional; omit for all-REST). REST is canonical;
+# GraphQL is an opt-in accelerator that falls back to REST when unsupported.
+[profiles.work.api]
+search = "graphql"            # rest | graphql
+# vrf = "graphql"             # rest | graphql
 ```
 
 Tokens are **never written to config**. nbox resolves them in order: the profile's
@@ -476,17 +481,19 @@ raw escape-hatch tool come later.
 
 - **Requires NetBox 4.2+** (the polymorphic `scope` model for prefixes/VLANs).
   nbox checks the instance version via `/api/status/` on connect.
-- Targets the NetBox **REST API** (`/api/`) as the primary integration path.
-- `nbox status --json` and MCP `nbox_status` include a typed `capabilities`
-  object with version compatibility, REST behavior, and GraphQL search support
-  when the active profile has `backend = "graphql"`.
+- Targets the NetBox **REST API** (`/api/`) as the canonical integration path.
+- `nbox status --json` and MCP `nbox_status` include a per-surface `api` block
+  (configured vs effective backend) and a typed `capabilities` object with
+  version compatibility, REST behavior, and per-surface GraphQL support.
 - Auto-detects **v2 API tokens** (NetBox 4.5+, `Authorization: Bearer nbt_…`) and
   legacy **v1 tokens** (`Authorization: Token …`); force one with `auth_scheme`.
-- Optional, read-only **GraphQL** (`/graphql/`) search backend is available per
-  profile with `backend = "graphql"`. It probes the schema so NetBox 4.2, 4.3,
-  and 4.5+ filter/pagination differences are handled without hard-coding a
-  version. REST remains the default and continues to power detail lookups, raw,
-  journals, and available-IP/prefix operations.
+- Optional, read-only **GraphQL** (`/graphql/`) as a **per-surface accelerator**:
+  set `[profiles.<name>.api]` `search = "graphql"` and/or `vrf = "graphql"`. nbox
+  probes the schema so NetBox 4.2, 4.3, and 4.5+ filter/pagination differences are
+  handled without hard-coding a version, and **falls back to REST** (with the
+  reason in `status`) when a surface isn't supported. REST stays canonical and
+  powers identity resolution, detail lookups, raw, journals, and available-IP/
+  prefix operations.
 
 ## Documentation
 

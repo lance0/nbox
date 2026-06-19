@@ -7,18 +7,22 @@ TUI, so output is consistent across both.
 ## Layers
 
 - **`netbox/`** — NetBox clients and wire types. REST is canonical; GraphQL is an
-  opt-in search backend.
+  opt-in per-surface accelerator (`search`, `vrf`).
   - `client.rs` — auth, paging, timeouts; retries HTTP 429 (`Retry-After` +
     backoff); maps statuses to typed errors (401→auth, 403→perms, 404→not-found).
-    The same authenticated client owns `/graphql/` POSTs when a profile selects
-    `backend = "graphql"`.
+    The same authenticated client owns `/graphql/` POSTs. Holds the profile's
+    per-surface `ApiConfig` and exposes `api_preference`/`effective_backend`.
   - `endpoints.rs` — endpoint paths.
   - `pagination.rs` — `Page<T>`, offset paging (`list` / `list_all`).
   - `query.rs` — per-object resolvers (`*_by_ref`, candidates, scope labels).
-  - `graphql.rs` — schema capability probing for the GraphQL search backend
-    (filter input shapes and pagination support across NetBox 4.2/4.3/4.5+).
+  - `capabilities.rs` — resolves a surface's configured preference + live schema
+    probe into an `EffectiveBackend` (with REST-fallback reason); the surface-aware
+    capability report and `status.api` routing.
+  - `graphql.rs` — schema capability probing (filter input shapes and pagination
+    support across NetBox 4.2/4.3/4.5+).
   - `search.rs` — parallel `q=` fan-out → ranked, deduped `SearchOutcome`;
-    branches to GraphQL only when the active profile asks for it.
+    branches to GraphQL only when the `search` surface effectively resolves to it.
+    Also `graphql_vrf_bundle` (the single-POST VRF prefixes+addresses query).
   - `models/` — permissive wire structs (`dcim`, `ipam`, `circuits`, `extras`,
     `tenancy`, `common`). Nullable, brief/complete, unknown fields ignored.
 - **`domain/`** — flattened view models, one per object (`device_detail`,
