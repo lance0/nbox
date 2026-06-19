@@ -1,0 +1,59 @@
+{
+  "cables": [
+    {
+      "cable": "CABLE-1",
+      "connected_to": [
+        "core01 xe-0/0/1"
+      ],
+      "interface": "xe-0/0/0"
+    }
+  ],
+  "custom_fields": {
+    "monitored": true,
+    "ticket": "INC-7"
+  },
+  "description": "edge leaf",
+  "id": 7,
+  "interfaces": [
+    {
+      "description": "uplink",
+      "enabled": true,
+      "name": "xe-0/0/0",
+      "type": "SFP+"
+    }
+  ],
+  "ip_addresses": [
+    {
+      "address": "10.44.208.55/24",
+      "interface": "xe-0/0/0"
+    }
+  ],
+  "name": "edge01",
+  "platform": "junos",
+  "primary_ip4": "10.44.208.55/24",
+  "rack": "rack-a1",
+  "role": "leaf",
+  "serial": "JN123",
+  "services": [
+    {
+      "name": "ssh",
+      "ports": [
+        22
+      ],
+      "protocol": "tcp"
+    }
+  ],
+  "site": "den1",
+  "status": "active",
+  "tags": [
+    "edge",
+    "prod"
+  ],
+  "tenant": "infra",
+  "vlans": [
+    {
+      "id": 208,
+      "vlan": "208 (v-prod)"
+    }
+  ]
+}

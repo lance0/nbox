@@ -25,6 +25,7 @@ confirm_writes = true
 url = "https://netbox.example.com"
 token_env = "NETBOX_TOKEN"
 auth_scheme = "auto"          # auto | bearer | token
+backend = "rest"              # rest | graphql
 verify_tls = true
 timeout_secs = 15
 page_size = 100
@@ -75,6 +76,26 @@ dependency.)
 Bearer`) versus legacy v1 tokens (`Authorization: Token`). Force one with
 `bearer` or `token`. The token is never logged — request logging shows only the
 scheme marker.
+
+## Backend
+
+`backend = "rest"` is the default and full-coverage path. It uses NetBox's REST
+API for search, detail lookups, journals, raw reads, and available IP/prefix
+queries.
+
+`backend = "graphql"` opts that profile into the GraphQL search backend. nbox
+posts to `/graphql/`, probes the schema, and shapes filters from the advertised
+input types so NetBox 4.2, 4.3, and 4.5+ differences are handled:
+
+- NetBox 4.2 list fields without a `pagination` argument are queried without
+  pagination.
+- NetBox 4.3+ list fields with `pagination` use offset pagination.
+- NetBox 4.5+ ID/enum lookup inputs use equality lookups such as
+  `status: { exact: STATUS_ACTIVE }`.
+
+REST remains the default fallback for non-search operations. Leave the key out,
+or set `backend = "rest"`, unless you specifically want to exercise GraphQL
+search on a profile.
 
 ## UI settings
 

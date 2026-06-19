@@ -38,12 +38,17 @@ clap_mangen = "0.3"
 
 # Serialization
 serde = { version = "1", features = ["derive"] }
+# Order-preserving map so `[profiles.*]` keep TOML document order (profile
+# cycling follows the config file, not alphabetical). Already in the tree.
+indexmap = { version = "2", features = ["serde"] }
 serde_json = "1"
 # JSON Schema derivation for MCP tool output schemas. Pinned to the exact
 # version rmcp 1.7 depends on so `Json<T>` accepts our `JsonSchema` types
 # (the trait bound is satisfied only by that one schemars instance).
 schemars = "=1.2.1"
-toml = "1"
+# `preserve_order` keeps map keys in TOML document order through deserialization
+# (so `[profiles.*]` load in file order for the TUI switcher, not alphabetical).
+toml = { version = "1", features = ["preserve_order"] }
 toml_edit = "0.25"
 
 # Config and paths

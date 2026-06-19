@@ -4,11 +4,11 @@
 //! `%APPDATA%\nbox\config.toml` (Windows). We read with `toml` and mutate with
 //! `toml_edit` so user comments and formatting survive `profile add`/`use`.
 
-use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, Table, value};
 
@@ -33,6 +33,7 @@ open_browser_command = ""
 url = "https://netbox.example.com"
 token_env = "NETBOX_TOKEN"
 auth_scheme = "auto"        # auto | bearer | token
+backend = "rest"            # rest | graphql
 verify_tls = true
 timeout_secs = 15
 page_size = 100
@@ -72,8 +73,10 @@ pub struct Config {
     #[serde(default)]
     pub serve: ServeConfig,
 
+    /// An order-preserving map so the profiles keep their TOML document order
+    /// (the TUI profile switcher cycles in config-file order, not alphabetical).
     #[serde(default)]
-    pub profiles: BTreeMap<String, ProfileConfig>,
+    pub profiles: IndexMap<String, ProfileConfig>,
 }
 
 /// `nbox serve` (MCP server) settings. The CLI flags (`--http`, `--http-token`)
@@ -184,6 +187,9 @@ pub struct ProfileConfig {
     pub auth_scheme: Option<AuthScheme>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub backend: Option<BackendKind>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub verify_tls: Option<bool>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -194,6 +200,37 @@ pub struct ProfileConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exclude_config_context: Option<bool>,
+}
+
+/// Which NetBox read backend a profile should prefer.
+///
+/// REST remains the default and full-coverage backend. GraphQL is opt-in and may
+/// fall back to REST for operations NetBox does not expose through GraphQL.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendKind {
+    #[default]
+    Rest,
+    Graphql,
+}
+
+impl BackendKind {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Rest => "rest",
+            Self::Graphql => "graphql",
+        }
+    }
+}
+
+impl ProfileConfig {
+    #[must_use]
+    pub fn backend(&self) -> BackendKind {
+        self.backend.unwrap_or_default()
+    }
 }
 
 fn default_theme() -> String {
@@ -948,6 +985,7 @@ theme = "nord"
 url = "https://netbox.example.com"
 token_env = "NETBOX_TOKEN"
 auth_scheme = "bearer"
+backend = "graphql"
 page_size = 250
 "#;
 
@@ -961,8 +999,30 @@ page_size = 250
         let work = &cfg.profiles["work"];
         assert_eq!(work.url, "https://netbox.example.com");
         assert_eq!(work.auth_scheme, Some(AuthScheme::Bearer));
+        assert_eq!(work.backend(), BackendKind::Graphql);
         assert_eq!(work.page_size, Some(250));
         assert_eq!(work.verify_tls, None);
+    }
+
+    #[test]
+    fn profiles_preserve_config_file_order_not_alphabetical() {
+        // Declared out of alphabetical order on purpose: the `IndexMap` must keep
+        // TOML document order so the TUI switcher (`P`/`Ctrl+P`) cycles in file
+        // order. A `BTreeMap` would re-sort these to alpha and break that.
+        let cfg: Config = toml::from_str(
+            "[profiles.zebra]\nurl = \"https://z\"\n\
+             [profiles.alpha]\nurl = \"https://a\"\n\
+             [profiles.mike]\nurl = \"https://m\"\n",
+        )
+        .unwrap();
+        let order: Vec<&str> = cfg.profiles.keys().map(String::as_str).collect();
+        assert_eq!(order, ["zebra", "alpha", "mike"]);
+    }
+
+    #[test]
+    fn profile_backend_defaults_to_rest() {
+        let profile: ProfileConfig = toml::from_str("url = \"https://nb.example\"").unwrap();
+        assert_eq!(profile.backend(), BackendKind::Rest);
     }
 
     #[test]

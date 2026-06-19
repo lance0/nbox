@@ -19,6 +19,7 @@ use crate::domain::WithJournal;
 use crate::domain::detail;
 use crate::domain::journal_view::{JournalEntryRow, JournalView};
 use crate::domain::tag_view::TagsView;
+use crate::netbox::capabilities::GraphqlBackendCapabilities;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::models::ipam::{AvailablePrefix, Prefix};
 use crate::netbox::search::{SearchFilters, SearchRequest};
@@ -271,7 +272,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                 tag,
                 vrf,
             };
-            run_search(&ctx, &query, limit, filters, cols, partial).await
+            Box::pin(run_search(&ctx, &query, limit, filters, cols, partial)).await
         }
         Some(Command::Device {
             value,
@@ -775,10 +776,9 @@ async fn build_tui_app(
     let status = client.verify_compatible().await?;
 
     // All configured profiles the running session can cycle between without
-    // restarting. Order is alphabetical-by-name (the `BTreeMap` iterates sorted),
-    // not TOML document order — making cycling follow the config file would mean
-    // an order-preserving map across config (de)serialization, deferred for now.
-    // The switcher (`P` / `Ctrl+P`, or the palette `profile <name>` verb)
+    // restarting, in config-file (TOML document) order — `profiles` is an
+    // order-preserving `IndexMap`, so `P` / `Ctrl+P` walk the file order rather
+    // than alphabetical. The switcher (or the palette `profile <name>` verb)
     // reconnects + re-probes each one live; see `tui::state::App::cycle_profile`.
     let profiles: Vec<tui::state::ProfileEntry> = cfg
         .profiles
@@ -815,23 +815,51 @@ async fn build_tui_app(
 async fn run_status(ctx: &Ctx) -> Result<()> {
     let client = connect(ctx)?;
     let status = client.status().await?;
+    let capabilities = client.capabilities(&status).await;
     let url = client.base_url().as_str().to_string();
+    let graphql_summary = graphql_capabilities_plain(&capabilities.graphql);
 
     let report = serde_json::json!({
         "netbox_url": url,
+        "backend": client.backend(),
         "netbox_version": status.netbox_version,
         "django_version": status.django_version,
         "python_version": status.python_version,
+        "capabilities": capabilities,
     });
 
     emit(ctx, &report, || {
         let mut kv = KeyValues::new();
         kv.push("netbox_url", url.clone())
+            .push("backend", client.backend().as_str())
             .push("netbox_version", status.netbox_version.clone())
             .push_opt("django", status.django_version.clone())
-            .push_opt("python", status.python_version.clone());
+            .push_opt("python", status.python_version.clone())
+            .push("rest", "available (search, detail)")
+            .push("graphql", graphql_summary);
         kv.print();
     })
+}
+
+fn graphql_capabilities_plain(gql: &GraphqlBackendCapabilities) -> String {
+    if !gql.configured {
+        return "not configured".to_string();
+    }
+    if !gql.available {
+        return match gql.error.as_deref() {
+            Some(error) => format!("unavailable ({error})"),
+            None => "unavailable".to_string(),
+        };
+    }
+    let Some(search) = &gql.search else {
+        return "available".to_string();
+    };
+    format!(
+        "available (search lists {}/{}, paginated {})",
+        search.lists_found,
+        search.lists_found + search.missing_lists.len(),
+        search.paginated_lists
+    )
 }
 
 /// `nbox search <query>` — normalized multi-endpoint search.
@@ -844,13 +872,12 @@ async fn run_search(
     partial: bool,
 ) -> Result<()> {
     let client = connect(ctx)?;
-    let outcome = client
-        .search(SearchRequest {
-            query: query.to_string(),
-            limit,
-            filters,
-        })
-        .await?;
+    let outcome = Box::pin(client.search(SearchRequest {
+        query: query.to_string(),
+        limit,
+        filters,
+    }))
+    .await?;
 
     // Fail closed by default: if some endpoints failed, don't present partial
     // results as if they were complete. `--partial` opts into a best-effort run.

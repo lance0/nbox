@@ -6,12 +6,16 @@
 
 use std::collections::HashSet;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use schemars::JsonSchema;
-use serde::Serialize;
+use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value, json};
 
-use crate::netbox::client::NetBoxClient;
+use crate::config::BackendKind;
+use crate::netbox::client::{MAX_PAGE_SIZE, NetBoxClient};
 use crate::netbox::endpoints::Endpoint;
+use crate::netbox::graphql::GraphqlCapabilities;
 use crate::netbox::models::circuits::{Circuit, Provider};
 use crate::netbox::models::dcim::{Device, Site};
 use crate::netbox::models::ipam::{Aggregate, Asn, IpAddress, IpRange, Prefix, Vlan};
@@ -256,6 +260,12 @@ impl NetBoxClient {
     /// failure — some endpoints down, others returning data — is reported via
     /// [`SearchOutcome::errors`] for the caller to act on.
     pub async fn search(&self, req: SearchRequest) -> Result<SearchOutcome> {
+        if self.backend() == BackendKind::Graphql {
+            // Keep the large GraphQL fan-out future boxed at this public entry
+            // point so spawned call sites can await `search()` normally.
+            return Box::pin(self.search_graphql(req)).await;
+        }
+
         let q = req.query.trim().to_string();
         let f = &req.filters;
 
@@ -360,6 +370,94 @@ impl NetBoxClient {
         })
     }
 
+    async fn search_graphql(&self, req: SearchRequest) -> Result<SearchOutcome> {
+        let q = req.query.trim().to_string();
+        let f = &req.filters;
+        let scope = self.resolve_scope(f).await?;
+        let vrf_id = self.resolve_vrf(f).await?;
+        let caps = self.graphql_capabilities().await?;
+
+        let (
+            devices,
+            sites,
+            ips,
+            prefixes,
+            vlans,
+            circuits,
+            aggregates,
+            asns,
+            ip_ranges,
+            tenants,
+            contacts,
+            providers,
+            vms,
+            clusters,
+        ) = tokio::join!(
+            self.gql_search_devices(&caps, &q, f, scope.as_ref(), req.limit),
+            self.gql_search_sites(&caps, &q, f, scope.as_ref(), req.limit),
+            self.gql_search_ips(&caps, &q, f, scope.as_ref(), vrf_id, req.limit),
+            self.gql_search_prefixes(&caps, &q, f, scope.as_ref(), vrf_id, req.limit),
+            self.gql_search_vlans(&caps, &q, f, scope.as_ref(), req.limit),
+            self.gql_search_circuits(&caps, &q, f, scope.as_ref(), req.limit),
+            self.gql_search_aggregates(&caps, &q, f, scope.as_ref(), req.limit),
+            self.gql_search_asns(&caps, &q, f, scope.as_ref(), req.limit),
+            self.gql_search_ip_ranges(&caps, &q, f, scope.as_ref(), req.limit),
+            self.gql_search_tenants(&caps, &q, f, scope.as_ref(), req.limit),
+            self.gql_search_contacts(&caps, &q, f, scope.as_ref(), req.limit),
+            self.gql_search_providers(&caps, &q, f, scope.as_ref(), req.limit),
+            self.gql_search_vms(&caps, &q, f, scope.as_ref(), req.limit),
+            self.gql_search_clusters(&caps, &q, f, scope.as_ref(), req.limit),
+        );
+
+        let mut merged = Vec::new();
+        let mut errors = Vec::new();
+        let mut last_err = None;
+        for (name, branch) in [
+            ("devices", devices),
+            ("sites", sites),
+            ("ips", ips),
+            ("prefixes", prefixes),
+            ("vlans", vlans),
+            ("circuits", circuits),
+            ("aggregates", aggregates),
+            ("asns", asns),
+            ("ip-ranges", ip_ranges),
+            ("tenants", tenants),
+            ("contacts", contacts),
+            ("providers", providers),
+            ("vms", vms),
+            ("clusters", clusters),
+        ] {
+            match branch {
+                Ok(mut items) => merged.append(&mut items),
+                Err(e) => {
+                    tracing::warn!("GraphQL search branch '{name}' failed: {e:#}");
+                    errors.push(format!("{name}: {e:#}"));
+                    last_err = Some(e);
+                }
+            }
+        }
+
+        if merged.is_empty()
+            && let Some(e) = last_err
+        {
+            return Err(e);
+        }
+
+        merged.sort_by(|a, b| {
+            b.score
+                .cmp(&a.score)
+                .then_with(|| a.display.cmp(&b.display))
+        });
+        let mut seen = HashSet::new();
+        merged.retain(|r| seen.insert((r.kind, r.id)));
+        merged.truncate(req.limit);
+        Ok(SearchOutcome {
+            results: merged,
+            errors,
+        })
+    }
+
     /// Resolve the (at most one) active scope filter to a content type + id.
     ///
     /// `--site`/`--region`/`--site-group`/`--location` are mutually exclusive: the
@@ -443,6 +541,847 @@ impl NetBoxClient {
             .await?
             .ok_or_else(|| not_found("VRF", reference))?;
         Ok(Some(v.id))
+    }
+
+    async fn graphql_list<T>(
+        &self,
+        caps: &GraphqlCapabilities,
+        list_name: &str,
+        filters: Value,
+        selection: &str,
+        limit: usize,
+    ) -> Result<Vec<T>>
+    where
+        T: DeserializeOwned,
+    {
+        let Some(field) = caps.list(list_name) else {
+            return Ok(Vec::new());
+        };
+        let Some(filter_type) = field.filter_type() else {
+            return Ok(Vec::new());
+        };
+        let page_limit = limit.clamp(1, MAX_PAGE_SIZE);
+        let pagination = if field.has_pagination() {
+            format!(", pagination: {{offset: 0, limit: {page_limit}}}")
+        } else {
+            String::new()
+        };
+        let query = format!(
+            "query($filters: {filter_type}) {{ {list_name}(filters: $filters{pagination}) {{ {selection} }} }}"
+        );
+        let data: Map<String, Value> = self.graphql(&query, json!({ "filters": filters })).await?;
+        let rows = data
+            .get(list_name)
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new()));
+        serde_json::from_value(rows)
+            .with_context(|| format!("deserializing GraphQL {list_name} rows"))
+    }
+
+    fn gql_filters(
+        caps: &GraphqlCapabilities,
+        list_name: &str,
+        q: &str,
+        f: &SearchFilters,
+        supported: &[&str],
+    ) -> Option<Map<String, Value>> {
+        let filter_type = caps.list(list_name)?.filter_type()?;
+        let mut filters = Map::new();
+        if let Some(v) = caps.filter_value(filter_type, "q", json!(q)) {
+            filters.insert("q".into(), v);
+        }
+
+        for (key, active) in [
+            ("status", &f.status),
+            ("tenant", &f.tenant),
+            ("role", &f.role),
+            ("tag", &f.tag),
+        ] {
+            let Some(value) = active else {
+                continue;
+            };
+            if !supported.contains(&key) {
+                return None;
+            }
+            let v = caps.filter_value(filter_type, key, json!(value))?;
+            filters.insert(key.into(), v);
+        }
+        Some(filters)
+    }
+
+    fn gql_add_filter(
+        caps: &GraphqlCapabilities,
+        list_name: &str,
+        filters: &mut Map<String, Value>,
+        key: &str,
+        value: Value,
+    ) -> bool {
+        let Some(filter_type) = caps.list(list_name).and_then(|field| field.filter_type()) else {
+            return false;
+        };
+        let Some(value) = caps.filter_value(filter_type, key, value) else {
+            return false;
+        };
+        filters.insert(key.into(), value);
+        true
+    }
+
+    fn gql_scope_filter_key(scope: &ResolvedScope) -> &'static str {
+        match scope.content_type {
+            "dcim.site" => "site_id",
+            "dcim.region" => "region_id",
+            "dcim.sitegroup" => "site_group_id",
+            "dcim.location" => "location_id",
+            _ => "scope_id",
+        }
+    }
+
+    fn gql_web_url(&self, kind: ObjectKind, id: u64) -> String {
+        let path = match kind {
+            ObjectKind::Device => format!("dcim/devices/{id}/"),
+            ObjectKind::Site => format!("dcim/sites/{id}/"),
+            ObjectKind::IpAddress => format!("ipam/ip-addresses/{id}/"),
+            ObjectKind::Prefix => format!("ipam/prefixes/{id}/"),
+            ObjectKind::Vlan => format!("ipam/vlans/{id}/"),
+            ObjectKind::Circuit => format!("circuits/circuits/{id}/"),
+            ObjectKind::Aggregate => format!("ipam/aggregates/{id}/"),
+            ObjectKind::Asn => format!("ipam/asns/{id}/"),
+            ObjectKind::IpRange => format!("ipam/ip-ranges/{id}/"),
+            ObjectKind::Tenant => format!("tenancy/tenants/{id}/"),
+            ObjectKind::Contact => format!("tenancy/contacts/{id}/"),
+            ObjectKind::Provider => format!("circuits/providers/{id}/"),
+            ObjectKind::Vm => format!("virtualization/virtual-machines/{id}/"),
+            ObjectKind::Cluster => format!("virtualization/clusters/{id}/"),
+        };
+        self.base_url()
+            .join(&path)
+            .map_or_else(|_| path, |url| url.to_string())
+    }
+
+    async fn gql_search_devices(
+        &self,
+        caps: &GraphqlCapabilities,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        let Some(mut filters) = Self::gql_filters(
+            caps,
+            "device_list",
+            q,
+            f,
+            &["status", "tenant", "role", "tag"],
+        ) else {
+            return Ok(Vec::new());
+        };
+        if let Some(scope) = scope
+            && !Self::gql_add_filter(
+                caps,
+                "device_list",
+                &mut filters,
+                Self::gql_scope_filter_key(scope),
+                json!(scope.id),
+            )
+        {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<GqlNamedSite> = self
+            .graphql_list(
+                caps,
+                "device_list",
+                Value::Object(filters),
+                "id name display site { id name display slug }",
+                limit,
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|d| {
+                let id = d.id()?;
+                let name = d.name.or(d.display)?;
+                Some(SearchResult {
+                    kind: ObjectKind::Device,
+                    id,
+                    score: score_match(q, &name),
+                    subtitle: d.site.and_then(GqlBrief::label),
+                    url: self.gql_web_url(ObjectKind::Device, id),
+                    display: name,
+                })
+            })
+            .collect())
+    }
+
+    async fn gql_search_sites(
+        &self,
+        caps: &GraphqlCapabilities,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        if skip_for_any_scope(scope) {
+            return Ok(Vec::new());
+        }
+        let Some(filters) =
+            Self::gql_filters(caps, "site_list", q, f, &["status", "tenant", "tag"])
+        else {
+            return Ok(Vec::new());
+        };
+        let rows: Vec<GqlSite> = self
+            .graphql_list(
+                caps,
+                "site_list",
+                Value::Object(filters),
+                "id name display slug",
+                limit,
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|s| {
+                let id = s.id()?;
+                let display = s.name.or(s.display)?;
+                Some(SearchResult {
+                    kind: ObjectKind::Site,
+                    id,
+                    score: score_match(q, &display),
+                    subtitle: s.slug,
+                    url: self.gql_web_url(ObjectKind::Site, id),
+                    display,
+                })
+            })
+            .collect())
+    }
+
+    async fn gql_search_ips(
+        &self,
+        caps: &GraphqlCapabilities,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+        vrf_id: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        if skip_for_any_scope(scope) {
+            return Ok(Vec::new());
+        }
+        let Some(mut filters) = Self::gql_filters(
+            caps,
+            "ip_address_list",
+            q,
+            f,
+            &["status", "tenant", "role", "tag"],
+        ) else {
+            return Ok(Vec::new());
+        };
+        if let Some(id) = vrf_id
+            && !Self::gql_add_filter(caps, "ip_address_list", &mut filters, "vrf_id", json!(id))
+        {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<GqlIpAddress> = self
+            .graphql_list(
+                caps,
+                "ip_address_list",
+                Value::Object(filters),
+                "id address display dns_name",
+                limit,
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|ip| {
+                let id = ip.id()?;
+                let display = ip.address.or(ip.display)?;
+                Some(SearchResult {
+                    kind: ObjectKind::IpAddress,
+                    id,
+                    score: score_match(q, &display),
+                    subtitle: non_empty(ip.dns_name),
+                    url: self.gql_web_url(ObjectKind::IpAddress, id),
+                    display,
+                })
+            })
+            .collect())
+    }
+
+    async fn gql_search_prefixes(
+        &self,
+        caps: &GraphqlCapabilities,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+        vrf_id: Option<u64>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        let without_scope = SearchFilters {
+            site: None,
+            region: None,
+            site_group: None,
+            location: None,
+            ..f.clone()
+        };
+        let Some(mut filters) = Self::gql_filters(
+            caps,
+            "prefix_list",
+            q,
+            &without_scope,
+            &["status", "tenant", "role", "tag"],
+        ) else {
+            return Ok(Vec::new());
+        };
+        if let Some(scope) = scope
+            && !Self::gql_add_filter(
+                caps,
+                "prefix_list",
+                &mut filters,
+                Self::gql_scope_filter_key(scope),
+                json!(scope.id),
+            )
+        {
+            // Prefer the friendly per-scope key when NetBox exposes one. The
+            // 4.2+ polymorphic shape instead exposes `scope_type`+`scope_id`,
+            // which preserves exact scope semantics across site/region/group/location.
+            let added_type = Self::gql_add_filter(
+                caps,
+                "prefix_list",
+                &mut filters,
+                "scope_type",
+                json!(scope.content_type),
+            );
+            let added_id = Self::gql_add_filter(
+                caps,
+                "prefix_list",
+                &mut filters,
+                "scope_id",
+                json!(scope.id),
+            );
+            if !(added_type && added_id) {
+                return Ok(Vec::new());
+            }
+        }
+        if let Some(id) = vrf_id
+            && !Self::gql_add_filter(caps, "prefix_list", &mut filters, "vrf_id", json!(id))
+        {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<GqlPrefix> = self
+            .graphql_list(
+                caps,
+                "prefix_list",
+                Value::Object(filters),
+                "id prefix display scope { ... on SiteType { id name display slug } ... on RegionType { id name display slug } ... on LocationType { id name display slug } ... on SiteGroupType { id name display slug } }",
+                limit,
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|p| {
+                let id = p.id()?;
+                let display = p.prefix.or(p.display)?;
+                Some(SearchResult {
+                    kind: ObjectKind::Prefix,
+                    id,
+                    score: score_match(q, &display),
+                    subtitle: p.scope.and_then(GqlBrief::label),
+                    url: self.gql_web_url(ObjectKind::Prefix, id),
+                    display,
+                })
+            })
+            .collect())
+    }
+
+    async fn gql_search_vlans(
+        &self,
+        caps: &GraphqlCapabilities,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        if skip_for_id_scope(scope) {
+            return Ok(Vec::new());
+        }
+        let Some(mut filters) = Self::gql_filters(
+            caps,
+            "vlan_list",
+            q,
+            f,
+            &["status", "tenant", "role", "tag"],
+        ) else {
+            return Ok(Vec::new());
+        };
+        if let Some(scope) = scope
+            && !Self::gql_add_filter(caps, "vlan_list", &mut filters, "site_id", json!(scope.id))
+        {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<GqlVlan> = self
+            .graphql_list(
+                caps,
+                "vlan_list",
+                Value::Object(filters),
+                "id vid name display site { id name display slug } group { id name display slug }",
+                limit,
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|v| {
+                let id = v.id()?;
+                let name = v.name.or(v.display).unwrap_or_default();
+                let display = format!("{} {}", v.vid, name);
+                Some(SearchResult {
+                    kind: ObjectKind::Vlan,
+                    id,
+                    score: score_match(q, &display),
+                    subtitle: v.site.or(v.group).and_then(GqlBrief::label),
+                    url: self.gql_web_url(ObjectKind::Vlan, id),
+                    display,
+                })
+            })
+            .collect())
+    }
+
+    async fn gql_search_circuits(
+        &self,
+        caps: &GraphqlCapabilities,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        if skip_for_any_scope(scope) {
+            return Ok(Vec::new());
+        }
+        let Some(filters) =
+            Self::gql_filters(caps, "circuit_list", q, f, &["status", "tenant", "tag"])
+        else {
+            return Ok(Vec::new());
+        };
+        let rows: Vec<GqlCircuit> = self
+            .graphql_list(
+                caps,
+                "circuit_list",
+                Value::Object(filters),
+                "id cid display provider { id name display slug }",
+                limit,
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|c| {
+                let id = c.id()?;
+                let display = c.cid.or(c.display)?;
+                Some(SearchResult {
+                    kind: ObjectKind::Circuit,
+                    id,
+                    score: score_match(q, &display),
+                    subtitle: c.provider.and_then(GqlBrief::label),
+                    url: self.gql_web_url(ObjectKind::Circuit, id),
+                    display,
+                })
+            })
+            .collect())
+    }
+
+    async fn gql_search_aggregates(
+        &self,
+        caps: &GraphqlCapabilities,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        if skip_for_any_scope(scope) {
+            return Ok(Vec::new());
+        }
+        let Some(filters) = Self::gql_filters(caps, "aggregate_list", q, f, &["tenant", "tag"])
+        else {
+            return Ok(Vec::new());
+        };
+        let rows: Vec<GqlPrefixLike> = self
+            .graphql_list(
+                caps,
+                "aggregate_list",
+                Value::Object(filters),
+                "id prefix display rir { id name display slug }",
+                limit,
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|a| {
+                let id = a.id()?;
+                let display = a.prefix.or(a.display)?;
+                Some(SearchResult {
+                    kind: ObjectKind::Aggregate,
+                    id,
+                    score: score_match(q, &display),
+                    subtitle: a.rir.and_then(GqlBrief::label),
+                    url: self.gql_web_url(ObjectKind::Aggregate, id),
+                    display,
+                })
+            })
+            .collect())
+    }
+
+    async fn gql_search_asns(
+        &self,
+        caps: &GraphqlCapabilities,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        if skip_for_any_scope(scope) {
+            return Ok(Vec::new());
+        }
+        let Some(mut filters) = Self::gql_filters(caps, "asn_list", q, f, &["tenant", "tag"])
+        else {
+            return Ok(Vec::new());
+        };
+        if let Ok(asn) = q.parse::<u32>() {
+            filters.remove("q");
+            if !Self::gql_add_filter(caps, "asn_list", &mut filters, "asn", json!(asn)) {
+                return Ok(Vec::new());
+            }
+        }
+        let rows: Vec<GqlAsn> = self
+            .graphql_list(
+                caps,
+                "asn_list",
+                Value::Object(filters),
+                "id asn display rir { id name display slug }",
+                limit,
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|a| {
+                let id = a.id()?;
+                let asn = a.asn?;
+                let display = format!("AS{asn}");
+                Some(SearchResult {
+                    kind: ObjectKind::Asn,
+                    id,
+                    score: score_match(q, &asn.to_string()),
+                    subtitle: a.rir.and_then(GqlBrief::label),
+                    url: self.gql_web_url(ObjectKind::Asn, id),
+                    display,
+                })
+            })
+            .collect())
+    }
+
+    async fn gql_search_ip_ranges(
+        &self,
+        caps: &GraphqlCapabilities,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        if skip_for_any_scope(scope) {
+            return Ok(Vec::new());
+        }
+        let Some(filters) = Self::gql_filters(
+            caps,
+            "ip_range_list",
+            q,
+            f,
+            &["status", "tenant", "role", "tag"],
+        ) else {
+            return Ok(Vec::new());
+        };
+        let rows: Vec<GqlIpRange> = self
+            .graphql_list(
+                caps,
+                "ip_range_list",
+                Value::Object(filters),
+                "id start_address end_address display vrf { id name display rd } role { id name display slug }",
+                limit,
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|r| {
+                let id = r.id()?;
+                let display = r
+                    .display
+                    .or_else(|| Some(format!("{}-{}", r.start_address?, r.end_address?)))?;
+                Some(SearchResult {
+                    kind: ObjectKind::IpRange,
+                    id,
+                    score: score_match(q, &display),
+                    subtitle: r.vrf.or(r.role).and_then(GqlBrief::label),
+                    url: self.gql_web_url(ObjectKind::IpRange, id),
+                    display,
+                })
+            })
+            .collect())
+    }
+
+    async fn gql_search_tenants(
+        &self,
+        caps: &GraphqlCapabilities,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        if skip_for_any_scope(scope) {
+            return Ok(Vec::new());
+        }
+        let Some(filters) = Self::gql_filters(caps, "tenant_list", q, f, &["tag"]) else {
+            return Ok(Vec::new());
+        };
+        let rows: Vec<GqlTenantLike> = self
+            .graphql_list(
+                caps,
+                "tenant_list",
+                Value::Object(filters),
+                "id name display slug group { id name display slug }",
+                limit,
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|t| {
+                let id = t.id()?;
+                let display = t.name.or(t.display)?;
+                Some(SearchResult {
+                    kind: ObjectKind::Tenant,
+                    id,
+                    score: score_match(q, &display),
+                    subtitle: t.group.and_then(GqlBrief::label).or(t.slug),
+                    url: self.gql_web_url(ObjectKind::Tenant, id),
+                    display,
+                })
+            })
+            .collect())
+    }
+
+    async fn gql_search_contacts(
+        &self,
+        caps: &GraphqlCapabilities,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        if skip_for_any_scope(scope) {
+            return Ok(Vec::new());
+        }
+        let Some(filters) = Self::gql_filters(caps, "contact_list", q, f, &["tag"]) else {
+            return Ok(Vec::new());
+        };
+        let rows: Vec<GqlContact> = self
+            .graphql_list(
+                caps,
+                "contact_list",
+                Value::Object(filters),
+                "id name display email",
+                limit,
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|c| {
+                let id = c.id()?;
+                let display = c.name.or(c.display)?;
+                Some(SearchResult {
+                    kind: ObjectKind::Contact,
+                    id,
+                    score: score_match(q, &display),
+                    subtitle: non_empty(c.email),
+                    url: self.gql_web_url(ObjectKind::Contact, id),
+                    display,
+                })
+            })
+            .collect())
+    }
+
+    async fn gql_search_providers(
+        &self,
+        caps: &GraphqlCapabilities,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        if skip_for_any_scope(scope) {
+            return Ok(Vec::new());
+        }
+        let Some(filters) = Self::gql_filters(caps, "provider_list", q, f, &["tag"]) else {
+            return Ok(Vec::new());
+        };
+        let rows: Vec<GqlProvider> = self
+            .graphql_list(
+                caps,
+                "provider_list",
+                Value::Object(filters),
+                "id name display slug asns { id asn }",
+                limit,
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|p| {
+                let id = p.id()?;
+                let display = p.name.or(p.display)?;
+                let subtitle = p
+                    .asns
+                    .first()
+                    .and_then(|asn| asn.asn.map(|n| format!("AS{n}")))
+                    .or(p.slug);
+                Some(SearchResult {
+                    kind: ObjectKind::Provider,
+                    id,
+                    score: score_match(q, &display),
+                    subtitle,
+                    url: self.gql_web_url(ObjectKind::Provider, id),
+                    display,
+                })
+            })
+            .collect())
+    }
+
+    async fn gql_search_vms(
+        &self,
+        caps: &GraphqlCapabilities,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        if skip_for_id_scope(scope) {
+            return Ok(Vec::new());
+        }
+        let Some(mut filters) = Self::gql_filters(
+            caps,
+            "virtual_machine_list",
+            q,
+            f,
+            &["status", "tenant", "role", "tag"],
+        ) else {
+            return Ok(Vec::new());
+        };
+        if let Some(scope) = scope
+            && !Self::gql_add_filter(
+                caps,
+                "virtual_machine_list",
+                &mut filters,
+                "site_id",
+                json!(scope.id),
+            )
+        {
+            return Ok(Vec::new());
+        }
+        let rows: Vec<GqlVm> = self
+            .graphql_list(
+                caps,
+                "virtual_machine_list",
+                Value::Object(filters),
+                "id name display cluster { id name display } site { id name display slug }",
+                limit,
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|vm| {
+                let id = vm.id()?;
+                let display = vm.name.or(vm.display)?;
+                Some(SearchResult {
+                    kind: ObjectKind::Vm,
+                    id,
+                    score: score_match(q, &display),
+                    subtitle: vm.cluster.or(vm.site).and_then(GqlBrief::label),
+                    url: self.gql_web_url(ObjectKind::Vm, id),
+                    display,
+                })
+            })
+            .collect())
+    }
+
+    async fn gql_search_clusters(
+        &self,
+        caps: &GraphqlCapabilities,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+        limit: usize,
+    ) -> Result<Vec<SearchResult>> {
+        let without_scope = SearchFilters {
+            site: None,
+            region: None,
+            site_group: None,
+            location: None,
+            ..f.clone()
+        };
+        let Some(mut filters) = Self::gql_filters(
+            caps,
+            "cluster_list",
+            q,
+            &without_scope,
+            &["status", "tenant", "tag"],
+        ) else {
+            return Ok(Vec::new());
+        };
+        if let Some(scope) = scope
+            && !Self::gql_add_filter(
+                caps,
+                "cluster_list",
+                &mut filters,
+                Self::gql_scope_filter_key(scope),
+                json!(scope.id),
+            )
+        {
+            // Prefer the friendly per-scope key when available; otherwise fall
+            // back to NetBox's polymorphic `scope_type`+`scope_id` filters.
+            let added_type = Self::gql_add_filter(
+                caps,
+                "cluster_list",
+                &mut filters,
+                "scope_type",
+                json!(scope.content_type),
+            );
+            let added_id = Self::gql_add_filter(
+                caps,
+                "cluster_list",
+                &mut filters,
+                "scope_id",
+                json!(scope.id),
+            );
+            if !(added_type && added_id) {
+                return Ok(Vec::new());
+            }
+        }
+        let rows: Vec<GqlCluster> = self
+            .graphql_list(
+                caps,
+                "cluster_list",
+                Value::Object(filters),
+                "id name display type { id name display slug } scope { ... on SiteType { id name display slug } ... on RegionType { id name display slug } ... on LocationType { id name display slug } ... on SiteGroupType { id name display slug } }",
+                limit,
+            )
+            .await?;
+        Ok(rows
+            .into_iter()
+            .filter_map(|c| {
+                let id = c.id()?;
+                let display = c.name.or(c.display)?;
+                Some(SearchResult {
+                    kind: ObjectKind::Cluster,
+                    id,
+                    score: score_match(q, &display),
+                    subtitle: c.type_.or(c.scope).and_then(GqlBrief::label),
+                    url: self.gql_web_url(ObjectKind::Cluster, id),
+                    display,
+                })
+            })
+            .collect())
     }
 
     async fn search_devices(
@@ -986,6 +1925,248 @@ impl NetBoxClient {
                 display: c.name,
             })
             .collect())
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlBrief {
+    id: Option<String>,
+    name: Option<String>,
+    display: Option<String>,
+    slug: Option<String>,
+    rd: Option<String>,
+}
+
+impl GqlBrief {
+    fn label(self) -> Option<String> {
+        self.display
+            .or(self.name)
+            .or(self.slug)
+            .or(self.rd)
+            .or(self.id)
+    }
+}
+
+trait GqlId {
+    fn raw_id(&self) -> Option<&str>;
+
+    fn id(&self) -> Option<u64> {
+        let raw_id = self.raw_id()?;
+        match raw_id.parse() {
+            Ok(id) => Some(id),
+            Err(error) => {
+                tracing::debug!(
+                    raw_id,
+                    error = %error,
+                    "dropping GraphQL search row with non-numeric id"
+                );
+                None
+            }
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlNamedSite {
+    id: Option<String>,
+    name: Option<String>,
+    display: Option<String>,
+    site: Option<GqlBrief>,
+}
+
+impl GqlId for GqlNamedSite {
+    fn raw_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlSite {
+    id: Option<String>,
+    name: Option<String>,
+    display: Option<String>,
+    slug: Option<String>,
+}
+
+impl GqlId for GqlSite {
+    fn raw_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlIpAddress {
+    id: Option<String>,
+    address: Option<String>,
+    display: Option<String>,
+    dns_name: Option<String>,
+}
+
+impl GqlId for GqlIpAddress {
+    fn raw_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlPrefix {
+    id: Option<String>,
+    prefix: Option<String>,
+    display: Option<String>,
+    scope: Option<GqlBrief>,
+}
+
+impl GqlId for GqlPrefix {
+    fn raw_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlVlan {
+    id: Option<String>,
+    vid: u16,
+    name: Option<String>,
+    display: Option<String>,
+    site: Option<GqlBrief>,
+    group: Option<GqlBrief>,
+}
+
+impl GqlId for GqlVlan {
+    fn raw_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlCircuit {
+    id: Option<String>,
+    cid: Option<String>,
+    display: Option<String>,
+    provider: Option<GqlBrief>,
+}
+
+impl GqlId for GqlCircuit {
+    fn raw_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlPrefixLike {
+    id: Option<String>,
+    prefix: Option<String>,
+    display: Option<String>,
+    rir: Option<GqlBrief>,
+}
+
+impl GqlId for GqlPrefixLike {
+    fn raw_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlAsn {
+    id: Option<String>,
+    asn: Option<u32>,
+    rir: Option<GqlBrief>,
+}
+
+impl GqlId for GqlAsn {
+    fn raw_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlIpRange {
+    id: Option<String>,
+    start_address: Option<String>,
+    end_address: Option<String>,
+    display: Option<String>,
+    vrf: Option<GqlBrief>,
+    role: Option<GqlBrief>,
+}
+
+impl GqlId for GqlIpRange {
+    fn raw_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlTenantLike {
+    id: Option<String>,
+    name: Option<String>,
+    display: Option<String>,
+    slug: Option<String>,
+    group: Option<GqlBrief>,
+}
+
+impl GqlId for GqlTenantLike {
+    fn raw_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlContact {
+    id: Option<String>,
+    name: Option<String>,
+    display: Option<String>,
+    email: Option<String>,
+}
+
+impl GqlId for GqlContact {
+    fn raw_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlProvider {
+    id: Option<String>,
+    name: Option<String>,
+    display: Option<String>,
+    slug: Option<String>,
+    asns: Vec<GqlAsn>,
+}
+
+impl GqlId for GqlProvider {
+    fn raw_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlVm {
+    id: Option<String>,
+    name: Option<String>,
+    display: Option<String>,
+    cluster: Option<GqlBrief>,
+    site: Option<GqlBrief>,
+}
+
+impl GqlId for GqlVm {
+    fn raw_id(&self) -> Option<&str> {
+        self.id.as_deref()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlCluster {
+    id: Option<String>,
+    name: Option<String>,
+    display: Option<String>,
+    #[serde(rename = "type")]
+    type_: Option<GqlBrief>,
+    scope: Option<GqlBrief>,
+}
+
+impl GqlId for GqlCluster {
+    fn raw_id(&self) -> Option<&str> {
+        self.id.as_deref()
     }
 }
 

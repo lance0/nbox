@@ -218,7 +218,7 @@ a directory — `nbox man man/` — to write the full set instead (`nbox.1` plus
 
 ```bash
 nbox                              # launch the TUI
-nbox status                       # connection + NetBox/Django/Python versions
+nbox status                       # connection + backend capabilities + NetBox/Django/Python versions
 nbox search <query> [--limit N] [--status/--site/--region/--site-group/--location/--tenant/--role/--tag <v>] [--vrf <id|rd|name>] [--cols a,b,c] [--partial]
                                   # --site/--region/--site-group/--location resolve the ref once and filter
                                   # scope-capable endpoints by resolved id (prefixes/clusters via
@@ -388,6 +388,7 @@ confirm_writes = true
 url = "https://netbox.example.com"
 token_env = "NETBOX_TOKEN"
 auth_scheme = "auto"          # auto | bearer | token
+backend = "rest"              # rest | graphql (GraphQL currently backs search)
 verify_tls = true
 timeout_secs = 15
 page_size = 100
@@ -413,7 +414,7 @@ The tools are all annotated read-only:
 
 | Tool | What |
 |------|------|
-| `nbox_status` | Connection + NetBox/Django/Python versions. |
+| `nbox_status` | Connection + backend capabilities + NetBox/Django/Python versions. |
 | `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/providers/aggregates/ASNs/IP-ranges/tenants/contacts/VMs/clusters; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; filters IP/prefix results only). |
 | `nbox_get` | Fetch one object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster) + `ref`; `vrf`/`site`/`group` disambiguate. |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |
@@ -462,10 +463,16 @@ raw escape-hatch tool come later.
 - **Requires NetBox 4.2+** (the polymorphic `scope` model for prefixes/VLANs).
   nbox checks the instance version via `/api/status/` on connect.
 - Targets the NetBox **REST API** (`/api/`) as the primary integration path.
+- `nbox status --json` and MCP `nbox_status` include a typed `capabilities`
+  object with version compatibility, REST behavior, and GraphQL search support
+  when the active profile has `backend = "graphql"`.
 - Auto-detects **v2 API tokens** (NetBox 4.5+, `Authorization: Bearer nbt_…`) and
   legacy **v1 tokens** (`Authorization: Token …`); force one with `auth_scheme`.
-- Optional, read-only **GraphQL** (`/graphql/`) for nested detail views is on the
-  roadmap (later).
+- Optional, read-only **GraphQL** (`/graphql/`) search backend is available per
+  profile with `backend = "graphql"`. It probes the schema so NetBox 4.2, 4.3,
+  and 4.5+ filter/pagination differences are handled without hard-coding a
+  version. REST remains the default and continues to power detail lookups, raw,
+  journals, and available-IP/prefix operations.
 
 ## Documentation
 

@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- Profile-level GraphQL search backend. Set `backend = "graphql"` on a profile to
+  run `nbox search` through NetBox's `/graphql/` endpoint while keeping REST as
+  the default and as the backend for detail lookups, journals, raw reads, and
+  available-IP/prefix commands. The GraphQL path probes the schema at runtime and
+  adapts to NetBox 4.2 unpaginated list fields, NetBox 4.3+ offset pagination,
+  and NetBox 4.5+ lookup-wrapper filters for IDs/enums. Probed capabilities are
+  cached per client and shared across clones, so repeated TUI searches do not
+  re-run introspection. GraphQL pagination is capped at NetBox's maximum page
+  size, and list decode errors include the GraphQL list name for easier debugging.
+
+### Changed
+- The TUI profile switcher (`P` / `Ctrl+P`) now cycles profiles in **config-file
+  order** instead of alphabetical. Profiles are loaded into an order-preserving
+  map (`indexmap` + `toml`'s `preserve_order`), so `[profiles.*]` keep their TOML
+  document order everywhere they're listed (`profile list`, `config show`, and the
+  switcher). No config change needed.
+
 ### Fixed
 - TUI footer/navigation UX: theme changes now apply visually without replacing the
   bottom navigation bar with a sticky `theme: ...` message. Live state now owns

@@ -1,0 +1,51 @@
+{
+  "backend": "graphql",
+  "capabilities": {
+    "backend": "graphql",
+    "graphql": {
+      "available": true,
+      "configured": true,
+      "filters": {
+        "scope_id": {
+          "named_type": "ID",
+          "shape": "scalar"
+        },
+        "scope_type": {
+          "named_type": "ContentTypeFilter",
+          "shape": "lookup"
+        },
+        "site_id": {
+          "named_type": "ID",
+          "shape": "scalar"
+        },
+        "tree_node_scope_ids": true,
+        "vrf_id": {
+          "named_type": "ID",
+          "shape": "scalar"
+        }
+      },
+      "probed": true,
+      "search": {
+        "lists_found": 14,
+        "missing_lists": [],
+        "paginated_lists": 14
+      }
+    },
+    "rest": {
+      "available": true,
+      "detail": true,
+      "exclude_config_context": true,
+      "page_size": 250,
+      "search": true
+    },
+    "version": {
+      "compatible": true,
+      "minimum_supported": "4.2",
+      "netbox": "4.5.5"
+    }
+  },
+  "django_version": "5.2.1",
+  "netbox_url": "https://netbox.example.com/",
+  "netbox_version": "4.5.5",
+  "python_version": "3.12.3"
+}

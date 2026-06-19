@@ -4,17 +4,21 @@
 //! the per-profile config-context optimization. Tokens are never logged — debug
 //! logging emits a redacted scheme marker only (see [`NetBoxClient::masked_authorization`]).
 
+use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::{Context, Result};
 use reqwest::Url;
-use reqwest::header::{ACCEPT, AUTHORIZATION};
+use reqwest::header::{ACCEPT, AUTHORIZATION, CONTENT_TYPE};
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
+use serde_json::json;
 
-use crate::config::ProfileConfig;
+use crate::config::{BackendKind, ProfileConfig};
 use crate::error::NboxError;
 use crate::netbox::auth::AuthScheme;
 use crate::netbox::endpoints::Endpoint;
+use crate::netbox::graphql::GraphqlCapabilities;
 use crate::netbox::pagination::Page;
 
 /// NetBox's default list page size when no `limit` is sent.
@@ -23,7 +27,7 @@ const DEFAULT_PAGE_SIZE: usize = 100;
 /// NetBox caps `limit` at `MAX_PAGE_SIZE` server-side; sending more is silently
 /// reduced to this, so we clamp at construction to keep `limit`/`offset` windows
 /// aligned (see `list_all`).
-const MAX_PAGE_SIZE: usize = 1000;
+pub(crate) const MAX_PAGE_SIZE: usize = 1000;
 
 /// An HTTP client bound to a single NetBox instance/profile.
 #[derive(Clone)]
@@ -34,6 +38,8 @@ pub struct NetBoxClient {
     http: reqwest::Client,
     page_size: usize,
     exclude_config_context: bool,
+    backend: BackendKind,
+    graphql_capabilities: Arc<tokio::sync::OnceCell<GraphqlCapabilities>>,
 }
 
 impl NetBoxClient {
@@ -74,12 +80,28 @@ impl NetBoxClient {
             http,
             page_size,
             exclude_config_context: profile.exclude_config_context.unwrap_or(true),
+            backend: profile.backend(),
+            graphql_capabilities: Arc::new(tokio::sync::OnceCell::new()),
         })
+    }
+
+    /// The preferred read backend for this client/profile.
+    pub fn backend(&self) -> BackendKind {
+        self.backend
+    }
+
+    pub(crate) fn graphql_capability_cache(&self) -> &tokio::sync::OnceCell<GraphqlCapabilities> {
+        &self.graphql_capabilities
     }
 
     /// The effective page size sent as `limit` (clamped into `1..=MAX_PAGE_SIZE`).
     pub fn page_size(&self) -> usize {
         self.page_size
+    }
+
+    /// Whether list calls for devices/VMs omit config context.
+    pub fn exclude_config_context(&self) -> bool {
+        self.exclude_config_context
     }
 
     /// The configured NetBox base URL.
@@ -191,6 +213,84 @@ impl NetBoxClient {
         self.get(endpoint.path(), &params).await
     }
 
+    /// Perform an authenticated GraphQL POST and deserialize the `data` object.
+    ///
+    /// GraphQL rides the same NetBox base URL, auth header, TLS settings, timeout,
+    /// and 429 retry policy as REST. GraphQL-level errors are mapped to the
+    /// generic API exit-code bucket; HTTP 401/403/404 keep the stable status
+    /// mapping from REST.
+    pub(crate) async fn graphql<T, V>(&self, query: &str, variables: V) -> Result<T>
+    where
+        T: DeserializeOwned,
+        V: Serialize,
+    {
+        const MAX_RETRIES: u32 = 3;
+        let url = self.url_for("/graphql/")?;
+        let body = json!({
+            "query": query,
+            "variables": variables,
+        });
+
+        match self.masked_authorization() {
+            Some(auth) => tracing::debug!(url = %url, auth = %auth, "GraphQL POST"),
+            None => tracing::debug!(url = %url, "GraphQL POST (unauthenticated)"),
+        }
+
+        let mut attempt = 0;
+        loop {
+            let mut req = self
+                .http
+                .post(url.clone())
+                .header(ACCEPT, "application/json")
+                .header(CONTENT_TYPE, "application/json")
+                .json(&body);
+            if let Some(token) = &self.token {
+                req = req.header(AUTHORIZATION, self.auth_scheme.header_value(token));
+            }
+
+            let res = req
+                .send()
+                .await
+                .context("sending GraphQL request to NetBox")?;
+            if res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt < MAX_RETRIES {
+                let wait = parse_retry_after(
+                    res.headers()
+                        .get(reqwest::header::RETRY_AFTER)
+                        .and_then(|v| v.to_str().ok()),
+                )
+                .unwrap_or_else(|| backoff(attempt));
+                tracing::warn!("NetBox GraphQL rate limited (429); retrying in {wait:?}");
+                tokio::time::sleep(wait).await;
+                attempt += 1;
+                continue;
+            }
+
+            return Self::decode_graphql(res).await;
+        }
+    }
+
+    async fn decode_graphql<T: DeserializeOwned>(res: reqwest::Response) -> Result<T> {
+        let status = res.status();
+        if !status.is_success() {
+            let body = res.text().await.unwrap_or_default();
+            return Err(status_error(status, &body).into());
+        }
+
+        let envelope: GraphqlEnvelope<T> = res.json().await.context("decoding GraphQL response")?;
+        if !envelope.errors.is_empty() {
+            let body = envelope
+                .errors
+                .into_iter()
+                .map(|e| e.message)
+                .collect::<Vec<_>>()
+                .join("; ");
+            return Err(NboxError::Api { status: 200, body }.into());
+        }
+        envelope
+            .data
+            .context("GraphQL response did not include data")
+    }
+
     /// Page through a list endpoint, collecting up to `max` objects.
     pub async fn list_all<T>(
         &self,
@@ -230,6 +330,18 @@ impl NetBoxClient {
         out.truncate(max);
         Ok(out)
     }
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphqlEnvelope<T> {
+    data: Option<T>,
+    #[serde(default)]
+    errors: Vec<GraphqlError>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GraphqlError {
+    message: String,
 }
 
 /// Parse a `Retry-After` header value (delay in seconds; HTTP-date form is not

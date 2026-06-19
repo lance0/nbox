@@ -77,7 +77,7 @@ stderr. Every tool is annotated read-only.
 
 | Tool | Purpose |
 | ---- | ------- |
-| `nbox_status` | Connection + NetBox/Django/Python versions (call first to confirm reachability). |
+| `nbox_status` | Connection + active backend capabilities + NetBox/Django/Python versions (call first to confirm reachability and inspect `capabilities`). |
 | `nbox_search` | Search devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP ranges/tenants/contacts/providers/VMs/clusters; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag` (one scope filter at a time), `vrf` (id\|rd\|name; filters IP/prefix results only). Find a reference before `nbox_get`. |
 | `nbox_get` | One object: `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster) + `ref`; `vrf`/`site`/`group` disambiguate (an ambiguous ref returns the candidates). |
 | `nbox_get_interface` | One interface on a device: config, addresses, cable-path trace. |
@@ -120,6 +120,9 @@ MCP prompts are later. See `docs/MCP.md`.
   (`nbox config token set`) → none. Env always overrides the keyring. Inspect the
   active source with `nbox config token status` (never prints the token). Select a
   profile with `--profile <name>` or set the active one.
+- Backend: REST is the default. A profile may set `backend = "graphql"` to use
+  GraphQL for `search`; nbox probes `/graphql/` and adapts to NetBox 4.2, 4.3,
+  and 4.5+ filter/pagination shapes. Non-search operations remain REST-backed.
 - Logging: quiet by default (warnings to stderr). `--log-level` / `NBOX_LOG` /
   `RUST_LOG` set verbosity; `--log-file <PATH>` (or config `log_file`) also tees
   `tracing` output to a file. stdout stays data-only on every path.

@@ -1246,6 +1246,7 @@ impl App {
             config.timeout_secs = existing.config.timeout_secs;
             config.page_size = existing.config.page_size;
             config.exclude_config_context = existing.config.exclude_config_context;
+            config.backend = existing.config.backend;
         }
         self.upsert_live_profile(original.as_deref(), &name, config);
 

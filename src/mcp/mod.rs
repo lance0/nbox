@@ -25,11 +25,13 @@ use rmcp::{
 };
 use serde::{Deserialize, Serialize};
 
+use crate::config::BackendKind;
 use crate::domain::detail;
 use crate::domain::interface_view::InterfaceView;
 use crate::domain::journal_view::JournalView;
 use crate::domain::tag_view::TagsView;
 use crate::error::NboxError;
+use crate::netbox::capabilities::NetBoxCapabilities;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::search::{SearchFilters, SearchRequest, SearchResult};
 
@@ -213,7 +215,7 @@ pub struct ListTagsArgs {
     pub limit: Option<usize>,
 }
 
-/// `nbox_status` result: connection target plus NetBox/Django/Python versions.
+/// `nbox_status` result: connection target, active backend, and versions.
 ///
 /// The version keys mirror the previous `serde_json::json!` shape exactly: they
 /// are always present, with `null` when NetBox omits the value (no
@@ -222,12 +224,16 @@ pub struct ListTagsArgs {
 pub struct StatusReport {
     /// The NetBox base URL the server is connected to.
     pub netbox_url: String,
+    /// The active read backend for this profile.
+    pub backend: BackendKind,
     /// The NetBox application version.
     pub netbox_version: String,
     /// The Django framework version NetBox runs on (`null` if unreported).
     pub django_version: Option<String>,
     /// The Python runtime version NetBox runs on (`null` if unreported).
     pub python_version: Option<String>,
+    /// Backend/version capability summary for this connected profile.
+    pub capabilities: NetBoxCapabilities,
 }
 
 /// `nbox_search` result: ranked hits plus any per-endpoint failures.
@@ -384,16 +390,19 @@ impl NboxMcp {
     /// reachability and the NetBox/Django/Python versions. No parameters.
     #[tool(
         name = "nbox_status",
-        description = "Show NetBox connection and version info (NetBox/Django/Python versions). Use to confirm reachability before other lookups.",
+        description = "Show NetBox connection, active backend, and version info (NetBox/Django/Python versions). Use to confirm reachability before other lookups.",
         annotations(read_only_hint = true)
     )]
     async fn nbox_status(&self) -> Result<Json<StatusReport>, ErrorData> {
         let status = self.client.status().await.map_err(to_mcp_error)?;
+        let capabilities = self.client.capabilities(&status).await;
         Ok(Json(StatusReport {
             netbox_url: self.client.base_url().as_str().to_string(),
+            backend: self.client.backend(),
             netbox_version: status.netbox_version,
             django_version: status.django_version,
             python_version: status.python_version,
+            capabilities,
         }))
     }
 
@@ -408,25 +417,23 @@ impl NboxMcp {
         &self,
         Parameters(args): Parameters<SearchArgs>,
     ) -> Result<Json<SearchReport>, ErrorData> {
-        let outcome = self
-            .client
-            .search(SearchRequest {
-                query: args.query,
-                limit: args.limit.unwrap_or(25),
-                filters: SearchFilters {
-                    status: args.status,
-                    site: args.site,
-                    region: args.region,
-                    site_group: args.site_group,
-                    location: args.location,
-                    tenant: args.tenant,
-                    role: args.role,
-                    tag: args.tag,
-                    vrf: args.vrf,
-                },
-            })
-            .await
-            .map_err(to_mcp_error)?;
+        let outcome = Box::pin(self.client.search(SearchRequest {
+            query: args.query,
+            limit: args.limit.unwrap_or(25),
+            filters: SearchFilters {
+                status: args.status,
+                site: args.site,
+                region: args.region,
+                site_group: args.site_group,
+                location: args.location,
+                tenant: args.tenant,
+                role: args.role,
+                tag: args.tag,
+                vrf: args.vrf,
+            },
+        }))
+        .await
+        .map_err(to_mcp_error)?;
 
         // Fail-closed reporting: surface partial-failure endpoints alongside the
         // results so the agent can decide whether the set is trustworthy.

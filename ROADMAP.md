@@ -66,6 +66,47 @@ Polish the read experience. No writes here.
 
 ---
 
+## Foundation before scale
+
+These are the highest-leverage engineering items before the repo grows much more. Bias toward small,
+reviewable PRs that lock contracts and reduce future change cost.
+
+- ☑ **Golden JSON contracts, first slice** — file-backed contracts for `status`, `search`, and
+  `device_detail`, rendered through the shared JSON renderer.
+- ☑ **Shared test support layer** — `tests/support/` builders/helpers for representative fixtures,
+  rendered JSON assertions, binary execution, and wiremock NetBox pages.
+- ☑ **Binary error contracts, first slice** — process-level tests for exit codes `1`/`2`/`3`/`4`/`5`,
+  clean stdout on errors, and actionable stderr.
+- ☐ **Broaden output goldens** — add contract fixtures for `ip`, `prefix`, `vlan`, `interface`,
+  `site`, and one journal-bearing detail response. This is the next best guardrail for agents and
+  scripts.
+- ☐ **CSV/output-mode contracts** — pin CSV shape for list/search output, `--cols` ordering, empty
+  arrays, and the intentional “single objects are not CSV” usage error.
+- ☐ **MCP response contracts** — stable JSON shapes for `nbox_status`, `nbox_search`, `nbox_get`,
+  resource reads, and MCP error mapping (`invalid_params` vs internal errors). Keep these against
+  direct server calls, not brittle protocol snapshots.
+- ☐ **Fixture migration pass** — move repeated inline NetBox JSON in `search_tests`, `query_tests`,
+  `scope_tests`, MCP tests, and custom-field tests onto `tests/support` builders as those files are
+  next touched.
+- ☐ **Compatibility matrix as tests + docs** — explicit NetBox 4.2 / 4.3 / 4.5 assumptions for REST
+  scope behavior, GraphQL pagination/filter shapes, and supported object coverage. Keep the matrix
+  backed by wiremock and the live integration lanes.
+- ☐ **CLI contract harness** — a thin reusable harness for command-level tests that records
+  `(args, stdout, stderr, exit_code)` expectations while preserving the stdout-data-only invariant.
+- ☐ **Release smoke checklist automation** — one local command/script that runs the release-critical
+  gate (`fmt`, diff check, both clippies, both test modes, audit, package/build smoke, man/completion
+  generation) before tags move.
+- ☐ **Observability contracts** — pin `nbox status`, MCP status, and selected debug/audit fields so
+  users and agents can tell backend, version, capability, and failure mode without scraping prose.
+- ☐ **Config migration/compat tests** — table-driven fixtures for old/current/future `config.toml`
+  shapes, token-source precedence, redaction, and format-preserving edits.
+- ☐ **Dependency and feature matrix** — CI or scripted local checks for default, `--no-default-features`,
+  `http`, `keyring`, `keyring-secret-service`, and release-musl-relevant feature combinations.
+- ☐ **Performance baseline, narrow** — bench or measured smoke for search fan-out and JSON rendering
+  on representative fixture sizes. Do not add a cache unless measurements justify it.
+
+---
+
 ## Writes — deferred (later track)
 
 Writes are intentionally **not** near-term. They land after the read tool is proven in practice, behind
@@ -98,8 +139,14 @@ Consolidated future scope:
   list/preview split.
 - ☐ VRF-pivoted navigation in the TUI (a dedicated VRF view) — the `--vrf` filter, VRF-scoped prefix
   sections, and exact VRF-by-RD lookup already ship; this is the navigation layer on top.
-- ☐ Device detail via a read-only GraphQL query as an alternative to the REST fan-out (currently REST;
-  only pursue if the fan-out becomes a latency problem — don't build both).
+- ☐ GraphQL detail views after the TUI detail experience settles — start with device detail as a
+  read-only GraphQL query alternative to the REST fan-out; only pursue if the fan-out becomes a
+  latency problem, and don't build both surfaces indefinitely.
+- ☐ GraphQL backend cleanup once PR #11 has review miles: table-driven search descriptors for the
+  repeated search branches, shared kind→web-path mapping, and less boilerplate around row IDs.
+- ☐ GraphQL capability probing v2 if schema churn demands it: dynamic `*Filter` discovery and/or a
+  short TTL cache keyed by instance/profile to avoid re-probing when users bounce between profiles
+  pointing at the same NetBox.
 - ☐ Batch queries from a file (audits).
 - ☐ Configurable client concurrency for very large instances — `search` is a bounded fan-out and
   `list_all` is `max`-capped today; expose tuning only if a real instance needs it.
@@ -173,6 +220,8 @@ Consolidated future scope:
 - ☑ MSRV CI job (pins `rust-version` 1.95).
 - ☑ Real-NetBox integration workflow (`netbox-integration.yml`).
 - ☑ `clippy::pedantic` enforced whole-project (incl. test crates) via a `Cargo.toml [lints]` table.
+- ☑ Golden output contracts + shared integration-test support (`tests/golden/`, `tests/support/`).
+- ☑ Binary-level error contracts for stable exit codes and stdout cleanliness.
 - ☑ `dependabot.yml`, `CONTRIBUTING.md`, the `docs/` tree, `KNOWN_ISSUES.md`, `examples/config.toml`,
   `.github/FUNDING.yml`.
 
