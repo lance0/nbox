@@ -154,11 +154,15 @@ Consolidated future scope:
 - ☐ GraphQL capability probing v2 if schema churn demands it: dynamic `*Filter` discovery and/or a
   short TTL cache keyed by instance/profile to avoid re-probing when users bounce between profiles
   pointing at the same NetBox.
-- ☐ **Local cache — flagship direction (2026-06-19).** A local cache so users don't hammer their
-  NetBox instance: cache search/detail/list responses with a tuned TTL + invalidation, and surface
-  freshness to the user (cache age, manual refresh, perhaps an offline mode). `rusqlite` with the
-  `bundled` SQLite feature (self-contained C, links on musl) so it ships in the single binary.
-  Reverses the earlier "likely cut" stance.
+- ◐ **Local cache (2026-06-19).** A small, bounded **in-memory** view-model cache (keyed by
+  profile+kind+ref) so a burst of identical reads doesn't re-hit NetBox. Single short TTL (default 30s,
+  a *de-dupe* window, not a freshness window — nothing is served past TTL); `r`/auto-refresh/profile-
+  switch always bust; a dim "cached Ns ago" footer chip surfaces age. Shipped for TUI **detail**
+  navigation; configurable via `config.toml [cache]`. An on-disk SQLite version was built then
+  deliberately walked back (staleness + a large on-disk cache are the wrong trade for an infra tool).
+  Remaining: ☐ Settings-modal toggle for `enabled`/`ttl_secs`; ☐ CLI `--no-cache` / `nbox cache clear`;
+  ☐ MCP `cached_at` annotation; ☐ **preview-pane caching** (route the results preview through the same
+  cache so scrolling back over seen rows is instant and warms detail opens).
 - ☐ **Single binary.** Ship one canonical full-featured binary per platform: the default feature set
   carries every cross-platform user feature (`http`, native `keyring`, `clipboard`, `updates`), no
   feature-variant artifacts. `--no-default-features` stays a dev-only lean build;
