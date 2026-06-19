@@ -28,6 +28,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   background fill (`chrome_bg`, added to every theme), the profile emphasized with
   the NetBox URL/version dim and the mode right-aligned in the header, and the
   footer nav hints with accented keys + dim labels. Cosmetic only.
+- TUI list, preview, and detail panes now have one column of inner padding, so
+  their content no longer touches the pane borders. Cosmetic only.
 
 ### Fixed
 - TUI footer/navigation UX: theme changes now apply visually without replacing the

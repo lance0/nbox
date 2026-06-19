@@ -4,7 +4,7 @@ use ratatui::Frame;
 use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table};
+use ratatui::widgets::{Block, Borders, Cell, Clear, Padding, Paragraph, Row, Table};
 
 use crate::tui::config_modal::{ConfigModal, ConfigSection, ProfilesMode, TestState};
 use crate::tui::state::{App, Focus, Modal, Mode, Screen, result_row_cells};
@@ -156,7 +156,8 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
         let mut block = Block::default()
             .borders(Borders::ALL)
             .title(" Results ")
-            .border_style(border);
+            .border_style(border)
+            .padding(Padding::horizontal(1));
         if let Some(pos) = position {
             block = block.title(Line::from(pos).right_aligned().style(theme.text_dim));
         }
@@ -175,7 +176,8 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
         let mut block = Block::default()
             .borders(Borders::ALL)
             .title(" Recent ")
-            .border_style(border);
+            .border_style(border)
+            .padding(Padding::horizontal(1));
         if let Some(pos) = position {
             block = block.title(Line::from(pos).right_aligned().style(theme.text_dim));
         }
@@ -199,7 +201,8 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::default()
         .borders(Borders::ALL)
         .title(" Results ")
-        .border_style(border);
+        .border_style(border)
+        .padding(Padding::horizontal(1));
     frame.render_widget(
         Paragraph::new("Press / to search NetBox.")
             .block(block)
@@ -221,7 +224,8 @@ fn render_home_preview(frame: &mut Frame, area: Rect, app: &mut App) {
     let mut block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {title} "))
-        .border_style(border);
+        .border_style(border)
+        .padding(Padding::horizontal(1));
     // Fetch the body once (M10: it borrows the loaded detail rather than cloning)
     // and reuse it for both the scroll hint's line count and the rendered lines.
     let body = app.preview_body();
@@ -825,7 +829,8 @@ fn render_detail(frame: &mut Frame, area: Rect, app: &mut App) {
     let mut block = Block::default()
         .borders(Borders::ALL)
         .title(format!(" {title} "))
-        .border_style(pane_border(theme, true));
+        .border_style(pane_border(theme, true))
+        .padding(Padding::horizontal(1));
     // A scroll-position hint in the title corner when the body overflows, so a
     // long detail reads as scrollable rather than silently clipped.
     if let Some(hint) = scroll_hint(app.detail_scroll, app.detail_content_lines(), inner_height) {
