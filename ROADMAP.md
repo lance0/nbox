@@ -160,9 +160,15 @@ Consolidated future scope:
   switch always bust; a dim "cached Ns ago" footer chip surfaces age. Shipped for TUI **detail**
   navigation; configurable via `config.toml [cache]`. An on-disk SQLite version was built then
   deliberately walked back (staleness + a large on-disk cache are the wrong trade for an infra tool).
-  ☑ Settings-modal toggle for `enabled`/`ttl_secs` (hot-applied). Remaining: ☐ CLI `--no-cache` /
-  `nbox cache clear`; ☐ MCP `cached_at` annotation; ☐ **preview-pane caching** (route the results
-  preview through the same cache so scrolling back over seen rows is instant and warms detail opens).
+  ☑ Settings-modal toggle for `enabled`/`ttl_secs` (hot-applied). **The CLI intentionally does NOT
+  cache** — it's one-shot (resolve→print→exit), so an in-memory cache has nothing to reuse, and "always
+  fresh from source" is the right default for the scripting/automation surface; no `--no-cache` /
+  `nbox cache clear` (nothing persistent to bypass or clear). The cache is a long-lived-process feature.
+  ☑ **MCP cache** — `nbox serve` reads (`nbox_get`) go through the cache (chatty agents re-reading the
+  same object graph de-dupe within the TTL), with an `nbox_cache_clear` tool so agents can force fresh
+  reads after out-of-band changes. Remaining: ☐ MCP `cached_at`/age annotation on responses (optional —
+  short TTL + the clear tool cover most of it); ☐ **preview-pane caching** (route the results preview
+  through the same cache so scrolling back over seen rows is instant and warms detail opens).
 - ☐ **Single binary.** Ship one canonical full-featured binary per platform: the default feature set
   carries every cross-platform user feature (`http`, native `keyring`, `clipboard`, `updates`), no
   feature-variant artifacts. `--no-default-features` stays a dev-only lean build;
