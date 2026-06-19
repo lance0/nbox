@@ -42,6 +42,9 @@ pub struct Theme {
     pub text: Color,
     pub text_dim: Color,
     pub highlight_bg: Color,
+    /// A subtle background fill for the header/footer status bars, kept distinct
+    /// from `highlight_bg` (row selection) so chrome and selection never blend.
+    pub chrome_bg: Color,
 
     // Status indicators
     pub success: Color,
@@ -75,6 +78,7 @@ impl Theme {
             text: Color::White,
             text_dim: Color::Gray,
             highlight_bg: Color::DarkGray,
+            chrome_bg: Color::Rgb(28, 28, 38),
 
             success: Color::Green,
             warning: Color::Yellow,
@@ -99,6 +103,7 @@ impl Theme {
             text: Color::Rgb(255, 255, 255),
             text_dim: Color::Rgb(180, 180, 200),
             highlight_bg: Color::Rgb(60, 50, 70),
+            chrome_bg: Color::Rgb(45, 38, 52),
 
             success: Color::Rgb(152, 255, 200),
             warning: Color::Rgb(255, 200, 152),
@@ -123,6 +128,7 @@ impl Theme {
             text: Color::Rgb(255, 255, 255),
             text_dim: Color::Rgb(100, 100, 120),
             highlight_bg: Color::Rgb(20, 20, 35),
+            chrome_bg: Color::Rgb(12, 12, 24),
 
             success: Color::Rgb(0, 255, 150),
             warning: Color::Rgb(255, 200, 0),
@@ -147,6 +153,7 @@ impl Theme {
             text: Color::Rgb(248, 248, 242),
             text_dim: Color::Rgb(98, 114, 164),
             highlight_bg: Color::Rgb(68, 71, 90),
+            chrome_bg: Color::Rgb(40, 42, 54),
 
             success: Color::Rgb(80, 250, 123),
             warning: Color::Rgb(255, 184, 108),
@@ -171,6 +178,7 @@ impl Theme {
             text: Color::Rgb(255, 255, 255),
             text_dim: Color::Rgb(120, 120, 120),
             highlight_bg: Color::Rgb(50, 50, 50),
+            chrome_bg: Color::Rgb(38, 38, 38),
 
             success: Color::Rgb(200, 200, 200),
             warning: Color::Rgb(170, 170, 170),
@@ -195,6 +203,7 @@ impl Theme {
             text: Color::Rgb(0, 255, 0),
             text_dim: Color::Rgb(0, 100, 0),
             highlight_bg: Color::Rgb(0, 20, 0),
+            chrome_bg: Color::Rgb(0, 15, 0),
 
             success: Color::Rgb(0, 255, 0),
             warning: Color::Rgb(200, 255, 100),
@@ -219,6 +228,7 @@ impl Theme {
             text: Color::Rgb(236, 239, 244),
             text_dim: Color::Rgb(76, 86, 106),
             highlight_bg: Color::Rgb(59, 66, 82),
+            chrome_bg: Color::Rgb(46, 52, 64),
 
             success: Color::Rgb(163, 190, 140),
             warning: Color::Rgb(235, 203, 139),
@@ -243,6 +253,7 @@ impl Theme {
             text: Color::Rgb(235, 219, 178),
             text_dim: Color::Rgb(146, 131, 116),
             highlight_bg: Color::Rgb(80, 73, 69),
+            chrome_bg: Color::Rgb(40, 40, 40),
 
             success: Color::Rgb(184, 187, 38),
             warning: Color::Rgb(250, 189, 47),
@@ -267,6 +278,7 @@ impl Theme {
             text: Color::Rgb(205, 214, 244),
             text_dim: Color::Rgb(108, 112, 134),
             highlight_bg: Color::Rgb(88, 91, 112),
+            chrome_bg: Color::Rgb(30, 30, 46),
 
             success: Color::Rgb(166, 227, 161),
             warning: Color::Rgb(249, 226, 175),
@@ -291,6 +303,7 @@ impl Theme {
             text: Color::Rgb(192, 202, 245),
             text_dim: Color::Rgb(86, 95, 137),
             highlight_bg: Color::Rgb(59, 66, 97),
+            chrome_bg: Color::Rgb(26, 27, 38),
 
             success: Color::Rgb(158, 206, 106),
             warning: Color::Rgb(224, 175, 104),
@@ -315,6 +328,7 @@ impl Theme {
             text: Color::Rgb(131, 148, 150),
             text_dim: Color::Rgb(88, 110, 117),
             highlight_bg: Color::Rgb(7, 54, 66),
+            chrome_bg: Color::Rgb(0, 43, 54),
 
             success: Color::Rgb(133, 153, 0),
             warning: Color::Rgb(181, 137, 0),
@@ -345,6 +359,7 @@ impl Theme {
             text: Color::Rgb(101, 123, 131),
             text_dim: Color::Rgb(147, 161, 161),
             highlight_bg: Color::Rgb(238, 232, 213),
+            chrome_bg: Color::Rgb(238, 232, 213),
 
             success: Color::Rgb(133, 153, 0),
             warning: Color::Rgb(181, 137, 0),
@@ -377,6 +392,7 @@ impl Theme {
             text: Color::Reset,
             text_dim: Color::Reset,
             highlight_bg: Color::Reset,
+            chrome_bg: Color::Reset,
 
             success: Color::Reset,
             warning: Color::Reset,
@@ -578,6 +594,7 @@ mod tests {
             t.text,
             t.text_dim,
             t.highlight_bg,
+            t.chrome_bg,
             t.success,
             t.warning,
             t.error,

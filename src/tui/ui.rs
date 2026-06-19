@@ -1,7 +1,7 @@
 //! TUI rendering.
 
 use ratatui::Frame;
-use ratatui::layout::{Constraint, Layout, Rect};
+use ratatui::layout::{Alignment, Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Cell, Clear, Paragraph, Row, Table};
@@ -55,24 +55,7 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     ])
     .split(frame.area());
 
-    let header = {
-        let theme = &app.theme;
-        Line::from(vec![
-            Span::styled(
-                format!(" profile: {} ", app.profile_name),
-                Style::default().fg(theme.header),
-            ),
-            Span::styled(
-                format!("netbox: {} (v{}) ", app.base_url, app.netbox_version),
-                Style::default().fg(theme.text_dim),
-            ),
-            Span::styled(
-                format!("mode: {} ", mode_label(app.mode)),
-                Style::default().fg(theme.accent),
-            ),
-        ])
-    };
-    frame.render_widget(Paragraph::new(header), areas[0]);
+    render_header(frame, areas[0], app);
 
     match app.screen {
         Screen::Home => render_home(frame, areas[1], app),
@@ -99,6 +82,38 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         }
         None => {}
     }
+}
+
+/// The top status bar: `profile:` + `netbox:` URL/version on the left, the active
+/// `mode:` right-aligned, all on a subtle `chrome_bg` fill so it reads as a bar
+/// rather than loose text floating on the terminal background. The profile name
+/// is emphasized (the one value you switch); the URL/version stay dim.
+fn render_header(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let bar = Style::default().bg(theme.chrome_bg);
+    // Fill the whole row first so the bar spans edge to edge behind both segments.
+    frame.render_widget(Block::default().style(bar), area);
+
+    let left = Line::from(vec![
+        Span::styled(" profile: ", bar.fg(theme.text_dim)),
+        Span::styled(
+            app.profile_name.clone(),
+            bar.fg(theme.header).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  netbox: ", bar.fg(theme.text_dim)),
+        Span::styled(format!("{} ", app.base_url), bar.fg(theme.text)),
+        Span::styled(format!("(v{})", app.netbox_version), bar.fg(theme.text_dim)),
+    ]);
+    let mode = format!(" mode: {} ", mode_label(app.mode));
+    let mode_w = mode.chars().count().try_into().unwrap_or(u16::MAX);
+    let cols = Layout::horizontal([Constraint::Min(0), Constraint::Length(mode_w)]).split(area);
+    frame.render_widget(Paragraph::new(left).style(bar), cols[0]);
+    frame.render_widget(
+        Paragraph::new(Span::styled(mode, bar.fg(theme.accent)))
+            .style(bar)
+            .alignment(Alignment::Right),
+        cols[1],
+    );
 }
 
 fn render_home(frame: &mut Frame, area: Rect, app: &mut App) {
@@ -857,6 +872,14 @@ fn tab_bar<'a>(app: &App, detail: &'a crate::domain::detail::DetailView) -> Line
 }
 
 fn render_footer(frame: &mut Frame, area: Rect, app: &mut App) {
+    // Fill the footer with the chrome bar bg first, so every mode — the nav hints,
+    // the search/command editor, and the one-column padding around it — sits on the
+    // same bar instead of the raw terminal background.
+    frame.render_widget(
+        Block::default().style(Style::default().bg(app.theme.chrome_bg)),
+        area,
+    );
+
     // In Search/Command mode the footer is the cheese-backed line editor: it
     // draws the `sigil value` line itself (with a visible cursor) and reports
     // where the terminal cursor should sit, which we then place. The borrow of
@@ -888,7 +911,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &mut App) {
 
     let line = footer_line(app);
     frame.render_widget(
-        Paragraph::new(line).style(Style::default().fg(app.theme.text)),
+        Paragraph::new(line).style(Style::default().fg(app.theme.text).bg(app.theme.chrome_bg)),
         area,
     );
 }
@@ -934,17 +957,38 @@ fn footer_line(app: &App) -> Line<'static> {
 
     if has_state || !app.status.is_empty() {
         spans.push(Span::raw("    "));
-        spans.push(Span::styled(
-            footer_nav(app).trim_start().to_string(),
-            Style::default().fg(theme.text_dim),
-        ));
-    } else {
-        spans.push(Span::styled(
-            footer_nav(app),
-            Style::default().fg(theme.text_dim),
-        ));
     }
+    spans.extend(nav_spans(footer_nav(app), theme));
     Line::from(spans)
+}
+
+/// Split a footer nav string (segments joined by ` · `) into styled spans: each
+/// segment's leading key token in the accent color (bold), the rest dim, with dim
+/// `·` separators — all on the chrome bar bg so the footer reads as one bar. Pure
+/// and unit-testable.
+fn nav_spans(nav: &str, theme: &Theme) -> Vec<Span<'static>> {
+    let bar = Style::default().bg(theme.chrome_bg);
+    let key = bar.fg(theme.accent).add_modifier(Modifier::BOLD);
+    let label = bar.fg(theme.text_dim);
+    let mut spans = Vec::new();
+    for (i, seg) in nav
+        .split('·')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .enumerate()
+    {
+        if i > 0 {
+            spans.push(Span::styled(" · ", label));
+        }
+        match seg.split_once(char::is_whitespace) {
+            Some((k, rest)) => {
+                spans.push(Span::styled(k.to_string(), key));
+                spans.push(Span::styled(format!(" {rest}"), label));
+            }
+            None => spans.push(Span::styled(seg.to_string(), key)),
+        }
+    }
+    spans
 }
 
 fn footer_nav(app: &App) -> &'static str {
@@ -1107,6 +1151,26 @@ mod tests {
         // A 1-column footer can't be inset twice; width saturates at 0, no panic.
         let inset = footer_input_area(Rect::new(0, 0, 1, 1));
         assert_eq!(inset.width, 0);
+    }
+
+    #[test]
+    fn nav_spans_accents_keys_and_dims_labels() {
+        let theme = Theme::default_theme();
+        let spans = nav_spans(" / search · j/k move ", &theme);
+        // The leading key of the first segment is accented (bold), its label dim.
+        assert_eq!(spans[0].content, "/");
+        assert_eq!(spans[0].style.fg, Some(theme.accent));
+        assert_eq!(spans[1].content, " search");
+        assert_eq!(spans[1].style.fg, Some(theme.text_dim));
+        // Segments are separated, and the next segment's key is carried through.
+        assert!(spans.iter().any(|s| s.content == " · "));
+        assert!(
+            spans
+                .iter()
+                .any(|s| s.content == "j/k" && s.style.fg == Some(theme.accent))
+        );
+        // Everything sits on the chrome bar bg.
+        assert!(spans.iter().all(|s| s.style.bg == Some(theme.chrome_bg)));
     }
 
     #[test]

@@ -24,6 +24,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   map (`indexmap` + `toml`'s `preserve_order`), so `[profiles.*]` keep their TOML
   document order everywhere they're listed (`profile list`, `config show`, and the
   switcher). No config change needed.
+- TUI header and footer now render as proper status bars: a subtle per-theme
+  background fill (`chrome_bg`, added to every theme), the profile emphasized with
+  the NetBox URL/version dim and the mode right-aligned in the header, and the
+  footer nav hints with accented keys + dim labels. Cosmetic only.
 
 ### Fixed
 - TUI footer/navigation UX: theme changes now apply visually without replacing the
