@@ -83,15 +83,13 @@ async fn status_counts(client: &NetBoxClient) -> Result<Vec<(String, usize)>> {
 async fn top_prefixes(client: &NetBoxClient) -> Result<Vec<(String, u8)>> {
     let params = vec![("limit", PREFIX_SCAN.to_string())];
     let page: Page<Prefix> = client.get(Endpoint::Prefixes.path(), &params).await?;
-    let mut utils: Vec<(String, u8)> = page
-        .results
+    // Reuse the prefix-tree builder so utilization is populated even on NetBox 4.5,
+    // which dropped the API `utilization` field: container prefixes get their
+    // child-coverage computed from this same page (no extra calls). On older
+    // NetBox the API-provided value still wins. See `prefix_tree::fill_child_coverage`.
+    let mut utils: Vec<(String, u8)> = crate::netbox::prefix_tree::build_nodes(page.results)
         .into_iter()
-        .filter_map(|p| {
-            p.utilization
-                .as_ref()
-                .and_then(utilization_pct)
-                .map(|pct| (p.prefix, pct))
-        })
+        .filter_map(|n| n.utilization.map(|pct| (n.prefix, pct)))
         .collect();
     // Highest utilization first; ties broken by CIDR for a stable order.
     utils.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
