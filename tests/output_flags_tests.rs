@@ -11,34 +11,19 @@
 //!   * `--raw` emits compact single-line JSON;
 //!   * `--envelope` wraps as `{schema_version, data}` and composes with the rest.
 
+mod support;
+
 use nbox::config::{Config, ProfileConfig};
 use nbox::domain::detail;
 use nbox::domain::journal_view::JournalView;
 use nbox::domain::tag_view::TagsView;
-use nbox::netbox::client::NetBoxClient;
-use nbox::output::json::{JsonOptions, SCHEMA_VERSION, render_with};
+use nbox::output::json::{JsonOptions, SCHEMA_VERSION};
 use serde::Serialize;
 use serde_json::{Value, json};
+use support::json_contract::{render_json, shaped_json as shaped};
+use support::netbox::{client, mount_empty_list, not_found, page};
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
-
-fn client(server: &MockServer) -> NetBoxClient {
-    let profile = ProfileConfig {
-        url: server.uri(),
-        ..Default::default()
-    };
-    NetBoxClient::new(&profile, None).unwrap()
-}
-
-fn not_found(noun: &str, value: &str) -> anyhow::Error {
-    anyhow::anyhow!("no {noun} matched \"{value}\"")
-}
-
-/// Parse the JSON a command would emit with `--json` plus the given options.
-fn shaped<T: Serialize>(value: &T, opts: &JsonOptions) -> Value {
-    let rendered = render_with(value, opts).unwrap();
-    serde_json::from_str(&rendered).unwrap()
-}
 
 fn fields(list: &[&str]) -> JsonOptions {
     JsonOptions {
@@ -69,14 +54,13 @@ fn assert_object_flags(value: &impl Serialize, keep: &[&str], expected_drop: &st
     );
 
     // --raw is single-line compact (and still valid JSON).
-    let raw = render_with(
+    let raw = render_json(
         value,
         &JsonOptions {
             raw: true,
             ..Default::default()
         },
-    )
-    .unwrap();
+    );
     assert!(!raw.contains('\n'), "raw is single-line: {raw:?}");
     let _: Value = serde_json::from_str(&raw).unwrap();
 
@@ -93,15 +77,14 @@ fn assert_object_flags(value: &impl Serialize, keep: &[&str], expected_drop: &st
 
     // --fields + --envelope + --raw compose: field-select happens inside the
     // envelope, the whole thing on one line.
-    let composed_raw = render_with(
+    let composed_raw = render_json(
         value,
         &JsonOptions {
             fields: Some(keep.iter().map(ToString::to_string).collect()),
             raw: true,
             envelope: true,
         },
-    )
-    .unwrap();
+    );
     assert!(!composed_raw.contains('\n'), "composed raw is single-line");
     let composed: Value = serde_json::from_str(&composed_raw).unwrap();
     assert_eq!(composed["schema_version"], json!(SCHEMA_VERSION));
@@ -129,14 +112,13 @@ fn assert_array_flags(value: &impl Serialize, keep: &[&str], expected_drop: &str
         assert!(!obj.contains_key(expected_drop), "dropped key: {trimmed}");
     }
 
-    let raw = render_with(
+    let raw = render_json(
         value,
         &JsonOptions {
             raw: true,
             ..Default::default()
         },
-    )
-    .unwrap();
+    );
     assert!(!raw.contains('\n'), "raw array is single-line");
 
     let env = shaped(
@@ -156,14 +138,11 @@ async fn device_detail_json_honors_all_flags() {
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
         .and(query_param("name__ie", "edge01"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![json!({
                 "id": 7, "url": "http://nb/api/dcim/devices/7/", "name": "edge01",
                 "status": {"value": "active", "label": "Active"},
                 "custom_fields": {}
-            }]
-        })))
+        })])))
         .mount(&server)
         .await;
     for ep in [
@@ -174,9 +153,7 @@ async fn device_detail_json_honors_all_flags() {
         Mock::given(method("GET"))
             .and(path(ep))
             .and(query_param("device_id", "7"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "count": 0, "next": null, "previous": null, "results": []
-            })))
+            .respond_with(ResponseTemplate::new(200).set_body_json(page(Vec::new())))
             .mount(&server)
             .await;
     }
@@ -194,13 +171,10 @@ async fn search_results_json_honors_all_flags() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![json!({
                 "id": 1, "url": "http://nb/api/dcim/devices/1/", "name": "edge01",
                 "site": {"id": 9, "display": "iad1"}
-            }]
-        })))
+        })])))
         .mount(&server)
         .await;
     for ep in [
@@ -213,13 +187,7 @@ async fn search_results_json_honors_all_flags() {
         "/api/ipam/asns/",
         "/api/ipam/ip-ranges/",
     ] {
-        Mock::given(method("GET"))
-            .and(path(ep))
-            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                "count": 0, "next": null, "previous": null, "results": []
-            })))
-            .mount(&server)
-            .await;
+        mount_empty_list(&server, ep).await;
     }
 
     let results = client(&server)
@@ -241,13 +209,10 @@ async fn tags_json_honors_all_flags() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/extras/tags/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![json!({
                 "id": 1, "name": "Critical", "slug": "critical",
                 "color": "ff0000", "tagged_items": 12
-            }]
-        })))
+        })])))
         .mount(&server)
         .await;
 
@@ -266,15 +231,12 @@ async fn journal_list_json_honors_all_flags() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/extras/journal-entries/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![json!({
                 "id": 5, "created": "2024-03-02",
                 "kind": {"value": "info", "label": "Info"},
                 "created_by": {"username": "admin", "display": "admin"},
                 "comments": "rebooted"
-            }]
-        })))
+        })])))
         .mount(&server)
         .await;
 
@@ -352,14 +314,13 @@ fn profile_list_json_honors_all_flags() {
     assert_eq!(full, json!(["work", "lab"]));
 
     // --raw is single-line.
-    let raw = render_with(
+    let raw = render_json(
         &names,
         &JsonOptions {
             raw: true,
             ..Default::default()
         },
-    )
-    .unwrap();
+    );
     assert_eq!(raw, r#"["work","lab"]"#);
 
     // --envelope wraps the array.

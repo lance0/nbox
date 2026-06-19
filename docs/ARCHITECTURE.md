@@ -60,6 +60,14 @@ When a JSON shape changes intentionally, update the matching golden file in the
 same commit. An unexpected golden diff should be treated as a contract review,
 not a formatting chore.
 
+## Test Support
+
+Integration-test fixtures live under `tests/support/`. Use those builders and
+wiremock helpers for representative NetBox objects, rendered JSON assertions,
+and binary command execution instead of cloning payloads into each test file.
+This keeps contract tests readable and makes schema/output changes reviewable in
+one place.
+
 ## Exit codes
 
 Stable contract (also in AGENTS.md): `0` success · `1` generic · `2` usage ·
