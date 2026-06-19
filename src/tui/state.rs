@@ -767,7 +767,10 @@ impl App {
             modal: None,
             test_seq: 0,
             test_gen: 0,
-            focus: Focus::List,
+            // Open on the Browse rail so the first thing a user sees is the
+            // browse-by-kind entry point (with live counts); the cursor starts on
+            // Recent, which the Results pane mirrors until a kind is chosen.
+            focus: Focus::Nav,
             nav_selected: NAV_SECTIONS.len() - 1, // Recent, matching the default view
             browse_kind: None,
             nav_counts: std::collections::HashMap::new(),
@@ -2323,6 +2326,10 @@ impl App {
                         return Vec::new();
                     }
                     self.last_query = Some(query.clone());
+                    // Submitting a search moves focus to the results so the user can
+                    // navigate them straight away (the home now opens on the Nav
+                    // rail, so this can't rely on List being the default focus).
+                    self.focus = Focus::List;
                     self.set_status(format!("searching {query}…"), Severity::Info);
                     return vec![self.search_cmd(query)];
                 }
@@ -3823,6 +3830,10 @@ mod tests {
                 errors: Vec::new(),
             }),
         });
+        // Mirror a user-submitted search: the results pane is focused (the submit
+        // path sets this; SearchComplete on its own doesn't, so tests that drive
+        // list navigation get the realistic focus here).
+        a.focus = Focus::List;
     }
 
     /// Deliver `result` on the search channel tagged as the current request, so
@@ -4457,8 +4468,11 @@ mod tests {
         assert_eq!(a.recent.len(), 2);
         assert_eq!(a.recent[0].id, 1);
 
-        // No search results → Home shows recents; Enter reopens the selected one.
+        // No search results → Home shows recents in the Results pane; with that
+        // pane focused, Enter reopens the selected one. (The home opens on the Nav
+        // rail; selecting Recent there lists recents and moves focus here.)
         assert!(a.results.is_empty());
+        a.focus = Focus::List;
         let cmds = a.handle_event(press(KeyCode::Enter));
         assert!(matches!(
             cmds.as_slice(),
@@ -5760,23 +5774,25 @@ mod tests {
     #[test]
     fn tab_and_backtab_cycle_focus() {
         let mut a = app();
+        // The home opens on the Browse (Nav) rail.
+        assert_eq!(a.focus, Focus::Nav);
         set_results(&mut a, results_n(3));
-        // Tab cycles left→right across the three panes (Nav → List → Preview),
-        // wrapping. Default focus is List.
+        // A search moved focus to the results; from there Tab cycles left→right
+        // across the three panes (Nav → List → Preview), wrapping.
+        a.focus = Focus::Nav;
+        a.handle_event(press(KeyCode::Tab));
         assert_eq!(a.focus, Focus::List);
         a.handle_event(press(KeyCode::Tab));
         assert_eq!(a.focus, Focus::Preview);
         a.handle_event(press(KeyCode::Tab));
         assert_eq!(a.focus, Focus::Nav);
-        a.handle_event(press(KeyCode::Tab));
-        assert_eq!(a.focus, Focus::List);
         // Shift+Tab (BackTab) cycles in reverse.
         a.handle_event(press(KeyCode::BackTab));
-        assert_eq!(a.focus, Focus::Nav);
-        a.handle_event(press(KeyCode::BackTab));
         assert_eq!(a.focus, Focus::Preview);
         a.handle_event(press(KeyCode::BackTab));
         assert_eq!(a.focus, Focus::List);
+        a.handle_event(press(KeyCode::BackTab));
+        assert_eq!(a.focus, Focus::Nav);
     }
 
     #[test]
@@ -5995,7 +6011,9 @@ mod tests {
     fn empty_results_focus_and_movement_are_safe() {
         let mut a = app();
         // No results, no recents. Tab focus, scroll-in-preview, and select keys
-        // are all harmless no-ops.
+        // are all harmless no-ops. The home opens on Nav, so two Tabs reach the
+        // Preview pane (Nav → List → Preview).
+        a.handle_event(press(KeyCode::Tab));
         a.handle_event(press(KeyCode::Tab));
         assert_eq!(a.focus, Focus::Preview);
         for key in [
