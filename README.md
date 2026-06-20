@@ -504,7 +504,8 @@ raw escape-hatch tool come later.
 ## NetBox Compatibility
 
 - **Requires NetBox 4.2+** (the polymorphic `scope` model for prefixes/VLANs).
-  nbox checks the instance version via `/api/status/` on connect.
+  nbox checks the instance version via `/api/status/` on connect. Full 4.2 / 4.3 /
+  4.5+ matrix: [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
 - Targets the NetBox **REST API** (`/api/`) as the canonical integration path.
 - `nbox status --json` and MCP `nbox_status` include a per-surface `api` block
   (configured vs effective backend) and a typed `capabilities` object with
@@ -539,6 +540,7 @@ Full list with copy-paste fixes: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.
 
 - [Features](docs/FEATURES.md) — full command reference
 - [Configuration](docs/CONFIG.md) — config, profiles, token resolution, cache
+- [Compatibility](docs/COMPATIBILITY.md) — NetBox 4.2 / 4.3 / 4.5+ matrix and how nbox adapts
 - [Comparison](docs/COMPARISON.md) — nbox vs the NetBox web UI / raw API, and when to use each
 - [Scripting & automation](docs/SCRIPTING.md) — JSON/CSV/envelope schemas, exit codes, jq recipes, CI
 - [MCP server](docs/MCP.md) — agent setup, tools, HTTP/OIDC
