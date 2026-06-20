@@ -1584,3 +1584,453 @@ async fn read_resource_missing_object_is_invalid_params() {
     assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
     assert!(err.message.contains("nope"), "got: {}", err.message);
 }
+
+// ---- Response contracts -----------------------------------------------------
+//
+// The tests above prove each tool *works* against a representative NetBox; this
+// module pins the *shape* of what they return — the JSON contract an agent (or a
+// future host) depends on. They assert the full key set of each report struct
+// (not just sampled fields), the partial-failure reporting shape, the resource
+// path's byte-equality with `nbox_get`, and the error-category mapping AS IT IS.
+// All run against direct server/tool calls over a `wiremock` NetBox — no
+// JSON-RPC wire snapshots.
+mod contracts {
+    use super::{
+        ErrorCode, GetKind, Json, Mock, MockServer, Parameters, ResponseTemplate, SearchArgs,
+        empty_page, get_args, method, mount_empty, mount_one, one_text, path, query_param,
+        server_for,
+    };
+    use rmcp::ErrorData;
+    use serde_json::{Value, json};
+
+    /// Assert a JSON object has exactly these top-level keys (order-independent).
+    /// Pins the contract's key set: a removed or renamed field, or a new one not
+    /// listed here, fails the test.
+    fn assert_keys(value: &Value, expected: &[&str]) {
+        let obj = value.as_object().expect("a JSON object");
+        let mut got: Vec<&str> = obj.keys().map(String::as_str).collect();
+        got.sort_unstable();
+        let mut want: Vec<&str> = expected.to_vec();
+        want.sort_unstable();
+        assert_eq!(got, want, "key set drifted; full value: {value}");
+    }
+
+    /// The 16 search fan-out endpoints other than devices, mounted empty.
+    async fn mount_search_endpoints_empty(mock: &MockServer) {
+        for p in [
+            "/api/dcim/sites/",
+            "/api/ipam/ip-addresses/",
+            "/api/ipam/prefixes/",
+            "/api/ipam/vlans/",
+            "/api/circuits/circuits/",
+            "/api/ipam/aggregates/",
+            "/api/ipam/asns/",
+            "/api/ipam/ip-ranges/",
+            "/api/tenancy/tenants/",
+            "/api/tenancy/contacts/",
+            "/api/circuits/providers/",
+            "/api/virtualization/virtual-machines/",
+            "/api/virtualization/clusters/",
+            "/api/dcim/racks/",
+            "/api/ipam/vrfs/",
+            "/api/ipam/route-targets/",
+        ] {
+            mount_empty(mock, p).await;
+        }
+    }
+
+    fn search_args(query: &str) -> SearchArgs {
+        SearchArgs {
+            query: query.to_string(),
+            limit: None,
+            status: None,
+            site: None,
+            region: None,
+            site_group: None,
+            location: None,
+            tenant: None,
+            role: None,
+            tag: None,
+            vrf: None,
+        }
+    }
+
+    /// `nbox_status` → `StatusReport`: the full top-level key set and the nested
+    /// `api`/`capabilities` shapes a host reads to decide reachability/routing.
+    #[tokio::test]
+    async fn status_report_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/status/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "netbox-version": "4.5.5",
+                "django-version": "5.0.9",
+                "python-version": "3.12.3"
+            })))
+            .mount(&mock)
+            .await;
+
+        let Json(report) = server_for(&mock).nbox_status().await.expect("status");
+        let value = serde_json::to_value(&report).expect("serialize report");
+
+        // Top-level contract: every key always present (no skip_serializing).
+        assert_keys(
+            &value,
+            &[
+                "netbox_url",
+                "api",
+                "netbox_version",
+                "django_version",
+                "python_version",
+                "capabilities",
+            ],
+        );
+
+        // Per-surface routing: each surface reports configured + effective; the
+        // optional `reason` is omitted when there is no fallback (REST profile).
+        assert_keys(&value["api"], &["search", "vrf"]);
+        assert_keys(&value["api"]["search"], &["configured", "effective"]);
+        assert_keys(&value["api"]["vrf"], &["configured", "effective"]);
+
+        // Capability summary: the three blocks and their stable inner keys.
+        assert_keys(&value["capabilities"], &["version", "rest", "graphql"]);
+        assert_keys(
+            &value["capabilities"]["version"],
+            &["netbox", "minimum_supported", "compatible"],
+        );
+        assert_keys(
+            &value["capabilities"]["rest"],
+            &[
+                "available",
+                "search",
+                "detail",
+                "page_size",
+                "exclude_config_context",
+            ],
+        );
+        // A REST profile never probes GraphQL, so `error`/`surfaces` stay omitted.
+        assert_keys(&value["capabilities"]["graphql"], &["probed", "available"]);
+    }
+
+    /// `nbox_search` → `SearchReport`: a ranked hit's key set, the `kind`
+    /// serialization (snake_case enum, NOT the CLI short label), and the always-
+    /// present `errors` array.
+    #[tokio::test]
+    async fn search_report_hit_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/dcim/devices/",
+            json!({
+                "id": 7, "url": "http://nb/api/dcim/devices/7/", "name": "edge01",
+                "site": {"id": 1, "display": "den1"}
+            }),
+        )
+        .await;
+        mount_search_endpoints_empty(&mock).await;
+
+        let Json(report) = server_for(&mock)
+            .nbox_search(Parameters(search_args("edge01")))
+            .await
+            .expect("search");
+        let value = serde_json::to_value(&report).expect("serialize report");
+
+        assert_keys(&value, &["results", "errors"]);
+        let hit = &value["results"][0];
+        // A hit always carries kind/id/display/url/score; `subtitle` is present
+        // here because the device has a site, but is skip-if-none in general.
+        assert_keys(hit, &["kind", "id", "display", "url", "score", "subtitle"]);
+        // `kind` is the snake_case ObjectKind discriminant. A device's stays
+        // "device", but this pins the serde representation as the contract.
+        assert_eq!(hit["kind"], "device");
+        assert_eq!(hit["id"], 7);
+        assert_eq!(hit["display"], "edge01");
+        assert_eq!(hit["subtitle"], "den1");
+        // A hit's `url` is the web-UI URL (the `/api` segment stripped), not the
+        // raw NetBox API URL — pinned here as the contract a host links to.
+        assert_eq!(hit["url"], "http://nb/dcim/devices/7/");
+        // Exact-match query ranks highest.
+        assert_eq!(hit["score"], 100);
+        // Every endpoint succeeded → errors present and empty (fail-closed shape).
+        assert!(value["errors"].as_array().expect("errors array").is_empty());
+    }
+
+    /// `nbox_search` hit `kind` for an IP address serializes as `ip_address`
+    /// (the snake_case enum variant), distinct from the CLI's `ip` short label —
+    /// a JSON-shape fact a host must not assume away. Pinned here as the contract.
+    #[tokio::test]
+    async fn search_report_ip_kind_serializes_snake_case() {
+        let mock = MockServer::start().await;
+        mount_empty(&mock, "/api/dcim/devices/").await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/ip-addresses/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{
+                    "id": 3, "url": "http://nb/api/ipam/ip-addresses/3/",
+                    "address": "10.0.0.1/24"
+                }]
+            })))
+            .mount(&mock)
+            .await;
+        for p in [
+            "/api/dcim/sites/",
+            "/api/ipam/prefixes/",
+            "/api/ipam/vlans/",
+            "/api/circuits/circuits/",
+            "/api/ipam/aggregates/",
+            "/api/ipam/asns/",
+            "/api/ipam/ip-ranges/",
+            "/api/tenancy/tenants/",
+            "/api/tenancy/contacts/",
+            "/api/circuits/providers/",
+            "/api/virtualization/virtual-machines/",
+            "/api/virtualization/clusters/",
+            "/api/dcim/racks/",
+            "/api/ipam/vrfs/",
+            "/api/ipam/route-targets/",
+        ] {
+            mount_empty(&mock, p).await;
+        }
+
+        let Json(report) = server_for(&mock)
+            .nbox_search(Parameters(search_args("10.0.0.1")))
+            .await
+            .expect("search");
+        let value = serde_json::to_value(&report).expect("serialize report");
+        assert_eq!(value["results"][0]["kind"], "ip_address");
+    }
+
+    /// The partial-failure contract: a failed endpoint surfaces in `errors` while
+    /// the successful endpoints' hits still come through in `results`.
+    #[tokio::test]
+    async fn search_report_partial_failure_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/dcim/devices/",
+            json!({"id": 1, "url": "http://nb/api/dcim/devices/1/", "name": "edge01"}),
+        )
+        .await;
+        // The sites endpoint fails; the rest are empty.
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/sites/"))
+            .respond_with(ResponseTemplate::new(403).set_body_string("Forbidden"))
+            .mount(&mock)
+            .await;
+        for p in [
+            "/api/ipam/ip-addresses/",
+            "/api/ipam/prefixes/",
+            "/api/ipam/vlans/",
+            "/api/circuits/circuits/",
+            "/api/ipam/aggregates/",
+            "/api/ipam/asns/",
+            "/api/ipam/ip-ranges/",
+            "/api/tenancy/tenants/",
+            "/api/tenancy/contacts/",
+            "/api/circuits/providers/",
+            "/api/virtualization/virtual-machines/",
+            "/api/virtualization/clusters/",
+            "/api/dcim/racks/",
+            "/api/ipam/vrfs/",
+            "/api/ipam/route-targets/",
+        ] {
+            mount_empty(&mock, p).await;
+        }
+
+        let Json(report) = server_for(&mock)
+            .nbox_search(Parameters(search_args("edge")))
+            .await
+            .expect("search succeeds despite a per-endpoint failure");
+        let value = serde_json::to_value(&report).expect("serialize report");
+
+        assert_keys(&value, &["results", "errors"]);
+        // Results survive the partial failure.
+        assert_eq!(value["results"].as_array().expect("results").len(), 1);
+        // `errors` is a flat array of human-readable strings naming the endpoint.
+        let errors = value["errors"].as_array().expect("errors array");
+        assert_eq!(errors.len(), 1);
+        let msg = errors[0].as_str().expect("error is a string");
+        assert!(msg.contains("sites"), "error names the endpoint: {msg}");
+    }
+
+    /// `nbox_get prefix` view shape: the prefix detail keys a host relies on. A
+    /// representative populated prefix (with a child + a member IP) pins both the
+    /// scalar contract and the two list sections.
+    #[tokio::test]
+    async fn get_prefix_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/prefixes/"))
+            .and(query_param("prefix", "10.44.208.0/24"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{
+                    "id": 5, "url": "u", "prefix": "10.44.208.0/24",
+                    "status": {"value": "active", "label": "Active"}
+                }]
+            })))
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/prefixes/"))
+            .and(query_param("within", "10.44.208.0/24"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{"id": 6, "url": "u", "prefix": "10.44.208.0/26"}]
+            })))
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/ip-addresses/"))
+            .and(query_param("parent", "10.44.208.0/24"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{"id": 7, "url": "u", "address": "10.44.208.1/24"}]
+            })))
+            .mount(&mock)
+            .await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::Prefix, "10.44.208.0/24")))
+            .await
+            .expect("prefix lookup");
+
+        // The contract's mandatory keys plus the two populated list sections.
+        // Optional scalars (vrf/vlan/scope/role/…) are skip-if-none and absent
+        // here; their presence-when-populated is pinned by the golden contract.
+        assert_keys(
+            &value,
+            &["prefix", "status", "child_prefixes", "ip_addresses"],
+        );
+        assert_eq!(value["prefix"], "10.44.208.0/24");
+        assert_eq!(value["status"], "active");
+        assert_eq!(value["child_prefixes"][0], "10.44.208.0/26");
+        // A member IP row is itself an object with a stable key set.
+        assert_keys(&value["ip_addresses"][0], &["address"]);
+        assert_eq!(value["ip_addresses"][0]["address"], "10.44.208.1/24");
+    }
+
+    /// Contract item: a resource read of `nbox://{kind}/{ref}` returns byte-for-
+    /// byte the same JSON view as `nbox_get` for that kind. The resource path is
+    /// only a URI veneer over `get_impl`, and this pins that they cannot drift.
+    #[tokio::test]
+    async fn resource_read_matches_nbox_get() {
+        // Two servers with identical mounts: one drives `nbox_get`, the other the
+        // resource path. (A single disabled-cache server re-issues the fetch, so
+        // separate servers keep the two reads independent and the mounts simple.)
+        async fn mount_prefix(mock: &MockServer) {
+            Mock::given(method("GET"))
+                .and(path("/api/ipam/prefixes/"))
+                .and(query_param("prefix", "10.44.208.0/24"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "count": 1, "next": null, "previous": null,
+                    "results": [{
+                        "id": 5, "url": "u", "prefix": "10.44.208.0/24",
+                        "status": {"value": "active", "label": "Active"}
+                    }]
+                })))
+                .mount(mock)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/api/ipam/prefixes/"))
+                .and(query_param("within", "10.44.208.0/24"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
+                .mount(mock)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/api/ipam/ip-addresses/"))
+                .and(query_param("parent", "10.44.208.0/24"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
+                .mount(mock)
+                .await;
+        }
+
+        let get_mock = MockServer::start().await;
+        mount_prefix(&get_mock).await;
+        let Json(via_get) = server_for(&get_mock)
+            .nbox_get(Parameters(get_args(GetKind::Prefix, "10.44.208.0/24")))
+            .await
+            .expect("prefix via nbox_get");
+
+        let res_mock = MockServer::start().await;
+        mount_prefix(&res_mock).await;
+        let result = server_for(&res_mock)
+            .read_resource_impl("nbox://prefix/10.44.208.0%2F24")
+            .await
+            .expect("prefix via resource");
+        let via_resource = one_text(&result, "nbox://prefix/10.44.208.0%2F24");
+
+        assert_eq!(
+            via_get, via_resource,
+            "resource read must return the same view as nbox_get"
+        );
+    }
+
+    /// Error-mapping contract, pinned AS IT IS: not-found and ambiguous are
+    /// caller-fixable → `invalid_params`; an upstream NetBox failure (HTTP 500)
+    /// is not → `internal_error`. The not-found message stays actionable.
+    #[tokio::test]
+    async fn error_mapping_categories_are_pinned() {
+        // Not found → invalid_params, with the ref echoed in the message.
+        let nf = MockServer::start().await;
+        mount_empty(&nf, "/api/dcim/devices/").await;
+        let err: ErrorData = match server_for(&nf)
+            .nbox_get(Parameters(get_args(GetKind::Device, "nope")))
+            .await
+        {
+            Ok(_) => panic!("missing device should error"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("nope"), "got: {}", err.message);
+
+        // Ambiguous → invalid_params, candidate scopes listed for the caller.
+        let amb = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/ip-addresses/"))
+            .and(query_param("address", "10.0.0.1"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 2, "next": null, "previous": null,
+                "results": [
+                    {"id": 1, "url": "u", "address": "10.0.0.1/24",
+                     "vrf": {"id": 1, "display": "blue"}},
+                    {"id": 2, "url": "u", "address": "10.0.0.1/24",
+                     "vrf": {"id": 2, "display": "green"}}
+                ]
+            })))
+            .mount(&amb)
+            .await;
+        let err: ErrorData = match server_for(&amb)
+            .nbox_get(Parameters(get_args(GetKind::Ip, "10.0.0.1")))
+            .await
+        {
+            Ok(_) => panic!("ambiguous IP should error"),
+            Err(e) => e,
+        };
+        assert_eq!(err.code, ErrorCode::INVALID_PARAMS);
+        assert!(err.message.contains("ambiguous"), "got: {}", err.message);
+
+        // Upstream failure (HTTP 500) → internal_error, NOT invalid_params.
+        let boom = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/prefixes/"))
+            .and(query_param("prefix", "10.0.0.0/24"))
+            .respond_with(ResponseTemplate::new(500).set_body_string("kaboom"))
+            .mount(&boom)
+            .await;
+        let err: ErrorData = match server_for(&boom)
+            .nbox_get(Parameters(get_args(GetKind::Prefix, "10.0.0.0/24")))
+            .await
+        {
+            Ok(_) => panic!("a 500 should error"),
+            Err(e) => e,
+        };
+        assert_eq!(
+            err.code,
+            ErrorCode::INTERNAL_ERROR,
+            "an upstream failure is not caller-fixable: {}",
+            err.message
+        );
+    }
+}
