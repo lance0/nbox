@@ -139,6 +139,10 @@ Consolidated future scope:
 
 ## Later / under consideration
 
+- ☐ **Cable-path visualizer (idea — exploring).** A TUI rendering of an interface's cable trace: the
+  A-side ↔ Z-side path (with any intermediate panels / junctions) drawn inline on the interface/cable
+  detail, from the trace data nbox already fetches. Scoped to a **single connection's path**, NOT full
+  network topology maps (those stay an explicit non-goal). Raised 2026-06-20.
 - ☑ **Full rack integration** — racks are now a first-class **searchable** `ObjectKind`: they appear in
   the global search fan-out (REST + GraphQL), `/` + `nbox search`, MCP `nbox_search`, and a `rack`
   palette lookup, honoring the site/region/site-group/location scope (like devices, via `*_id`). They
