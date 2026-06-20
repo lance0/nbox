@@ -45,9 +45,9 @@ See [Installation](#installation) below for setup instructions.
 
 ## Features
 
-- **Fast shell lookups** — `device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `circuit`, `provider`, `aggregate`, `asn`, `ip-range`, `tenant`, `contact`, `vm`, `cluster`, and `interface`, each as a one-liner.
+- **Fast shell lookups** — `device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `circuit`, `provider`, `aggregate`, `asn`, `ip-range`, `tenant`, `contact`, `vm`, `cluster`, `vrf`, `route-target`, and `interface`, each as a one-liner.
 - **Agent-ready** — `nbox serve` is a read-only MCP server: the same lookups exposed as eight tools (plus the objects as `nbox://{kind}/{ref}` resources), returning the exact JSON view models the CLI does, so AI agents (Claude Code, Claude Desktop, …) query NetBox safely. Stdio for a local subprocess, or a loopback HTTP transport — with OIDC resource-server auth for a network-reachable, read-only deployment. See [docs/MCP.md](docs/MCP.md).
-- **Normalized search** — one `search` query runs in parallel across devices, sites, IPs, prefixes, VLANs, circuits, providers, aggregates, ASNs, IP ranges, tenants, contacts, VMs, and clusters and returns ranked, deduped hits.
+- **Normalized search** — one `search` query runs in parallel across devices, sites, IPs, prefixes, VLANs, circuits, providers, aggregates, ASNs, IP ranges, tenants, contacts, VMs, clusters, VRFs, and route targets and returns ranked, deduped hits.
 - **IPAM-aware** — IP → most-specific parent prefix → VLAN → scope resolution, prefix utilization and children, `next-ip` / `next-prefix` for available addresses and free blocks (computed locally with `ipnet`).
 - **Polymorphic scope** — `--site`/`--region`/`--site-group`/`--location` on `search` resolve the reference once and filter by NetBox 4.2's `scope_type` + `scope_id` (exact scope, one flag at a time); `prefix`, `vlan`, and `ip` views expose `scope`/`scope_type` (site, location, region, site-group, …) — `prefix` and `vlan` carry their own scope, `ip` inherits it from its parent prefix.
 - **Interactive TUI** — list/preview split, scrolling, command palette, recents, twelve themes (including a light theme), `NO_COLOR` honored.
@@ -257,8 +257,8 @@ nbox journal <kind> <ref>         # recent journal entries for an object
                                   # --journal folds recent entries into a detail lookup (cap 5)
                                   # --journal-limit N overrides the cap (implies --journal)
 nbox open <kind>/<ref>            # device, ip, prefix, vlan, site, rack, circuit, provider,
-                                  # aggregate, asn, ip-range, tenant, contact, vm, cluster, and
-                                  # interface/<device>/<name> (the name may contain slashes,
+                                  # aggregate, asn, ip-range, tenant, contact, vm, cluster, vrf, route-target,
+                                  # and interface/<device>/<name> (the name may contain slashes,
                                   # e.g. xe-0/0/1)
 nbox raw GET <api-path>           # raw read-only API request (escape hatch)
 nbox serve [--http <addr>]        # read-only MCP server for AI agents (stdio, or loopback/OIDC HTTP)
@@ -433,8 +433,8 @@ The tools are all annotated read-only:
 | Tool | What |
 |------|------|
 | `nbox_status` | Connection + backend capabilities + NetBox/Django/Python versions. |
-| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/providers/aggregates/ASNs/IP-ranges/tenants/contacts/VMs/clusters; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; filters IP/prefix results only). |
-| `nbox_get` | Fetch one object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster) + `ref`; `vrf`/`site`/`group` disambiguate. |
+| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/providers/aggregates/ASNs/IP-ranges/tenants/contacts/VMs/clusters/route-targets; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; filters IP/prefix results only). |
+| `nbox_get` | Fetch one object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target) + `ref`; `vrf`/`site`/`group` disambiguate. |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix. |
 | `nbox_next_prefix` | Available free child prefix(es) of a given length, or all free blocks. |

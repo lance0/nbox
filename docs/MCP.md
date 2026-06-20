@@ -325,7 +325,7 @@ All tools are annotated read-only.
 | Tool | Purpose |
 | ---- | ------- |
 | `nbox_status` | Connection target, per-surface `api` routing (configured vs effective backend), capabilities, and NetBox/Django/Python versions. Call first to confirm reachability and inspect the `api`/`capabilities` objects. |
-| `nbox_search` | Free-text search across devices, sites, IPs, prefixes, VLANs, circuits, aggregates, ASNs, IP ranges, tenants, contacts, providers, virtual machines, and clusters. Optional `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, and `vrf` filters (`vrf` filters IP/prefix results only; only one scope filter at a time). Use it to find an object's exact reference. |
+| `nbox_search` | Free-text search across devices, sites, IPs, prefixes, VLANs, circuits, aggregates, ASNs, IP ranges, tenants, contacts, providers, virtual machines, clusters, and route targets. Optional `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, and `vrf` filters (`vrf` filters IP/prefix results only; only one scope filter at a time). Use it to find an object's exact reference. |
 | `nbox_get` | Fetch one object by `kind` + `ref`. An ambiguous `ref` returns a candidate list; pass `vrf` (ip/prefix) or `site`/`group` (vlan) to disambiguate. |
 | `nbox_get_interface` | One interface on a device: its config, assigned addresses, and cable-path trace. |
 | `nbox_next_ip` | Next available address(es) within a prefix. `count`, `vrf`. Nothing is reserved. |
@@ -335,10 +335,10 @@ All tools are annotated read-only.
 
 `nbox_get` and `nbox_journal` take a `kind` and a `ref`. `kind` is one of
 `device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `circuit`, `aggregate`,
-`asn`, `ip_range`, `tenant`, `contact`, `provider`, `vm`, `cluster`, `vrf` — both
+`asn`, `ip_range`, `tenant`, `contact`, `provider`, `vm`, `cluster`, `vrf`, `route_target` — both
 tools accept the full set. `ref` is the natural reference for that kind: a
 name/slug/ID for named objects, a CIDR for prefix and aggregate, an address for
-ip, a VID or name for vlan, the AS number for asn, a name/RD/ID for vrf.
+ip, a VID or name for vlan, the AS number for asn, a name/RD/ID for vrf, a name (e.g. 65000:100) or ID for route_target.
 
 ## Resources
 

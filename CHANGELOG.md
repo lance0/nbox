@@ -36,6 +36,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   latency on a high-RTT link.
 
 ### Added
+- **Route targets are now a first-class object.** A route target (BGP extended
+  community, e.g. `65000:100`) can be looked up (`nbox route-target <name|id>`),
+  found in search, opened (`nbox open route-target/<ref>`), journalled, and
+  fetched over MCP (`nbox_get route_target` / `nbox://route-target/<ref>`). Its
+  detail is the relation graph — the VRFs that import and export it — built by
+  resolving both directions over REST concurrently; each VRF row is navigable.
+  The **VRF view's targets tab is now navigable**: import/export route targets
+  are structured `{id, name}` (so `vrf --json` gains the id) and `Enter` opens the
+  route target's detail, like the prefix/address sections.
 - **VRF GraphQL bundle.** With `[profiles.<name>.api] vrf = "graphql"`, the VRF
   view fetches its prefixes + addresses in a single GraphQL query (the VRF
   identity is still resolved over REST, preserving not-found/ambiguous exit codes).
