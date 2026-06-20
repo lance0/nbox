@@ -1,0 +1,46 @@
+name: Bug report
+description: Something in nbox isn't working as expected
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. Please include the versions below — most issues are
+        NetBox-version- or token-specific. **Never paste your API token.**
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: The command you ran, what you expected, and what happened instead.
+      placeholder: |
+        $ nbox ip 10.0.0.1
+        ...
+    validations:
+      required: true
+  - type: input
+    id: nbox-version
+    attributes:
+      label: nbox version
+      description: Output of `nbox --version`.
+    validations:
+      required: true
+  - type: input
+    id: netbox-version
+    attributes:
+      label: NetBox version
+      description: From `nbox status` (NetBox / Django / Python).
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: OS / arch and install method
+      description: e.g. "Linux x86_64, cargo install" or "macOS arm64, Homebrew".
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs (optional)
+      description: Re-run with `--log-level debug` if useful. Redact tokens and hostnames.
+      render: text

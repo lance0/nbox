@@ -3,7 +3,7 @@
 Terminal UI and CLI for NetBox — fast search, IPAM lookups, and device context.
 
 <p align="center">
-  <img src="nbox-ss.png" alt="nbox TUI — list/preview split with a live detail pane" width="900">
+  <img src="nbox-ss.png" alt="nbox TUI — a three-pane browser: navigation rail, results, and a live detail pane" width="900">
 </p>
 
 [![Crates.io](https://img.shields.io/crates/v/nbox.svg)](https://crates.io/crates/nbox)
@@ -46,17 +46,33 @@ See [Installation](#installation) below for setup instructions.
 ## Features
 
 - **Fast shell lookups** — `device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `circuit`, `provider`, `aggregate`, `asn`, `ip-range`, `tenant`, `contact`, `vm`, `cluster`, `vrf`, `route-target`, and `interface`, each as a one-liner.
-- **Agent-ready** — `nbox serve` is a read-only MCP server: the same lookups exposed as eight tools (plus the objects as `nbox://{kind}/{ref}` resources), returning the exact JSON view models the CLI does, so AI agents (Claude Code, Claude Desktop, …) query NetBox safely. Stdio for a local subprocess, or a loopback HTTP transport — with OIDC resource-server auth for a network-reachable, read-only deployment. See [docs/MCP.md](docs/MCP.md).
-- **Normalized search** — one `search` query runs in parallel across devices, sites, IPs, prefixes, VLANs, circuits, providers, aggregates, ASNs, IP ranges, tenants, contacts, VMs, clusters, VRFs, and route targets and returns ranked, deduped hits.
-- **IPAM-aware** — IP → most-specific parent prefix → VLAN → scope resolution, prefix utilization and children, `next-ip` / `next-prefix` for available addresses and free blocks (computed locally with `ipnet`).
-- **Polymorphic scope** — `--site`/`--region`/`--site-group`/`--location` on `search` resolve the reference once and filter by NetBox 4.2's `scope_type` + `scope_id` (exact scope, one flag at a time); `prefix`, `vlan`, and `ip` views expose `scope`/`scope_type` (site, location, region, site-group, …) — `prefix` and `vlan` carry their own scope, `ip` inherits it from its parent prefix.
-- **Interactive TUI** — list/preview split, scrolling, command palette, recents, twelve themes (including a light theme), `NO_COLOR` honored.
-- **Scriptable** — `-o plain|json|csv`, `--fields`, `--raw`, versioned `--envelope`, and stable exit codes; stdout stays clean for piping, logs go to stderr (see [AGENTS.md](AGENTS.md)).
-- **Open and copy** — open any object in the browser or copy a field straight from results.
-- **Profiles** for multiple NetBox instances, **journals** folded into detail lookups, and **tags** listing.
+- **Normalized search** — one `search` query runs in parallel across devices, sites, racks, IPs, prefixes, VLANs, circuits, providers, aggregates, ASNs, IP ranges, tenants, contacts, VMs, clusters, VRFs, and route targets, returning ranked, deduped hits. Scope it with `--site`/`--region`/`--site-group`/`--location` (one at a time, exact scope), or narrow by `--status`/`--tenant`/`--role`/`--tag`/`--vrf`.
+- **IPAM-aware** — IP → most-specific parent prefix → VLAN → scope resolution, prefix utilization and children, a navigable prefix tree, and `next-ip` / `next-prefix` for free addresses and blocks (computed locally with `ipnet`).
+- **A k9s-style TUI** — a three-pane home (navigation rail → results → live preview), an overview dashboard, a hierarchical prefix tree, cross-object navigation between related objects, fuzzy filters, recents, and an in-app profile + settings editor. Twelve themes; `NO_COLOR` honored.
+- **Agent-ready** — `nbox serve` is a read-only MCP server: the same lookups exposed as nine tools (plus every object as an `nbox://{kind}/{ref}` resource), returning the exact JSON view models the CLI does, so AI agents (Claude Code, Claude Desktop, …) query NetBox safely. Stdio for a local subprocess, or a loopback HTTP transport with OIDC resource-server auth for a network-reachable, read-only deployment. See [docs/MCP.md](docs/MCP.md).
+- **Scriptable** — `-o plain|json|csv`, `--fields`, `--raw`, versioned `--envelope`, and stable exit codes; stdout stays clean for piping, logs go to stderr. See [docs/SCRIPTING.md](docs/SCRIPTING.md).
+- **Fast on repeat** — a small in-memory read cache (per profile, ~30s) keeps TUI back-navigation and chatty agents from re-hitting NetBox; the detail footer shows "cached Ns ago" and `nbox_cache_clear` busts it.
+- **Multi-instance** — profiles for several NetBox instances (switch live in the TUI), journals folded into detail lookups, open-in-browser and copy, and tag listing.
 
-See [docs/FEATURES.md](docs/FEATURES.md) for the full command reference and
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the internals.
+See [docs/FEATURES.md](docs/FEATURES.md) for the full command reference,
+[docs/COMPARISON.md](docs/COMPARISON.md) for how nbox compares to the NetBox web
+UI and raw API calls, and [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the
+internals.
+
+### nbox vs the NetBox web UI vs raw API
+
+nbox doesn't replace NetBox — it's a fast read path into it. When to reach for which:
+
+| Task | nbox | NetBox web UI | `curl` / `pynetbox` |
+|------|------|---------------|---------------------|
+| "What is this IP?" (address → prefix → VLAN → scope) | one command / one keystroke | several clicks across pages | several requests + manual joins |
+| Search across object types at once | one ranked, deduped query | per-type search pages | one request per endpoint |
+| Use it over SSH on a jump host | yes — one static binary, no runtime | no (needs a browser) | only if Python/curl are present |
+| Machine output (JSON/CSV, stable exit codes) | built in | no | you build it |
+| Feed an AI agent | built in (`nbox serve`, MCP) | no | you build it |
+| Reserve / allocate / edit (writes) | not yet — read-only | yes | yes |
+
+Full matrix and a "when to use each" guide: [docs/COMPARISON.md](docs/COMPARISON.md).
 
 ## Real-World Use Cases
 
@@ -112,7 +128,7 @@ and gets the same JSON view models the CLI returns. See [docs/MCP.md](docs/MCP.m
 
 ### From crates.io (Recommended)
 
-Requires [Rust 1.95+](https://www.rust-lang.org/tools/install):
+Requires [Rust 1.88+](https://www.rust-lang.org/tools/install):
 
 ```bash
 # Install Rust (if not already installed)
@@ -227,13 +243,8 @@ a directory — `nbox man man/` — to write the full set instead (`nbox.1` plus
 nbox                              # launch the TUI
 nbox status                       # connection + backend capabilities + NetBox/Django/Python versions
 nbox search <query> [--limit N] [--status/--site/--region/--site-group/--location/--tenant/--role/--tag <v>] [--vrf <id|rd|name>] [--cols a,b,c] [--partial]
-                                  # --site/--region/--site-group/--location resolve the ref once and filter
-                                  # scope-capable endpoints by resolved id (prefixes/clusters via
-                                  # scope_type=dcim.<kind> + scope_id; devices via *_id;
-                                  # --site also filters VLANs/VMs by site_id), exact match.
-                                  # At most one scope flag (else exit 2); an unknown ref errors (exit 4)
-                                  # --vrf resolves id|rd|name once and filters IP/prefix results by vrf_id
-                                  # (VRF-incapable endpoints skip it); orthogonal to scope; unknown → exit 4
+                                  # one scope flag at a time, exact match; --vrf filters IP/prefix results.
+                                  # Full scope/filter semantics: docs/FEATURES.md
 nbox device <name-or-id> [--journal] [--journal-limit N]
 nbox ip <address> [--vrf <name>] [--journal]    # --vrf disambiguates duplicates across VRFs
 nbox prefix <cidr> [--vrf <name>] [--journal]   # includes utilization + children when present
@@ -262,7 +273,7 @@ nbox open <kind>/<ref>            # device, ip, prefix, vlan, site, rack, circui
                                   # e.g. xe-0/0/1)
 nbox raw GET <api-path>           # raw read-only API request (escape hatch)
 nbox serve [--http <addr>]        # read-only MCP server for AI agents (stdio, or loopback/OIDC HTTP)
-nbox config <init|path|show>
+nbox config <init|path|show|token>    # token: keyring set/clear/status (never echoed)
 nbox profile <add|use|list|show>
 nbox completions <bash|zsh|fish|powershell|elvish>
 nbox man [DIR]                    # man pages: `nbox man > nbox.1` (top-level),
@@ -305,25 +316,31 @@ auth/permission (401/403), `4` not found, `5` ambiguous reference. See
 |-----|--------|
 | `/` | search |
 | `:` | command palette |
-| `Tab` / `Shift+Tab` | switch pane focus |
-| `j` / `k` | move selection / scroll detail |
+| `f` / `F` | filter results / clear filters |
+| `Tab` / `Shift+Tab` | switch pane focus (or cycle detail tabs) |
+| `j` / `k` | move selection / scroll detail (on the nav rail, live-browse the kind) |
 | `g` / `G` | top / bottom |
 | `PgUp` / `PgDn` | page up / down |
 | `Enter` | open selected object |
 | `o` | open in browser |
 | `y` | copy current item label |
+| `R` | related objects (jump between connected objects) |
+| `D` | overview dashboard |
+| `T` | prefix tree (`Space` / `←` / `→` collapse/expand) |
 | `t` | cycle theme |
 | `r` | refresh |
 | `P` / `Ctrl+P` | switch profile (cycle forward / backward) |
 | `S` | open the Config modal (profiles + settings) |
-| `b` / `Esc` | back |
+| `b` / `Esc` | back / clear search |
 | `i p c v s` | device tabs (interfaces / IPs / cables / VLANs / services) |
+| `e` | rack elevation |
+| `u` | dismiss update notice |
 | `?` / `F1` | help |
 | `q` / `Ctrl+c` | quit |
 
-The command palette (`:`) accepts `device`/`ip`/`prefix`/`vlan`/`site <ref>`,
-`find <q>` (or bare text), `open`, `copy`, `theme <name>`, `profile <name>`,
-`config`, and `refresh`. The home screen lists recently opened objects (deduped,
+The command palette (`:`) accepts `device`/`ip`/`prefix`/`vlan`/`site`/`vrf <ref>`,
+`find <q>` (or bare text), `filter <key>=<value>`, `open`, `copy`, `theme <name>`,
+`profile <name>`, `config`, and `refresh`. The home screen lists recently opened objects (deduped,
 most-recent-first) when there are no search results — press `Enter` to reopen one.
 Set `[ui].refresh_secs` to auto-refresh the current search on an interval (off by
 default).
@@ -398,6 +415,13 @@ confirm_writes = true
 # refresh_secs = 30          # TUI auto-refresh interval in seconds (omit/0 = off)
 # open_browser_command = ""  # custom browser-open command (empty = OS default)
 
+# Local read cache (optional; on by default). A short in-memory de-dupe window so
+# repeated reads (TUI back-nav, a chatty agent) don't re-hit NetBox. Never serves
+# stale data across a write you made; cleared on profile switch.
+[cache]
+enabled = true             # master switch
+ttl_secs = 30              # reuse window in seconds (clamped to 5–300)
+
 [profiles.work]
 url = "https://netbox.example.com"
 token_env = "NETBOX_TOKEN"
@@ -433,13 +457,14 @@ The tools are all annotated read-only:
 | Tool | What |
 |------|------|
 | `nbox_status` | Connection + backend capabilities + NetBox/Django/Python versions. |
-| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/providers/aggregates/ASNs/IP-ranges/tenants/contacts/VMs/clusters/VRFs/route-targets; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; filters IP/prefix results only). |
+| `nbox_search` | Search devices/sites/racks/IPs/prefixes/VLANs/circuits/providers/aggregates/ASNs/IP-ranges/tenants/contacts/VMs/clusters/VRFs/route-targets; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; filters IP/prefix results only). |
 | `nbox_get` | Fetch one object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target) + `ref`; `vrf`/`site`/`group` disambiguate. |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |
-| `nbox_next_ip` | Next available address(es) in a prefix. |
+| `nbox_next_ip` | Next available address(es) in a prefix (nothing is reserved). |
 | `nbox_next_prefix` | Available free child prefix(es) of a given length, or all free blocks. |
 | `nbox_journal` | Recent journal entries for an object. |
-| `nbox_list_tags` | List tags. |
+| `nbox_list_tags` | List tags (name, slug, color, usage count). |
+| `nbox_cache_clear` | Drop nbox's local read cache so the next lookups fetch fresh (read-only w.r.t. NetBox). |
 
 The same objects are also exposed as MCP **resources** via one template,
 `nbox://{kind}/{ref}` (e.g. `nbox://device/edge01`), for hosts that browse or
@@ -495,13 +520,32 @@ raw escape-hatch tool come later.
   the search surface. REST stays canonical and powers search, identity resolution,
   detail lookups, raw, journals, and available-IP/prefix operations.
 
+## Troubleshooting
+
+| Symptom | Fix |
+|---------|-----|
+| `no config at … — run nbox config init` | First run: just launch `nbox` for the guided wizard, or `nbox profile add …`. |
+| `error: authentication failed` (exit 3) | The token is missing/invalid. Check `nbox config token status` for the resolved source; export `NBOX_TOKEN` or point `token_env` at a set variable. |
+| `403` / permission denied (exit 3) | The token is valid but lacks object permissions, or your NetBox needs `LOGIN_REQUIRED`-aware tokens. Use a token with read access. |
+| TLS / certificate error | For a lab with a self-signed cert, set `verify_tls = false` on that profile (never in production). |
+| `operation timed out` on one search endpoint | Transient; nbox already disables stale keep-alive reuse. Retry, or raise `timeout_secs`. |
+| `ambiguous` (exit 5) | The reference matched several objects — disambiguate (`--vrf` for an IP/prefix, `--site`/`--group` for a VLAN). |
+| `keyring not available` (Linux) | The default static binary has no D-Bus backend. Use `token_env`/`NBOX_TOKEN`, or install a build with `keyring-secret-service`. |
+| NetBox version error | nbox requires NetBox **4.2+**. Check `nbox status`. |
+
+Full list with copy-paste fixes: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).
+
 ## Documentation
 
 - [Features](docs/FEATURES.md) — full command reference
-- [Configuration](docs/CONFIG.md) — config, profiles, token resolution
+- [Configuration](docs/CONFIG.md) — config, profiles, token resolution, cache
+- [Comparison](docs/COMPARISON.md) — nbox vs the NetBox web UI / raw API, and when to use each
+- [Scripting & automation](docs/SCRIPTING.md) — JSON/CSV/envelope schemas, exit codes, jq recipes, CI
+- [MCP server](docs/MCP.md) — agent setup, tools, HTTP/OIDC
 - [Architecture](docs/ARCHITECTURE.md) — internal design and module structure
-- [MCP server](docs/MCP.md) — agent setup and tools
+- [Design](DESIGN.md) — the deep design rationale and patterns
 - [Agents](AGENTS.md) — machine-readable surface, output formats, exit codes
+- [Troubleshooting](docs/TROUBLESHOOTING.md) — symptoms and fixes
 - [Known Issues](KNOWN_ISSUES.md) — current limitations
 - [Changelog](CHANGELOG.md) — release history
 - [Roadmap](ROADMAP.md) — planned features

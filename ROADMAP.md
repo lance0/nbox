@@ -34,7 +34,7 @@ The read surface is broad and stable today (full history in `CHANGELOG.md`):
   trace, VRF-scoped child prefixes + contained IPs.
 - **Output:** `-o plain|json|csv`, `--raw`, `--envelope`, `--fields`, `--cols`; stable exit codes.
 - **MCP server (`nbox serve`):** stdio **and** HTTP (Streamable HTTP), OAuth 2.1 OIDC resource-server
-  mode (RFC 9728 metadata, audit log, per-caller rate limit), 8 read tools + a `nbox://{kind}/{ref}`
+  mode (RFC 9728 metadata, audit log, per-caller rate limit), 9 read tools + a `nbox://{kind}/{ref}`
   resource template (DESIGN §24; read-only Pattern 3).
 - **TUI:** list/preview split with focus, scrolling + position cues, 11 themes, command palette,
   fuzzy filter, recents, auto-refresh, device tabs, open-in-browser/copy, profile switcher
@@ -279,7 +279,7 @@ Consolidated future scope:
 ### v0.2.0 — shipped since v0.1.1
 
 - ☑ **MCP server** (`nbox serve`) — stdio + HTTP transport, OIDC resource-server auth, audit + rate
-  limit, 8 read tools, `nbox://{kind}/{ref}` resources.
+  limit, 9 read tools, `nbox://{kind}/{ref}` resources.
 - ☑ **Read coverage** — circuits, providers, aggregates, ASNs, IP ranges, tenants, contacts, VMs,
   clusters; journal command + inline `--journal`; services on device detail; cable/interface trace.
 - ☑ **Scope/VRF** — `search --vrf`, scope filters (`--region`/`--site-group`/`--location`), exact
@@ -299,7 +299,7 @@ Consolidated future scope:
 - ☑ musl Linux targets in the release matrix (static x86_64/aarch64; gnu aarch64 kept).
 - ☑ `Dockerfile.release` + multi-arch (amd64/arm64) GHCR publish.
 - ☑ Completions + the full man-page set shipped as a release artifact.
-- ☑ MSRV CI job (pins `rust-version` 1.95).
+- ☑ MSRV CI job (pins `rust-version` 1.88).
 - ☑ Real-NetBox integration workflow (`netbox-integration.yml`).
 - ☑ `clippy::pedantic` enforced whole-project (incl. test crates) via a `Cargo.toml [lints]` table.
 - ☑ Golden output contracts + shared integration-test support (`tests/golden/`, `tests/support/`).

@@ -53,6 +53,7 @@ nbox contact <name|id>
 nbox vm <name|id>
 nbox cluster <name|id>
 nbox vrf <name|rd|id>
+nbox route-target <name|id>
 nbox search <query> [--limit N] [--status S] [--site <name|slug|id>] [--region <name|slug|id>] [--site-group <name|slug|id>] [--location <name|slug|id>] [--tenant SLUG] [--role SLUG] [--tag SLUG] [--vrf <id|rd|name>] [--cols a,b,c] [--partial]
 nbox tags
 nbox journal <kind> <ref>
@@ -79,13 +80,14 @@ stderr. Every tool is annotated read-only.
 | Tool | Purpose |
 | ---- | ------- |
 | `nbox_status` | Connection + active backend capabilities + NetBox/Django/Python versions (call first to confirm reachability and inspect `capabilities`). |
-| `nbox_search` | Search devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP ranges/tenants/contacts/providers/VMs/clusters; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag` (one scope filter at a time), `vrf` (id\|rd\|name; filters IP/prefix results only). Find a reference before `nbox_get`. |
-| `nbox_get` | One object: `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf) + `ref`; `vrf`/`site`/`group` disambiguate (an ambiguous ref returns the candidates). |
+| `nbox_search` | Search devices/sites/racks/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP ranges/tenants/contacts/providers/VMs/clusters/VRFs/route-targets; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag` (one scope filter at a time), `vrf` (id\|rd\|name; filters IP/prefix results only). Find a reference before `nbox_get`. |
+| `nbox_get` | One object: `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target) + `ref`; `vrf`/`site`/`group` disambiguate (an ambiguous ref returns the candidates). |
 | `nbox_get_interface` | One interface on a device: config, addresses, cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix (nothing reserved); `count`, `vrf`. |
 | `nbox_next_prefix` | Available child prefix(es) in a prefix; `length` for a block of a size, else all free blocks; `vrf`. |
 | `nbox_journal` | Recent journal entries for an object (`kind`/`ref` as `nbox_get`). |
 | `nbox_list_tags` | List tags (name, slug, color, usage count) — valid `tag` values for `nbox_search`. |
+| `nbox_cache_clear` | Drop nbox's local read cache so the next lookups fetch fresh from NetBox (read-only w.r.t. NetBox; idempotent). |
 
 The same objects are also exposed as MCP **resources** via one template,
 `nbox://{kind}/{ref}` (e.g. `nbox://device/edge01`, `nbox://ip/10.0.0.1`), for

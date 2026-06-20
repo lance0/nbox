@@ -6,8 +6,9 @@ TUI, so output is consistent across both.
 
 ## Layers
 
-- **`netbox/`** — NetBox clients and wire types. REST is canonical; GraphQL is an
-  opt-in per-surface accelerator (`search`, `vrf`).
+- **`netbox/`** — NetBox clients and wire types. REST is canonical and powers
+  search, identity resolution, detail lookups, journals, `raw`, and the
+  available-IP/prefix math; GraphQL is an opt-in accelerator for the VRF view only.
   - `client.rs` — auth, paging, timeouts; retries HTTP 429 (`Retry-After` +
     backoff); maps statuses to typed errors (401→auth, 403→perms, 404→not-found).
     The same authenticated client owns `/graphql/` POSTs. Holds the profile's
@@ -18,11 +19,12 @@ TUI, so output is consistent across both.
   - `capabilities.rs` — resolves a surface's configured preference + live schema
     probe into an `EffectiveBackend` (with REST-fallback reason); the surface-aware
     capability report and `status.api` routing.
-  - `graphql.rs` — schema capability probing (filter input shapes and pagination
-    support across NetBox 4.2/4.3/4.5+).
-  - `search.rs` — parallel `q=` fan-out → ranked, deduped `SearchOutcome`;
-    branches to GraphQL only when the `search` surface effectively resolves to it.
-    Also `graphql_vrf_bundle` (the single-POST VRF prefixes+addresses query).
+  - `graphql.rs` — all GraphQL: schema capability probing (filter input shapes and
+    pagination across NetBox 4.2/4.3/4.5+) and `graphql_vrf_bundle` (the single-POST
+    VRF prefixes+addresses query that backs the VRF view when opted in).
+  - `search.rs` — parallel REST `q=` fan-out → ranked, deduped `SearchOutcome`.
+    Always REST: NetBox's GraphQL has no `q` full-text equivalent (4.3+ moved to
+    per-field filters), so it can't reproduce canonical search.
   - `models/` — permissive wire structs (`dcim`, `ipam`, `circuits`, `extras`,
     `tenancy`, `common`). Nullable, brief/complete, unknown fields ignored.
 - **`domain/`** — flattened view models, one per object (`device_detail`,
@@ -37,13 +39,20 @@ TUI, so output is consistent across both.
 - **`error.rs`** — `NboxError` with stable exit codes (see below).
 - **`config.rs`** — typed config, profiles, token resolution, format-preserving
   writes (`toml_edit`).
+- **`cache.rs`** — a small, bounded, in-memory per-profile read cache (one short
+  TTL, clamped 5–300s) so a burst of identical reads (TUI back-navigation, a
+  chatty agent) doesn't re-hit NetBox; re-keyed/cleared on profile switch.
+- **`mcp/`** — the read-only MCP server (`nbox serve`): stdio plus a loopback
+  HTTP transport (OIDC resource-server auth, audit log, per-caller rate limit),
+  exposing the same query + view layer as nine tools and `nbox://{kind}/{ref}`
+  resources.
 
 ## Data flow
 
 ```
 CLI args ─► lib::run ─► query/search ─► netbox::client ─► NetBox REST
                                              │
-                                             └──► NetBox GraphQL (search only, opt-in)
+                                             └──► NetBox GraphQL (VRF view only, opt-in)
                           │
                           ▼
                   domain view model ─► output::emit (plain | json | csv)

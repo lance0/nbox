@@ -85,10 +85,22 @@ See [AGENTS.md](../AGENTS.md) for the machine-readable surface and exit codes.
 
 ## TUI
 
-`nbox` (no subcommand) launches the TUI: `/` search, `:` palette, `Tab` switch
-pane, `Enter` open, `o` browser, `y` copy, `t` theme, `r` refresh, device tabs
-`i`/`p`/`c`/`v`/`s`, recents on the home screen, optional auto-refresh
-(`[ui].refresh_secs`).
+`nbox` (no subcommand) launches the TUI — a three-pane home (a navigation rail of
+browsable kinds → results → a live detail preview):
+
+- `/` search, `:` command palette, `f`/`F` filter / clear, `Tab`/`Shift+Tab` move
+  between panes (or cycle detail tabs), `j`/`k` move (live-browse the kind while on
+  the nav rail), `g`/`G` top/bottom, `Enter` open.
+- `o` open in browser, `y` copy, `R` related objects (jump between connected
+  objects), device tabs `i`/`p`/`c`/`v`/`s`, `e` rack elevation.
+- `D` overview dashboard, `T` prefix tree (`Space`/`←`/`→` collapse/expand), `t`
+  cycle theme, `r` refresh, recents on the home screen, optional auto-refresh
+  (`[ui].refresh_secs`).
+- `P`/`Ctrl+P` switch profile live; `S` opens the Config modal — add/edit/select
+  profiles and a settings editor (appearance, behavior, logging). First run with
+  no config drops into a guided onboarding wizard instead.
+
+Twelve themes (`NO_COLOR` honored); `?`/`F1` shows the full keymap.
 
 ## MCP server
 
@@ -101,13 +113,14 @@ are annotated read-only.
 | Tool | What |
 | ---- | ---- |
 | `nbox_status` | Connection + active backend capabilities + NetBox/Django/Python versions. |
-| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers/VMs/clusters/VRFs/route-targets; `query`, `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; IP/prefix only). |
+| `nbox_search` | Search devices/sites/racks/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers/VMs/clusters/VRFs/route-targets; `query`, `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; IP/prefix only). |
 | `nbox_get` | One object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target) + `ref`; `vrf`/`site`/`group` disambiguate. |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix. |
-| `nbox_next_prefix` | Next available child prefix(es) of a given length. |
+| `nbox_next_prefix` | Available child prefix(es) of a given length, or all free blocks. |
 | `nbox_journal` | Recent journal entries for an object. |
 | `nbox_list_tags` | List tags. |
+| `nbox_cache_clear` | Drop nbox's local read cache so the next lookups fetch fresh (read-only w.r.t. NetBox). |
 
 A loopback HTTP transport ships in the default build (behind the `http` cargo
 feature, on by default; `--no-default-features` for stdio-only):

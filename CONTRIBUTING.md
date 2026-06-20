@@ -6,7 +6,7 @@ Thanks for your interest in contributing to nbox!
 
 ### Prerequisites
 
-- Rust 1.95+ (edition 2024)
+- Rust 1.88+ (edition 2024)
 - A NetBox 4.2+ instance to test against (a token with read access)
 
 ### Building
@@ -71,8 +71,10 @@ cargo test --all-features -- --nocapture
 ```
 
 The client and query layers are covered by `wiremock` integration tests
-(`tests/`); view models and pure logic have unit tests. There are no live-NetBox
-tests yet — that CI lands separately (see ROADMAP).
+(`tests/`); view models and pure logic have unit tests. End-to-end tests that hit
+a real NetBox are marked `#[ignore]` and run in CI by the `netbox-integration.yml`
+workflow (it boots netbox-docker). To run them locally, bring up the harness in
+`tests/integration/` (see its README) and `cargo test -- --ignored`.
 
 ## Project structure
 
@@ -85,6 +87,26 @@ split: the wire layer (`netbox/`) stays separate from the view models
 - `src/output/` — plain / JSON / CSV rendering
 - `src/tui/` — ratatui app (pure `handle_event`, spawned network commands)
 - `src/config.rs`, `src/error.rs`, `src/cli.rs`, `src/lib.rs`
+- `src/cache.rs` — the in-memory read cache; `src/mcp/` — the MCP server
+
+### Adding a new object lookup
+
+The wire→view split makes most additions mechanical. End to end:
+
+1. **Wire model** — add the struct to `src/netbox/models/<group>.rs` (permissive:
+   nullable fields, `#[serde(default)]`, unknown fields ignored).
+2. **Endpoint + resolver** — add the path to `src/netbox/endpoints.rs` and a
+   `<kind>_by_ref` resolver to `src/netbox/query.rs`.
+3. **View model** — add `src/domain/<kind>_view.rs` (flattened; owns plain-text
+   rendering and `Serialize`), wired into `domain::detail`.
+4. **CLI** — add the subcommand in `src/cli.rs` and dispatch it in `src/lib.rs`.
+5. **Surfaces** — add it to `search` (if searchable), the TUI Nav rail, the MCP
+   `nbox_get` kinds, and the `open` / `journal` resolvers.
+6. **Tests + docs** — a `wiremock` test (plus a golden if it has a JSON shape) and
+   the kind lists in README, docs/FEATURES.md, and AGENTS.md, kept in sync.
+
+For an output format or a config knob, start from `src/output/` and `src/config.rs`
+(the `set_ui_field` + format-preserving `save_ui_field`/`save_ui_fields` setters).
 
 ## Pull request process
 

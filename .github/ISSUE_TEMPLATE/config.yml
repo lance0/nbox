@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/lance0/nbox/security/advisories/new
+    about: Report security issues privately — do not open a public issue (see SECURITY.md).
+  - name: Question or idea
+    url: https://github.com/lance0/nbox/discussions
+    about: Usage questions and discussion.

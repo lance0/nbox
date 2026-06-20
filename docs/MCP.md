@@ -78,7 +78,7 @@ nbox serve --http 127.0.0.1:8080
 (The transport lives behind the `http` cargo feature, which is on by default;
 `cargo install nbox --no-default-features` gives a lean stdio-only build.)
 
-The same eight tools are mounted at `/mcp` (Streamable HTTP). It binds **only**
+The same nine tools are mounted at `/mcp` (Streamable HTTP). It binds **only**
 loopback: a non-loopback address (e.g. `0.0.0.0:8080`) is a usage error unless
 the OIDC resource-server auth mode is configured (see below) — there is no other
 bypass flag. The trust boundary is the loopback interface; the same profile/token
@@ -174,7 +174,7 @@ header (tokens in the query string are rejected); the JWT signature against the
 issuer's JWKS, selected by `kid`, with an explicit algorithm allowlist
 (RS256/ES256 — the token's own `alg` is never trusted, `none` is rejected); `iss`
 exact-match; `aud` contains the configured audience; and `exp` in the future (with
-a ≤120 s clock-skew leeway). The 8 read-only tools require the `nbox:read` scope.
+a ≤120 s clock-skew leeway). The 9 read-only tools require the `nbox:read` scope.
 JWKS is cached by `kid` (an unknown `kid` triggers a single rate-limited refresh,
 then rejects; a transient JWKS outage keeps serving from the cache).
 
@@ -332,6 +332,7 @@ All tools are annotated read-only.
 | `nbox_next_prefix` | Available child prefix(es) within a prefix. `length` returns the first free block of that size, else all free blocks. `vrf`. Nothing is reserved. |
 | `nbox_journal` | Recent journal entries for an object, newest first. `kind`/`ref` as `nbox_get`. |
 | `nbox_list_tags` | List tags (name, slug, color, usage count) — the valid `tag` values for `nbox_search`. |
+| `nbox_cache_clear` | Drop nbox's local read cache so the next lookups fetch fresh from NetBox. Read-only with respect to NetBox (idempotent) — it only clears copies held in this server process; use after data changed out-of-band and you need current state before the TTL expires. |
 
 `nbox_get` and `nbox_journal` take a `kind` and a `ref`. `kind` is one of
 `device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `circuit`, `aggregate`,
@@ -351,7 +352,7 @@ nbox://{kind}/{ref}
 
 `kind` is the same set as `nbox_get` (`device`, `ip`, `prefix`, `vlan`, `site`,
 `rack`, `circuit`, `aggregate`, `asn`, `ip_range`, `tenant`, `contact`,
-`provider`, `vm`, `cluster`, `vrf`); `ref` is the same natural reference. Reading a resource returns the
+`provider`, `vm`, `cluster`, `vrf`, `route_target`); `ref` is the same natural reference. Reading a resource returns the
 object as JSON — the exact view model `nbox_get` returns. Examples:
 `nbox://device/edge01`, `nbox://ip/10.0.0.1`, `nbox://site/iad1`.
 

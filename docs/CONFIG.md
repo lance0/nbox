@@ -21,6 +21,11 @@ confirm_writes = true
 # refresh_secs = 30          # TUI auto-refresh interval in seconds (omit/0 = off)
 # open_browser_command = ""  # custom browser-open command (empty = OS default)
 
+# Local read cache (optional; on by default). See "Cache" below.
+[cache]
+enabled = true             # master switch
+ttl_secs = 30              # reuse window in seconds (clamped to 5–300)
+
 [profiles.work]
 url = "https://netbox.example.com"
 token_env = "NETBOX_TOKEN"
@@ -143,6 +148,25 @@ modal's **Settings** section (`Tab` to it; `↑`/`↓` move between fields; `Ent
 `confirm_writes` is reserved for the future write features and has no effect today,
 so it is not exposed in the Settings section. (The former `wide` knob was removed —
 nothing read it; an existing `wide = …` in your file is harmlessly ignored.)
+
+## Cache (`[cache]`)
+
+A small **in-memory** read cache, on by default. It de-duplicates a burst of
+identical reads — TUI back-navigation, a chatty MCP agent — so they don't re-hit
+NetBox. It lives only in the running process; nothing is written to disk.
+
+```toml
+[cache]
+enabled = true      # master switch; when off, every read goes straight to NetBox
+ttl_secs = 30       # reuse window in seconds (clamped to 5–300 by the engine)
+```
+
+`ttl_secs` is a short **de-dupe** window, not a freshness guarantee — it's how long
+an assembled view is reused before the next fetch. The cache is keyed per profile
+and re-keyed (effectively cleared) on a profile switch, so it can never serve one
+instance's data for another. In the TUI a cache-served detail shows a dim
+"cached Ns ago" chip; press `r` to force a fresh fetch. Over MCP, the
+`nbox_cache_clear` tool drops everything so the next lookups are fresh.
 
 ## Profiles
 

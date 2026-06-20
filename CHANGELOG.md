@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Documentation
+- **Docs overhauled to the project standard.** Restructured the README (a "vs the
+  NetBox web UI / raw API" comparison table, a complete keybindings table, a
+  troubleshooting section, a full documentation index) and added
+  `docs/COMPARISON.md`, `docs/SCRIPTING.md`, and `docs/TROUBLESHOOTING.md`.
+  Documented the in-memory read cache (`[cache]`) and the `nbox_cache_clear` MCP
+  tool. Corrected the MSRV (1.88), the MCP tool count (nine), the searchable-kind
+  lists (racks, VRFs, route targets), and the GraphQL/REST split (search is always
+  REST; GraphQL backs the VRF view only) across every doc. Expanded `SECURITY.md`
+  (the `nbox serve` network surface, supported-versions) and `CONTRIBUTING.md`
+  (module map, an "adding a feature" recipe), and added GitHub issue/PR templates.
+
 ### Changed
 - **BREAKING: per-surface API backends replace the coarse `backend` key.** The
   profile-level `backend = "rest"|"graphql"` setting is **removed**; a config that

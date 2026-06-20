@@ -74,7 +74,7 @@ pub struct Config {
     #[serde(default)]
     pub ui: UiConfig,
 
-    /// Local read-cache settings. Absent ⇒ defaults (on-disk cache enabled).
+    /// Local read-cache settings. Absent ⇒ defaults (in-memory cache enabled).
     #[serde(default)]
     pub cache: CacheSettings,
 
