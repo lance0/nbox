@@ -694,8 +694,10 @@ fn render_home_nav(frame: &mut Frame, area: Rect, app: &App) {
         if let Some(n) = count {
             let count_str = n.to_string();
             // inner width = pane minus both borders and the 1-col horizontal padding.
+            // Measure by display width (not char count) so the column stays aligned
+            // even if a label ever holds a wide/CJK glyph; the gutter + "● " is 2 cols.
             let inner = usize::from(area.width.saturating_sub(4));
-            let used = 1 + 2 + label.chars().count() + count_str.chars().count();
+            let used = 1 + 2 + label.width() + count_str.width();
             let pad = inner.saturating_sub(used).max(1);
             spans.push(Span::raw(" ".repeat(pad)));
             spans.push(Span::styled(count_str, Style::default().fg(theme.text_dim)));
