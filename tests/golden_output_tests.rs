@@ -33,3 +33,11 @@ fn device_detail_json_contract() {
         include_str!("golden/device_detail.json"),
     );
 }
+
+#[test]
+fn vrf_detail_json_contract() {
+    assert_golden(
+        &fixtures::vrf_detail(),
+        include_str!("golden/vrf_detail.json"),
+    );
+}

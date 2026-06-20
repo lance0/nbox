@@ -1,0 +1,47 @@
+{
+  "address_total": 1,
+  "addresses": [
+    {
+      "address": "10.50.1.1/24",
+      "dns_name": "gw.customer",
+      "id": 9,
+      "status": "active"
+    }
+  ],
+  "prefix_total": 3,
+  "prefixes": [
+    {
+      "depth": 0,
+      "description": "supernet",
+      "id": 1,
+      "prefix": "10.50.0.0/16",
+      "status": "container",
+      "utilization": 42
+    },
+    {
+      "depth": 1,
+      "id": 2,
+      "prefix": "10.50.1.0/24",
+      "status": "active"
+    }
+  ],
+  "summary": {
+    "description": "Customer production VRF",
+    "enforce_unique": true,
+    "export_targets": [
+      "65000:100"
+    ],
+    "id": 12,
+    "import_targets": [
+      "65000:100"
+    ],
+    "ipaddress_count": 1,
+    "name": "customer-prod",
+    "prefix_count": 3,
+    "rd": "65000:100",
+    "tags": [
+      "prod"
+    ],
+    "tenant": "Acme"
+  }
+}

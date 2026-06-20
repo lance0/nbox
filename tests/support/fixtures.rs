@@ -2,8 +2,59 @@ use std::collections::BTreeMap;
 
 use nbox::domain::device_detail::{CableRow, DeviceDetail, IfaceRow, IpRow, ServiceRow, VlanRow};
 use nbox::domain::device_view::DeviceView;
+use nbox::domain::vrf_view::{VrfAddressRow, VrfDetail, VrfPrefixRow, VrfView};
 use nbox::netbox::search::{ObjectKind, SearchResult};
 use serde_json::{Value, json};
+
+/// A VRF routing-context detail with a small prefix tree (container + child),
+/// one scoped address, and a capped total, exercising every serialized field
+/// (including the skip-if-empty ones). This is the exact shape `nbox vrf --json`
+/// and MCP `nbox_get vrf` emit.
+pub fn vrf_detail() -> VrfDetail {
+    VrfDetail {
+        summary: VrfView {
+            id: 12,
+            name: "customer-prod".into(),
+            rd: Some("65000:100".into()),
+            tenant: Some("Acme".into()),
+            enforce_unique: Some(true),
+            import_targets: vec!["65000:100".into()],
+            export_targets: vec!["65000:100".into()],
+            prefix_count: Some(3),
+            ipaddress_count: Some(1),
+            description: Some("Customer production VRF".into()),
+            tags: vec!["prod".into()],
+            custom_fields: BTreeMap::new(),
+        },
+        prefixes: vec![
+            VrfPrefixRow {
+                id: 1,
+                prefix: "10.50.0.0/16".into(),
+                depth: 0,
+                status: Some("container".into()),
+                description: "supernet".into(),
+                utilization: Some(42),
+            },
+            VrfPrefixRow {
+                id: 2,
+                prefix: "10.50.1.0/24".into(),
+                depth: 1,
+                status: Some("active".into()),
+                description: String::new(),
+                utilization: None,
+            },
+        ],
+        addresses: vec![VrfAddressRow {
+            id: 9,
+            address: "10.50.1.1/24".into(),
+            status: Some("active".into()),
+            dns_name: Some("gw.customer".into()),
+        }],
+        // prefix_total exceeds prefixes.len() to model a capped section.
+        prefix_total: 3,
+        address_total: 1,
+    }
+}
 
 pub fn status_report() -> Value {
     json!({

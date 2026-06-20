@@ -1283,6 +1283,122 @@ mod tests {
         assert!(gql_row_to_prefix(&json!({"id": "abc", "prefix": "10.0.0.0/8"})).is_none());
     }
 
+    #[tokio::test]
+    async fn graphql_vrf_bundle_fetches_scoped_children_in_one_query() {
+        use crate::config::{ApiConfig, BackendPreference, ProfileConfig};
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        // Schema probe: prefix_list + ip_address_list, each with a filters arg
+        // and offset pagination.
+        let list_field = |name: &str, filter: &str| {
+            json!({
+                "name": name,
+                "args": [
+                    {"name": "filters", "type": {"kind": "INPUT_OBJECT", "name": filter}},
+                    {"name": "pagination", "type": {"kind": "INPUT_OBJECT", "name": "PaginationInput"}}
+                ]
+            })
+        };
+        Mock::given(method("POST"))
+            .and(path("/graphql/"))
+            .and(body_string_contains("__schema"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {"__schema": {"queryType": {"fields": [
+                    list_field("prefix_list", "PrefixFilter"),
+                    list_field("ip_address_list", "IPAddressFilter"),
+                ]}}}
+            })))
+            .mount(&server)
+            .await;
+
+        // Filter probe: batch A carries PrefixFilter + IPAddressFilter; both
+        // expose a vrf_id lookup so the bundle can scope its children.
+        let vrf_id_field =
+            json!({"name": "vrf_id", "type": {"kind": "INPUT_OBJECT", "name": "IntegerLookup"}});
+        Mock::given(method("POST"))
+            .and(path("/graphql/"))
+            .and(body_string_contains("DeviceFilter"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "prefix": {"inputFields": [vrf_id_field.clone()]},
+                    "ip": {"inputFields": [vrf_id_field]}
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql/"))
+            .and(body_string_contains("ASNFilter"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {}})))
+            .mount(&server)
+            .await;
+
+        // The bundle itself: one POST carrying both list selections.
+        Mock::given(method("POST"))
+            .and(path("/graphql/"))
+            .and(body_string_contains("ip_address_list(filters"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "prefix_list": [
+                        {"id": "1", "prefix": "10.50.0.0/16", "_depth": 0, "status": "container", "description": "supernet"},
+                        {"id": "2", "prefix": "10.50.1.0/24", "_depth": 1, "status": "active", "description": ""}
+                    ],
+                    "ip_address_list": [
+                        {"id": "9", "address": "10.50.1.1/24", "status": "active", "dns_name": "gw.customer", "description": ""}
+                    ]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = NetBoxClient::new(
+            &ProfileConfig {
+                url: server.uri(),
+                api: Some(ApiConfig {
+                    search: None,
+                    vrf: Some(BackendPreference::Graphql),
+                }),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        let (prefixes, addresses) = client.graphql_vrf_bundle(42, 500).await.expect("bundle");
+
+        // GraphQL's string ids / plain-string status / `_depth` are reshaped into
+        // the REST wire models.
+        assert_eq!(prefixes.len(), 2);
+        assert_eq!(prefixes[0].id, 1);
+        assert_eq!(prefixes[0].prefix, "10.50.0.0/16");
+        assert_eq!(prefixes[0].depth, Some(0));
+        assert_eq!(
+            prefixes[0].status.as_ref().map(|c| c.value.as_str()),
+            Some("container")
+        );
+        assert_eq!(prefixes[1].id, 2);
+        assert_eq!(prefixes[1].depth, Some(1));
+        assert_eq!(addresses.len(), 1);
+        assert_eq!(addresses[0].id, 9);
+        assert_eq!(addresses[0].address, "10.50.1.1/24");
+        assert_eq!(addresses[0].dns_name.as_deref(), Some("gw.customer"));
+
+        // The children come back in a SINGLE round-trip, and both lists are
+        // scoped by the resolved vrf id.
+        let requests = server.received_requests().await.unwrap();
+        let bundles: Vec<_> = requests
+            .iter()
+            .filter(|r| String::from_utf8_lossy(&r.body).contains("ip_address_list(filters"))
+            .collect();
+        assert_eq!(bundles.len(), 1, "VRF children must be one bundled POST");
+        let body: Value = serde_json::from_slice(&bundles[0].body).unwrap();
+        assert_eq!(body["variables"]["pf"]["vrf_id"], json!({"exact": 42}));
+        assert_eq!(body["variables"]["if"]["vrf_id"], json!({"exact": 42}));
+    }
+
     #[test]
     fn scoring_orders_exact_prefix_contains() {
         assert!(score_match("edge01", "edge01") > score_match("edge", "edge01"));
