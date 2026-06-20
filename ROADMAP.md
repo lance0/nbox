@@ -112,9 +112,6 @@ reviewable PRs that lock contracts and reduce future change cost.
   `http`, `keyring`, `keyring-secret-service`, and release-musl-relevant feature combinations.
 - ☐ **Performance baseline, narrow** — bench or measured smoke for search fan-out and JSON rendering
   on representative fixture sizes. Do not add a cache unless measurements justify it.
-- ☐ **Adversarial review pass (recurring).** Periodic skeptical review of recent feature work
-  (VRF / route-target / search / client) — the last few reviews each surfaced a real issue. Pair it with
-  the contract suites above and capture findings as `Code nits to revisit` items.
 
 ---
 
