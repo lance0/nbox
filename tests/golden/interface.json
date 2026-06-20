@@ -1,0 +1,32 @@
+{
+  "cable": "#3",
+  "connected_to": [
+    "core01 xe-1/0/0"
+  ],
+  "custom_fields": {
+    "link_owner": "netops"
+  },
+  "description": "uplink to core01",
+  "device": "edge01",
+  "enabled": true,
+  "ip_addresses": [
+    "10.44.208.1/24",
+    "2001:db8::1/64"
+  ],
+  "mac_address": "00:1b:44:11:3a:b7",
+  "mode": "Tagged",
+  "mtu": 9000,
+  "name": "xe-0/0/0",
+  "tagged_vlans": [
+    "208 (v-prod)",
+    "209 (v-dev)"
+  ],
+  "tags": [
+    "uplink"
+  ],
+  "trace": [
+    "edge01 xe-0/0/0 --[Cable #3]-- core01 xe-1/0/0"
+  ],
+  "type": "SFP+ (10GE)",
+  "untagged_vlan": "10 (mgmt)"
+}

@@ -1,0 +1,23 @@
+{
+  "custom_fields": {
+    "vlan_owner": "netops"
+  },
+  "description": "production user VLAN",
+  "group": "den1-campus",
+  "group_scope": "us-west",
+  "group_scope_type": "region",
+  "name": "v-prod",
+  "prefixes": [
+    "10.44.208.0/24",
+    "10.45.208.0/24"
+  ],
+  "role": "access",
+  "scope": "den1",
+  "scope_type": "site",
+  "status": "active",
+  "tags": [
+    "prod"
+  ],
+  "tenant": "Acme",
+  "vid": 208
+}

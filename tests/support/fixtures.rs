@@ -2,8 +2,12 @@ use std::collections::BTreeMap;
 
 use nbox::domain::device_detail::{CableRow, DeviceDetail, IfaceRow, IpRow, ServiceRow, VlanRow};
 use nbox::domain::device_view::DeviceView;
+use nbox::domain::interface_view::InterfaceView;
 use nbox::domain::ip_view::IpView;
+use nbox::domain::journal_view::{JournalEntryRow, JournalView};
 use nbox::domain::prefix_view::{PrefixIp, PrefixView};
+use nbox::domain::site_view::SiteView;
+use nbox::domain::vlan_view::VlanView;
 use nbox::domain::vrf_view::{RouteTargetRef, VrfAddressRow, VrfDetail, VrfPrefixRow, VrfView};
 use nbox::netbox::search::{ObjectKind, SearchResult};
 use serde_json::{Value, json};
@@ -111,6 +115,95 @@ pub fn prefix_view() -> PrefixView {
             PrefixIp {
                 address: "10.44.208.55/24".into(),
                 assigned: None,
+            },
+        ],
+    }
+}
+
+/// A VLAN scoped to a site, belonging to a group that is itself region-scoped,
+/// with two referencing prefixes — the shape `nbox vlan --json` and MCP
+/// `nbox_get vlan` emit. Populates the group-scope and direct-scope fields plus
+/// the skip-if-empty scalars so the contract pins every serialized field.
+pub fn vlan_view() -> VlanView {
+    VlanView {
+        vid: 208,
+        name: "v-prod".into(),
+        status: Some("active".into()),
+        group: Some("den1-campus".into()),
+        scope: Some("den1".into()),
+        scope_type: Some("site".into()),
+        group_scope: Some("us-west".into()),
+        group_scope_type: Some("region".into()),
+        tenant: Some("Acme".into()),
+        role: Some("access".into()),
+        description: Some("production user VLAN".into()),
+        tags: vec!["prod".into()],
+        custom_fields: BTreeMap::from([("vlan_owner".to_string(), json!("netops"))]),
+        prefixes: vec!["10.44.208.0/24".into(), "10.45.208.0/24".into()],
+    }
+}
+
+/// A site with region/group/tenant context, a facility, a tag, and a custom
+/// field — the shape `nbox site --json` and MCP `nbox_get site` emit. Every
+/// skip-if-empty field is populated so the contract pins their presence.
+pub fn site_view() -> SiteView {
+    SiteView {
+        id: 3,
+        name: "den1".into(),
+        slug: "den1".into(),
+        status: Some("active".into()),
+        region: Some("us-west".into()),
+        group: Some("colos".into()),
+        tenant: Some("Acme".into()),
+        facility: Some("DEN-1 / Suite 400".into()),
+        description: Some("Denver edge site".into()),
+        tags: vec!["edge".into(), "prod".into()],
+        custom_fields: BTreeMap::from([("region_lead".to_string(), json!("netops"))]),
+    }
+}
+
+/// A tagged-mode interface with an untagged + two tagged VLANs, a cable with its
+/// far end, a rendered cable-trace path, two assigned IPs, a tag, and a custom
+/// field — the shape `nbox interface --json` and MCP `nbox_get interface` emit.
+/// Every skip-if-empty field (scalars and lists) is populated to pin the contract.
+pub fn interface_view() -> InterfaceView {
+    InterfaceView {
+        device: Some("edge01".into()),
+        name: "xe-0/0/0".into(),
+        enabled: Some(true),
+        type_: Some("SFP+ (10GE)".into()),
+        mtu: Some(9000),
+        mac_address: Some("00:1b:44:11:3a:b7".into()),
+        mode: Some("Tagged".into()),
+        untagged_vlan: Some("10 (mgmt)".into()),
+        tagged_vlans: vec!["208 (v-prod)".into(), "209 (v-dev)".into()],
+        cable: Some("#3".into()),
+        connected_to: vec!["core01 xe-1/0/0".into()],
+        description: Some("uplink to core01".into()),
+        ip_addresses: vec!["10.44.208.1/24".into(), "2001:db8::1/64".into()],
+        trace: vec!["edge01 xe-0/0/0 --[Cable #3]-- core01 xe-1/0/0".into()],
+        tags: vec!["uplink".into()],
+        custom_fields: BTreeMap::from([("link_owner".to_string(), json!("netops"))]),
+    }
+}
+
+/// A journal with two entries (one with author/kind/date, one comments-only) —
+/// the shape `nbox journal --json` and MCP `nbox_journal` emit (a top-level
+/// `{ "entries": [...] }`). Exercises the per-row skip-if-empty optionals.
+pub fn journal_view() -> JournalView {
+    JournalView {
+        entries: vec![
+            JournalEntryRow {
+                created: Some("2026-01-02T15:04:05Z".into()),
+                kind: Some("info".into()),
+                author: Some("admin".into()),
+                comments: "Replaced uplink optic; link is stable.".into(),
+            },
+            JournalEntryRow {
+                created: None,
+                kind: None,
+                author: None,
+                comments: "Migrated to new rack.".into(),
             },
         ],
     }
