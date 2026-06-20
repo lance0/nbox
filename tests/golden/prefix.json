@@ -1,0 +1,32 @@
+{
+  "child_prefixes": [
+    "10.44.208.0/26",
+    "10.44.208.64/26"
+  ],
+  "children": 2,
+  "custom_fields": {
+    "vlan_owner": "netops"
+  },
+  "description": "user access prefix",
+  "ip_addresses": [
+    {
+      "address": "10.44.208.1/24",
+      "assigned": "edge01 irb.208"
+    },
+    {
+      "address": "10.44.208.55/24"
+    }
+  ],
+  "prefix": "10.44.208.0/24",
+  "role": "access",
+  "scope": "den1",
+  "scope_type": "site",
+  "status": "active",
+  "tags": [
+    "prod"
+  ],
+  "tenant": "Acme",
+  "utilization": 37.5,
+  "vlan": "208 (v-prod)",
+  "vrf": "customer-prod"
+}
