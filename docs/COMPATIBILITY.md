@@ -1,0 +1,64 @@
+# NetBox Compatibility
+
+nbox targets **NetBox 4.2+** over the REST API. Each release in the 4.2–4.5 range
+moved an API contract nbox depends on; nbox handles the differences at runtime
+(version probe + schema probe) rather than pinning a single version. The table
+below is the matrix; the behavior is pinned by `tests/compat_tests.rs`.
+
+The floor is enforced on connect via `/api/status/`
+(`netbox_version` < 4.2 → fail fast). `nbox status --json` and MCP `nbox_status`
+report the connected version, the build's `minimum_supported`, a `compatible`
+flag, and the per-surface backend routing.
+
+## Matrix
+
+| Concern | 4.2 | 4.3 | 4.5+ |
+|---|---|---|---|
+| Scope model | polymorphic `scope` (`scope_type` + `scope_id`); prefix `site` FK dropped ¹ | same | same |
+| Search backend | REST `q=` fan-out | REST (GraphQL has no `q`) | REST (GraphQL has no `q`) |
+| GraphQL filtering | per-field input objects | advanced per-field lookups (AND/OR, custom fields) ² | same |
+| Prefix `utilization` | returned by the REST API | returned by the REST API | not returned → computed client-side ³ |
+| `/api/status/` auth | open by default | open by default | requires auth ³ |
+| Token scheme | v1 `Authorization: Token` | v1 `Token` | v1 `Token` **+ v2 `Authorization: Bearer nbt_…`** ¹ |
+
+¹ In the official NetBox release notes — the `4.2.0` scope change (Jan 2025) and the `4.5` v2 tokens (HMAC, `nbt_` prefix, `Bearer`; v1 retained until 4.7).
+² NetBox [#7598](https://github.com/netbox-community/netbox/issues/7598), "adopt advanced query filtering in GraphQL." GraphQL never had a REST-style full-text `q`; this rework is why a per-kind GraphQL search can't stand in for REST search.
+³ **Observed** against live instances (4.2 vs 4.5.10), **not called out in the release notes** — so treat as empirical, not a documented contract. `/api/status/` auth may reflect instance `LOGIN_REQUIRED`-style config rather than a strict version change; either way nbox authenticates **every** request (including the version probe), so it is unaffected.
+
+## How nbox adapts
+
+- **Scope (4.2).** Prefixes/VLANs/clusters use the polymorphic `scope`, so a plain
+  `?site=` slug filter is dead on those endpoints. `--site`/`--region`/`--group`/
+  `--location` resolve to a numeric id once, then go out-of-band per endpoint: the
+  polymorphic endpoints (prefixes, clusters) get `scope_type=dcim.<kind>` +
+  `scope_id=<id>`; the rest get `site_id`/`region_id`/… An endpoint with no clean
+  filter for the active scope skips itself rather than return an unfiltered set.
+
+- **Search is always REST.** NetBox 4.3 reworked GraphQL filtering into advanced
+  per-field lookups (AND/OR, custom fields — NetBox #7598). GraphQL has no
+  REST-style full-text `q`, so a per-kind GraphQL search can't reproduce canonical
+  search; `nbox search` is a parallel REST `q=` fan-out across the object
+  endpoints. Even with a
+  `graphql` preference for the search surface, the backend resolves to a REST
+  fallback (without probing the schema) and `status` carries the reason. GraphQL
+  stays an opt-in accelerator for the VRF view only.
+
+- **Client-side container utilization.** As of NetBox 4.5 the prefix REST API no
+  longer returns `utilization` (observed live — present on 4.2, absent on 4.5's
+  list, detail, and OpenAPI schema; not called out in the release notes). nbox
+  computes a container prefix's
+  utilization from the already-fetched tree — the fraction of its space its direct
+  children cover, `Σ 2^(parent_len − child_len)` — so no extra calls, on every
+  version. An older NetBox that still serves `utilization` keeps its richer value;
+  a leaf (no children) has no client-side value (IP-level utilization would need
+  per-prefix queries).
+
+- **Token scheme (4.5).** v2 tokens are shaped `nbt_<key>.<secret>` and sent as
+  `Authorization: Bearer`; legacy v1 tokens as `Authorization: Token`. The default
+  `auth_scheme = "auto"` detects the shape; force one with `auth_scheme =
+  "bearer"`/`"token"` on the profile.
+
+- **GraphQL schema probe.** When a surface opts into GraphQL, nbox probes the live
+  schema (filter input shapes + pagination) instead of hard-coding a version, so
+  4.2/4.3/4.5+ differences are absorbed, and falls back to REST (with the reason in
+  `status`) when the schema can't back the surface.
