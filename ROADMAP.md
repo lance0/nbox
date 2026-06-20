@@ -337,6 +337,18 @@ Consolidated future scope:
   exhaustive, but the list is tiny); `status_in_banner` elevating only Warning/Error (deliberate — long
   Info/Success messages are transient and stay in the footer slot).
 
+### Dependency maintenance
+
+- ⏸ **`rand` held at `0.8`.** `rsa 0.9.10`'s `RsaPrivateKey::new` (test-only keygen, `mcp/http.rs`) requires
+  a `rand_core` 0.6 RNG; `rand` 0.9/0.10 moved to `rand_core` 0.9, so the bump doesn't compile. Pinned on
+  purpose (`Cargo.toml` comment). **Unblock when `rsa` ships on `rand_core` 0.9**, then take the bump and
+  switch `thread_rng()` → `rng()`. Dependabot PR #15 (group bump incl. `rand` 0.10) is parked on this.
+- ☐ **Ungroup Dependabot cargo updates.** `dependabot.yml` groups all crates (`patterns: ["*"]`), so one
+  incompatible bump (e.g. `rand`) blocks safe ones in the same PR (a `ratatui` 0.30.2 patch is stuck behind
+  `rand` in #15). Split the group (or `ignore` `rand`) so safe updates flow independently.
+- ☑ **GitHub Actions on Node 24.** Bumped `actions/cache@v5`, `actions/upload-artifact@v7`, and the
+  `docker/*` actions (Dependabot #4–8, 2026-06-20) to clear the Node-20 deprecation warnings in `release.yml`.
+
 ## Explicit non-goals
 
 Full CRUD for every model · replacing the NetBox web UI · a plugin framework · topology diagrams · a
