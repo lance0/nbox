@@ -115,6 +115,7 @@ pub enum NavSection {
     Ips,
     Vlans,
     Vrfs,
+    RouteTargets,
     Sites,
     Racks,
     Recent,
@@ -122,12 +123,13 @@ pub enum NavSection {
 
 /// The Nav sections in display order: the browse kinds, then `Recent` (rendered
 /// under a divider). The selection cursor indexes this array.
-pub const NAV_SECTIONS: [NavSection; 8] = [
+pub const NAV_SECTIONS: [NavSection; 9] = [
     NavSection::Devices,
     NavSection::Prefixes,
     NavSection::Ips,
     NavSection::Vlans,
     NavSection::Vrfs,
+    NavSection::RouteTargets,
     NavSection::Sites,
     NavSection::Racks,
     NavSection::Recent,
@@ -142,6 +144,7 @@ impl NavSection {
             NavSection::Ips => "IPs",
             NavSection::Vlans => "VLANs",
             NavSection::Vrfs => "VRFs",
+            NavSection::RouteTargets => "Route Targets",
             NavSection::Sites => "Sites",
             NavSection::Racks => "Racks",
             NavSection::Recent => "Recent",
@@ -156,6 +159,7 @@ impl NavSection {
             NavSection::Ips => ObjectKind::IpAddress,
             NavSection::Vlans => ObjectKind::Vlan,
             NavSection::Vrfs => ObjectKind::Vrf,
+            NavSection::RouteTargets => ObjectKind::RouteTarget,
             NavSection::Sites => ObjectKind::Site,
             NavSection::Racks => ObjectKind::Rack,
             NavSection::Recent => return None,
@@ -3478,6 +3482,11 @@ impl App {
         } else {
             self.view.len()
         }
+    }
+
+    /// Number of recently-opened items — shown as the Nav `Recent` row's count.
+    pub fn recent_count(&self) -> usize {
+        self.recent.len()
     }
 
     /// The (kind, id) the home cursor points at — a result, or a recent.

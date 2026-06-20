@@ -631,6 +631,7 @@ fn browse_label(kind: ObjectKind) -> &'static str {
         ObjectKind::IpAddress => "IPs",
         ObjectKind::Vlan => "VLANs",
         ObjectKind::Vrf => "VRFs",
+        ObjectKind::RouteTarget => "Route Targets",
         ObjectKind::Site => "Sites",
         ObjectKind::Rack => "Racks",
         _ => "Results",
@@ -672,17 +673,32 @@ fn render_home_nav(frame: &mut Frame, area: Rect, app: &App) {
         } else {
             Style::default().fg(theme.text)
         };
+        let label = section.label();
         let mut spans = vec![
             Span::styled(gutter, Style::default().fg(theme.accent)),
             Span::styled("● ", Style::default().fg(bullet_color)),
-            Span::styled(section.label(), label_style),
+            Span::styled(label, label_style),
         ];
-        // Live per-kind total, dim, once the count probe has reported one.
-        if let Some(n) = section.object_kind().and_then(|k| app.nav_counts.get(&k)) {
-            spans.push(Span::styled(
-                format!(" {n}"),
-                Style::default().fg(theme.text_dim),
-            ));
+        // The per-kind total (dim), once the count probe reports one; `Recent`
+        // shows the number of recently-opened items. Right-aligned to the pane's
+        // inner edge so the counts form a clean column instead of trailing the
+        // label.
+        let count = if *section == NavSection::Recent {
+            Some(app.recent_count())
+        } else {
+            section
+                .object_kind()
+                .and_then(|k| app.nav_counts.get(&k))
+                .map(|n| *n as usize)
+        };
+        if let Some(n) = count {
+            let count_str = n.to_string();
+            // inner width = pane minus both borders and the 1-col horizontal padding.
+            let inner = usize::from(area.width.saturating_sub(4));
+            let used = 1 + 2 + label.chars().count() + count_str.chars().count();
+            let pad = inner.saturating_sub(used).max(1);
+            spans.push(Span::raw(" ".repeat(pad)));
+            spans.push(Span::styled(count_str, Style::default().fg(theme.text_dim)));
         }
         lines.push(Line::from(spans));
     }
