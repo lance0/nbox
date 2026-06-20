@@ -79,6 +79,29 @@ impl ObjectKind {
             ObjectKind::RouteTarget => "route-target",
         }
     }
+
+    /// Header for the secondary column of a homogeneous (single-kind) browse list:
+    /// the attribute each `search_*` builder puts in [`SearchResult::subtitle`]
+    /// (e.g. a VRF's RD, a route target's tenant, a device's site). A *mixed*
+    /// search keeps the generic `SITE` header instead, since one header can't name
+    /// every kind's subtitle at once. Keep in sync with the `search_*` subtitles.
+    pub fn subtitle_header(self) -> &'static str {
+        match self {
+            ObjectKind::Device | ObjectKind::Rack => "SITE",
+            ObjectKind::Site => "SLUG",
+            ObjectKind::IpAddress => "DNS",
+            ObjectKind::Prefix | ObjectKind::Vlan => "SCOPE",
+            ObjectKind::Circuit => "PROVIDER",
+            ObjectKind::Aggregate | ObjectKind::Asn => "RIR",
+            ObjectKind::IpRange => "VRF",
+            ObjectKind::Tenant | ObjectKind::Contact => "GROUP",
+            ObjectKind::Provider => "ASN",
+            ObjectKind::Vm => "CLUSTER",
+            ObjectKind::Cluster => "TYPE",
+            ObjectKind::Vrf => "RD",
+            ObjectKind::RouteTarget => "TENANT",
+        }
+    }
 }
 
 /// Structured filters for a search, mapped to NetBox query params (by slug/value).
@@ -1148,6 +1171,44 @@ mod tests {
         assert!(score_match("edge01", "edge01") > score_match("edge", "edge01"));
         assert!(score_match("edge", "edge01") > score_match("dge", "edge01"));
         assert!(score_match("dge", "edge01") > score_match("zzz", "edge01"));
+    }
+
+    #[test]
+    fn subtitle_header_names_each_kinds_secondary_field() {
+        // The site-less kinds the kind-aware browse columns target get a meaningful
+        // header instead of an empty "SITE" — matching what `search_*` puts in the
+        // subtitle (VRF → its RD, route target → tenant, ASN → RIR, tenant → group).
+        assert_eq!(ObjectKind::Vrf.subtitle_header(), "RD");
+        assert_eq!(ObjectKind::RouteTarget.subtitle_header(), "TENANT");
+        assert_eq!(ObjectKind::Asn.subtitle_header(), "RIR");
+        assert_eq!(ObjectKind::Tenant.subtitle_header(), "GROUP");
+        // Site-bearing kinds keep "SITE".
+        assert_eq!(ObjectKind::Device.subtitle_header(), "SITE");
+        assert_eq!(ObjectKind::Rack.subtitle_header(), "SITE");
+        // Every kind yields a short, non-empty, uppercase header.
+        for kind in [
+            ObjectKind::Device,
+            ObjectKind::Site,
+            ObjectKind::IpAddress,
+            ObjectKind::Prefix,
+            ObjectKind::Vlan,
+            ObjectKind::Circuit,
+            ObjectKind::Aggregate,
+            ObjectKind::Asn,
+            ObjectKind::IpRange,
+            ObjectKind::Tenant,
+            ObjectKind::Contact,
+            ObjectKind::Provider,
+            ObjectKind::Vm,
+            ObjectKind::Cluster,
+            ObjectKind::Rack,
+            ObjectKind::Vrf,
+            ObjectKind::RouteTarget,
+        ] {
+            let h = kind.subtitle_header();
+            assert!(!h.is_empty(), "{kind:?} has an empty subtitle header");
+            assert_eq!(h, h.to_uppercase(), "{kind:?} header should be uppercase");
+        }
     }
 
     #[test]

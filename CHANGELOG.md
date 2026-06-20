@@ -17,6 +17,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   block and the `capabilities` report. (Also fixes the GraphQL filter probe to
   introspect `RouteTargetFilter`, so the `id` filter is shaped correctly.)
 
+### Changed
+- **Browsing one kind shows kind-aware list columns.** Opening a kind from the Nav
+  rail (e.g. VRFs, Route Targets) now drops the redundant per-row KIND tag — the
+  pane title already names the kind — and labels the second column for that kind
+  (`RD` for VRFs, `TENANT` for route targets, `RIR` for ASNs, `SCOPE` for
+  prefixes/VLANs, and so on) instead of a fixed, often-empty `SITE` column, so a
+  site-less kind no longer reads as a ragged, empty column. Mixed search results
+  and Recent keep the `KIND / DISPLAY / SITE` layout.
+
 ## [0.4.0] - 2026-06-19
 
 ### Documentation
