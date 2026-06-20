@@ -3172,6 +3172,10 @@ impl App {
         self.recent.clear();
         self.selected = 0;
         self.browse_kind = None;
+        // Land on a clean results pane: cancel any pending auto-browse and re-anchor
+        // the nav tick so the switch can't trip a spurious browse on the new instance.
+        self.browse_dirty = false;
+        self.nav_tick_anchor = self.nav_selected;
         // Old instance's counts are moot; a LoadNavCounts refetch repopulates them.
         self.nav_counts.clear();
         self.detail = None;
@@ -6172,6 +6176,17 @@ mod tests {
         assert_eq!(a.browse_kind, None);
         assert!(a.view.is_empty(), "Recent clears the browse results");
         assert_eq!(a.focus, Focus::Nav);
+
+        // With the browse results gone, the home target falls back to Recent.
+        // Seed a recent and confirm `home_target` resolves to it (selection 0).
+        assert!(a.results.is_empty() && a.selected == 0);
+        let r = result_of(ObjectKind::Vlan, 42, "vlan-42");
+        a.recent.push(RecentItem {
+            kind: r.kind,
+            id: r.id,
+            title: r.display.clone(),
+        });
+        assert_eq!(a.home_target(), Some((ObjectKind::Vlan, 42)));
     }
 
     #[test]
