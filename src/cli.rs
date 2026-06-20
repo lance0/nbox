@@ -64,7 +64,8 @@ pub enum Command {
     Tui,
 
     /// Search devices, sites, racks, IPs, prefixes, VLANs, circuits, aggregates,
-    /// ASNs, IP ranges, tenants, contacts, providers, VMs, and clusters.
+    /// ASNs, IP ranges, tenants, contacts, providers, VMs, clusters, VRFs, and
+    /// route targets.
     Search {
         /// Free-text query.
         query: String,
