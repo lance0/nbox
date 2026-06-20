@@ -783,6 +783,28 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
         if let Some(pos) = position {
             block = block.title(Line::from(pos).right_aligned().style(theme.text_dim));
         }
+        // A homogeneous browse (the Nav rail picked one kind) drops the redundant
+        // per-row KIND tag — the pane title already names the kind — and labels the
+        // secondary column for that kind (RD/tenant/scope/…), so a site-less kind
+        // no longer reads as a ragged, empty SITE column.
+        if let Some(kind) = app.browse_kind {
+            let accent = kind_accent(kind.as_str(), theme);
+            let rows: Vec<Row> = app
+                .view
+                .iter()
+                .filter_map(|&idx| app.results.get(idx))
+                .map(|r| {
+                    Row::new([
+                        Cell::from(r.display.clone()),
+                        Cell::from(r.subtitle.clone().unwrap_or_default())
+                            .style(Style::default().fg(theme.text_dim)),
+                    ])
+                })
+                .collect();
+            let table = browse_table(rows, block, kind, accent, theme);
+            frame.render_stateful_widget(table, area, &mut app.table_state);
+            return;
+        }
         let rows: Vec<Row> = app
             .view
             .iter()
@@ -1006,6 +1028,41 @@ fn results_table<'a>(rows: Vec<Row<'a>>, block: Block<'a>, theme: &Theme) -> Tab
     ];
     Table::new(rows, widths)
         .header(results_header(theme))
+        .block(block)
+        .style(Style::default().fg(theme.text))
+        .highlight_symbol("▌ ")
+        .row_highlight_style(Style::default().fg(theme.text).bg(theme.highlight_bg))
+}
+
+/// The header row for a homogeneous browse list: the kind's name (tinted with its
+/// domain [`kind_accent`] — the one spot of color now the per-row KIND tag is
+/// gone) over its [`ObjectKind::subtitle_header`] secondary column. Dim + bold
+/// like [`results_header`] so it reads as a label band.
+fn browse_header<'a>(kind: ObjectKind, accent: Color, theme: &Theme) -> Row<'a> {
+    let primary = kind.as_str().to_uppercase().replace('-', " ");
+    Row::new([
+        Cell::from(primary).style(Style::default().fg(accent).add_modifier(Modifier::BOLD)),
+        Cell::from(kind.subtitle_header()).style(
+            Style::default()
+                .fg(theme.text_dim)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
+/// A stateful table for a homogeneous browse: two columns (DISPLAY + the kind's
+/// secondary field), without the redundant KIND column. Same selection marker and
+/// highlight as [`results_table`]; the secondary column reuses [`SITE_COL`]'s width.
+fn browse_table<'a>(
+    rows: Vec<Row<'a>>,
+    block: Block<'a>,
+    kind: ObjectKind,
+    accent: Color,
+    theme: &Theme,
+) -> Table<'a> {
+    let widths = [Constraint::Min(1), Constraint::Length(SITE_COL)];
+    Table::new(rows, widths)
+        .header(browse_header(kind, accent, theme))
         .block(block)
         .style(Style::default().fg(theme.text))
         .highlight_symbol("▌ ")

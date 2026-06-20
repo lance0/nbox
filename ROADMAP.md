@@ -64,6 +64,11 @@ Polish the read experience. No writes here.
   device→rack) without re-searching; an object-level back-stack to walk the drill path. Lands TUI-open +
   cross-nav for racks (see *full rack integration* below).
 - ☐ **Demo recording** — an asciinema/VHS cast for the README.
+- ☐ **Deepen the in-app Config modal.** Surface the profile/settings knobs that still need a hand-edited
+  `config.toml`: per-surface API backends (`[profiles.<name>.api]` `search`/`vrf`/`route_target` =
+  `rest`|`graphql`), `timeout_secs`, `page_size`, `exclude_config_context`, and `confirm_writes` — each
+  hot-applied where it can be, with the existing test-connect on profile fields. The modal is the
+  onboarding/edit path; it shouldn't bottom out at "now go edit the TOML by hand."
 - ☑ **Release `0.2.0`** — banked the large read surface accumulated since `0.1.1` (MCP HTTP/OAuth, the new
   read commands, MCP resources, the in-app config layer, three hardening rounds).
 - ☑ **Release `0.4.0`** — per-surface API backends (breaking), REST-canonical search (GraphQL search
@@ -165,10 +170,13 @@ Consolidated future scope:
   highlighted kind into the results pane — debounced until the cursor settles so a fast scroll doesn't
   flash intermediate lists; focus stays on Nav, `Enter` still commits + jumps into the list), and a
   Nav-focused footer hint (`j/k browse · Enter results`).
-- ☐ **Browse list pane look for site-less kinds.** The list (middle) pane renders a fixed column set
-  geared to site-bearing objects; kinds with no site (route targets, and to a degree VRFs/ASNs/tenants)
-  leave the SITE column empty, so the row reads sparse/ragged. Letting it truncate for now — revisit with
-  per-kind columns (e.g. tenant/RD for route targets/VRFs) or a kind-aware column layout.
+- ☑ **Kind-aware browse list columns.** A homogeneous browse (the Nav rail opening one kind) now drops
+  the redundant per-row KIND tag — the pane title already names the kind — and labels the secondary column
+  for that kind (`RD` for VRFs, `TENANT` for route targets, `RIR` for ASNs, `SCOPE` for prefixes/VLANs, …,
+  via `ObjectKind::subtitle_header`), tinting the header with the kind's domain color. Site-less kinds no
+  longer read as a ragged, empty SITE column; mixed search results + Recent keep the generic
+  `KIND/DISPLAY/SITE` layout. (A richer multi-column layout — e.g. device name/site/role/status — would
+  need `SearchResult` enriched with those fields; deferred.)
 - ☑ **VRF-pivoted navigation (a dedicated VRF view).** VRF is now a first-class `ObjectKind`:
   searchable (REST + GraphQL), browsable from the Nav rail with a live count, `nbox vrf <name|rd|id>`,
   palette `vrf`, `open`/`journal` resolvers, and MCP `nbox_get`/`nbox://vrf/<ref>`. The TUI detail is a
