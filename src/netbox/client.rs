@@ -48,9 +48,15 @@ impl NetBoxClient {
         let timeout = Duration::from_secs(profile.timeout_secs.unwrap_or(15));
         let verify_tls = profile.verify_tls.unwrap_or(true);
 
+        // Keep the connect timeout under the overall timeout (a 10s connect
+        // budget with a 5s total is confusing); clamp to [1s, 10s].
+        let connect_timeout = Duration::from_secs(10)
+            .min(timeout.saturating_sub(Duration::from_secs(1)))
+            .max(Duration::from_secs(1));
+
         let http = reqwest::Client::builder()
             .timeout(timeout)
-            .connect_timeout(Duration::from_secs(10))
+            .connect_timeout(connect_timeout)
             // NetBox is commonly served by gunicorn *sync* workers, which close
             // the connection after each response rather than honoring HTTP/1.1
             // keep-alive. nbox's search fan-out fires ~17 requests at once; a

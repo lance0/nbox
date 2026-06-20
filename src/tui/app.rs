@@ -32,23 +32,24 @@ pub async fn run_on(
 ) -> Result<()> {
     let result = event_loop(terminal, app, refresh_secs).await;
 
-    // Persist the theme if it changed during the session.
-    if app.theme.name() != app.initial_theme
-        && let Some(path) = &app.config_path
-        && let Err(e) = crate::config::save_ui_theme(path, app.theme.name())
-    {
-        tracing::warn!("failed to persist theme: {e:#}");
+    // Persist only the `[ui]` fields that changed this session, in ONE
+    // format-preserving write so a failure can't leave the file half-updated.
+    let mut fields = Vec::new();
+    // Theme, if it changed.
+    if app.theme.name() != app.initial_theme {
+        fields.push(crate::config::UiField::Theme(app.theme.name().to_string()));
     }
-
-    // Persist the last-browsed Nav kind if it moved this session, so the next
-    // launch lands where the user left off (mirrors the theme guard).
+    // Last-browsed Nav kind, if it moved (so the next launch lands where the
+    // user left off).
     let last_browsed = app.last_browsed.map(|k| k.as_str().to_string());
-    if last_browsed != app.initial_last_browsed
+    if last_browsed != app.initial_last_browsed {
+        fields.push(crate::config::UiField::LastBrowsed(last_browsed));
+    }
+    if !fields.is_empty()
         && let Some(path) = &app.config_path
-        && let Err(e) =
-            crate::config::save_ui_field(path, &crate::config::UiField::LastBrowsed(last_browsed))
+        && let Err(e) = crate::config::save_ui_fields(path, &fields)
     {
-        tracing::warn!("failed to persist last-browsed kind: {e:#}");
+        tracing::warn!("failed to persist ui fields: {e:#}");
     }
 
     result
