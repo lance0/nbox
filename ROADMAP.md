@@ -66,6 +66,10 @@ Polish the read experience. No writes here.
 - ☐ **Demo recording** — an asciinema/VHS cast for the README.
 - ☑ **Release `0.2.0`** — banked the large read surface accumulated since `0.1.1` (MCP HTTP/OAuth, the new
   read commands, MCP resources, the in-app config layer, three hardening rounds).
+- ☑ **Release `0.4.0`** — per-surface API backends (breaking), REST-canonical search (GraphQL search
+  dropped), route targets + VRFs first-class, the connection-pool timeout fix, live-browse, the
+  config/keyring layer, dashboard, prefix tree, and cross-object nav. Shipped to crates.io / Homebrew
+  tap / GHCR via the `/ship` skill.
 
 ---
 
@@ -108,6 +112,9 @@ reviewable PRs that lock contracts and reduce future change cost.
   `http`, `keyring`, `keyring-secret-service`, and release-musl-relevant feature combinations.
 - ☐ **Performance baseline, narrow** — bench or measured smoke for search fan-out and JSON rendering
   on representative fixture sizes. Do not add a cache unless measurements justify it.
+- ☐ **Adversarial review pass (recurring).** Periodic skeptical review of recent feature work
+  (VRF / route-target / search / client) — the last few reviews each surfaced a real issue. Pair it with
+  the contract suites above and capture findings as `Code nits to revisit` items.
 
 ---
 
