@@ -91,9 +91,10 @@ reviewable PRs that lock contracts and reduce future change cost.
 - ☐ **Fixture migration pass** — move repeated inline NetBox JSON in `search_tests`, `query_tests`,
   `scope_tests`, MCP tests, and custom-field tests onto `tests/support` builders as those files are
   next touched.
-- ☐ **Compatibility matrix as tests + docs** — explicit NetBox 4.2 / 4.3 / 4.5 assumptions for REST
-  scope behavior, GraphQL pagination/filter shapes, and supported object coverage. Keep the matrix
-  backed by wiremock and the live integration lanes.
+- ☑ **Compatibility matrix as tests + docs** _(PR #21)_ — `tests/compat_tests.rs` (9 tests) pins the 4.2
+  scope model, 4.3 REST-only search, 4.5 client-side utilization + v2 tokens, and version-floor gating;
+  `docs/COMPATIBILITY.md` documents the matrix (cross-checked against the official release notes — citing the
+  documented changes, marking the prefix-`utilization` absence and `/api/status` auth as observed-not-noted).
 - ☐ **CLI contract harness** — a thin reusable harness for command-level tests that records
   `(args, stdout, stderr, exit_code)` expectations while preserving the stdout-data-only invariant.
 - ☐ **Release smoke checklist automation** — one local command/script that runs the release-critical
@@ -333,6 +334,11 @@ Consolidated future scope:
 - ☑ **(test) `live_browse_on_recent_clears_the_results` checks state, not the recents render.** _(done, PR #18)_ It asserts
   `browse_kind == None` + empty view but seeds no recents, so it doesn't prove the fallback paints. Seed a
   recent and assert `home_target()` falls back to it.
+- ☐ **MCP `nbox_search` hit `kind` is snake_case (`ip_address`), but `nbox_get`/CLI use `ip`.** Surfaced by
+  the MCP contract tests (PR #20) and pinned as-is. An agent chaining search → get must translate the kind
+  (`ip_address` → `ip`, etc.). Minor surface inconsistency — candidate small follow-up: align the
+  search-result `kind` with the `nbox_get` kind set for a frictionless chain, or document the mapping in
+  AGENTS.md / docs/MCP.md.
 - Considered, not worth doing: `nav_section_index_for_slug` linear scan over 9 slugs (a `match` would be
   exhaustive, but the list is tiny); `status_in_banner` elevating only Warning/Error (deliberate — long
   Info/Success messages are transient and stay in the footer slot).
