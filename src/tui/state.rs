@@ -2659,6 +2659,13 @@ impl App {
             }
         }
         self.screen = self.history.pop().unwrap_or(Screen::Home);
+        if self.screen == Screen::Home {
+            // Back to the list/preview split: the highlighted row may differ from
+            // whatever the preview last held, so reconcile it on the next tick —
+            // otherwise the preview sits blank until a `j`/`k` nudge dirties it
+            // (the "ghost loading" where you go down-then-up to load the top row).
+            self.mark_preview_dirty();
+        }
         Vec::new()
     }
 
@@ -4470,6 +4477,12 @@ mod tests {
 
         a.handle_event(press(KeyCode::Char('b')));
         assert_eq!(a.screen, Screen::Home);
+        // Back to the list marks the preview dirty so the highlighted row loads on
+        // the next tick — no "go down then up" nudge to clear the ghost state.
+        assert!(
+            a.preview_dirty,
+            "returning to the list should reconcile the preview"
+        );
     }
 
     #[test]
