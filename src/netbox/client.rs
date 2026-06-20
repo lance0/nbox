@@ -50,6 +50,15 @@ impl NetBoxClient {
 
         let http = reqwest::Client::builder()
             .timeout(timeout)
+            .connect_timeout(Duration::from_secs(10))
+            // NetBox is commonly served by gunicorn *sync* workers, which close
+            // the connection after each response rather than honoring HTTP/1.1
+            // keep-alive. nbox's search fan-out fires ~17 requests at once; a
+            // pooled connection the server has already half-closed can hang a
+            // reused request to the full timeout. Don't reuse idle connections —
+            // each request gets a fresh one (like curl), which costs a cheap
+            // reconnect but eliminates the stale-keep-alive stall.
+            .pool_max_idle_per_host(0)
             .danger_accept_invalid_certs(!verify_tls)
             .build()
             .context("building the HTTP client")?;

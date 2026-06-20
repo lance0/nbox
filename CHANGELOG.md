@@ -30,6 +30,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   is currently the only GraphQL-capable surface. (The per-kind GraphQL search
   fan-out — which silently returned unfiltered results on 4.3+ — was removed.)
 
+### Fixed
+- **Search no longer randomly times out one endpoint.** NetBox is commonly served
+  by gunicorn *sync* workers, which close the connection after each response;
+  reqwest could reuse such a half-closed keep-alive connection from its pool and
+  hang that request to the full timeout, so `nbox search`'s ~17-way fan-out would
+  intermittently report one endpoint as failed (`operation timed out`) even though
+  the server was healthy. nbox now disables idle-connection reuse (a fresh
+  connection per request, like curl) and sets a 10s connect timeout.
+
 ### Performance
 - **VRF detail (REST) fetches its prefixes and addresses concurrently** via
   `tokio::try_join!` instead of sequentially, roughly halving the REST VRF view's
