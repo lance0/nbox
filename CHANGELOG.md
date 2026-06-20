@@ -45,6 +45,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   latency on a high-RTT link.
 
 ### Added
+- **Live-browse the Nav rail.** Moving the Nav-rail cursor with `j`/`k` (or
+  `g`/`G`) now auto-browses the highlighted kind into the results pane — no `Enter`
+  needed — so scrolling the rail previews each kind's list (and its first item)
+  beside it. It's debounced until the cursor settles, so a fast scroll doesn't
+  flash the list of every section it passes; focus stays on the rail, and `Enter`
+  still commits and jumps into the results. The footer reflects the rail's
+  controls when it's focused (`j/k browse · Enter results`).
 - **TUI remembers the last-browsed kind.** The Nav rail's browsed kind is
   persisted to `[ui].last_browsed` on exit and restored on the next launch — the
   cursor lands on it and its list preloads (focus stays on the Nav rail). First

@@ -579,6 +579,10 @@ pub struct App {
     pub focus: Focus,
     /// Cursor into [`NAV_SECTIONS`] — the highlighted Navigation-pane row.
     pub nav_selected: usize,
+    /// The [`Self::nav_selected`] value observed at the previous `PreviewTick`,
+    /// used to gate live-browse on a settled cursor: a fast scroll through the
+    /// rail keeps moving between ticks, so it only fetches once movement stops.
+    pub nav_tick_anchor: usize,
     /// The kind currently browsed into the Results pane (the Nav pane picked it),
     /// or `None` when Results holds a search / the recents fallback. Drives the
     /// Results pane title.
@@ -674,6 +678,12 @@ pub struct App {
     /// on the next `PreviewTick`, not on every keystroke — so a burst of j/k
     /// scrolling issues at most one fetch when the cursor finally settles.
     pub preview_dirty: bool,
+    /// Set when the Nav-rail cursor moves; cleared once a debounced live-browse
+    /// for the highlighted kind has been dispatched. The Nav-side twin of
+    /// [`Self::preview_dirty`]: a burst of `j`/`k` on the rail coalesces into a
+    /// single `Browse` when the cursor settles (see [`App::on_nav_browse_tick`]),
+    /// so scrolling the rail previews each kind's list without leaving Nav focus.
+    pub browse_dirty: bool,
     /// Vertical scroll offset of the preview body, owned by the pure scroll keys
     /// while the Preview pane is focused. Reset when the previewed object changes.
     pub preview_scroll: u16,
@@ -795,6 +805,7 @@ impl App {
             // Recent, which the Results pane mirrors until a kind is chosen.
             focus: Focus::Nav,
             nav_selected: NAV_SECTIONS.len() - 1, // Recent, matching the default view
+            nav_tick_anchor: NAV_SECTIONS.len() - 1,
             browse_kind: None,
             last_browsed: None,
             initial_last_browsed: None,
@@ -822,6 +833,7 @@ impl App {
             preview_for: None,
             preview: None,
             preview_dirty: false,
+            browse_dirty: false,
             preview_scroll: 0,
             preview_viewport: 0,
             request_seq: 0,
@@ -1027,7 +1039,10 @@ impl App {
                 if self.loading() {
                     self.spinner.tick();
                 }
-                let commands = self.on_preview_tick();
+                // Flush the Nav-rail live-browse first (it may replace the results,
+                // which then dirties the preview), then the preview debounce.
+                let mut commands = self.on_nav_browse_tick();
+                commands.extend(self.on_preview_tick());
                 self.tick_status_ttl();
                 commands
             }
@@ -1477,9 +1492,9 @@ impl App {
             // The Nav pane owns movement when focused: j/k move the section cursor.
             KeyCode::Char('j') | KeyCode::Down if self.on_nav() => self.nav_move(true),
             KeyCode::Char('k') | KeyCode::Up if self.on_nav() => self.nav_move(false),
-            KeyCode::Char('g') | KeyCode::Home if self.on_nav() => self.nav_selected = 0,
+            KeyCode::Char('g') | KeyCode::Home if self.on_nav() => self.nav_jump(0),
             KeyCode::Char('G') | KeyCode::End if self.on_nav() => {
-                self.nav_selected = NAV_SECTIONS.len() - 1;
+                self.nav_jump(NAV_SECTIONS.len() - 1);
             }
             // An interactive detail section (e.g. a VRF's prefix tree) takes the
             // movement keys to move its row cursor, ahead of the body-scroll route.
@@ -2767,15 +2782,31 @@ impl App {
         self.screen == Screen::Home && self.focus == Focus::Nav
     }
 
-    /// Move the Nav-pane cursor one row, clamped to the section list.
+    /// Move the Nav-pane cursor one row, clamped to the section list. A real move
+    /// dirties the live-browse so the highlighted kind's list loads on the next
+    /// tick (debounced; see [`Self::on_nav_browse_tick`]).
     fn nav_move(&mut self, forward: bool) {
         let last = NAV_SECTIONS.len() - 1;
         let cur = self.nav_selected.min(last);
-        self.nav_selected = if forward {
+        let next = if forward {
             (cur + 1).min(last)
         } else {
             cur.saturating_sub(1)
         };
+        if next != self.nav_selected {
+            self.nav_selected = next;
+            self.browse_dirty = true;
+        }
+    }
+
+    /// Jump the Nav cursor to a section index (g/G), dirtying the live-browse when
+    /// it actually moves.
+    fn nav_jump(&mut self, index: usize) {
+        let clamped = index.min(NAV_SECTIONS.len() - 1);
+        if clamped != self.nav_selected {
+            self.nav_selected = clamped;
+            self.browse_dirty = true;
+        }
     }
 
     /// Act on the highlighted Nav section: browse a kind into Results (moving focus
@@ -2863,6 +2894,62 @@ impl App {
                 self.preview = None;
                 self.preview_for = None;
                 self.preview_scroll = 0;
+                Vec::new()
+            }
+        }
+    }
+
+    /// The live-browse debounce flush, run on the always-on `PreviewTick`. When
+    /// the Nav-rail cursor has settled on a different kind than the results pane
+    /// currently shows, issue exactly one [`AppCommand::Browse`] for it — without
+    /// moving focus off the rail, so a reader can keep scrolling the rail and
+    /// watch each kind's list (and its first item's preview) populate beside it.
+    /// A burst of `j`/`k` coalesces into a single fetch here. The `Recent` section
+    /// clears the results so its recents fallback shows.
+    fn on_nav_browse_tick(&mut self) -> Vec<AppCommand> {
+        // Track the rail cursor every tick so "settled" means it hasn't moved
+        // since the previous tick. A continuous scroll keeps moving between ticks,
+        // so this defers the fetch until movement stops — no flashing the list of
+        // each section the cursor passes through.
+        let settled = self.nav_selected == self.nav_tick_anchor;
+        self.nav_tick_anchor = self.nav_selected;
+        if !self.browse_dirty || !settled {
+            return Vec::new();
+        }
+        self.browse_dirty = false;
+        // Only auto-browse from the Nav rail, idle, and never mid profile switch
+        // (it would hit the old client; the post-switch state reconciles instead).
+        if !self.on_nav() || self.mode != Mode::Normal || self.switch_in_flight() {
+            return Vec::new();
+        }
+        let section = NAV_SECTIONS[self.nav_selected.min(NAV_SECTIONS.len() - 1)];
+        match section.object_kind() {
+            Some(kind) => {
+                // Already showing this kind from a browse (not a search) → no-op,
+                // so a still cursor never re-fetches.
+                if self.browse_kind == Some(kind) && self.last_query.is_none() {
+                    return Vec::new();
+                }
+                self.browse_kind = Some(kind);
+                self.last_query = None;
+                // Hovering is browsing: remember it for the exit-time persist too.
+                self.last_browsed = Some(kind);
+                vec![AppCommand::Browse { kind, req: 0 }]
+            }
+            None => {
+                // Recent: drop browse/search results so the recents fallback shows.
+                if self.browse_kind.is_none()
+                    && self.last_query.is_none()
+                    && self.results.is_empty()
+                {
+                    return Vec::new();
+                }
+                self.browse_kind = None;
+                self.last_query = None;
+                self.results.clear();
+                self.view.clear();
+                self.selected = 0;
+                self.mark_preview_dirty();
                 Vec::new()
             }
         }
@@ -6002,6 +6089,101 @@ mod tests {
             result: Ok(vec![result_of(ObjectKind::Device, 1, "old")]),
         });
         assert!(a.results.is_empty(), "a superseded browse must be dropped");
+    }
+
+    #[test]
+    fn nav_jk_live_browses_after_the_cursor_settles() {
+        let mut a = app(); // opens focus=Nav, cursor on Recent
+        // Jump the rail cursor to Devices (top). Movement only marks dirty.
+        let cmds = a.handle_event(press(KeyCode::Char('g')));
+        assert!(cmds.is_empty(), "movement itself dispatches nothing");
+        assert_eq!(a.nav_selected, 0);
+
+        // First tick after a move: the cursor isn't settled yet (it moved since
+        // the previous tick's anchor), so the debounce defers the fetch.
+        assert!(
+            preview_tick(&mut a).is_empty(),
+            "a just-moved cursor doesn't fetch on the same tick"
+        );
+
+        // Next tick with the cursor still: exactly one Browse for the kind, and
+        // focus stays on the rail so the reader can keep scrolling.
+        let cmds = preview_tick(&mut a);
+        assert!(
+            matches!(
+                cmds.as_slice(),
+                [AppCommand::Browse {
+                    kind: ObjectKind::Device,
+                    ..
+                }]
+            ),
+            "a settled cursor live-browses its kind; got {cmds:?}"
+        );
+        assert_eq!(a.focus, Focus::Nav, "live-browse never steals focus");
+        assert_eq!(a.browse_kind, Some(ObjectKind::Device));
+        assert_eq!(a.last_browsed, Some(ObjectKind::Device));
+
+        // A still cursor on an already-shown kind doesn't re-fetch.
+        a.browse_dirty = true;
+        assert!(
+            preview_tick(&mut a).is_empty(),
+            "no re-fetch while parked on the shown kind"
+        );
+    }
+
+    #[test]
+    fn live_browse_defers_through_a_continuous_scroll() {
+        let mut a = app();
+        a.handle_event(press(KeyCode::Char('g'))); // → Devices(0)
+        assert!(preview_tick(&mut a).is_empty()); // moved this tick, defer
+        a.handle_event(press(KeyCode::Char('j'))); // → Prefixes(1), still scrolling
+        assert!(
+            preview_tick(&mut a).is_empty(),
+            "still moving between ticks: keep deferring, no flash of intermediate lists"
+        );
+        // Cursor now still: a single Browse for the final kind, not the ones passed.
+        let cmds = preview_tick(&mut a);
+        assert!(
+            matches!(
+                cmds.as_slice(),
+                [AppCommand::Browse {
+                    kind: ObjectKind::Prefix,
+                    ..
+                }]
+            ),
+            "one fetch for the kind the cursor stopped on; got {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn live_browse_on_recent_clears_the_results() {
+        let mut a = app();
+        set_results(&mut a, results_n(3));
+        a.preview_dirty = false; // ignore the preview the seeded results dirtied
+        a.browse_kind = Some(ObjectKind::Device);
+        a.focus = Focus::Nav;
+        a.nav_selected = 0; // Devices
+        a.nav_tick_anchor = 0;
+        // Move to Recent (bottom) and let it settle.
+        a.handle_event(press(KeyCode::Char('G')));
+        assert!(preview_tick(&mut a).is_empty()); // moved this tick, defer
+        let cmds = preview_tick(&mut a);
+        assert!(cmds.is_empty(), "Recent fetches nothing; got {cmds:?}");
+        assert_eq!(a.browse_kind, None);
+        assert!(a.view.is_empty(), "Recent clears the browse results");
+        assert_eq!(a.focus, Focus::Nav);
+    }
+
+    #[test]
+    fn live_browse_only_fires_on_the_nav_rail() {
+        let mut a = app();
+        a.handle_event(press(KeyCode::Char('g'))); // dirty the live-browse
+        a.focus = Focus::List; // …but focus left the rail before it settled
+        a.nav_tick_anchor = a.nav_selected; // cursor is settled
+        assert!(
+            preview_tick(&mut a).is_empty(),
+            "off the Nav rail the live-browse stays quiet"
+        );
     }
 
     #[test]

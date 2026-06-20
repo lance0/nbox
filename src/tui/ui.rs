@@ -1985,6 +1985,11 @@ fn footer_nav(app: &App) -> &'static str {
         Screen::Home if app.focus == Focus::Preview => {
             " / search · j/k scroll · g/G top/bottom · Tab results · Enter open · o/y open/copy · r refresh · ? help · q quit "
         }
+        // The Nav rail: j/k live-browse the highlighted kind into the results pane
+        // (focus stays here), Enter commits and jumps into the list.
+        Screen::Home if app.focus == Focus::Nav => {
+            " j/k browse · Enter results · / search · D dash · T tree · S settings · t theme · ? help · q quit "
+        }
         Screen::Home => {
             " / search · j/k move · Enter open · D dash · T tree · S settings · Tab preview · o/y open/copy · r refresh · t theme · ? help · q quit "
         }
@@ -2497,9 +2502,17 @@ mod tests {
     #[test]
     fn footer_nav_is_contextual() {
         let mut a = app();
-        let home = footer_nav(&a);
-        assert!(home.contains("j/k move"));
-        assert!(home.contains("Enter open"));
+        // Home opens on the Nav rail: j/k live-browse, Enter jumps into results.
+        let nav = footer_nav(&a);
+        assert!(nav.contains("j/k browse"), "nav rail footer: {nav}");
+        assert!(nav.contains("Enter results"), "nav rail footer: {nav}");
+
+        // The results list: j/k moves the selection, Enter opens the detail.
+        a.focus = Focus::List;
+        let list = footer_nav(&a);
+        assert!(list.contains("j/k move"), "list footer: {list}");
+        assert!(list.contains("Enter open"), "list footer: {list}");
+        assert!(list.contains("Tab preview"), "list footer: {list}");
 
         a.focus = Focus::Preview;
         let preview = footer_nav(&a);

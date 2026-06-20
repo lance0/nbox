@@ -149,11 +149,13 @@ Consolidated future scope:
   Navigation rail: browse-by-kind sections (Devices/Prefixes/IPs/VLANs/Sites/Racks) with domain-colored
   bullets and live per-kind counts, plus Recent; `Enter` lists a kind into Results (search stays on `/`),
   `Tab` cycles the three panes. Built on the list/preview split.
-- ◑ **3-pane polish (follow-ups).** Done: right-aligned Nav counts (display-width measured), a Recent
-  count, the Route Targets section (Nav label abbreviated to "RTs"), and **remember the last-browsed kind**
+- ☑ **3-pane polish (follow-ups).** Right-aligned Nav counts (display-width measured), a Recent
+  count, the Route Targets section (Nav label abbreviated to "RTs"), **remember the last-browsed kind**
   (persisted to `[ui].last_browsed` on exit; restored on launch — cursor lands on it and its list
-  preloads, focus stays on Nav). Left: live-browse on Nav `j`/`k` (debounced) instead of requiring
-  `Enter`; a `Browse` (`b`?) hint in the footer when Nav-focused.
+  preloads, focus stays on Nav), **live-browse on Nav `j`/`k`** (moving the rail cursor auto-browses the
+  highlighted kind into the results pane — debounced until the cursor settles so a fast scroll doesn't
+  flash intermediate lists; focus stays on Nav, `Enter` still commits + jumps into the list), and a
+  Nav-focused footer hint (`j/k browse · Enter results`).
 - ☐ **Browse list pane look for site-less kinds.** The list (middle) pane renders a fixed column set
   geared to site-bearing objects; kinds with no site (route targets, and to a degree VRFs/ASNs/tenants)
   leave the SITE column empty, so the row reads sparse/ragged. Letting it truncate for now — revisit with
