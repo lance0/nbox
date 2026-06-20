@@ -14,12 +14,16 @@ flag, and the per-surface backend routing.
 
 | Concern | 4.2 | 4.3 | 4.5+ |
 |---|---|---|---|
-| Scope model | polymorphic `scope` (`scope_type` + `scope_id`); prefix `site` FK dropped | same | same |
-| Search backend | REST (full-text `q`) | **REST only** — GraphQL `q` dropped | REST only |
-| GraphQL filter shape | per-field input objects | per-field Strawberry lookups | per-field Strawberry lookups |
-| Prefix `utilization` source | REST API field | REST API field | **client-side** — API field dropped |
-| `/api/status/` auth | unauthenticated | unauthenticated | **requires auth** |
-| Token scheme | v1 `Authorization: Token` | v1 `Token` | v1 `Token` **+ v2 `Authorization: Bearer nbt_…`** |
+| Scope model | polymorphic `scope` (`scope_type` + `scope_id`); prefix `site` FK dropped ¹ | same | same |
+| Search backend | REST `q=` fan-out | REST (GraphQL has no `q`) | REST (GraphQL has no `q`) |
+| GraphQL filtering | per-field input objects | advanced per-field lookups (AND/OR, custom fields) ² | same |
+| Prefix `utilization` | returned by the REST API | returned by the REST API | not returned → computed client-side ³ |
+| `/api/status/` auth | open by default | open by default | requires auth ³ |
+| Token scheme | v1 `Authorization: Token` | v1 `Token` | v1 `Token` **+ v2 `Authorization: Bearer nbt_…`** ¹ |
+
+¹ In the official NetBox release notes — the `4.2.0` scope change (Jan 2025) and the `4.5` v2 tokens (HMAC, `nbt_` prefix, `Bearer`; v1 retained until 4.7).
+² NetBox [#7598](https://github.com/netbox-community/netbox/issues/7598), "adopt advanced query filtering in GraphQL." GraphQL never had a REST-style full-text `q`; this rework is why a per-kind GraphQL search can't stand in for REST search.
+³ **Observed** against live instances (4.2 vs 4.5.10), **not called out in the release notes** — so treat as empirical, not a documented contract. `/api/status/` auth may reflect instance `LOGIN_REQUIRED`-style config rather than a strict version change; either way nbox authenticates **every** request (including the version probe), so it is unaffected.
 
 ## How nbox adapts
 
@@ -30,15 +34,19 @@ flag, and the per-surface backend routing.
   `scope_id=<id>`; the rest get `site_id`/`region_id`/… An endpoint with no clean
   filter for the active scope skips itself rather than return an unfiltered set.
 
-- **Search is always REST (4.3).** NetBox 4.3 moved GraphQL filtering to per-field
-  lookups and dropped the full-text `q`, which has no GraphQL equivalent. `nbox
-  search` is a parallel REST `q=` fan-out across the object endpoints. Even with a
+- **Search is always REST.** NetBox 4.3 reworked GraphQL filtering into advanced
+  per-field lookups (AND/OR, custom fields — NetBox #7598). GraphQL has no
+  REST-style full-text `q`, so a per-kind GraphQL search can't reproduce canonical
+  search; `nbox search` is a parallel REST `q=` fan-out across the object
+  endpoints. Even with a
   `graphql` preference for the search surface, the backend resolves to a REST
   fallback (without probing the schema) and `status` carries the reason. GraphQL
   stays an opt-in accelerator for the VRF view only.
 
-- **Client-side container utilization (4.5).** NetBox 4.5 dropped the prefix
-  `utilization` field from the REST API. nbox computes a container prefix's
+- **Client-side container utilization.** As of NetBox 4.5 the prefix REST API no
+  longer returns `utilization` (observed live — present on 4.2, absent on 4.5's
+  list, detail, and OpenAPI schema; not called out in the release notes). nbox
+  computes a container prefix's
   utilization from the already-fetched tree — the fraction of its space its direct
   children cover, `Σ 2^(parent_len − child_len)` — so no extra calls, on every
   version. An older NetBox that still serves `utilization` keeps its richer value;
