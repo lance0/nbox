@@ -80,9 +80,9 @@ reviewable PRs that lock contracts and reduce future change cost.
   rendered JSON assertions, binary execution, and wiremock NetBox pages.
 - ☑ **Binary error contracts, first slice** — process-level tests for exit codes `1`/`2`/`3`/`4`/`5`,
   clean stdout on errors, and actionable stderr.
-- ☐ **Broaden output goldens** — add contract fixtures for `ip`, `prefix`, `vlan`, `interface`,
-  `site`, and one journal-bearing detail response. This is the next best guardrail for agents and
-  scripts.
+- ☑ **Broaden output goldens** _(PR #16, #17)_ — file-backed JSON contracts for `ip`, `prefix`, `vlan`,
+  `interface`, `site`, and `journal` (a journal-bearing response), via the shared `assert_golden` harness.
+  The next best guardrail for agents and scripts.
 - ☐ **CSV/output-mode contracts** — pin CSV shape for list/search output, `--cols` ordering, empty
   arrays, and the intentional “single objects are not CSV” usage error.
 - ☐ **MCP response contracts** — stable JSON shapes for `nbox_status`, `nbox_search`, `nbox_get`,
@@ -316,21 +316,21 @@ Consolidated future scope:
 
 ### Code nits to revisit (verified 2026-06-19, post live-browse)
 
-- ☐ **Profile switch leaves the live-browse flags unreset** (`tui/state.rs` `clear_for_profile_switch`).
+- ☑ **Profile switch leaves the live-browse flags unreset** _(done, PR #18)_ (`tui/state.rs` `clear_for_profile_switch`).
   It clears `browse_kind`/`preview_dirty` but not `browse_dirty`/`nav_tick_anchor`, so whether the new
   instance auto-browses the hovered Nav section depends on whether a `PreviewTick` fired mid-switch (the
   `switch_in_flight` guard consumes the flag). Correct-by-accident today; make it deliberate — either reset
   `browse_dirty = false` + `nav_tick_anchor = nav_selected` for a clean empty pane, or set
   `browse_dirty = true` to always reload the hovered kind on the new instance.
-- ☐ **Exit persists theme + last_browsed in two separate writes** (`tui/app.rs` `run_on`). Each is a full
+- ☑ **Exit persists theme + last_browsed in two separate writes** _(done, PR #18)_ (`tui/app.rs` `run_on`). Each is a full
   read-modify-write of `config.toml`; if both changed it writes twice, and a failure between them
   half-persists. Batch into one `config::save_ui_fields(&[Theme, LastBrowsed])` — the atomic batch helper
   already exists and is tested.
-- ☐ **`connect_timeout` is hardcoded 10s, independent of the configurable overall `timeout`**
+- ☑ **`connect_timeout` is hardcoded 10s, independent of the configurable overall `timeout`** _(done, PR #18)_
   (`netbox/client.rs:53`; overall = `timeout_secs.unwrap_or(15)`). With `timeout_secs < 10` the overall
   timeout fires first (reqwest takes the min) — harmless but confusing. Clamp:
   `connect_timeout = min(10s, timeout.saturating_sub(1s))`.
-- ☐ **(test) `live_browse_on_recent_clears_the_results` checks state, not the recents render.** It asserts
+- ☑ **(test) `live_browse_on_recent_clears_the_results` checks state, not the recents render.** _(done, PR #18)_ It asserts
   `browse_kind == None` + empty view but seeds no recents, so it doesn't prove the fallback paints. Seed a
   recent and assert `home_target()` falls back to it.
 - Considered, not worth doing: `nav_section_index_for_slug` linear scan over 9 slugs (a `match` would be
