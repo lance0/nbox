@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use nbox::domain::device_detail::{CableRow, DeviceDetail, IfaceRow, IpRow, ServiceRow, VlanRow};
 use nbox::domain::device_view::DeviceView;
-use nbox::domain::vrf_view::{VrfAddressRow, VrfDetail, VrfPrefixRow, VrfView};
+use nbox::domain::vrf_view::{RouteTargetRef, VrfAddressRow, VrfDetail, VrfPrefixRow, VrfView};
 use nbox::netbox::search::{ObjectKind, SearchResult};
 use serde_json::{Value, json};
 
@@ -18,8 +18,14 @@ pub fn vrf_detail() -> VrfDetail {
             rd: Some("65000:100".into()),
             tenant: Some("Acme".into()),
             enforce_unique: Some(true),
-            import_targets: vec!["65000:100".into()],
-            export_targets: vec!["65000:100".into()],
+            import_targets: vec![RouteTargetRef {
+                id: 5,
+                name: "65000:100".into(),
+            }],
+            export_targets: vec![RouteTargetRef {
+                id: 5,
+                name: "65000:100".into(),
+            }],
             prefix_count: Some(3),
             ipaddress_count: Some(1),
             description: Some("Customer production VRF".into()),

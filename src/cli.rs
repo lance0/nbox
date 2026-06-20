@@ -321,6 +321,12 @@ pub enum Command {
         value: String,
     },
 
+    /// Show a route target (e.g. 65000:100) and the VRFs that import/export it.
+    RouteTarget {
+        /// Route target name or numeric ID.
+        value: String,
+    },
+
     /// Show a VLAN by VID or name.
     Vlan {
         /// VLAN VID or name.

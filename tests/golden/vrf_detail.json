@@ -29,11 +29,17 @@
     "description": "Customer production VRF",
     "enforce_unique": true,
     "export_targets": [
-      "65000:100"
+      {
+        "id": 5,
+        "name": "65000:100"
+      }
     ],
     "id": 12,
     "import_targets": [
-      "65000:100"
+      {
+        "id": 5,
+        "name": "65000:100"
+      }
     ],
     "ipaddress_count": 1,
     "name": "customer-prod",

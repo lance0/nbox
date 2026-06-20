@@ -3617,6 +3617,7 @@ fn object_web_url(base_url: &str, kind: ObjectKind, id: u64) -> String {
         ObjectKind::Cluster => format!("virtualization/clusters/{id}/"),
         ObjectKind::Rack => format!("dcim/racks/{id}/"),
         ObjectKind::Vrf => format!("ipam/vrfs/{id}/"),
+        ObjectKind::RouteTarget => format!("ipam/route-targets/{id}/"),
     };
 
     let mut base = base_url.to_string();

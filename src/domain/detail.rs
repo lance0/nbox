@@ -28,6 +28,7 @@ use crate::domain::journal_view::{JournalEntryRow, JournalView};
 use crate::domain::prefix_view::PrefixView;
 use crate::domain::provider_view::ProviderView;
 use crate::domain::rack_view::RackView;
+use crate::domain::route_target_view::{RouteTargetDetail, RouteTargetView, VrfRef};
 use crate::domain::site_view::SiteView;
 use crate::domain::tenant_view::TenantView;
 use crate::domain::vlan_view::VlanView;
@@ -40,7 +41,7 @@ use crate::netbox::models::circuits::{Circuit, Provider};
 use crate::netbox::models::common::BriefObject;
 use crate::netbox::models::dcim::{Device, Rack, Site};
 use crate::netbox::models::ipam::{
-    Aggregate, Asn, IpAddress, IpRange, Prefix, Vlan, VlanGroup, Vrf,
+    Aggregate, Asn, IpAddress, IpRange, Prefix, RouteTarget, Vlan, VlanGroup, Vrf,
 };
 use crate::netbox::models::tenancy::{Contact, Tenant};
 use crate::netbox::models::virtualization::{Cluster, VirtualMachine};
@@ -703,23 +704,36 @@ fn vrf_header_lines(v: &VrfView) -> Vec<String> {
     lines
 }
 
-/// Render the VRF's import/export route targets as plain text (route targets have
-/// no detail view, so this tab isn't navigable).
-fn vrf_targets_section(v: &VrfView) -> String {
-    use std::fmt::Write as _;
+/// Navigable rows for the VRF's import/export route targets — each route target
+/// opens its detail (the VRFs that import/export it), so the `targets` tab
+/// navigates like the prefix/address sections.
+fn vrf_target_detail_rows(v: &VrfView) -> Vec<DetailRow> {
     if v.import_targets.is_empty() && v.export_targets.is_empty() {
-        return "Route Targets\n  (none)".to_string();
+        return vec![DetailRow::plain("(no route targets)".to_string())];
     }
-    let mut out = String::from("Route Targets\n");
-    let _ = writeln!(out, "Import ({})", v.import_targets.len());
+    let mut rows = vec![DetailRow::plain(format!(
+        "Import ({})",
+        v.import_targets.len()
+    ))];
     for rt in &v.import_targets {
-        let _ = writeln!(out, "  {rt}");
+        rows.push(DetailRow::link(
+            format!("  {}", rt.name),
+            ObjectKind::RouteTarget,
+            rt.id,
+        ));
     }
-    let _ = writeln!(out, "Export ({})", v.export_targets.len());
+    rows.push(DetailRow::plain(format!(
+        "Export ({})",
+        v.export_targets.len()
+    )));
     for rt in &v.export_targets {
-        let _ = writeln!(out, "  {rt}");
+        rows.push(DetailRow::link(
+            format!("  {}", rt.name),
+            ObjectKind::RouteTarget,
+            rt.id,
+        ));
     }
-    out
+    rows
 }
 
 /// Flatten navigable rows to a plain-text body (one row per line) — the text
@@ -830,6 +844,117 @@ pub async fn vrf_detail_by_ref(
     build_vrf_detail(client, vrf).await
 }
 
+fn route_target_links(rt: &RouteTarget) -> Vec<ObjectLink> {
+    let mut l = Vec::new();
+    push_link(&mut l, "tenant", ObjectKind::Tenant, rt.tenant.as_ref());
+    l
+}
+
+/// Build a route target's relation graph: the target's header plus the VRFs that
+/// import and export it. A route target carries no VRF list of its own, so both
+/// directions are resolved by filtering `/api/ipam/vrfs/` — independent, so they
+/// run concurrently.
+async fn build_route_target_detail(
+    client: &NetBoxClient,
+    rt: RouteTarget,
+) -> Result<RouteTargetDetail> {
+    let id = rt.id;
+    let summary = RouteTargetView::from_model(rt);
+    let (importing, exporting): (Vec<Vrf>, Vec<Vrf>) = tokio::try_join!(
+        client.list_all(
+            Endpoint::Vrfs,
+            vec![("import_target_id", id.to_string())],
+            VRF_SECTION_CAP,
+        ),
+        client.list_all(
+            Endpoint::Vrfs,
+            vec![("export_target_id", id.to_string())],
+            VRF_SECTION_CAP,
+        ),
+    )?;
+    Ok(RouteTargetDetail {
+        summary,
+        importing_vrfs: importing.iter().map(VrfRef::from_model).collect(),
+        exporting_vrfs: exporting.iter().map(VrfRef::from_model).collect(),
+    })
+}
+
+/// `route-target <name|id>`: resolve a route target and build its relation graph.
+/// Shared by CLI/MCP. Identity (and not-found/ambiguous typed errors) stays REST.
+pub async fn route_target_detail_by_ref(
+    client: &NetBoxClient,
+    value: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<RouteTargetDetail> {
+    let rt = client
+        .route_target_by_ref(value)
+        .await?
+        .ok_or_else(|| not_found("route target", value))?;
+    build_route_target_detail(client, rt).await
+}
+
+/// The route target's compact header card: tenant then description.
+fn route_target_header_lines(v: &RouteTargetView) -> Vec<String> {
+    let mut lines = Vec::new();
+    if let Some(t) = &v.tenant {
+        lines.push(format!("Tenant {t}"));
+    }
+    if let Some(d) = &v.description {
+        lines.push(d.clone());
+    }
+    lines
+}
+
+/// Navigable rows from a route target's VRF list — each opens that VRF.
+fn route_target_vrf_rows(vrfs: &[VrfRef], empty: &str) -> Vec<DetailRow> {
+    if vrfs.is_empty() {
+        return vec![DetailRow::plain(empty.to_string())];
+    }
+    vrfs.iter()
+        .map(|v| DetailRow::link(v.display_line(), ObjectKind::Vrf, v.id))
+        .collect()
+}
+
+/// Map a [`RouteTargetDetail`] to the TUI [`DetailView`]: a header card over the
+/// importing VRFs (navigable summary slot), with the exporting VRFs as a tab.
+fn route_target_detail_view(links: Vec<ObjectLink>, detail: RouteTargetDetail) -> DetailView {
+    let id = detail.summary.id;
+    let name = detail.summary.name.clone();
+    let header = route_target_header_lines(&detail.summary);
+    let importing = route_target_vrf_rows(&detail.importing_vrfs, "(no VRFs import this target)");
+    let exporting = route_target_vrf_rows(&detail.exporting_vrfs, "(no VRFs export this target)");
+    let importing_len = detail.importing_vrfs.len();
+
+    let tabs = vec![DetailTab {
+        key: 'e',
+        label: format!("exporting·{}", detail.exporting_vrfs.len()),
+        body: rows_to_text(&exporting),
+        rows: exporting,
+    }];
+
+    DetailView::new(
+        ObjectKind::RouteTarget,
+        id,
+        format!("route-target {name}"),
+        rows_to_text(&importing),
+    )
+    .with_tabs(tabs)
+    .with_links(links)
+    .with_header(header)
+    .with_summary(format!("importing·{importing_len}"), importing)
+}
+
+/// Build a route target's relation-graph [`DetailView`] (TUI): identity + links
+/// (REST) then the importing/exporting VRFs.
+async fn load_route_target_detail_view(
+    client: &NetBoxClient,
+    rt: RouteTarget,
+) -> Result<DetailView> {
+    let links = route_target_links(&rt);
+    let detail = build_route_target_detail(client, rt).await?;
+    Ok(route_target_detail_view(links, detail))
+}
+
 /// Navigable rows from a VRF detail's prefix tree — each opens its prefix; a
 /// footer notes any capped overflow.
 fn vrf_prefix_detail_rows(detail: &VrfDetail) -> Vec<DetailRow> {
@@ -877,8 +1002,8 @@ fn vrf_detail_view(links: Vec<ObjectLink>, detail: VrfDetail) -> DetailView {
     let id = detail.summary.id;
     let name = detail.summary.name.clone();
     let header = vrf_header_lines(&detail.summary);
-    let targets_body = vrf_targets_section(&detail.summary);
     let target_count = detail.summary.import_targets.len() + detail.summary.export_targets.len();
+    let target_rows = vrf_target_detail_rows(&detail.summary);
     let prefix_rows = vrf_prefix_detail_rows(&detail);
     let address_rows = vrf_address_detail_rows(&detail);
 
@@ -892,8 +1017,8 @@ fn vrf_detail_view(links: Vec<ObjectLink>, detail: VrfDetail) -> DetailView {
         DetailTab {
             key: 't',
             label: format!("targets·{target_count}"),
-            body: targets_body,
-            rows: Vec::new(),
+            body: rows_to_text(&target_rows),
+            rows: target_rows,
         },
     ];
 
@@ -1060,6 +1185,13 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             // The VRF view sets a header card + navigable summary rows, so it
             // builds the whole DetailView itself rather than the (title, body) pair.
             return load_vrf_detail_view(client, vrf).await;
+        }
+        ObjectKind::RouteTarget => {
+            let rt: RouteTarget = client
+                .get(&format!("/api/ipam/route-targets/{id}/"), &[])
+                .await?;
+            // Like the VRF view, the route target builds its own header + rows.
+            return load_route_target_detail_view(client, rt).await;
         }
     };
     Ok(DetailView::new(kind, id, title, body)
@@ -1287,6 +1419,13 @@ pub async fn load_detail_by_ref(
                 .with_context(|| format!("no vrf matched \"{value}\""))?;
             // The VRF view builds the whole DetailView itself (header + rows).
             return load_vrf_detail_view(client, vrf).await;
+        }
+        ObjectKind::RouteTarget => {
+            let rt = client
+                .route_target_by_ref(value)
+                .await?
+                .with_context(|| format!("no route target matched \"{value}\""))?;
+            return load_route_target_detail_view(client, rt).await;
         }
     };
     Ok(DetailView::new(kind, id, title, body)

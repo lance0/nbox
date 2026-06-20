@@ -211,6 +211,7 @@ async fn search_returns_results_and_errors() {
         "/api/virtualization/clusters/",
         "/api/dcim/racks/",
         "/api/ipam/vrfs/",
+        "/api/ipam/route-targets/",
     ] {
         Mock::given(method("GET"))
             .and(path(p))
@@ -307,6 +308,7 @@ async fn search_reports_partial_endpoint_errors() {
         "/api/virtualization/clusters/",
         "/api/dcim/racks/",
         "/api/ipam/vrfs/",
+        "/api/ipam/route-targets/",
     ] {
         mount_empty(&mock, p).await;
     }

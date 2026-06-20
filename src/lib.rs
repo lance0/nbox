@@ -336,6 +336,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Vm { value }) => run_vm(&ctx, &value).await,
         Some(Command::Cluster { value }) => run_cluster(&ctx, &value).await,
         Some(Command::Vrf { value }) => run_vrf(&ctx, &value).await,
+        Some(Command::RouteTarget { value }) => run_route_target(&ctx, &value).await,
         Some(Command::Vlan {
             value,
             site,
@@ -1259,6 +1260,12 @@ async fn run_vrf(ctx: &Ctx, value: &str) -> Result<()> {
     emit(ctx, &detail, || println!("{}", detail.to_plain()))
 }
 
+async fn run_route_target(ctx: &Ctx, value: &str) -> Result<()> {
+    let client = connect(ctx)?;
+    let detail = detail::route_target_detail_by_ref(&client, value, &not_found).await?;
+    emit(ctx, &detail, || println!("{}", detail.to_plain()))
+}
+
 /// `nbox open <kind/ref>` — resolve an object and open it in the browser.
 async fn run_open(ctx: &Ctx, object_ref: &str) -> Result<()> {
     let (kind, value) = parse_object_ref(object_ref)?;
@@ -1336,6 +1343,7 @@ pub(crate) async fn resolve_object_url(
         "vm" => client.vm_by_ref(value).await?.map(|vm| vm.url),
         "cluster" => client.cluster_by_ref(value).await?.map(|c| c.url),
         "vrf" => client.vrf_by_ref(value).await?.map(|v| v.url),
+        "route-target" | "routetarget" => client.route_target_by_ref(value).await?.map(|rt| rt.url),
         // `interface/<device-ref>/<name>`: the device ref is the first segment of
         // `value`, and EVERYTHING after the next `/` is the interface name —
         // taken verbatim, since names contain slashes (e.g. `xe-0/0/1`,
@@ -1467,8 +1475,12 @@ pub(crate) async fn resolve_content_type_id(
             .await?
             .map(|c| ("virtualization.cluster", c.id)),
         "vrf" => client.vrf_by_ref(value).await?.map(|v| ("ipam.vrf", v.id)),
+        "route-target" | "routetarget" => client
+            .route_target_by_ref(value)
+            .await?
+            .map(|rt| ("ipam.routetarget", rt.id)),
         other => anyhow::bail!(
-            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf)"
+            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, route-target)"
         ),
     };
     resolved.ok_or_else(|| not_found(kind, value))

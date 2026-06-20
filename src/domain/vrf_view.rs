@@ -7,8 +7,35 @@ use serde_json::Value;
 
 use crate::domain::custom;
 use crate::domain::util::non_empty;
+use crate::netbox::models::common::BriefObject;
 use crate::netbox::models::ipam::Vrf;
 use crate::output::plain::KeyValues;
+
+/// A navigable route-target reference (id + name) on a VRF's import/export lists.
+/// The id lets the VRF view's `targets` tab jump to the route target's detail.
+#[derive(Debug, Clone, Serialize)]
+pub struct RouteTargetRef {
+    pub id: u64,
+    pub name: String,
+}
+
+impl RouteTargetRef {
+    fn from_brief(b: BriefObject) -> Self {
+        Self {
+            id: b.id,
+            name: b.label(),
+        }
+    }
+}
+
+/// Join route-target names for the compact `key: value` plain output.
+fn join_target_names(targets: &[RouteTargetRef]) -> String {
+    targets
+        .iter()
+        .map(|r| r.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ")
+}
 
 /// A VRF, normalized to flat string fields.
 #[derive(Debug, Clone, Serialize)]
@@ -22,9 +49,9 @@ pub struct VrfView {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enforce_unique: Option<bool>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub import_targets: Vec<String>,
+    pub import_targets: Vec<RouteTargetRef>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub export_targets: Vec<String>,
+    pub export_targets: Vec<RouteTargetRef>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prefix_count: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -46,8 +73,16 @@ impl VrfView {
             rd: v.rd.and_then(non_empty),
             tenant: v.tenant.map(|b| b.label()),
             enforce_unique: v.enforce_unique,
-            import_targets: v.import_targets.into_iter().map(|b| b.label()).collect(),
-            export_targets: v.export_targets.into_iter().map(|b| b.label()).collect(),
+            import_targets: v
+                .import_targets
+                .into_iter()
+                .map(RouteTargetRef::from_brief)
+                .collect(),
+            export_targets: v
+                .export_targets
+                .into_iter()
+                .map(RouteTargetRef::from_brief)
+                .collect(),
             prefix_count: v.prefix_count,
             ipaddress_count: v.ipaddress_count,
             description: v.description.and_then(non_empty),
@@ -64,10 +99,10 @@ impl VrfView {
             .push_opt("tenant", self.tenant.clone())
             .push_opt("enforce_unique", self.enforce_unique.map(|b| b.to_string()));
         if !self.import_targets.is_empty() {
-            kv.push("import_targets", self.import_targets.join(", "));
+            kv.push("import_targets", join_target_names(&self.import_targets));
         }
         if !self.export_targets.is_empty() {
-            kv.push("export_targets", self.export_targets.join(", "));
+            kv.push("export_targets", join_target_names(&self.export_targets));
         }
         kv.push_opt("prefixes", self.prefix_count.map(|c| c.to_string()))
             .push_opt("addresses", self.ipaddress_count.map(|c| c.to_string()))
@@ -233,7 +268,14 @@ mod tests {
         assert_eq!(view.rd.as_deref(), Some("65000:100"));
         assert_eq!(view.tenant.as_deref(), Some("Acme Corp"));
         assert_eq!(view.enforce_unique, Some(true));
-        assert_eq!(view.import_targets, vec!["65000:100", "65000:200"]);
+        assert_eq!(
+            view.import_targets
+                .iter()
+                .map(|r| (r.id, r.name.as_str()))
+                .collect::<Vec<_>>(),
+            vec![(1, "65000:100"), (2, "65000:200")]
+        );
+        assert_eq!(view.export_targets.len(), 1);
         assert_eq!(view.prefix_count, Some(12));
         let plain = view.to_key_values().render();
         assert!(plain.contains("rd: 65000:100"));

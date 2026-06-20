@@ -66,12 +66,13 @@ pub enum GetKind {
     Vm,
     Cluster,
     Vrf,
+    RouteTarget,
 }
 
 impl GetKind {
     /// Every kind, in the order the docs and `nbox://{kind}/{ref}` template list
     /// them — the same set `nbox_get` accepts.
-    const ALL: [GetKind; 16] = [
+    const ALL: [GetKind; 17] = [
         GetKind::Device,
         GetKind::Ip,
         GetKind::Prefix,
@@ -88,6 +89,7 @@ impl GetKind {
         GetKind::Vm,
         GetKind::Cluster,
         GetKind::Vrf,
+        GetKind::RouteTarget,
     ];
 
     /// The `snake_case` slug used in `nbox://{kind}/{ref}` URIs and the `kind`
@@ -110,6 +112,7 @@ impl GetKind {
             GetKind::Vm => "vm",
             GetKind::Cluster => "cluster",
             GetKind::Vrf => "vrf",
+            GetKind::RouteTarget => "route_target",
         }
     }
 
@@ -359,7 +362,7 @@ fn resource_templates() -> ListResourceTemplatesResult {
         .with_description(
             "Read one NetBox object as JSON. `kind` is one of device, ip, prefix, vlan, \
              site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, \
-             vm, cluster; `ref` is its natural reference (name/slug/ID; CIDR for \
+             vm, cluster, route_target; `ref` is its natural reference (name/slug/ID; CIDR for \
              prefix/aggregate; address for ip; VID or name for vlan; AS number for asn). \
              Percent-encode a `ref` that contains '/'. Same view as the nbox_get tool.",
         )
@@ -467,7 +470,7 @@ impl NboxMcp {
     // single concrete type (a oneOf over ~10 view types is out of scope).
     #[tool(
         name = "nbox_get",
-        description = "Look up a single object and its context. `kind` is one of: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster. `ref` is the natural reference for that kind (name/slug/ID; CIDR for prefix/aggregate; address for ip; VID or name for vlan; AS number for asn; slug/name/ID for tenant; name/ID for contact; slug/name/ID for provider; name/ID for vm and cluster). On an ambiguous reference the error lists the candidates: pass `vrf` for an ip/prefix in several VRFs, or `site`/`group` for a VLAN VID present at several sites.",
+        description = "Look up a single object and its context. `kind` is one of: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, route_target. `ref` is the natural reference for that kind (name/slug/ID; CIDR for prefix/aggregate; address for ip; VID or name for vlan; AS number for asn; slug/name/ID for tenant; name/ID for contact; slug/name/ID for provider; name/ID for vm and cluster). On an ambiguous reference the error lists the candidates: pass `vrf` for an ip/prefix in several VRFs, or `site`/`group` for a VLAN VID present at several sites.",
         output_schema = output_schema(),
         annotations(read_only_hint = true)
     )]
@@ -575,7 +578,7 @@ impl NboxMcp {
     /// Recent journal entries for an object.
     #[tool(
         name = "nbox_journal",
-        description = "Return recent journal entries (operator notes) for an object, newest first. `kind` and `ref` follow nbox_get; supported kinds are device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster.",
+        description = "Return recent journal entries (operator notes) for an object, newest first. `kind` and `ref` follow nbox_get; supported kinds are device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, route_target.",
         annotations(read_only_hint = true)
     )]
     async fn nbox_journal(
@@ -703,6 +706,9 @@ impl NboxMcp {
             GetKind::Vrf => {
                 serde_json::to_value(detail::vrf_detail_by_ref(c, r, &not_found).await?)?
             }
+            GetKind::RouteTarget => {
+                serde_json::to_value(detail::route_target_detail_by_ref(c, r, &not_found).await?)?
+            }
         };
         Ok(Json(value))
     }
@@ -771,6 +777,7 @@ impl NboxMcp {
             GetKind::Vm => "vm",
             GetKind::Cluster => "cluster",
             GetKind::Vrf => "vrf",
+            GetKind::RouteTarget => "route-target",
         };
         crate::resolve_content_type_id(&self.client, cli_kind, value).await
     }

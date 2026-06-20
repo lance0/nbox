@@ -11,8 +11,8 @@ use crate::netbox::models::circuits::{Circuit, Provider};
 use crate::netbox::models::dcim::{Device, Interface, Location, Rack, Region, Site, SiteGroup};
 use crate::netbox::models::extras::{JournalEntry, TagInfo};
 use crate::netbox::models::ipam::{
-    Aggregate, Asn, AvailableIp, AvailablePrefix, IpAddress, IpRange, Prefix, Service, Vlan,
-    VlanGroup, Vrf,
+    Aggregate, Asn, AvailableIp, AvailablePrefix, IpAddress, IpRange, Prefix, RouteTarget, Service,
+    Vlan, VlanGroup, Vrf,
 };
 use crate::netbox::models::tenancy::{Contact, Tenant};
 use crate::netbox::models::virtualization::{Cluster, VirtualMachine};
@@ -507,6 +507,38 @@ impl NetBoxClient {
             .list(Endpoint::Vrfs, vec![("name__ic", value.to_string())])
             .await?;
         ambiguous_or_first("VRF", value, contains.results, |v| v.name.clone())
+    }
+
+    /// Resolve a route target by numeric ID, or by its name (the BGP extended
+    /// community value, e.g. `65000:100`). Route targets have no slug/RD, so the
+    /// name is the only string key: exact (case-insensitive) first, then a
+    /// contains-match that surfaces an ambiguous candidate list.
+    pub async fn route_target_by_ref(&self, value: &str) -> Result<Option<RouteTarget>> {
+        if let Ok(id) = value.parse::<u64>()
+            && let Some(rt) = self
+                .get_optional::<RouteTarget>(&format!("/api/ipam/route-targets/{id}/"), &[])
+                .await?
+        {
+            return Ok(Some(rt));
+        }
+        let exact: Page<RouteTarget> = self
+            .list(
+                Endpoint::RouteTargets,
+                vec![("name__ie", value.to_string())],
+            )
+            .await?;
+        if let Some(rt) = exact.results.into_iter().next() {
+            return Ok(Some(rt));
+        }
+        let contains: Page<RouteTarget> = self
+            .list(
+                Endpoint::RouteTargets,
+                vec![("name__ic", value.to_string())],
+            )
+            .await?;
+        ambiguous_or_first("route target", value, contains.results, |rt| {
+            rt.name.clone()
+        })
     }
 
     /// Resolve an IP range by numeric ID, or by its start address.

@@ -21,6 +21,7 @@ pub mod journal_view;
 pub mod prefix_view;
 pub mod provider_view;
 pub mod rack_view;
+pub mod route_target_view;
 pub mod site_view;
 pub mod tag_view;
 pub mod tenant_view;

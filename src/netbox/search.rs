@@ -14,7 +14,9 @@ use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
 use crate::netbox::models::circuits::{Circuit, Provider};
 use crate::netbox::models::dcim::{Device, Rack, Site};
-use crate::netbox::models::ipam::{Aggregate, Asn, IpAddress, IpRange, Prefix, Vlan, Vrf};
+use crate::netbox::models::ipam::{
+    Aggregate, Asn, IpAddress, IpRange, Prefix, RouteTarget, Vlan, Vrf,
+};
 use crate::netbox::models::tenancy::{Contact, Tenant};
 use crate::netbox::models::virtualization::{Cluster, VirtualMachine};
 use crate::netbox::pagination::Page;
@@ -47,6 +49,11 @@ pub enum ObjectKind {
     /// targets), and a cross-navigation target. Carries no site scope, so scope
     /// filters skip it. Kept last to preserve the existing variants' order.
     Vrf,
+    /// A route target (BGP extended community, e.g. `65000:100`). Searchable by
+    /// name, openable as a detail (the VRFs that import/export it), and the
+    /// cross-navigation target the VRF view's targets tab jumps to. Carries no
+    /// site scope. Kept last to preserve the existing variants' order.
+    RouteTarget,
 }
 
 impl ObjectKind {
@@ -69,6 +76,7 @@ impl ObjectKind {
             ObjectKind::Cluster => "cluster",
             ObjectKind::Rack => "rack",
             ObjectKind::Vrf => "vrf",
+            ObjectKind::RouteTarget => "route-target",
         }
     }
 }
@@ -316,6 +324,7 @@ impl NetBoxClient {
             clusters,
             racks,
             vrfs,
+            route_targets,
         ) = tokio::join!(
             self.search_devices(&q, f, scope.as_ref()),
             self.search_sites(&q, f, scope.as_ref()),
@@ -333,6 +342,7 @@ impl NetBoxClient {
             self.search_clusters(&q, f, scope.as_ref()),
             self.search_racks(&q, f, scope.as_ref()),
             self.search_vrfs(&q, f, scope.as_ref()),
+            self.search_route_targets(&q, f, scope.as_ref()),
         );
 
         let mut merged = Vec::new();
@@ -355,6 +365,7 @@ impl NetBoxClient {
             ("clusters", clusters),
             ("racks", racks),
             ("vrfs", vrfs),
+            ("route-targets", route_targets),
         ];
         for (name, branch) in branches {
             match branch {
@@ -1090,6 +1101,39 @@ impl NetBoxClient {
                 }),
                 url: api_to_web_url(&v.url),
                 display: v.name,
+            })
+            .collect())
+    }
+
+    async fn search_route_targets(
+        &self,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+    ) -> Result<Vec<SearchResult>> {
+        // Route targets carry no site scope — skip them for any active scope.
+        if skip_for_any_scope(scope) {
+            return Ok(Vec::new());
+        }
+        // The route-target endpoint accepts `q` + `tenant` + `tag` (no
+        // status/role/site), so an unsupported active filter skips it.
+        let Some(params) = endpoint_params(q, f, &["tenant", "tag"]) else {
+            return Ok(Vec::new());
+        };
+        let page: Page<RouteTarget> = self.list(Endpoint::RouteTargets, params).await?;
+        Ok(page
+            .results
+            .into_iter()
+            .map(|rt| SearchResult {
+                kind: ObjectKind::RouteTarget,
+                id: rt.id,
+                score: score_match(q, &rt.name),
+                subtitle: rt
+                    .tenant
+                    .as_ref()
+                    .map(super::models::common::BriefObject::label),
+                url: api_to_web_url(&rt.url),
+                display: rt.name,
             })
             .collect())
     }

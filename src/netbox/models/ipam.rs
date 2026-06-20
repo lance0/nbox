@@ -190,6 +190,28 @@ pub struct Vrf {
     pub custom_fields: serde_json::Value,
 }
 
+/// A route target (`/api/ipam/route-targets/`). A BGP extended community
+/// (e.g. `65000:100`) that VRFs import/export; the relation to VRFs lives on the
+/// VRF side (`import_targets`/`export_targets`), so the detail view resolves the
+/// importing/exporting VRFs by filtering `/api/ipam/vrfs/`.
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
+pub struct RouteTarget {
+    pub id: u64,
+    pub url: String,
+    #[serde(default)]
+    pub display: Option<String>,
+    #[serde(default)]
+    pub name: String,
+    #[serde(default)]
+    pub tenant: Option<BriefObject>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<Tag>,
+    #[serde(default)]
+    pub custom_fields: serde_json::Value,
+}
+
 /// An IP range (`/api/ipam/ip-ranges/`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct IpRange {
