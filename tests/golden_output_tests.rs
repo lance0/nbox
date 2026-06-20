@@ -41,3 +41,13 @@ fn vrf_detail_json_contract() {
         include_str!("golden/vrf_detail.json"),
     );
 }
+
+#[test]
+fn ip_json_contract() {
+    assert_golden(&fixtures::ip_view(), include_str!("golden/ip.json"));
+}
+
+#[test]
+fn prefix_json_contract() {
+    assert_golden(&fixtures::prefix_view(), include_str!("golden/prefix.json"));
+}

@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 
 use nbox::domain::device_detail::{CableRow, DeviceDetail, IfaceRow, IpRow, ServiceRow, VlanRow};
 use nbox::domain::device_view::DeviceView;
+use nbox::domain::ip_view::IpView;
+use nbox::domain::prefix_view::{PrefixIp, PrefixView};
 use nbox::domain::vrf_view::{RouteTargetRef, VrfAddressRow, VrfDetail, VrfPrefixRow, VrfView};
 use nbox::netbox::search::{ObjectKind, SearchResult};
 use serde_json::{Value, json};
@@ -59,6 +61,58 @@ pub fn vrf_detail() -> VrfDetail {
         // prefix_total exceeds prefixes.len() to model a capped section.
         prefix_total: 3,
         address_total: 1,
+    }
+}
+
+/// An IP address with full parent-prefix context, a tag, and a custom field —
+/// the exact shape `nbox ip --json` and MCP `nbox_get ip` emit. Every
+/// skip-if-empty field is populated so the contract pins their presence.
+pub fn ip_view() -> IpView {
+    IpView {
+        address: "10.44.208.55/24".into(),
+        status: Some("active".into()),
+        dns_name: Some("printer-55.example.com".into()),
+        vrf: Some("customer-prod".into()),
+        tenant: Some("Acme".into()),
+        assigned: Some("edge01 xe-0/0/0".into()),
+        parent_prefix: Some("10.44.208.0/24".into()),
+        vlan: Some("208 (v-prod)".into()),
+        scope: Some("den1".into()),
+        scope_type: Some("site".into()),
+        tags: vec!["printer".into()],
+        custom_fields: BTreeMap::from([("owner".to_string(), json!("netops"))]),
+    }
+}
+
+/// A prefix with scope/VLAN context, a child prefix, and contained addresses
+/// (one assigned, one free) — the shape `nbox prefix --json` and MCP
+/// `nbox_get prefix` emit. Exercises the optional scalars plus the two lists.
+pub fn prefix_view() -> PrefixView {
+    PrefixView {
+        prefix: "10.44.208.0/24".into(),
+        status: Some("active".into()),
+        vrf: Some("customer-prod".into()),
+        vlan: Some("208 (v-prod)".into()),
+        scope: Some("den1".into()),
+        scope_type: Some("site".into()),
+        tenant: Some("Acme".into()),
+        role: Some("access".into()),
+        children: Some(2),
+        utilization: Some(37.5),
+        description: Some("user access prefix".into()),
+        tags: vec!["prod".into()],
+        custom_fields: BTreeMap::from([("vlan_owner".to_string(), json!("netops"))]),
+        child_prefixes: vec!["10.44.208.0/26".into(), "10.44.208.64/26".into()],
+        ip_addresses: vec![
+            PrefixIp {
+                address: "10.44.208.1/24".into(),
+                assigned: Some("edge01 irb.208".into()),
+            },
+            PrefixIp {
+                address: "10.44.208.55/24".into(),
+                assigned: None,
+            },
+        ],
     }
 }
 
