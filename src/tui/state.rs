@@ -1258,8 +1258,14 @@ impl App {
             AppEvent::Status(message) => {
                 // An async status push (e.g. "copied …"/"opened …"): classify it
                 // so confirmations and failures still get the right color.
+                // Confirmations fade like other transient notices; failures
+                // persist (until the next action) so they aren't missed.
                 let severity = classify_status(&message);
-                self.set_status(message, severity);
+                if severity == Severity::Error {
+                    self.set_status(message, severity);
+                } else {
+                    self.set_transient_status(message, severity);
+                }
                 Vec::new()
             }
         }
@@ -4005,6 +4011,25 @@ mod tests {
         assert_eq!(a.status_severity, Severity::Success);
         a.handle_event(AppEvent::Status("copy failed: x".into()));
         assert_eq!(a.status_severity, Severity::Error);
+    }
+
+    #[test]
+    fn async_confirmation_fades_but_failure_persists() {
+        let mut a = app();
+        // A success confirmation (e.g. `o` → "opened in browser") arms a TTL so
+        // it fades from the status line; ticking it down clears it.
+        a.handle_event(AppEvent::Status("opened in browser".into()));
+        assert_eq!(a.status_ttl, Some(TRANSIENT_STATUS_TICKS));
+        for _ in 0..TRANSIENT_STATUS_TICKS {
+            a.tick_status_ttl();
+        }
+        assert!(a.status.is_empty(), "confirmation should have faded");
+
+        // A failure persists (no TTL) until the next action replaces it.
+        a.handle_event(AppEvent::Status("open failed: nope".into()));
+        assert_eq!(a.status_ttl, None);
+        a.tick_status_ttl();
+        assert_eq!(a.status, "open failed: nope", "failure must not fade");
     }
 
     // --- Loading spinner / in-flight counter --------------------------------
