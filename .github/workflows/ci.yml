@@ -1,9 +1,15 @@
 name: CI
 
 on:
+  # Skip doc-only changes (Markdown anywhere) — no need to run fmt/clippy/build/test
+  # when nothing compilable changed. A commit touching any non-.md file still runs.
   push:
     branches: [master]
+    paths-ignore:
+      - '**.md'
   pull_request:
+    paths-ignore:
+      - '**.md'
 
 env:
   CARGO_TERM_COLOR: always
