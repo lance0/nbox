@@ -433,7 +433,7 @@ The tools are all annotated read-only:
 | Tool | What |
 |------|------|
 | `nbox_status` | Connection + backend capabilities + NetBox/Django/Python versions. |
-| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/providers/aggregates/ASNs/IP-ranges/tenants/contacts/VMs/clusters/route-targets; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; filters IP/prefix results only). |
+| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/providers/aggregates/ASNs/IP-ranges/tenants/contacts/VMs/clusters/VRFs/route-targets; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; filters IP/prefix results only). |
 | `nbox_get` | Fetch one object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target) + `ref`; `vrf`/`site`/`group` disambiguate. |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix. |

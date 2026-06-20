@@ -6,7 +6,7 @@ nbox is a read-only NetBox client — a CLI and a TUI over the same core.
 
 | Command | What |
 | ------- | ---- |
-| `nbox search <q>` | Parallel search across devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers/VMs/clusters/route-targets. Filters: `--status/--site/--region/--site-group/--location/--tenant/--role/--tag/--vrf`, `--limit`, `--cols`, `--partial`. |
+| `nbox search <q>` | Parallel search across devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers/VMs/clusters/VRFs/route-targets. Filters: `--status/--site/--region/--site-group/--location/--tenant/--role/--tag/--vrf`, `--limit`, `--cols`, `--partial`. |
 | `nbox device <name\|slug\|id> [--journal]` | Device + interfaces, IPs, cables, VLANs, services. |
 | `nbox interface <device> <iface>` | One interface: type, MTU, MAC, mode, VLANs, cable, **cable path** (trace), addresses. |
 | `nbox ip <addr> [--vrf] [--journal]` | IP + most-specific parent prefix (VRF-scoped) and its VLAN plus the prefix's `scope`/`scope_type` (site, location, region, …). |
@@ -101,7 +101,7 @@ are annotated read-only.
 | Tool | What |
 | ---- | ---- |
 | `nbox_status` | Connection + active backend capabilities + NetBox/Django/Python versions. |
-| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers/VMs/clusters/route-targets; `query`, `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; IP/prefix only). |
+| `nbox_search` | Search devices/IPs/prefixes/VLANs/sites/circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers/VMs/clusters/VRFs/route-targets; `query`, `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; IP/prefix only). |
 | `nbox_get` | One object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target) + `ref`; `vrf`/`site`/`group` disambiguate. |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix. |
