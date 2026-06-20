@@ -117,7 +117,7 @@ jobs:
           cd -
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nbox-${{ matrix.target }}
           path: |
@@ -163,7 +163,7 @@ jobs:
           tar czvf nbox-completions.tar.gz completions/
 
       - name: Upload completions
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: nbox-completions
           path: nbox-completions.tar.gz
