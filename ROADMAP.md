@@ -307,6 +307,29 @@ Consolidated future scope:
 - ☑ `dependabot.yml`, `CONTRIBUTING.md`, the `docs/` tree, `KNOWN_ISSUES.md`, `examples/config.toml`,
   `.github/FUNDING.yml`.
 
+### Code nits to revisit (verified 2026-06-19, post live-browse)
+
+- ☐ **Profile switch leaves the live-browse flags unreset** (`tui/state.rs` `clear_for_profile_switch`).
+  It clears `browse_kind`/`preview_dirty` but not `browse_dirty`/`nav_tick_anchor`, so whether the new
+  instance auto-browses the hovered Nav section depends on whether a `PreviewTick` fired mid-switch (the
+  `switch_in_flight` guard consumes the flag). Correct-by-accident today; make it deliberate — either reset
+  `browse_dirty = false` + `nav_tick_anchor = nav_selected` for a clean empty pane, or set
+  `browse_dirty = true` to always reload the hovered kind on the new instance.
+- ☐ **Exit persists theme + last_browsed in two separate writes** (`tui/app.rs` `run_on`). Each is a full
+  read-modify-write of `config.toml`; if both changed it writes twice, and a failure between them
+  half-persists. Batch into one `config::save_ui_fields(&[Theme, LastBrowsed])` — the atomic batch helper
+  already exists and is tested.
+- ☐ **`connect_timeout` is hardcoded 10s, independent of the configurable overall `timeout`**
+  (`netbox/client.rs:53`; overall = `timeout_secs.unwrap_or(15)`). With `timeout_secs < 10` the overall
+  timeout fires first (reqwest takes the min) — harmless but confusing. Clamp:
+  `connect_timeout = min(10s, timeout.saturating_sub(1s))`.
+- ☐ **(test) `live_browse_on_recent_clears_the_results` checks state, not the recents render.** It asserts
+  `browse_kind == None` + empty view but seeds no recents, so it doesn't prove the fallback paints. Seed a
+  recent and assert `home_target()` falls back to it.
+- Considered, not worth doing: `nav_section_index_for_slug` linear scan over 9 slugs (a `match` would be
+  exhaustive, but the list is tiny); `status_in_banner` elevating only Warning/Error (deliberate — long
+  Info/Success messages are transient and stay in the footer slot).
+
 ## Explicit non-goals
 
 Full CRUD for every model · replacing the NetBox web UI · a plugin framework · topology diagrams · a
