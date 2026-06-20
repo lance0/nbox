@@ -1688,9 +1688,10 @@ mod contracts {
 
         // Per-surface routing: each surface reports configured + effective; the
         // optional `reason` is omitted when there is no fallback (REST profile).
-        assert_keys(&value["api"], &["search", "vrf"]);
+        assert_keys(&value["api"], &["search", "vrf", "route_target"]);
         assert_keys(&value["api"]["search"], &["configured", "effective"]);
         assert_keys(&value["api"]["vrf"], &["configured", "effective"]);
+        assert_keys(&value["api"]["route_target"], &["configured", "effective"]);
 
         // Capability summary: the three blocks and their stable inner keys.
         assert_keys(&value["capabilities"], &["version", "rest", "graphql"]);

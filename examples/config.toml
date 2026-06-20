@@ -36,10 +36,11 @@ exclude_config_context = true   # drop the large config_context on devices/VMs
 # Per-surface backend. REST is canonical; opt a read surface into GraphQL here
 # (falls back to REST if the instance's GraphQL schema can't support it). Omit
 # the table for all-REST. `nbox status` shows the configured vs effective backend.
-# Only the VRF view can use GraphQL today — search is always REST (NetBox GraphQL
-# has no equivalent to REST's full-text `q`).
+# The VRF and route-target views can use GraphQL today — search is always REST
+# (NetBox GraphQL has no equivalent to REST's full-text `q`).
 [profiles.work.api]
 vrf = "graphql"              # rest | graphql
+# route_target = "graphql"   # rest | graphql — the route target's importing/exporting VRFs
 
 [profiles.lab]
 url = "https://netbox.lab.example.com"

@@ -1,5 +1,9 @@
 {
   "api": {
+    "route_target": {
+      "configured": "graphql",
+      "effective": "graphql"
+    },
     "search": {
       "configured": "graphql",
       "effective": "rest",
@@ -15,6 +19,11 @@
       "available": true,
       "probed": true,
       "surfaces": {
+        "route_target": {
+          "missing": [],
+          "recommended": true,
+          "supported": true
+        },
         "search": {
           "missing": [
             "NetBox GraphQL exposes no REST-equivalent full-text (q) search"

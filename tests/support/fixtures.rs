@@ -218,7 +218,8 @@ pub fn status_report() -> Value {
                 "effective": "rest",
                 "reason": "NetBox GraphQL exposes no REST-equivalent full-text (q) search"
             },
-            "vrf": { "configured": "graphql", "effective": "graphql" }
+            "vrf": { "configured": "graphql", "effective": "graphql" },
+            "route_target": { "configured": "graphql", "effective": "graphql" }
         },
         "netbox_version": "4.5.5",
         "django_version": "5.2.1",
@@ -245,7 +246,8 @@ pub fn status_report() -> Value {
                         "recommended": false,
                         "missing": ["NetBox GraphQL exposes no REST-equivalent full-text (q) search"]
                     },
-                    "vrf": { "supported": true, "recommended": true, "missing": [] }
+                    "vrf": { "supported": true, "recommended": true, "missing": [] },
+                    "route_target": { "supported": true, "recommended": true, "missing": [] }
                 }
             }
         }

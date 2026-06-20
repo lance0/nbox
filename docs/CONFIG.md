@@ -35,10 +35,11 @@ timeout_secs = 15
 page_size = 100
 exclude_config_context = true
 
-# Per-surface backend (optional; omit for all-REST). Only the VRF view can use
-# GraphQL today; search is always REST (see "Backends" below).
+# Per-surface backend (optional; omit for all-REST). The VRF and route-target
+# views can use GraphQL today; search is always REST (see "Backends" below).
 [profiles.work.api]
 vrf = "graphql"               # rest | graphql
+route_target = "graphql"      # rest | graphql
 ```
 
 `config_version` is written by `config init`. A config with a *newer* version
@@ -91,13 +92,20 @@ scheme marker.
 REST is the **canonical** backend — it covers every operation (search, detail
 lookups, journals, raw reads, available IP/prefix queries, and identity
 resolution). GraphQL is an **opt-in per-surface accelerator**, configured under
-`[profiles.<name>.api]`. Today the **VRF view** is the only GraphQL-capable
-surface:
+`[profiles.<name>.api]`. Today the **VRF view** and the **route-target view** are
+the GraphQL-capable surfaces:
 
 ```toml
 [profiles.work.api]
-vrf = "graphql"   # rest | graphql — the VRF view's prefix/address bundle
+vrf = "graphql"            # rest | graphql — the VRF view's prefix/address bundle
+route_target = "graphql"   # rest | graphql — the route target's importing/exporting VRFs
 ```
+
+Each replaces a multi-call REST fan-out with one filtered `/graphql/` query: the
+VRF view bundles its prefixes + addresses; the route-target view bundles its
+importing + exporting VRFs (two `vrfs` list calls → one query). Identity
+resolution stays REST (so not-found/ambiguous exit codes are unchanged), and the
+output is byte-identical to the REST path either way.
 
 **Search is always REST.** `nbox search` means canonical NetBox search semantics,
 and NetBox's GraphQL API has no equivalent to REST's full-text `q` quick-search —
@@ -125,8 +133,9 @@ Rules:
 `nbox status` reports the configured vs effective backend per surface:
 
 ```
-api search  rest (NetBox GraphQL exposes no REST-equivalent full-text (q) search)
-api vrf     graphql
+api search        rest (NetBox GraphQL exposes no REST-equivalent full-text (q) search)
+api vrf           graphql
+api route_target  graphql
 ```
 
 ## UI settings

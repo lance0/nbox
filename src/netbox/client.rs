@@ -109,6 +109,7 @@ impl NetBoxClient {
         match surface {
             ApiSurface::Search => self.api.search,
             ApiSurface::Vrf => self.api.vrf,
+            ApiSurface::RouteTarget => self.api.route_target,
         }
         .unwrap_or_default()
     }
@@ -119,6 +120,7 @@ impl NetBoxClient {
     /// a `search = "graphql"` preference never triggers a probe.
     pub(crate) fn any_graphql_preferred(&self) -> bool {
         self.api.vrf == Some(BackendPreference::Graphql)
+            || self.api.route_target == Some(BackendPreference::Graphql)
     }
 
     pub(crate) fn graphql_capability_cache(&self) -> &tokio::sync::OnceCell<GraphqlCapabilities> {

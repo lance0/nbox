@@ -66,6 +66,7 @@ impl EffectiveBackend {
 pub struct ApiRouting {
     pub search: SurfaceRouting,
     pub vrf: SurfaceRouting,
+    pub route_target: SurfaceRouting,
 }
 
 /// One surface's routing: what was configured, what is effective, and (on a
@@ -139,6 +140,7 @@ pub struct GraphqlBackendCapabilities {
 pub struct GraphqlSurfaces {
     pub search: SurfaceSupport,
     pub vrf: SurfaceSupport,
+    pub route_target: SurfaceSupport,
 }
 
 /// Whether a GraphQL surface is usable, recommended, and what (if anything) the
@@ -200,10 +202,33 @@ fn vrf_support(caps: &GraphqlCapabilities) -> SurfaceSupport {
     }
 }
 
+/// GraphQL route-target support requires the route-target list plus `id`
+/// filtering (the single filtered selection that carries the importing/exporting
+/// VRF relations). All-or-nothing — a partial schema falls back to REST with the
+/// missing pieces named. The nested `importing_vrfs`/`exporting_vrfs` fields are
+/// standard on NetBox's RouteTargetType across the 4.x line, so the list + id
+/// filter is the practical gate (mirroring `vrf_support`).
+fn route_target_support(caps: &GraphqlCapabilities) -> SurfaceSupport {
+    let mut missing = Vec::new();
+    if caps.list("route_target_list").is_none() {
+        missing.push("route_target_list".to_string());
+    }
+    if !list_has_filter(caps, "route_target_list", "id") {
+        missing.push("route_target_list.id".to_string());
+    }
+    let supported = missing.is_empty();
+    SurfaceSupport {
+        supported,
+        recommended: supported,
+        missing,
+    }
+}
+
 fn surface_support(caps: &GraphqlCapabilities, surface: ApiSurface) -> SurfaceSupport {
     match surface {
         ApiSurface::Search => search_support(),
         ApiSurface::Vrf => vrf_support(caps),
+        ApiSurface::RouteTarget => route_target_support(caps),
     }
 }
 
@@ -243,11 +268,12 @@ impl NetBoxClient {
         }
     }
 
-    /// Configured-vs-effective routing for both surfaces (`status.api`).
+    /// Configured-vs-effective routing for every surface (`status.api`).
     pub async fn api_routing(&self) -> ApiRouting {
         ApiRouting {
             search: self.surface_routing(ApiSurface::Search).await,
             vrf: self.surface_routing(ApiSurface::Vrf).await,
+            route_target: self.surface_routing(ApiSurface::RouteTarget).await,
         }
     }
 
@@ -275,6 +301,7 @@ impl NetBoxClient {
                     surfaces: Some(GraphqlSurfaces {
                         search: search_support(),
                         vrf: vrf_support(&caps),
+                        route_target: route_target_support(&caps),
                     }),
                 },
                 Err(err) => GraphqlBackendCapabilities {
@@ -369,6 +396,7 @@ mod tests {
                 api: Some(ApiConfig {
                     search: Some(BackendPreference::Graphql),
                     vrf: Some(BackendPreference::Graphql),
+                    route_target: Some(BackendPreference::Graphql),
                 }),
                 ..Default::default()
             },
