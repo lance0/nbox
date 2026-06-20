@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use super::common::{BriefObject, Choice, Tag};
 
 /// An IP address (`/api/ipam/ip-addresses/`).
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct IpAddress {
     pub id: u64,
     pub url: String,
@@ -42,7 +42,7 @@ pub struct IpAddress {
 ///
 /// NetBox 4.2+ uses a polymorphic `scope` (`scope_type`/`scope_id`/`scope`) in
 /// place of the old `site` field; we target 4.2+, so there is no legacy fallback.
-#[derive(Debug, Clone, Deserialize, Serialize)]
+#[derive(Debug, Clone, Default, Deserialize, Serialize)]
 pub struct Prefix {
     pub id: u64,
     pub url: String,

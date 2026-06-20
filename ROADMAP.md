@@ -192,8 +192,10 @@ Consolidated future scope:
     maintain both surfaces for a view indefinitely.
   - ☐ **Route-target / routing-context views** — bundle the relation graph (a route target ↔ the VRFs
     that import/export it) cleanly. Needs route targets as a first-class object or expanded VRF views.
-- ☐ GraphQL backend cleanup: typed `Gql*` structs for the VRF bundle (replace the `from_value(json!{})`
-  reshape) and a dedicated `netbox/graphql/` submodule for the remaining helpers.
+- ☑ **GraphQL backend cleanup.** Typed `GqlVrf{Prefix,Address}` + `VrfBundleResponse` structs replace
+  the `from_value(json!{})` row reshape (`Default` on the `Prefix`/`IpAddress` wire models lets the
+  conversion set only the VRF-relevant fields). All GraphQL — capabilities probe + VRF bundle + helpers
+  + tests — now lives in `netbox/graphql.rs`; `search.rs` is REST-only (2657 → ~1.2k lines).
 - ☐ GraphQL capability probing v2 if schema churn demands it: dynamic `*Filter` discovery and/or a
   short TTL cache keyed by instance/profile to avoid re-probing when users bounce between profiles
   pointing at the same NetBox.

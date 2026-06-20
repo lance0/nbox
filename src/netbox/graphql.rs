@@ -8,11 +8,13 @@
 
 use std::collections::HashMap;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 
-use crate::netbox::client::NetBoxClient;
+use crate::netbox::client::{MAX_PAGE_SIZE, NetBoxClient};
+use crate::netbox::models::common::Choice;
+use crate::netbox::models::ipam::{IpAddress, Prefix};
 
 const QUERY_INTROSPECTION: &str = r"
 query {
@@ -163,6 +165,169 @@ impl NetBoxClient {
             schema.schema,
             [first, second],
         ))
+    }
+
+    /// Fetch a VRF's prefixes + IP addresses in a single GraphQL query (the VRF
+    /// detail "bundle"), normalized into the REST wire models so the downstream
+    /// `VrfDetail` build is byte-identical to the REST path. The caller resolves
+    /// the VRF id and its header over REST first (identity stays canonical); this
+    /// fetches only the children. A real GraphQL/transport error propagates (fail
+    /// closed) rather than degrading to empty data.
+    pub(crate) async fn graphql_vrf_bundle(
+        &self,
+        vrf_id: u64,
+        limit: usize,
+    ) -> Result<(Vec<Prefix>, Vec<IpAddress>)> {
+        let caps = self.graphql_capabilities().await?;
+        let mut prefix_filters = Map::new();
+        let mut ip_filters = Map::new();
+        gql_add_filter(
+            &caps,
+            "prefix_list",
+            &mut prefix_filters,
+            "vrf_id",
+            json!(vrf_id),
+        );
+        gql_add_filter(
+            &caps,
+            "ip_address_list",
+            &mut ip_filters,
+            "vrf_id",
+            json!(vrf_id),
+        );
+        let prefix_type = caps
+            .list("prefix_list")
+            .and_then(|f| f.filter_type())
+            .context("GraphQL schema is missing the prefix_list filter type")?;
+        let ip_type = caps
+            .list("ip_address_list")
+            .and_then(|f| f.filter_type())
+            .context("GraphQL schema is missing the ip_address_list filter type")?;
+        let page = limit.clamp(1, MAX_PAGE_SIZE);
+        let prefix_pag = gql_pagination(&caps, "prefix_list", page);
+        let ip_pag = gql_pagination(&caps, "ip_address_list", page);
+
+        let query = format!(
+            "query($pf: {prefix_type}, $if: {ip_type}) {{ \
+             prefix_list(filters: $pf{prefix_pag}) {{ id prefix _depth status description }} \
+             ip_address_list(filters: $if{ip_pag}) {{ id address status dns_name description }} }}"
+        );
+        let bundle: VrfBundleResponse = self
+            .graphql(
+                &query,
+                json!({ "pf": Value::Object(prefix_filters), "if": Value::Object(ip_filters) }),
+            )
+            .await?;
+
+        let prefixes = bundle
+            .prefix_list
+            .into_iter()
+            .filter_map(GqlVrfPrefix::into_prefix)
+            .collect();
+        let addresses = bundle
+            .ip_address_list
+            .into_iter()
+            .filter_map(GqlVrfAddress::into_ip)
+            .collect();
+        Ok((prefixes, addresses))
+    }
+}
+
+/// Pagination clause for a GraphQL list field, empty when it isn't paginated.
+fn gql_pagination(caps: &GraphqlCapabilities, list_name: &str, limit: usize) -> String {
+    match caps.list(list_name) {
+        Some(field) if field.has_pagination() => {
+            format!(", pagination: {{offset: 0, limit: {limit}}}")
+        }
+        _ => String::new(),
+    }
+}
+
+/// Insert a schema-shaped value for `key` into `filters` when the list's filter
+/// type exposes it; returns whether it was added.
+fn gql_add_filter(
+    caps: &GraphqlCapabilities,
+    list_name: &str,
+    filters: &mut Map<String, Value>,
+    key: &str,
+    value: Value,
+) -> bool {
+    let Some(filter_type) = caps.list(list_name).and_then(|field| field.filter_type()) else {
+        return false;
+    };
+    let Some(value) = caps.filter_value(filter_type, key, value) else {
+        return false;
+    };
+    filters.insert(key.into(), value);
+    true
+}
+
+/// The combined VRF-bundle response. GraphQL ids are strings, `status` is a
+/// plain enum string, and prefixes carry `_depth`; each row deserializes into a
+/// typed struct, then maps into the REST wire model so REST and GraphQL converge
+/// on one downstream view-build path.
+#[derive(Debug, Deserialize)]
+struct VrfBundleResponse {
+    #[serde(default)]
+    prefix_list: Vec<GqlVrfPrefix>,
+    #[serde(default)]
+    ip_address_list: Vec<GqlVrfAddress>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlVrfPrefix {
+    id: String,
+    prefix: String,
+    #[serde(rename = "_depth")]
+    depth: Option<u64>,
+    status: Option<String>,
+    description: Option<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlVrfAddress {
+    id: String,
+    address: String,
+    status: Option<String>,
+    dns_name: Option<String>,
+    description: Option<String>,
+}
+
+/// A GraphQL plain-string `status` (`"active"`) becomes the REST `Choice` shape
+/// (`{value,label}`, both set to the string).
+fn gql_status(status: Option<String>) -> Option<Choice<String>> {
+    status.map(|s| Choice {
+        label: s.clone(),
+        value: s,
+    })
+}
+
+impl GqlVrfPrefix {
+    /// Map into the REST [`Prefix`] (only the fields the VRF tree needs; the rest
+    /// default). A non-numeric id drops the row rather than failing the bundle.
+    fn into_prefix(self) -> Option<Prefix> {
+        Some(Prefix {
+            id: self.id.parse().ok()?,
+            prefix: self.prefix,
+            status: gql_status(self.status),
+            description: self.description,
+            depth: self.depth,
+            ..Prefix::default()
+        })
+    }
+}
+
+impl GqlVrfAddress {
+    /// Map into the REST [`IpAddress`]. A non-numeric id drops the row.
+    fn into_ip(self) -> Option<IpAddress> {
+        Some(IpAddress {
+            id: self.id.parse().ok()?,
+            address: self.address,
+            status: gql_status(self.status),
+            dns_name: self.dns_name,
+            description: self.description,
+            ..IpAddress::default()
+        })
     }
 }
 
@@ -528,5 +693,173 @@ mod tests {
             caps.filter_value("EnumFilter", "status", json!("active")),
             Some(json!({ "exact": "STATUS_ACTIVE" }))
         );
+    }
+
+    #[test]
+    fn gql_vrf_prefix_maps_status_id_and_depth() {
+        // GraphQL gives string id, plain-string status, and `_depth`; the wire
+        // model wants numeric id, a Choice{value,label} status, and `depth`.
+        let row: GqlVrfPrefix = serde_json::from_value(json!({
+            "id": "34", "prefix": "10.20.0.0/16", "_depth": 0,
+            "status": "container", "description": "supernet"
+        }))
+        .unwrap();
+        let p = row.into_prefix().expect("prefix");
+        assert_eq!(p.id, 34);
+        assert_eq!(p.prefix, "10.20.0.0/16");
+        assert_eq!(p.depth, Some(0));
+        assert_eq!(
+            p.status.as_ref().map(|c| c.value.as_str()),
+            Some("container")
+        );
+        assert_eq!(p.description.as_deref(), Some("supernet"));
+
+        // A null status (GraphQL can omit it) stays None, not an error.
+        let row: GqlVrfPrefix = serde_json::from_value(
+            json!({"id": "35", "prefix": "10.20.1.0/24", "_depth": 1, "status": null}),
+        )
+        .unwrap();
+        let p = row.into_prefix().expect("prefix");
+        assert!(p.status.is_none());
+        assert_eq!(p.depth, Some(1));
+    }
+
+    #[test]
+    fn gql_vrf_address_maps_fields() {
+        let row: GqlVrfAddress = serde_json::from_value(json!({
+            "id": "6", "address": "10.20.1.10/24", "status": "active",
+            "dns_name": "web-01.customer"
+        }))
+        .unwrap();
+        let ip = row.into_ip().expect("ip");
+        assert_eq!(ip.id, 6);
+        assert_eq!(ip.address, "10.20.1.10/24");
+        assert_eq!(ip.status.as_ref().map(|c| c.value.as_str()), Some("active"));
+        assert_eq!(ip.dns_name.as_deref(), Some("web-01.customer"));
+    }
+
+    #[test]
+    fn gql_vrf_prefix_rejects_nonnumeric_id() {
+        // A non-numeric id (shouldn't happen, but be defensive) drops the row
+        // rather than panicking.
+        let row: GqlVrfPrefix =
+            serde_json::from_value(json!({"id": "abc", "prefix": "10.0.0.0/8"})).unwrap();
+        assert!(row.into_prefix().is_none());
+    }
+
+    #[tokio::test]
+    async fn graphql_vrf_bundle_fetches_scoped_children_in_one_query() {
+        use crate::config::{ApiConfig, BackendPreference, ProfileConfig};
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        // Schema probe: prefix_list + ip_address_list, each with a filters arg
+        // and offset pagination.
+        let list_field = |name: &str, filter: &str| {
+            json!({
+                "name": name,
+                "args": [
+                    {"name": "filters", "type": {"kind": "INPUT_OBJECT", "name": filter}},
+                    {"name": "pagination", "type": {"kind": "INPUT_OBJECT", "name": "PaginationInput"}}
+                ]
+            })
+        };
+        Mock::given(method("POST"))
+            .and(path("/graphql/"))
+            .and(body_string_contains("__schema"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {"__schema": {"queryType": {"fields": [
+                    list_field("prefix_list", "PrefixFilter"),
+                    list_field("ip_address_list", "IPAddressFilter"),
+                ]}}}
+            })))
+            .mount(&server)
+            .await;
+
+        // Filter probe: batch A carries PrefixFilter + IPAddressFilter; both
+        // expose a vrf_id lookup so the bundle can scope its children.
+        let vrf_id_field =
+            json!({"name": "vrf_id", "type": {"kind": "INPUT_OBJECT", "name": "IntegerLookup"}});
+        Mock::given(method("POST"))
+            .and(path("/graphql/"))
+            .and(body_string_contains("DeviceFilter"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "prefix": {"inputFields": [vrf_id_field.clone()]},
+                    "ip": {"inputFields": [vrf_id_field]}
+                }
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql/"))
+            .and(body_string_contains("ASNFilter"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {}})))
+            .mount(&server)
+            .await;
+
+        // The bundle itself: one POST carrying both list selections.
+        Mock::given(method("POST"))
+            .and(path("/graphql/"))
+            .and(body_string_contains("ip_address_list(filters"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "prefix_list": [
+                        {"id": "1", "prefix": "10.50.0.0/16", "_depth": 0, "status": "container", "description": "supernet"},
+                        {"id": "2", "prefix": "10.50.1.0/24", "_depth": 1, "status": "active", "description": ""}
+                    ],
+                    "ip_address_list": [
+                        {"id": "9", "address": "10.50.1.1/24", "status": "active", "dns_name": "gw.customer", "description": ""}
+                    ]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = NetBoxClient::new(
+            &ProfileConfig {
+                url: server.uri(),
+                api: Some(ApiConfig {
+                    search: None,
+                    vrf: Some(BackendPreference::Graphql),
+                }),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        let (prefixes, addresses) = client.graphql_vrf_bundle(42, 500).await.expect("bundle");
+
+        // GraphQL's string ids / plain-string status / `_depth` are reshaped into
+        // the REST wire models.
+        assert_eq!(prefixes.len(), 2);
+        assert_eq!(prefixes[0].id, 1);
+        assert_eq!(prefixes[0].prefix, "10.50.0.0/16");
+        assert_eq!(prefixes[0].depth, Some(0));
+        assert_eq!(
+            prefixes[0].status.as_ref().map(|c| c.value.as_str()),
+            Some("container")
+        );
+        assert_eq!(prefixes[1].id, 2);
+        assert_eq!(prefixes[1].depth, Some(1));
+        assert_eq!(addresses.len(), 1);
+        assert_eq!(addresses[0].id, 9);
+        assert_eq!(addresses[0].address, "10.50.1.1/24");
+        assert_eq!(addresses[0].dns_name.as_deref(), Some("gw.customer"));
+
+        // The children come back in a SINGLE round-trip, and both lists are
+        // scoped by the resolved vrf id.
+        let requests = server.received_requests().await.unwrap();
+        let bundles: Vec<_> = requests
+            .iter()
+            .filter(|r| String::from_utf8_lossy(&r.body).contains("ip_address_list(filters"))
+            .collect();
+        assert_eq!(bundles.len(), 1, "VRF children must be one bundled POST");
+        let body: Value = serde_json::from_slice(&bundles[0].body).unwrap();
+        assert_eq!(body["variables"]["pf"]["vrf_id"], json!({"exact": 42}));
+        assert_eq!(body["variables"]["if"]["vrf_id"], json!({"exact": 42}));
     }
 }
