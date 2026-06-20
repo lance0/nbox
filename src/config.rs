@@ -171,6 +171,10 @@ pub struct UiConfig {
     /// TUI auto-refresh interval in seconds (0/absent = disabled).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub refresh_secs: Option<u64>,
+    /// The kind slug the TUI Nav rail last browsed (e.g. `device`, `vrf`),
+    /// restored on the next launch. Absent = none (launch on Recent).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_browsed: Option<String>,
 }
 
 impl Default for UiConfig {
@@ -180,6 +184,7 @@ impl Default for UiConfig {
             confirm_writes: true,
             open_browser_command: String::new(),
             refresh_secs: None,
+            last_browsed: None,
         }
     }
 }
@@ -659,6 +664,9 @@ pub enum UiField {
     /// `[ui].open_browser_command` — a string. An empty string is written as `""`
     /// (the explicit "use the OS default" value), matching the init template.
     OpenBrowserCommand(String),
+    /// `[ui].last_browsed` — the kind slug the TUI Nav rail last browsed (e.g.
+    /// `device`, `vrf`), restored on the next launch. `None` removes the key.
+    LastBrowsed(Option<String>),
 }
 
 /// Set a single `[ui]` field in a format-preserving document, creating the `[ui]`
@@ -680,6 +688,12 @@ pub fn set_ui_field(doc: &mut DocumentMut, field: &UiField) {
             Some(s) => table["refresh_secs"] = value(i64::try_from(s).unwrap_or(i64::MAX)),
             None => {
                 table.remove("refresh_secs");
+            }
+        },
+        UiField::LastBrowsed(slug) => match slug {
+            Some(s) => table["last_browsed"] = value(s),
+            None => {
+                table.remove("last_browsed");
             }
         },
     }
@@ -1673,6 +1687,7 @@ url = \"https://a\"
             &mut doc,
             &UiField::OpenBrowserCommand("firefox --new-tab".into()),
         );
+        set_ui_field(&mut doc, &UiField::LastBrowsed(Some("vrf".into())));
         let out = doc.to_string();
         // Comments and unrelated keys/sections survive. (An inline comment on a key
         // that *isn't* changed is preserved; overwriting a value replaces its own
@@ -1690,6 +1705,14 @@ url = \"https://a\"
         assert_eq!(cfg.ui.theme, "nord");
         assert_eq!(cfg.ui.refresh_secs, Some(30));
         assert_eq!(cfg.ui.open_browser_command, "firefox --new-tab");
+        assert_eq!(cfg.ui.last_browsed.as_deref(), Some("vrf"));
+
+        // `LastBrowsed(None)` removes the key (e.g. a session that ends on Recent).
+        set_ui_field(&mut doc, &UiField::LastBrowsed(None));
+        assert!(
+            !doc.to_string().contains("last_browsed"),
+            "None clears the key"
+        );
     }
 
     #[test]

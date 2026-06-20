@@ -826,7 +826,8 @@ async fn build_tui_app(
         base_url,
         status.netbox_version,
         Some(path.to_path_buf()),
-    );
+    )
+    .with_last_browsed(cfg.ui.last_browsed.clone());
     app.set_profiles(profiles);
     app.set_cache(crate::cache::Cache::from_settings(
         cache_partition,

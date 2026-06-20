@@ -40,6 +40,17 @@ pub async fn run_on(
         tracing::warn!("failed to persist theme: {e:#}");
     }
 
+    // Persist the last-browsed Nav kind if it moved this session, so the next
+    // launch lands where the user left off (mirrors the theme guard).
+    let last_browsed = app.last_browsed.map(|k| k.as_str().to_string());
+    if last_browsed != app.initial_last_browsed
+        && let Some(path) = &app.config_path
+        && let Err(e) =
+            crate::config::save_ui_field(path, &crate::config::UiField::LastBrowsed(last_browsed))
+    {
+        tracing::warn!("failed to persist last-browsed kind: {e:#}");
+    }
+
     result
 }
 
@@ -79,6 +90,18 @@ async fn event_loop(
         app.cache.clone(),
         tx.clone(),
     );
+
+    // If `[ui].last_browsed` restored a kind, preload its list at startup so the
+    // Nav rail lands populated where the user left off (focus stays on Nav). `req`
+    // 0 is current since `browse_gen` starts at 0; any user navigation supersedes it.
+    if let Some(kind) = app.startup_browse() {
+        dispatch(
+            AppCommand::Browse { kind, req: 0 },
+            app.client.clone(),
+            app.cache.clone(),
+            tx.clone(),
+        );
+    }
 
     while !app.should_quit {
         terminal.draw(|frame| ui::render(frame, app))?;

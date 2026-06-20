@@ -150,9 +150,10 @@ Consolidated future scope:
   bullets and live per-kind counts, plus Recent; `Enter` lists a kind into Results (search stays on `/`),
   `Tab` cycles the three panes. Built on the list/preview split.
 - ◑ **3-pane polish (follow-ups).** Done: right-aligned Nav counts (display-width measured), a Recent
-  count, and the Route Targets section (Nav label abbreviated to "RTs"). Left: remember the last browsed
-  kind and restore it on launch (persist to prefs); live-browse on Nav `j`/`k` (debounced) instead of
-  requiring `Enter`; a `Browse` (`b`?) hint in the footer when Nav-focused.
+  count, the Route Targets section (Nav label abbreviated to "RTs"), and **remember the last-browsed kind**
+  (persisted to `[ui].last_browsed` on exit; restored on launch — cursor lands on it and its list
+  preloads, focus stays on Nav). Left: live-browse on Nav `j`/`k` (debounced) instead of requiring
+  `Enter`; a `Browse` (`b`?) hint in the footer when Nav-focused.
 - ☐ **Browse list pane look for site-less kinds.** The list (middle) pane renders a fixed column set
   geared to site-bearing objects; kinds with no site (route targets, and to a degree VRFs/ASNs/tenants)
   leave the SITE column empty, so the row reads sparse/ragged. Letting it truncate for now — revisit with

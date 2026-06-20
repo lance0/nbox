@@ -169,6 +169,15 @@ impl NavSection {
     }
 }
 
+/// The [`NAV_SECTIONS`] index whose kind matches a slug (e.g. `device`, `vrf`,
+/// `route-target`), or `None` for an unknown slug (or `Recent`). Used to restore
+/// the Nav cursor from `[ui].last_browsed`.
+fn nav_section_index_for_slug(slug: &str) -> Option<usize> {
+    NAV_SECTIONS
+        .iter()
+        .position(|s| s.object_kind().is_some_and(|k| k.as_str() == slug))
+}
+
 /// Events delivered to the event loop.
 pub enum AppEvent {
     Key(KeyEvent),
@@ -574,6 +583,14 @@ pub struct App {
     /// or `None` when Results holds a search / the recents fallback. Drives the
     /// Results pane title.
     pub browse_kind: Option<ObjectKind>,
+    /// The most recent kind browsed this session (set whenever the Nav rail
+    /// browses a kind), persisted to `[ui].last_browsed` on exit and restored on
+    /// the next launch so the Nav rail lands where you left off. `None` until a
+    /// kind is browsed (or restored from config).
+    pub last_browsed: Option<ObjectKind>,
+    /// The `[ui].last_browsed` slug loaded at launch, to detect a change on exit
+    /// (persist only when it actually moved), mirroring `initial_theme`.
+    pub initial_last_browsed: Option<String>,
     /// Per-kind object totals shown in the Nav pane labels. Populated by a
     /// background count probe at launch (and after a profile switch); a kind absent
     /// from the map just shows no number.
@@ -779,6 +796,8 @@ impl App {
             focus: Focus::Nav,
             nav_selected: NAV_SECTIONS.len() - 1, // Recent, matching the default view
             browse_kind: None,
+            last_browsed: None,
+            initial_last_browsed: None,
             nav_counts: std::collections::HashMap::new(),
             history: Vec::new(),
             status: String::new(),
@@ -826,6 +845,34 @@ impl App {
             update_command: "",
             should_quit: false,
         }
+    }
+
+    /// Restore the Nav rail's last-browsed kind from `[ui].last_browsed` (a kind
+    /// slug). When it resolves to a browsable section, the cursor lands on it and
+    /// `browse_kind` is primed so the event loop can preload that kind's list at
+    /// startup (focus stays on the Nav rail). An unknown/absent slug leaves the
+    /// default (cursor on Recent). `initial_last_browsed` is pinned for the
+    /// exit-time persist guard, mirroring `initial_theme`.
+    #[must_use]
+    pub fn with_last_browsed(mut self, slug: Option<String>) -> Self {
+        if let Some(s) = &slug
+            && let Some(idx) = nav_section_index_for_slug(s)
+        {
+            self.nav_selected = idx;
+            let kind = NAV_SECTIONS[idx].object_kind();
+            self.browse_kind = kind;
+            self.last_browsed = kind;
+        }
+        // Pin the loaded slug (moved, not cloned) for the exit-time persist guard.
+        self.initial_last_browsed = slug;
+        self
+    }
+
+    /// The kind to preload at startup, if a last-browsed kind was restored — the
+    /// event loop dispatches a `Browse` for it so the list pane lands populated.
+    #[must_use]
+    pub fn startup_browse(&self) -> Option<ObjectKind> {
+        self.browse_kind
     }
 
     /// Switch the app into the monochrome `NO_COLOR` mode: the theme renders with
@@ -2734,6 +2781,8 @@ impl App {
                     return Vec::new();
                 }
                 self.browse_kind = Some(kind);
+                // Remember it for the exit-time persist → restored next launch.
+                self.last_browsed = Some(kind);
                 self.focus = Focus::List;
                 self.set_status(format!("browsing {}…", section.label()), Severity::Info);
                 vec![AppCommand::Browse { kind, req: 0 }]
@@ -5866,6 +5915,40 @@ mod tests {
         );
         assert_eq!(a.browse_kind, Some(ObjectKind::Device));
         assert_eq!(a.focus, Focus::List);
+        // Browsing a kind records it for the exit-time persist.
+        assert_eq!(a.last_browsed, Some(ObjectKind::Device));
+    }
+
+    #[test]
+    fn with_last_browsed_restores_cursor_and_primes_startup_browse() {
+        let a = app().with_last_browsed(Some("vrf".to_string()));
+        let vrf_idx = NAV_SECTIONS
+            .iter()
+            .position(|s| *s == NavSection::Vrfs)
+            .unwrap();
+        assert_eq!(a.nav_selected, vrf_idx);
+        assert_eq!(a.browse_kind, Some(ObjectKind::Vrf));
+        assert_eq!(a.startup_browse(), Some(ObjectKind::Vrf));
+        assert_eq!(a.last_browsed, Some(ObjectKind::Vrf));
+        // initial pin == loaded value, so a no-op session won't rewrite the key.
+        assert_eq!(a.initial_last_browsed.as_deref(), Some("vrf"));
+    }
+
+    #[test]
+    fn with_last_browsed_none_or_unknown_keeps_recent_default() {
+        let recent = NAV_SECTIONS.len() - 1;
+
+        let none = app().with_last_browsed(None);
+        assert_eq!(none.nav_selected, recent);
+        assert!(none.browse_kind.is_none());
+        assert!(none.startup_browse().is_none());
+
+        // An unknown/stale slug doesn't restore a browse (cursor stays on Recent),
+        // but is still pinned as `initial` so exit clears it rather than thrashing.
+        let bogus = app().with_last_browsed(Some("nonsense".to_string()));
+        assert_eq!(bogus.nav_selected, recent);
+        assert!(bogus.browse_kind.is_none());
+        assert_eq!(bogus.initial_last_browsed.as_deref(), Some("nonsense"));
     }
 
     #[test]

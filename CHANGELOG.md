@@ -36,6 +36,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   latency on a high-RTT link.
 
 ### Added
+- **TUI remembers the last-browsed kind.** The Nav rail's browsed kind is
+  persisted to `[ui].last_browsed` on exit and restored on the next launch — the
+  cursor lands on it and its list preloads (focus stays on the Nav rail). First
+  run (nothing remembered) still opens on Recent. Also: a **Route Targets** Nav
+  section, right-aligned Nav counts, and a count on the Recent row.
 - **Route targets are now a first-class object.** A route target (BGP extended
   community, e.g. `65000:100`) can be looked up (`nbox route-target <name|id>`),
   found in search, opened (`nbox open route-target/<ref>`), journalled, and
