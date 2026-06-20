@@ -40,9 +40,8 @@ exclude_config_context = true
 
 # REST is the canonical backend. GraphQL is an opt-in per-surface accelerator;
 # uncomment to route a read surface through it (falls back to REST if the
-# instance's GraphQL schema doesn't support that surface).
+# instance's GraphQL schema doesn't support that surface). Search is always REST.
 # [profiles.default.api]
-# search = "graphql"        # rest | graphql
 # vrf = "graphql"           # rest | graphql
 "#;
 
