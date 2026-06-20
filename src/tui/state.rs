@@ -144,7 +144,9 @@ impl NavSection {
             NavSection::Ips => "IPs",
             NavSection::Vlans => "VLANs",
             NavSection::Vrfs => "VRFs",
-            NavSection::RouteTargets => "Route Targets",
+            // Abbreviated: the Nav rail is narrow, and "Route Targets" crowds the
+            // count column. The list pane's title still spells it out in full.
+            NavSection::RouteTargets => "RTs",
             NavSection::Sites => "Sites",
             NavSection::Racks => "Racks",
             NavSection::Recent => "Recent",

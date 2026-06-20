@@ -149,9 +149,14 @@ Consolidated future scope:
   Navigation rail: browse-by-kind sections (Devices/Prefixes/IPs/VLANs/Sites/Racks) with domain-colored
   bullets and live per-kind counts, plus Recent; `Enter` lists a kind into Results (search stays on `/`),
   `Tab` cycles the three panes. Built on the list/preview split.
-- ☐ **3-pane polish (follow-ups).** Right-align the Nav counts; remember the last browsed kind and
-  restore it on launch (persist to prefs); show a count on the Recent row. Optional: live-browse on Nav
-  `j`/`k` (debounced) instead of requiring `Enter`; a `Browse` (`b`?) hint in the footer when Nav-focused.
+- ◑ **3-pane polish (follow-ups).** Done: right-aligned Nav counts (display-width measured), a Recent
+  count, and the Route Targets section (Nav label abbreviated to "RTs"). Left: remember the last browsed
+  kind and restore it on launch (persist to prefs); live-browse on Nav `j`/`k` (debounced) instead of
+  requiring `Enter`; a `Browse` (`b`?) hint in the footer when Nav-focused.
+- ☐ **Browse list pane look for site-less kinds.** The list (middle) pane renders a fixed column set
+  geared to site-bearing objects; kinds with no site (route targets, and to a degree VRFs/ASNs/tenants)
+  leave the SITE column empty, so the row reads sparse/ragged. Letting it truncate for now — revisit with
+  per-kind columns (e.g. tenant/RD for route targets/VRFs) or a kind-aware column layout.
 - ☑ **VRF-pivoted navigation (a dedicated VRF view).** VRF is now a first-class `ObjectKind`:
   searchable (REST + GraphQL), browsable from the Nav rail with a live count, `nbox vrf <name|rd|id>`,
   palette `vrf`, `open`/`journal` resolvers, and MCP `nbox_get`/`nbox://vrf/<ref>`. The TUI detail is a
