@@ -1,0 +1,18 @@
+{
+  "custom_fields": {
+    "region_lead": "netops"
+  },
+  "description": "Denver edge site",
+  "facility": "DEN-1 / Suite 400",
+  "group": "colos",
+  "id": 3,
+  "name": "den1",
+  "region": "us-west",
+  "slug": "den1",
+  "status": "active",
+  "tags": [
+    "edge",
+    "prod"
+  ],
+  "tenant": "Acme"
+}

@@ -1,0 +1,13 @@
+{
+  "entries": [
+    {
+      "author": "admin",
+      "comments": "Replaced uplink optic; link is stable.",
+      "created": "2026-01-02T15:04:05Z",
+      "kind": "info"
+    },
+    {
+      "comments": "Migrated to new rack."
+    }
+  ]
+}

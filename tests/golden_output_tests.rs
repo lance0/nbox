@@ -51,3 +51,29 @@ fn ip_json_contract() {
 fn prefix_json_contract() {
     assert_golden(&fixtures::prefix_view(), include_str!("golden/prefix.json"));
 }
+
+#[test]
+fn vlan_json_contract() {
+    assert_golden(&fixtures::vlan_view(), include_str!("golden/vlan.json"));
+}
+
+#[test]
+fn site_json_contract() {
+    assert_golden(&fixtures::site_view(), include_str!("golden/site.json"));
+}
+
+#[test]
+fn interface_json_contract() {
+    assert_golden(
+        &fixtures::interface_view(),
+        include_str!("golden/interface.json"),
+    );
+}
+
+#[test]
+fn journal_json_contract() {
+    assert_golden(
+        &fixtures::journal_view(),
+        include_str!("golden/journal.json"),
+    );
+}
