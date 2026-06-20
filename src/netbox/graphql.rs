@@ -12,6 +12,8 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
+use crate::domain::route_target_view::VrfRef;
+use crate::domain::util::non_empty;
 use crate::netbox::client::{MAX_PAGE_SIZE, NetBoxClient};
 use crate::netbox::models::common::Choice;
 use crate::netbox::models::ipam::{IpAddress, Prefix};
@@ -53,6 +55,7 @@ query {
   provider: __type(name: "ProviderFilter") { inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } }
   virtualMachine: __type(name: "VirtualMachineFilter") { inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } }
   cluster: __type(name: "ClusterFilter") { inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } }
+  routeTarget: __type(name: "RouteTargetFilter") { inputFields { name type { kind name ofType { kind name ofType { kind name ofType { kind name } } } } } }
 }
 "#;
 
@@ -231,6 +234,69 @@ impl NetBoxClient {
             .collect();
         Ok((prefixes, addresses))
     }
+
+    /// Fetch a route target's importing/exporting VRFs in a single GraphQL query
+    /// (the route-target detail "bundle"), normalized into the same [`VrfRef`]
+    /// shape the REST path produces so the downstream `RouteTargetDetail` build is
+    /// byte-identical. The caller resolves the route target's identity + header
+    /// over REST first (identity stays canonical); this fetches only the relation
+    /// graph. A real GraphQL/transport error propagates (fail closed) rather than
+    /// degrading to empty data.
+    ///
+    /// A route target carries its VRF relations on both sides
+    /// (`importing_vrfs`/`exporting_vrfs`), so one filtered `route_target_list`
+    /// selection replaces the REST path's two `vrfs` list calls.
+    pub(crate) async fn graphql_route_target_bundle(
+        &self,
+        route_target_id: u64,
+    ) -> Result<(Vec<VrfRef>, Vec<VrfRef>)> {
+        let caps = self.graphql_capabilities().await?;
+        let mut filters = Map::new();
+        gql_add_filter(
+            &caps,
+            "route_target_list",
+            &mut filters,
+            "id",
+            json!(route_target_id),
+        );
+        let filter_type = caps
+            .list("route_target_list")
+            .and_then(|f| f.filter_type())
+            .context("GraphQL schema is missing the route_target_list filter type")?;
+
+        let query = format!(
+            "query($rt: {filter_type}) {{ \
+             route_target_list(filters: $rt) {{ \
+             importing_vrfs {{ id name rd }} exporting_vrfs {{ id name rd }} }} }}"
+        );
+        let bundle: RouteTargetBundleResponse = self
+            .graphql(&query, json!({ "rt": Value::Object(filters) }))
+            .await?;
+
+        // The filter targets a single route target by id; take the one row (none
+        // ⇒ empty relation graph, matching the REST path on an isolated target).
+        let row = bundle.route_target_list.into_iter().next();
+        let (importing, exporting) = row.map_or_else(
+            || (Vec::new(), Vec::new()),
+            |r| {
+                (
+                    gql_vrf_refs(r.importing_vrfs),
+                    gql_vrf_refs(r.exporting_vrfs),
+                )
+            },
+        );
+        Ok((importing, exporting))
+    }
+}
+
+/// Reshape the GraphQL nested VRF rows into the REST path's [`VrfRef`] order:
+/// numeric ids (GraphQL gives strings), empty RDs dropped, and sorted by
+/// `(name, rd)` to match NetBox's VRF model ordering — the same order the REST
+/// `/api/ipam/vrfs/` list returns — so the two backends produce identical output.
+fn gql_vrf_refs(rows: Vec<GqlRtVrf>) -> Vec<VrfRef> {
+    let mut refs: Vec<VrfRef> = rows.into_iter().filter_map(GqlRtVrf::into_ref).collect();
+    refs.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.rd.cmp(&b.rd)));
+    refs
 }
 
 /// Pagination clause for a GraphQL list field, empty when it isn't paginated.
@@ -291,6 +357,44 @@ struct GqlVrfAddress {
     status: Option<String>,
     dns_name: Option<String>,
     description: Option<String>,
+}
+
+/// The route-target-bundle response. The single filtered `route_target_list` row
+/// carries the importing/exporting VRF relations; each VRF row deserializes into
+/// a typed struct, then maps into the domain [`VrfRef`] (string id → numeric,
+/// empty RD dropped) so REST and GraphQL converge on one downstream view-build.
+#[derive(Debug, Deserialize)]
+struct RouteTargetBundleResponse {
+    #[serde(default)]
+    route_target_list: Vec<GqlRouteTarget>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlRouteTarget {
+    #[serde(default)]
+    importing_vrfs: Vec<GqlRtVrf>,
+    #[serde(default)]
+    exporting_vrfs: Vec<GqlRtVrf>,
+}
+
+#[derive(Debug, Deserialize)]
+struct GqlRtVrf {
+    id: String,
+    name: String,
+    rd: Option<String>,
+}
+
+impl GqlRtVrf {
+    /// Map into the navigable [`VrfRef`]. A non-numeric id drops the row rather
+    /// than failing the bundle; an empty RD is normalized to `None`, exactly as
+    /// the REST [`VrfRef::from_model`] path does.
+    fn into_ref(self) -> Option<VrfRef> {
+        Some(VrfRef {
+            id: self.id.parse().ok()?,
+            name: self.name,
+            rd: self.rd.and_then(non_empty),
+        })
+    }
 }
 
 /// A GraphQL plain-string `status` (`"active"`) becomes the REST `Choice` shape
@@ -386,6 +490,7 @@ struct FilterResponse {
     provider: Option<InputType>,
     virtual_machine: Option<InputType>,
     cluster: Option<InputType>,
+    route_target: Option<InputType>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -565,6 +670,9 @@ impl FilterResponse {
         }
         if let Some(input) = self.cluster {
             inputs.push(("ClusterFilter", input));
+        }
+        if let Some(input) = self.route_target {
+            inputs.push(("RouteTargetFilter", input));
         }
         inputs
     }
@@ -824,6 +932,7 @@ mod tests {
                 api: Some(ApiConfig {
                     search: None,
                     vrf: Some(BackendPreference::Graphql),
+                    route_target: None,
                 }),
                 ..Default::default()
             },
@@ -861,5 +970,160 @@ mod tests {
         let body: Value = serde_json::from_slice(&bundles[0].body).unwrap();
         assert_eq!(body["variables"]["pf"]["vrf_id"], json!({"exact": 42}));
         assert_eq!(body["variables"]["if"]["vrf_id"], json!({"exact": 42}));
+    }
+
+    #[test]
+    fn gql_rt_vrf_maps_string_id_and_drops_empty_rd() {
+        // GraphQL gives a string id and may carry an empty rd; the VrfRef wants a
+        // numeric id and a None rd (matching the REST `VrfRef::from_model` path).
+        let row: GqlRtVrf =
+            serde_json::from_value(json!({"id": "7", "name": "blue", "rd": "65000:7"})).unwrap();
+        let r = row.into_ref().expect("vrf ref");
+        assert_eq!(r.id, 7);
+        assert_eq!(r.name, "blue");
+        assert_eq!(r.rd.as_deref(), Some("65000:7"));
+
+        let empty_rd: GqlRtVrf =
+            serde_json::from_value(json!({"id": "8", "name": "green", "rd": ""})).unwrap();
+        assert!(empty_rd.into_ref().expect("vrf ref").rd.is_none());
+
+        let null_rd: GqlRtVrf =
+            serde_json::from_value(json!({"id": "9", "name": "red", "rd": null})).unwrap();
+        assert!(null_rd.into_ref().expect("vrf ref").rd.is_none());
+
+        // A non-numeric id drops the row rather than panicking.
+        let bad: GqlRtVrf =
+            serde_json::from_value(json!({"id": "abc", "name": "x", "rd": null})).unwrap();
+        assert!(bad.into_ref().is_none());
+    }
+
+    #[test]
+    fn gql_vrf_refs_sorts_by_name_then_rd() {
+        let rows = vec![
+            GqlRtVrf {
+                id: "3".into(),
+                name: "zeta".into(),
+                rd: Some("65000:3".into()),
+            },
+            GqlRtVrf {
+                id: "1".into(),
+                name: "alpha".into(),
+                rd: Some("65000:2".into()),
+            },
+            GqlRtVrf {
+                id: "2".into(),
+                name: "alpha".into(),
+                rd: Some("65000:1".into()),
+            },
+        ];
+        let refs = gql_vrf_refs(rows);
+        // Sorted by (name, rd): alpha/65000:1, alpha/65000:2, then zeta.
+        assert_eq!(refs.iter().map(|r| r.id).collect::<Vec<_>>(), vec![2, 1, 3]);
+    }
+
+    #[tokio::test]
+    async fn graphql_route_target_bundle_fetches_both_directions_in_one_query() {
+        use crate::config::{ApiConfig, BackendPreference, ProfileConfig};
+        use wiremock::matchers::{body_string_contains, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+
+        // Schema probe: route_target_list with a filters arg (no pagination — the
+        // bundle selects a single id-filtered row).
+        Mock::given(method("POST"))
+            .and(path("/graphql/"))
+            .and(body_string_contains("__schema"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {"__schema": {"queryType": {"fields": [
+                    {"name": "route_target_list", "args": [
+                        {"name": "filters", "type": {"kind": "INPUT_OBJECT", "name": "RouteTargetFilter"}}
+                    ]}
+                ]}}}
+            })))
+            .mount(&server)
+            .await;
+
+        // Filter probe: batch A (DeviceFilter…) is empty; batch B (ASNFilter…)
+        // carries RouteTargetFilter, which exposes an `id` lookup (4.5 shape) so
+        // the bundle can scope to one target. Match the probe on the batch's own
+        // marker types (NOT "RouteTargetFilter", which the bundle query's
+        // `$rt: RouteTargetFilter` variable would also match).
+        let id_field =
+            json!({"name": "id", "type": {"kind": "INPUT_OBJECT", "name": "IDFilterLookup"}});
+        Mock::given(method("POST"))
+            .and(path("/graphql/"))
+            .and(body_string_contains("DeviceFilter"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {}})))
+            .mount(&server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql/"))
+            .and(body_string_contains("ASNFilter"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {"routeTarget": {"inputFields": [id_field]}}
+            })))
+            .mount(&server)
+            .await;
+
+        // The bundle itself: one POST carrying the route_target_list selection.
+        Mock::given(method("POST"))
+            .and(path("/graphql/"))
+            .and(body_string_contains("route_target_list(filters"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "data": {
+                    "route_target_list": [{
+                        "importing_vrfs": [
+                            {"id": "2", "name": "customer-prod", "rd": "65000:100"},
+                            {"id": "5", "name": "customer-dev", "rd": ""}
+                        ],
+                        "exporting_vrfs": [
+                            {"id": "2", "name": "customer-prod", "rd": "65000:100"}
+                        ]
+                    }]
+                }
+            })))
+            .mount(&server)
+            .await;
+
+        let client = NetBoxClient::new(
+            &ProfileConfig {
+                url: server.uri(),
+                api: Some(ApiConfig {
+                    search: None,
+                    vrf: None,
+                    route_target: Some(BackendPreference::Graphql),
+                }),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        let (importing, exporting) = client
+            .graphql_route_target_bundle(42)
+            .await
+            .expect("bundle");
+
+        // String ids → numeric; empty rd → None; sorted by (name, rd).
+        assert_eq!(importing.len(), 2);
+        assert_eq!(importing[0].name, "customer-dev");
+        assert_eq!(importing[0].id, 5);
+        assert!(importing[0].rd.is_none());
+        assert_eq!(importing[1].name, "customer-prod");
+        assert_eq!(importing[1].id, 2);
+        assert_eq!(importing[1].rd.as_deref(), Some("65000:100"));
+        assert_eq!(exporting.len(), 1);
+        assert_eq!(exporting[0].id, 2);
+
+        // Both directions come back in a SINGLE round-trip, scoped by the id.
+        let requests = server.received_requests().await.unwrap();
+        let bundles: Vec<_> = requests
+            .iter()
+            .filter(|r| String::from_utf8_lossy(&r.body).contains("route_target_list(filters"))
+            .collect();
+        assert_eq!(bundles.len(), 1, "RT relations must be one bundled POST");
+        let body: Value = serde_json::from_slice(&bundles[0].body).unwrap();
+        assert_eq!(body["variables"]["rt"]["id"], json!({"exact": 42}));
     }
 }

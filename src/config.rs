@@ -43,6 +43,7 @@ exclude_config_context = true
 # instance's GraphQL schema doesn't support that surface). Search is always REST.
 # [profiles.default.api]
 # vrf = "graphql"           # rest | graphql
+# route_target = "graphql"  # rest | graphql
 "#;
 
 /// The config schema version this build writes and understands. Bump when the
@@ -282,6 +283,8 @@ pub enum ApiSurface {
     Search,
     /// The VRF routing-context view (its prefixes/addresses bundle).
     Vrf,
+    /// The route-target relation graph (its importing/exporting VRFs).
+    RouteTarget,
 }
 
 impl ApiSurface {
@@ -291,6 +294,7 @@ impl ApiSurface {
         match self {
             Self::Search => "search",
             Self::Vrf => "vrf",
+            Self::RouteTarget => "route_target",
         }
     }
 }
@@ -305,6 +309,8 @@ pub struct ApiConfig {
     pub search: Option<BackendPreference>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub vrf: Option<BackendPreference>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub route_target: Option<BackendPreference>,
 }
 
 impl ProfileConfig {
@@ -316,6 +322,7 @@ impl ProfileConfig {
             .and_then(|a| match surface {
                 ApiSurface::Search => a.search,
                 ApiSurface::Vrf => a.vrf,
+                ApiSurface::RouteTarget => a.route_target,
             })
             .unwrap_or_default()
     }
@@ -1189,6 +1196,10 @@ search = "graphql"
             work.api_preference(ApiSurface::Vrf),
             BackendPreference::Rest
         );
+        assert_eq!(
+            work.api_preference(ApiSurface::RouteTarget),
+            BackendPreference::Rest
+        );
         assert_eq!(work.page_size, Some(250));
         assert_eq!(work.verify_tls, None);
     }
@@ -1219,12 +1230,16 @@ search = "graphql"
             profile.api_preference(ApiSurface::Vrf),
             BackendPreference::Rest
         );
+        assert_eq!(
+            profile.api_preference(ApiSurface::RouteTarget),
+            BackendPreference::Rest
+        );
     }
 
     #[test]
     fn api_surface_preferences_parse() {
         let profile: ProfileConfig = toml::from_str(
-            "url = \"https://nb.example\"\n[api]\nsearch = \"graphql\"\nvrf = \"rest\"\n",
+            "url = \"https://nb.example\"\n[api]\nsearch = \"graphql\"\nvrf = \"rest\"\nroute_target = \"graphql\"\n",
         )
         .unwrap();
         assert_eq!(
@@ -1234,6 +1249,10 @@ search = "graphql"
         assert_eq!(
             profile.api_preference(ApiSurface::Vrf),
             BackendPreference::Rest
+        );
+        assert_eq!(
+            profile.api_preference(ApiSurface::RouteTarget),
+            BackendPreference::Graphql
         );
     }
 

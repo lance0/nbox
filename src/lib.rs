@@ -866,6 +866,7 @@ async fn run_status(ctx: &Ctx) -> Result<()> {
     let url = client.base_url().as_str().to_string();
     let search_line = surface_routing_plain(&api.search);
     let vrf_line = surface_routing_plain(&api.vrf);
+    let route_target_line = surface_routing_plain(&api.route_target);
 
     let report = serde_json::json!({
         "netbox_url": url,
@@ -881,6 +882,7 @@ async fn run_status(ctx: &Ctx) -> Result<()> {
         kv.push("netbox_url", url.clone())
             .push("api search", search_line.clone())
             .push("api vrf", vrf_line.clone())
+            .push("api route_target", route_target_line.clone())
             .push("netbox_version", status.netbox_version.clone())
             .push_opt("django", status.django_version.clone())
             .push_opt("python", status.python_version.clone())

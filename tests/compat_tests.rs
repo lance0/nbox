@@ -190,6 +190,7 @@ async fn search_surface_is_rest_even_when_graphql_is_preferred() {
         api: Some(ApiConfig {
             search: Some(BackendPreference::Graphql),
             vrf: Some(BackendPreference::Rest),
+            route_target: None,
         }),
         ..Default::default()
     };

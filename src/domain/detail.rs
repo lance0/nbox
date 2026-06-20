@@ -850,32 +850,64 @@ fn route_target_links(rt: &RouteTarget) -> Vec<ObjectLink> {
     l
 }
 
+/// Sort a route target's VRF references into NetBox's VRF model order — by
+/// `(name, rd)` — so the importing/exporting lists are deterministic. The REST
+/// `/api/ipam/vrfs/` list already returns name order; the GraphQL bundle sorts to
+/// match. Applied to both backends so their output is byte-identical.
+fn sort_vrf_refs(refs: &mut [VrfRef]) {
+    refs.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.rd.cmp(&b.rd)));
+}
+
 /// Build a route target's relation graph: the target's header plus the VRFs that
-/// import and export it. A route target carries no VRF list of its own, so both
-/// directions are resolved by filtering `/api/ipam/vrfs/` — independent, so they
-/// run concurrently.
+/// import and export it. A route target carries the relation on the VRF side, so
+/// when the route-target surface resolves to GraphQL one filtered
+/// `route_target_list` query returns both directions; otherwise canonical REST
+/// fans out two `/api/ipam/vrfs/` list calls concurrently (independent, so they
+/// run together). The resulting [`RouteTargetDetail`] is byte-identical between
+/// the two paths. A real GraphQL/transport error propagates (fail closed) rather
+/// than degrading to empty data — only a capability mismatch (handled by
+/// `effective_backend`) routes to REST.
 async fn build_route_target_detail(
     client: &NetBoxClient,
     rt: RouteTarget,
 ) -> Result<RouteTargetDetail> {
     let id = rt.id;
     let summary = RouteTargetView::from_model(rt);
-    let (importing, exporting): (Vec<Vrf>, Vec<Vrf>) = tokio::try_join!(
-        client.list_all(
-            Endpoint::Vrfs,
-            vec![("import_target_id", id.to_string())],
-            VRF_SECTION_CAP,
-        ),
-        client.list_all(
-            Endpoint::Vrfs,
-            vec![("export_target_id", id.to_string())],
-            VRF_SECTION_CAP,
-        ),
-    )?;
+
+    let (mut importing_vrfs, mut exporting_vrfs): (Vec<VrfRef>, Vec<VrfRef>) = if client
+        .effective_backend(ApiSurface::RouteTarget)
+        .await
+        .uses_graphql()
+    {
+        client.graphql_route_target_bundle(id).await?
+    } else {
+        // REST: fetch the two VRF collections concurrently — they're independent
+        // and this halves the detail's latency on a high-RTT link.
+        let (importing, exporting): (Vec<Vrf>, Vec<Vrf>) = tokio::try_join!(
+            client.list_all(
+                Endpoint::Vrfs,
+                vec![("import_target_id", id.to_string())],
+                VRF_SECTION_CAP,
+            ),
+            client.list_all(
+                Endpoint::Vrfs,
+                vec![("export_target_id", id.to_string())],
+                VRF_SECTION_CAP,
+            ),
+        )?;
+        (
+            importing.iter().map(VrfRef::from_model).collect(),
+            exporting.iter().map(VrfRef::from_model).collect(),
+        )
+    };
+
+    sort_vrf_refs(&mut importing_vrfs);
+    sort_vrf_refs(&mut exporting_vrfs);
+
     Ok(RouteTargetDetail {
         summary,
-        importing_vrfs: importing.iter().map(VrfRef::from_model).collect(),
-        exporting_vrfs: exporting.iter().map(VrfRef::from_model).collect(),
+        importing_vrfs,
+        exporting_vrfs,
     })
 }
 
@@ -1636,5 +1668,304 @@ mod tests {
         assert_eq!(back.tabs[0].key, 'i');
         assert_eq!(back.links[0].relation, "site");
         assert_eq!(back.links[0].kind, ObjectKind::Site);
+    }
+
+    // --- Route-target relation graph: GraphQL accelerator vs REST ---
+
+    mod route_target_backends {
+        use super::super::*;
+        use crate::config::{ApiConfig, BackendPreference, ProfileConfig};
+        use serde_json::json;
+        use wiremock::matchers::{body_string_contains, method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn not_found(noun: &str, value: &str) -> anyhow::Error {
+            NboxError::NotFound(format!("no {noun} matched \"{value}\"")).into()
+        }
+
+        /// The route-target identity GET (id fast-path) the REST resolver hits
+        /// first on both backends — identity stays canonical REST.
+        async fn mount_rt_identity(server: &MockServer) {
+            Mock::given(method("GET"))
+                .and(path("/api/ipam/route-targets/5/"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "id": 5, "url": "http://nb/api/ipam/route-targets/5/",
+                    "name": "65000:100", "tenant": {"id": 1, "display": "Acme"}
+                })))
+                .mount(server)
+                .await;
+        }
+
+        fn rest_client(server: &MockServer) -> NetBoxClient {
+            NetBoxClient::new(
+                &ProfileConfig {
+                    url: server.uri(),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+        }
+
+        fn graphql_client(server: &MockServer) -> NetBoxClient {
+            NetBoxClient::new(
+                &ProfileConfig {
+                    url: server.uri(),
+                    api: Some(ApiConfig {
+                        search: None,
+                        vrf: None,
+                        route_target: Some(BackendPreference::Graphql),
+                    }),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+        }
+
+        /// Mount the GraphQL schema + filter probes that expose route_target_list
+        /// with an `id` lookup (so the bundle scopes to one target).
+        async fn mount_graphql_probe(server: &MockServer) {
+            Mock::given(method("POST"))
+                .and(path("/graphql/"))
+                .and(body_string_contains("__schema"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "data": {"__schema": {"queryType": {"fields": [
+                        {"name": "route_target_list", "args": [
+                            {"name": "filters", "type": {"kind": "INPUT_OBJECT", "name": "RouteTargetFilter"}}
+                        ]}
+                    ]}}}
+                })))
+                .mount(server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/graphql/"))
+                .and(body_string_contains("DeviceFilter"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {}})))
+                .mount(server)
+                .await;
+            let id_field =
+                json!({"name": "id", "type": {"kind": "INPUT_OBJECT", "name": "IDFilterLookup"}});
+            // Match the filter probe on its batch marker ("ASNFilter"), not
+            // "RouteTargetFilter" — the bundle query's `$rt: RouteTargetFilter`
+            // variable would otherwise be captured by this probe mock.
+            Mock::given(method("POST"))
+                .and(path("/graphql/"))
+                .and(body_string_contains("ASNFilter"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "data": {"routeTarget": {"inputFields": [id_field]}}
+                })))
+                .mount(server)
+                .await;
+        }
+
+        #[tokio::test]
+        async fn graphql_bundle_assembles_route_target_detail() {
+            let server = MockServer::start().await;
+            mount_rt_identity(&server).await;
+            mount_graphql_probe(&server).await;
+            Mock::given(method("POST"))
+                .and(path("/graphql/"))
+                .and(body_string_contains("route_target_list(filters"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "data": {"route_target_list": [{
+                        "importing_vrfs": [
+                            {"id": "1", "name": "customer-prod", "rd": "65000:100"},
+                            {"id": "2", "name": "customer-dev", "rd": null}
+                        ],
+                        "exporting_vrfs": [
+                            {"id": "1", "name": "customer-prod", "rd": "65000:100"}
+                        ]
+                    }]}
+                })))
+                .mount(&server)
+                .await;
+
+            let detail = route_target_detail_by_ref(&graphql_client(&server), "5", &not_found)
+                .await
+                .expect("graphql detail");
+
+            assert_eq!(detail.summary.name, "65000:100");
+            assert_eq!(detail.summary.tenant.as_deref(), Some("Acme"));
+            // Sorted by (name, rd): customer-dev before customer-prod.
+            assert_eq!(
+                detail
+                    .importing_vrfs
+                    .iter()
+                    .map(|v| v.name.as_str())
+                    .collect::<Vec<_>>(),
+                vec!["customer-dev", "customer-prod"]
+            );
+            assert_eq!(detail.exporting_vrfs.len(), 1);
+            assert_eq!(detail.exporting_vrfs[0].id, 1);
+        }
+
+        /// The REST-built and GraphQL-built `RouteTargetDetail` are byte-identical
+        /// for the same data: identical `to_plain()` and identical serialized JSON.
+        #[tokio::test]
+        async fn rest_and_graphql_detail_are_byte_identical() {
+            // REST server: identity GET + two vrfs list calls. NetBox returns the
+            // vrfs name-ordered already; supply them so the result matches GraphQL.
+            let rest = MockServer::start().await;
+            mount_rt_identity(&rest).await;
+            Mock::given(method("GET"))
+                .and(path("/api/ipam/vrfs/"))
+                .and(query_param("import_target_id", "5"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "count": 2, "next": null, "previous": null,
+                    "results": [
+                        {"id": 2, "url": "u", "name": "customer-dev"},
+                        {"id": 1, "url": "u", "name": "customer-prod", "rd": "65000:100"}
+                    ]
+                })))
+                .mount(&rest)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/api/ipam/vrfs/"))
+                .and(query_param("export_target_id", "5"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "count": 1, "next": null, "previous": null,
+                    "results": [
+                        {"id": 1, "url": "u", "name": "customer-prod", "rd": "65000:100"}
+                    ]
+                })))
+                .mount(&rest)
+                .await;
+
+            // GraphQL server: identity GET + probes + bundle. The nested rows are
+            // deliberately given in a DIFFERENT order than REST to prove the sort
+            // makes the two paths converge.
+            let gql = MockServer::start().await;
+            mount_rt_identity(&gql).await;
+            mount_graphql_probe(&gql).await;
+            Mock::given(method("POST"))
+                .and(path("/graphql/"))
+                .and(body_string_contains("route_target_list(filters"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "data": {"route_target_list": [{
+                        "importing_vrfs": [
+                            {"id": "1", "name": "customer-prod", "rd": "65000:100"},
+                            {"id": "2", "name": "customer-dev", "rd": ""}
+                        ],
+                        "exporting_vrfs": [
+                            {"id": "1", "name": "customer-prod", "rd": "65000:100"}
+                        ]
+                    }]}
+                })))
+                .mount(&gql)
+                .await;
+
+            let rest_detail = route_target_detail_by_ref(&rest_client(&rest), "5", &not_found)
+                .await
+                .expect("rest detail");
+            let gql_detail = route_target_detail_by_ref(&graphql_client(&gql), "5", &not_found)
+                .await
+                .expect("graphql detail");
+
+            assert_eq!(
+                rest_detail.to_plain(),
+                gql_detail.to_plain(),
+                "plain output must be byte-identical across backends"
+            );
+            assert_eq!(
+                serde_json::to_string(&rest_detail).unwrap(),
+                serde_json::to_string(&gql_detail).unwrap(),
+                "serialized JSON must be byte-identical across backends"
+            );
+        }
+
+        /// Capability gating: `route_target = "graphql"` with a supporting probe
+        /// routes through GraphQL (the REST vrfs list calls are NEVER made).
+        #[tokio::test]
+        async fn graphql_preference_with_support_uses_graphql_path() {
+            let server = MockServer::start().await;
+            mount_rt_identity(&server).await;
+            mount_graphql_probe(&server).await;
+            Mock::given(method("POST"))
+                .and(path("/graphql/"))
+                .and(body_string_contains("route_target_list(filters"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "data": {"route_target_list": [{"importing_vrfs": [], "exporting_vrfs": []}]}
+                })))
+                .mount(&server)
+                .await;
+            // The REST relation calls must NOT happen on the GraphQL path.
+            Mock::given(method("GET"))
+                .and(path("/api/ipam/vrfs/"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "count": 0, "next": null, "previous": null, "results": []
+                })))
+                .expect(0)
+                .mount(&server)
+                .await;
+
+            let client = graphql_client(&server);
+            assert!(
+                client
+                    .effective_backend(ApiSurface::RouteTarget)
+                    .await
+                    .uses_graphql()
+            );
+            let detail = route_target_detail_by_ref(&client, "5", &not_found)
+                .await
+                .expect("graphql detail");
+            assert!(detail.importing_vrfs.is_empty());
+            assert!(detail.exporting_vrfs.is_empty());
+        }
+
+        /// Capability gating: `route_target = "graphql"` but the schema lacks
+        /// route_target_list → REST fallback, with the reason surfaced. The REST
+        /// vrfs list calls are made; no GraphQL bundle query is issued.
+        #[tokio::test]
+        async fn graphql_preference_without_support_falls_back_to_rest() {
+            let server = MockServer::start().await;
+            mount_rt_identity(&server).await;
+            // Schema probe exposes no route_target_list at all.
+            Mock::given(method("POST"))
+                .and(path("/graphql/"))
+                .and(body_string_contains("__schema"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "data": {"__schema": {"queryType": {"fields": []}}}
+                })))
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/graphql/"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {}})))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/api/ipam/vrfs/"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "count": 0, "next": null, "previous": null, "results": []
+                })))
+                .mount(&server)
+                .await;
+
+            let client = graphql_client(&server);
+            let effective = client.effective_backend(ApiSurface::RouteTarget).await;
+            assert!(!effective.uses_graphql(), "missing schema → REST fallback");
+            assert!(
+                effective
+                    .reason()
+                    .is_some_and(|r| r.contains("route_target_list")),
+                "fallback reason names the missing schema piece"
+            );
+
+            // The REST path still assembles the detail (empty relations here).
+            let detail = route_target_detail_by_ref(&client, "5", &not_found)
+                .await
+                .expect("rest fallback detail");
+            assert!(detail.importing_vrfs.is_empty());
+
+            // No GraphQL bundle query was issued (only schema/filter probes).
+            let requests = server.received_requests().await.unwrap();
+            assert!(
+                !requests
+                    .iter()
+                    .any(|r| String::from_utf8_lossy(&r.body).contains("route_target_list(filters")),
+                "a fallback must not issue the GraphQL bundle query"
+            );
+        }
     }
 }
