@@ -273,30 +273,31 @@ impl NetBoxClient {
             .graphql(&query, json!({ "rt": Value::Object(filters) }))
             .await?;
 
-        // The filter targets a single route target by id; take the one row (none
-        // ⇒ empty relation graph, matching the REST path on an isolated target).
-        let row = bundle.route_target_list.into_iter().next();
-        let (importing, exporting) = row.map_or_else(
-            || (Vec::new(), Vec::new()),
-            |r| {
-                (
-                    gql_vrf_refs(r.importing_vrfs),
-                    gql_vrf_refs(r.exporting_vrfs),
-                )
-            },
-        );
-        Ok((importing, exporting))
+        // The filter targets a single route target by id; take the one row. The id
+        // was already resolved over REST, so a missing GraphQL row is a surprise
+        // (schema/permission/consistency skew) — degrade like the REST path on an
+        // isolated target (an empty relation graph), but leave a breadcrumb.
+        let Some(r) = bundle.route_target_list.into_iter().next() else {
+            tracing::debug!(
+                route_target_id,
+                "GraphQL route_target bundle returned no row for a REST-resolved id; relation graph empty"
+            );
+            return Ok((Vec::new(), Vec::new()));
+        };
+        Ok((
+            gql_vrf_refs(r.importing_vrfs),
+            gql_vrf_refs(r.exporting_vrfs),
+        ))
     }
 }
 
-/// Reshape the GraphQL nested VRF rows into the REST path's [`VrfRef`] order:
-/// numeric ids (GraphQL gives strings), empty RDs dropped, and sorted by
-/// `(name, rd)` to match NetBox's VRF model ordering — the same order the REST
-/// `/api/ipam/vrfs/` list returns — so the two backends produce identical output.
+/// Reshape the GraphQL nested VRF rows into the REST path's [`VrfRef`] form:
+/// numeric ids (GraphQL gives strings) and empty RDs dropped. Input order is
+/// preserved — the canonical `(name, rd)` order is applied once, downstream, by
+/// [`sort_vrf_refs`] (which runs on *both* backends), so the two produce identical
+/// output without this function repeating that sort.
 fn gql_vrf_refs(rows: Vec<GqlRtVrf>) -> Vec<VrfRef> {
-    let mut refs: Vec<VrfRef> = rows.into_iter().filter_map(GqlRtVrf::into_ref).collect();
-    refs.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.rd.cmp(&b.rd)));
-    refs
+    rows.into_iter().filter_map(GqlRtVrf::into_ref).collect()
 }
 
 /// Pagination clause for a GraphQL list field, empty when it isn't paginated.
@@ -998,7 +999,10 @@ mod tests {
     }
 
     #[test]
-    fn gql_vrf_refs_sorts_by_name_then_rd() {
+    fn gql_vrf_refs_reshapes_preserving_input_order() {
+        // Reshape only: string ids → numeric, empty RD → None, a non-numeric id
+        // dropped. Order is PRESERVED (the canonical (name, rd) sort is owned by
+        // `sort_vrf_refs` downstream, applied to both backends).
         let rows = vec![
             GqlRtVrf {
                 id: "3".into(),
@@ -1008,7 +1012,12 @@ mod tests {
             GqlRtVrf {
                 id: "1".into(),
                 name: "alpha".into(),
-                rd: Some("65000:2".into()),
+                rd: Some(String::new()),
+            },
+            GqlRtVrf {
+                id: "bad".into(),
+                name: "dropped".into(),
+                rd: None,
             },
             GqlRtVrf {
                 id: "2".into(),
@@ -1017,8 +1026,10 @@ mod tests {
             },
         ];
         let refs = gql_vrf_refs(rows);
-        // Sorted by (name, rd): alpha/65000:1, alpha/65000:2, then zeta.
-        assert_eq!(refs.iter().map(|r| r.id).collect::<Vec<_>>(), vec![2, 1, 3]);
+        // "bad" dropped; remaining ids in input order (NOT sorted).
+        assert_eq!(refs.iter().map(|r| r.id).collect::<Vec<_>>(), vec![3, 1, 2]);
+        // Empty RD normalized to None, matching the REST path.
+        assert_eq!(refs[1].rd, None);
     }
 
     #[tokio::test]
@@ -1105,14 +1116,15 @@ mod tests {
             .await
             .expect("bundle");
 
-        // String ids → numeric; empty rd → None; sorted by (name, rd).
+        // String ids → numeric; empty rd → None; INPUT ORDER preserved (the
+        // canonical (name, rd) sort is applied downstream by `sort_vrf_refs`).
         assert_eq!(importing.len(), 2);
-        assert_eq!(importing[0].name, "customer-dev");
-        assert_eq!(importing[0].id, 5);
-        assert!(importing[0].rd.is_none());
-        assert_eq!(importing[1].name, "customer-prod");
-        assert_eq!(importing[1].id, 2);
-        assert_eq!(importing[1].rd.as_deref(), Some("65000:100"));
+        assert_eq!(importing[0].name, "customer-prod");
+        assert_eq!(importing[0].id, 2);
+        assert_eq!(importing[0].rd.as_deref(), Some("65000:100"));
+        assert_eq!(importing[1].name, "customer-dev");
+        assert_eq!(importing[1].id, 5);
+        assert!(importing[1].rd.is_none());
         assert_eq!(exporting.len(), 1);
         assert_eq!(exporting[0].id, 2);
 
