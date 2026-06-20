@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Route-target view can use GraphQL.** Set `[profiles.<name>.api] route_target =
+  "graphql"` to fetch a route target's importing + exporting VRFs in one `/graphql/`
+  query instead of two REST `vrfs` list calls. Identity resolution stays REST (so
+  not-found/ambiguous exit codes are unchanged) and the result is byte-identical to
+  the REST path; an instance whose schema can't support it transparently falls back
+  to REST, with the reason in `nbox status`. The surface joins the per-surface `api`
+  block and the `capabilities` report. (Also fixes the GraphQL filter probe to
+  introspect `RouteTargetFilter`, so the `id` filter is shaped correctly.)
+
 ## [0.4.0] - 2026-06-19
 
 ### Documentation
