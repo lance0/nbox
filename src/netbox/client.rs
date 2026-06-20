@@ -55,9 +55,11 @@ impl NetBoxClient {
             // the connection after each response rather than honoring HTTP/1.1
             // keep-alive. nbox's search fan-out fires ~17 requests at once; a
             // pooled connection the server has already half-closed can hang a
-            // reused request to the full timeout. Don't reuse idle connections —
-            // each request gets a fresh one (like curl), which costs a cheap
-            // reconnect but eliminates the stale-keep-alive stall.
+            // reused request to the full timeout. Keep *zero* idle connections in
+            // the pool, so a completed request's connection is dropped rather than
+            // reused (like curl). This only changes the post-response reuse path:
+            // concurrency is unaffected — the fan-out still opens up to ~17
+            // connections at once; they just aren't pooled for the next request.
             .pool_max_idle_per_host(0)
             .danger_accept_invalid_certs(!verify_tls)
             .build()

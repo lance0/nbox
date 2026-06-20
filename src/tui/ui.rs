@@ -17,7 +17,7 @@ use crate::tui::config_modal::{ConfigModal, ConfigSection, ProfilesMode, TestSta
 use crate::tui::state::{
     App, Focus, Modal, Mode, NAV_SECTIONS, NavSection, RelatedModal, Screen, result_row_cells,
 };
-use crate::tui::theme::Theme;
+use crate::tui::theme::{Severity, Theme};
 
 /// Column widths for the results table. KIND is fixed-width so the kind tags line
 /// up; DISPLAY flexes to fill the middle; SITE gets a fixed tail column. These
@@ -64,7 +64,11 @@ pub fn render(frame: &mut Frame, app: &mut App) {
     let show_update = app.update_available.is_some();
     let filters_on = any_filter_active(&app.filters);
 
-    let mut constraints = Vec::with_capacity(5);
+    // Longer Warning/Error statuses (e.g. a partial search) get their own line
+    // above the footer rather than crowding the footer's nav hints.
+    let status_banner = status_in_banner(app);
+
+    let mut constraints = Vec::with_capacity(6);
     if show_update {
         constraints.push(Constraint::Length(1)); // update banner
     }
@@ -73,6 +77,9 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         constraints.push(Constraint::Length(1)); // filter chips
     }
     constraints.push(Constraint::Min(1)); // body
+    if status_banner {
+        constraints.push(Constraint::Length(1)); // status banner
+    }
     constraints.push(Constraint::Length(1)); // footer
     let areas = Layout::vertical(constraints).split(frame.area());
 
@@ -88,7 +95,12 @@ pub fn render(frame: &mut Frame, app: &mut App) {
         row += 1;
     }
     let body_area = areas[row];
-    let footer_area = areas[row + 1];
+    row += 1;
+    if status_banner {
+        render_status_banner(frame, areas[row], app);
+        row += 1;
+    }
+    let footer_area = areas[row];
 
     match app.screen {
         Screen::Home => render_home(frame, body_area, app),
@@ -223,6 +235,28 @@ fn render_filter_bar(frame: &mut Frame, area: Rect, f: &SearchFilters, theme: &T
     }
     spans.push(Span::styled("  :clear-filters", bar.fg(theme.text_dim)));
     frame.render_widget(Paragraph::new(Line::from(spans)).style(bar), area);
+}
+
+/// Whether the current status is surfaced as a banner above the footer (instead
+/// of in the footer's status slot): true for the longer Warning/Error messages
+/// (e.g. a partial search), false for brief Info/Success confirmations — so a
+/// long message can't squeeze the footer's nav hints off the line.
+fn status_in_banner(app: &App) -> bool {
+    !app.status.is_empty() && matches!(app.status_severity, Severity::Warning | Severity::Error)
+}
+
+/// Render a Warning/Error status on its own line above the footer, colored by
+/// severity, on the chrome bar — full-width so the whole message stays readable.
+fn render_status_banner(frame: &mut Frame, area: Rect, app: &App) {
+    let theme = &app.theme;
+    let bar = Style::default().bg(theme.chrome_bg);
+    frame.render_widget(Block::default().style(bar), area);
+    let style = theme.message_style(app.status_severity).bg(theme.chrome_bg);
+    let line = Line::from(vec![
+        Span::raw("  "),
+        Span::styled(app.status.clone(), style),
+    ]);
+    frame.render_widget(Paragraph::new(line).style(bar), area);
 }
 
 /// A bordered dashboard card with a dim border + one column of inner padding.
@@ -1859,7 +1893,9 @@ fn footer_line(app: &App) -> Line<'static> {
     }
 
     let mut has_text = false;
-    if !app.status.is_empty() {
+    // Warning/Error statuses are shown in the banner above the footer (see
+    // `render_status_banner`), so the footer keeps its room for the nav hints.
+    if !app.status.is_empty() && !status_in_banner(app) {
         spans.push(Span::styled(
             app.status.clone(),
             theme.message_style(app.status_severity),
