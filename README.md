@@ -432,9 +432,10 @@ page_size = 100
 exclude_config_context = true
 
 # Per-surface backend (optional; omit for all-REST). REST is canonical; GraphQL
-# is an opt-in accelerator for the VRF view. Search is always REST.
+# is an opt-in accelerator for the VRF and route-target views. Search is always REST.
 [profiles.work.api]
 vrf = "graphql"               # rest | graphql
+route_target = "graphql"      # rest | graphql
 ```
 
 Tokens are **never written to config**. nbox resolves them in order: the profile's
@@ -513,7 +514,7 @@ raw escape-hatch tool come later.
 - Auto-detects **v2 API tokens** (NetBox 4.5+, `Authorization: Bearer nbt_…`) and
   legacy **v1 tokens** (`Authorization: Token …`); force one with `auth_scheme`.
 - Optional, read-only **GraphQL** (`/graphql/`) as a **per-surface accelerator**
-  for the VRF view: set `[profiles.<name>.api]` `vrf = "graphql"`. nbox probes the
+  for the VRF and route-target views (`[profiles.<name>.api]` `vrf`/`route_target = "graphql"`). nbox probes the
   schema so NetBox 4.2, 4.3, and 4.5+ filter/pagination differences are handled
   without hard-coding a version, and **falls back to REST** (with the reason in
   `status`) when a surface isn't supported. **Search is always REST** — NetBox's

@@ -203,10 +203,11 @@ Consolidated future scope:
     (VLAN + prefixes + group/scope), tenant (tenant + devices/prefixes/IPs summary). Read-only GraphQL
     alternatives to the REST fan-outs; only pursue where the fan-out is a real latency cost, and don't
     maintain both surfaces for a view indefinitely.
-  - ◑ **Route-target / routing-context views** — route targets are now a first-class object (lookup,
-    search, open, journal, MCP) and the detail resolves its importing/exporting VRFs (the relation
-    graph) over REST — two concurrent `vrfs` list calls. The accelerator left: bundle that relation
-    graph into one GraphQL query (a `route_target` surface) instead of the REST pair.
+  - ☑ **Route-target / routing-context views** _(PR #22)_ — route targets are a first-class object
+    (lookup, search, open, journal, MCP); the detail's importing/exporting VRF relation graph is now a
+    GraphQL accelerator surface (`[profiles.<name>.api] route_target = "graphql"`): one
+    `route_target_list` query replaces the two REST `vrfs` list calls, identity stays REST, output is
+    byte-identical, with REST fallback. Next accelerator: the device detail bundle.
 - ☑ **GraphQL backend cleanup.** Typed `GqlVrf{Prefix,Address}` + `VrfBundleResponse` structs replace
   the `from_value(json!{})` row reshape (`Default` on the `Prefix`/`IpAddress` wire models lets the
   conversion set only the VRF-relevant fields). All GraphQL — capabilities probe + VRF bundle + helpers

@@ -34,7 +34,7 @@ Notes:
   addresses and blocks with the `ipnet` crate from the prefix it reads; nothing
   is reserved in NetBox.
 - nbox targets NetBox **4.2+**. REST is canonical; GraphQL is an opt-in
-  accelerator for the VRF view only.
+  accelerator for the VRF and route-target views.
 
 ## When to use each
 

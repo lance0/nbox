@@ -88,13 +88,14 @@ timeout_secs = 30                 # default 15
 ### `the backend key was removed`
 
 The coarse `backend = "rest"|"graphql"` profile key is gone. Set the backend
-per surface instead, under `[profiles.<name>.api]`. Only the VRF view is
-GraphQL-capable; search is always REST (NetBox's GraphQL has no full-text `q`
+per surface instead, under `[profiles.<name>.api]`. The VRF and route-target views
+are GraphQL-capable; search is always REST (NetBox's GraphQL has no full-text `q`
 equivalent), so a `search = "graphql"` preference transparently falls back:
 
 ```toml
 [profiles.work.api]
-vrf = "graphql"                   # rest | graphql — only vrf is GraphQL-capable
+vrf = "graphql"                   # rest | graphql
+route_target = "graphql"          # rest | graphql (vrf + route_target are GraphQL-capable)
 ```
 
 ### Wrong instance / no active profile

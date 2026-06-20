@@ -8,7 +8,8 @@ TUI, so output is consistent across both.
 
 - **`netbox/`** — NetBox clients and wire types. REST is canonical and powers
   search, identity resolution, detail lookups, journals, `raw`, and the
-  available-IP/prefix math; GraphQL is an opt-in accelerator for the VRF view only.
+  available-IP/prefix math; GraphQL is an opt-in accelerator for the VRF and
+  route-target views.
   - `client.rs` — auth, paging, timeouts; retries HTTP 429 (`Retry-After` +
     backoff); maps statuses to typed errors (401→auth, 403→perms, 404→not-found).
     The same authenticated client owns `/graphql/` POSTs. Holds the profile's
@@ -52,7 +53,7 @@ TUI, so output is consistent across both.
 ```
 CLI args ─► lib::run ─► query/search ─► netbox::client ─► NetBox REST
                                              │
-                                             └──► NetBox GraphQL (VRF view only, opt-in)
+                                             └──► NetBox GraphQL (VRF + route-target views, opt-in)
                           │
                           ▼
                   domain view model ─► output::emit (plain | json | csv)
@@ -89,6 +90,6 @@ Stable contract (also in AGENTS.md): `0` success · `1` generic · `2` usage ·
 ## Locked decisions
 
 NetBox 4.2+ (polymorphic `scope`) · `reqwest` 0.12 · REST canonical · GraphQL an
-opt-in schema-probed per-surface accelerator (VRF view only; search is always
+opt-in schema-probed per-surface accelerator (VRF + route-target views; search is always
 REST — NetBox GraphQL has no `q` equivalent) · `q=`-primary REST search · spawned
 TUI commands · centralized API→web URL conversion · tokens never logged.

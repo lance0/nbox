@@ -41,7 +41,7 @@ flag, and the per-surface backend routing.
   endpoints. Even with a
   `graphql` preference for the search surface, the backend resolves to a REST
   fallback (without probing the schema) and `status` carries the reason. GraphQL
-  stays an opt-in accelerator for the VRF view only.
+  stays an opt-in accelerator for the VRF and route-target views.
 
 - **Client-side container utilization.** As of NetBox 4.5 the prefix REST API no
   longer returns `utilization` (observed live — present on 4.2, absent on 4.5's
