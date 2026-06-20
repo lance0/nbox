@@ -79,6 +79,7 @@ Stable contract (also in AGENTS.md): `0` success · `1` generic · `2` usage ·
 
 ## Locked decisions
 
-NetBox 4.2+ (polymorphic `scope`) · `reqwest` 0.12 · REST default with opt-in
-schema-probed GraphQL search · `q=`-primary search · spawned TUI commands ·
-centralized API→web URL conversion · tokens never logged.
+NetBox 4.2+ (polymorphic `scope`) · `reqwest` 0.12 · REST canonical · GraphQL an
+opt-in schema-probed per-surface accelerator (VRF view only; search is always
+REST — NetBox GraphQL has no `q` equivalent) · `q=`-primary REST search · spawned
+TUI commands · centralized API→web URL conversion · tokens never logged.

@@ -9,7 +9,11 @@ pub fn status_report() -> Value {
     json!({
         "netbox_url": "https://netbox.example.com/",
         "api": {
-            "search": { "configured": "graphql", "effective": "graphql" },
+            "search": {
+                "configured": "graphql",
+                "effective": "rest",
+                "reason": "NetBox GraphQL exposes no REST-equivalent full-text (q) search"
+            },
             "vrf": { "configured": "graphql", "effective": "graphql" }
         },
         "netbox_version": "4.5.5",
@@ -32,7 +36,11 @@ pub fn status_report() -> Value {
                 "probed": true,
                 "available": true,
                 "surfaces": {
-                    "search": { "supported": true, "recommended": true, "missing": [] },
+                    "search": {
+                        "supported": false,
+                        "recommended": false,
+                        "missing": ["NetBox GraphQL exposes no REST-equivalent full-text (q) search"]
+                    },
                     "vrf": { "supported": true, "recommended": true, "missing": [] }
                 }
             }

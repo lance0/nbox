@@ -44,11 +44,10 @@ fn netbox_token() -> String {
 }
 
 /// A throwaway config file holding one profile that points at the live NetBox.
-/// `page_size` is configurable so the pagination test can force multiple pages,
-/// and `backend` sets the per-surface API preference (`[profiles.ci.api]
-/// search = …`) so GraphQL-smoke tests exercise the opt-in search path.
+/// `page_size` is configurable so the pagination test can force multiple pages.
+/// REST is the canonical backend, so no `[profiles.ci.api]` table is needed.
 /// The `NamedTempFile` is returned so it lives as long as the test needs it.
-fn temp_config_with_backend(page_size: usize, backend: &str) -> NamedTempFile {
+fn temp_config(page_size: usize) -> NamedTempFile {
     let mut config = NamedTempFile::new().expect("create temp config");
     write!(
         config,
@@ -58,12 +57,8 @@ fn temp_config_with_backend(page_size: usize, backend: &str) -> NamedTempFile {
          url = \"{url}\"\n\
          token_env = \"NETBOX_TOKEN_UNUSED\"\n\
          page_size = {page_size}\n\
-         verify_tls = false\n\
-         \n\
-         [profiles.ci.api]\n\
-         search = \"{backend}\"\n",
+         verify_tls = false\n",
         url = netbox_url(),
-        backend = backend,
     )
     .expect("write temp config");
     config.flush().expect("flush temp config");
@@ -72,8 +67,8 @@ fn temp_config_with_backend(page_size: usize, backend: &str) -> NamedTempFile {
 
 /// Run `nbox <args>` against the live instance with the given page size, using a
 /// throwaway profile and `NBOX_TOKEN` for auth. Returns the captured output.
-fn run_nbox_with_backend(page_size: usize, backend: &str, args: &[&str]) -> Output {
-    let config = temp_config_with_backend(page_size, backend);
+fn run_nbox_with_page_size(page_size: usize, args: &[&str]) -> Output {
+    let config = temp_config(page_size);
     let output = Command::new(env!("CARGO_BIN_EXE_nbox"))
         .arg("--config")
         .arg(config.path())
@@ -90,18 +85,9 @@ fn run_nbox_with_backend(page_size: usize, backend: &str, args: &[&str]) -> Outp
     output
 }
 
-fn run_nbox_with_page_size(page_size: usize, args: &[&str]) -> Output {
-    run_nbox_with_backend(page_size, "rest", args)
-}
-
 /// Run `nbox <args>` with the default page size (100).
 fn run_nbox(args: &[&str]) -> Output {
     run_nbox_with_page_size(100, args)
-}
-
-/// Run `nbox <args>` through a profile using the opt-in GraphQL search backend.
-fn run_nbox_graphql(args: &[&str]) -> Output {
-    run_nbox_with_backend(100, "graphql", args)
 }
 
 /// Assert the command succeeded (exit 0); on failure, dump both streams.
@@ -193,98 +179,6 @@ fn search_site_returns_scope_filtered_prefix() {
         arr.iter()
             .any(|r| r["kind"] == "prefix" && r["display"] == "10.10.0.0/16"),
         "site-scoped prefix 10.10.0.0/16 not returned for --site ci-site: {results}"
-    );
-}
-
-// --- GraphQL search backend smoke -----------------------------------------
-
-/// The opt-in GraphQL backend finds the same seeded device as REST search.
-#[test]
-#[ignore = "requires a live NetBox (GraphQL integration workflow)"]
-fn graphql_backend_search_finds_seeded_device() {
-    let out = run_nbox_graphql(&["-o", "json", "search", "ci-dev1"]);
-    assert_ok(&out, "search ci-dev1 (graphql)");
-    let results = json_of(&out);
-    let arr = results.as_array().expect("search JSON is an array");
-    assert!(
-        arr.iter()
-            .any(|r| r["kind"] == "device" && r["display"] == "ci-dev1"),
-        "GraphQL search did not surface device ci-dev1: {results}"
-    );
-}
-
-/// `--site` scopes both polymorphic prefixes and site-backed VLANs under GraphQL.
-#[test]
-#[ignore = "requires a live NetBox (GraphQL integration workflow)"]
-fn graphql_backend_site_scope_returns_prefix_and_vlan() {
-    let prefix = run_nbox_graphql(&["-o", "json", "search", "10.10", "--site", "ci-site"]);
-    assert_ok(&prefix, "search 10.10 --site ci-site (graphql)");
-    let prefix_results = json_of(&prefix);
-    let prefix_arr = prefix_results.as_array().expect("search JSON is an array");
-    assert!(
-        prefix_arr
-            .iter()
-            .any(|r| r["kind"] == "prefix" && r["display"] == "10.10.0.0/16"),
-        "GraphQL site scope did not surface site-scoped prefix: {prefix_results}"
-    );
-
-    let vlan = run_nbox_graphql(&["-o", "json", "search", "ci-vlan", "--site", "ci-site"]);
-    assert_ok(&vlan, "search ci-vlan --site ci-site (graphql)");
-    let vlan_results = json_of(&vlan);
-    let vlan_arr = vlan_results.as_array().expect("search JSON is an array");
-    assert!(
-        vlan_arr
-            .iter()
-            .any(|r| r["kind"] == "vlan" && r["display"] == "1234 ci-vlan"),
-        "GraphQL site scope did not surface ci-site VLAN: {vlan_results}"
-    );
-}
-
-/// GraphQL search applies exact polymorphic scope filters for all id-based scopes.
-#[test]
-#[ignore = "requires a live NetBox (GraphQL integration workflow)"]
-fn graphql_backend_scope_filters_return_exact_prefixes() {
-    for (flag, ref_, expected) in [
-        ("--region", "ci-region", "10.20.0.0/16"),
-        ("--site-group", "ci-sitegroup", "10.30.0.0/16"),
-        ("--location", "ci-loc", "10.40.0.0/16"),
-    ] {
-        let what = format!("search 10. {flag} {ref_} (graphql)");
-        let out = run_nbox_graphql(&["-o", "json", "search", "10.", flag, ref_]);
-        assert_ok(&out, &what);
-        let results = json_of(&out);
-        let arr = results.as_array().expect("search JSON is an array");
-        assert!(
-            arr.iter()
-                .any(|r| r["kind"] == "prefix" && r["display"] == expected),
-            "{flag} {ref_} should surface {expected}: {results}"
-        );
-        for other in ["10.20.0.0/16", "10.30.0.0/16", "10.40.0.0/16"] {
-            if other != expected {
-                assert!(
-                    !arr.iter().any(|r| r["display"] == other),
-                    "{flag} {ref_} leaked another scope's prefix {other}: {results}"
-                );
-            }
-        }
-    }
-}
-
-/// GraphQL search applies the resolved VRF id to prefixes.
-#[test]
-#[ignore = "requires a live NetBox (GraphQL integration workflow)"]
-fn graphql_backend_vrf_filters_duplicate_prefix() {
-    let out = run_nbox_graphql(&["-o", "json", "search", "10.0", "--vrf", "ci-vrf"]);
-    assert_ok(&out, "search 10.0 --vrf ci-vrf (graphql)");
-    let results = json_of(&out);
-    let arr = results.as_array().expect("search JSON is an array");
-    let matches = arr
-        .iter()
-        .filter(|r| r["kind"] == "prefix" && r["display"] == "10.0.0.0/24")
-        .count();
-    assert_eq!(
-        matches, 1,
-        "GraphQL VRF search should return only the VRF-scoped duplicate prefix: {results}"
     );
 }
 

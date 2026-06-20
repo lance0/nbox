@@ -2,7 +2,8 @@
   "api": {
     "search": {
       "configured": "graphql",
-      "effective": "graphql"
+      "effective": "rest",
+      "reason": "NetBox GraphQL exposes no REST-equivalent full-text (q) search"
     },
     "vrf": {
       "configured": "graphql",
@@ -15,9 +16,11 @@
       "probed": true,
       "surfaces": {
         "search": {
-          "missing": [],
-          "recommended": true,
-          "supported": true
+          "missing": [
+            "NetBox GraphQL exposes no REST-equivalent full-text (q) search"
+          ],
+          "recommended": false,
+          "supported": false
         },
         "vrf": {
           "missing": [],

@@ -163,14 +163,23 @@ Consolidated future scope:
   resolved against the live schema probe (`EffectiveBackend`, REST-fallback with reason). Surface-aware
   capabilities + a per-surface `api` block in `nbox status`/MCP. VRF GraphQL fetches its prefix/address
   bundle in one query; REST and GraphQL produce a byte-identical `VrfDetail`.
-- ☐ **Bundled GraphQL search.** The `search` surface still fans out one GraphQL POST per kind; collapse
-  it into a single query with aliased `*_list` fields (skipping unsupported branches) so GraphQL search
-  is a real round-trip win, not just a protocol swap.
+- ☑ **Search stays REST — GraphQL search dropped (decided 2026-06-19).** Investigated collapsing the
+  per-kind GraphQL search fan-out into one bundled POST. NetBox 4.3+ GraphQL has **no `q` full-text
+  filter** (filtering moved to per-field Strawberry lookups), so it can't reproduce canonical NetBox
+  search — the old fan-out silently returned unfiltered first-pages on 4.3+. Decision: `nbox search` is
+  REST-canonical; GraphQL never backs it (a `search = "graphql"` preference transparently falls back).
+  Removed the GraphQL search path entirely. The single-POST idea survives as a *different* future
+  surface (see typeahead below).
+- ☐ **GraphQL `browse`/typeahead surface (distant).** A single aliased `*_list` POST filtering each kind
+  by its name/description via `StrFilterLookup` `icontains` — a fast name-substring lookup for TUI
+  typeahead/incremental browse. Explicitly **not** `search`: different, non-canonical semantics (won't
+  match serial/tag/custom-field hits the way REST `q` does). Ship it as its own opt-in `[api]` surface,
+  honestly labeled as name/description filtering, where the UI can say so. Long-horizon.
 - ☐ GraphQL detail views after the TUI detail experience settles — start with device detail as a
   read-only GraphQL query alternative to the REST fan-out; only pursue if the fan-out becomes a
   latency problem, and don't build both surfaces indefinitely.
-- ☐ GraphQL backend cleanup once PR #11 has review miles: table-driven search descriptors for the
-  repeated search branches, shared kind→web-path mapping, and less boilerplate around row IDs.
+- ☐ GraphQL backend cleanup: typed `Gql*` structs for the VRF bundle (replace the `from_value(json!{})`
+  reshape) and a dedicated `netbox/graphql/` submodule for the remaining helpers.
 - ☐ GraphQL capability probing v2 if schema churn demands it: dynamic `*Filter` discovery and/or a
   short TTL cache keyed by instance/profile to avoid re-probing when users bounce between profiles
   pointing at the same NetBox.

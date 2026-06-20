@@ -30,10 +30,10 @@ timeout_secs = 15
 page_size = 100
 exclude_config_context = true
 
-# Per-surface backend (optional; omit for all-REST).
+# Per-surface backend (optional; omit for all-REST). Only the VRF view can use
+# GraphQL today; search is always REST (see "Backends" below).
 [profiles.work.api]
-search = "graphql"            # rest | graphql
-# vrf = "graphql"             # rest | graphql
+vrf = "graphql"               # rest | graphql
 ```
 
 `config_version` is written by `config init`. A config with a *newer* version
@@ -86,13 +86,21 @@ scheme marker.
 REST is the **canonical** backend — it covers every operation (search, detail
 lookups, journals, raw reads, available IP/prefix queries, and identity
 resolution). GraphQL is an **opt-in per-surface accelerator**, configured under
-`[profiles.<name>.api]`:
+`[profiles.<name>.api]`. Today the **VRF view** is the only GraphQL-capable
+surface:
 
 ```toml
 [profiles.work.api]
-search = "graphql"   # rest | graphql — the multi-kind search fan-out
-vrf    = "graphql"   # rest | graphql — the VRF view's prefix/address bundle
+vrf = "graphql"   # rest | graphql — the VRF view's prefix/address bundle
 ```
+
+**Search is always REST.** `nbox search` means canonical NetBox search semantics,
+and NetBox's GraphQL API has no equivalent to REST's full-text `q` quick-search —
+filtering moved to per-field Strawberry lookups in 4.3, which can't reproduce
+REST's multi-field server-side search. A `search = "graphql"` preference is
+therefore accepted but transparently **falls back to REST**, with the reason
+surfaced in `nbox status`. (A GraphQL single-POST name/description filter would be
+a *different* feature — a future `browse`/typeahead surface — not search.)
 
 Rules:
 
@@ -112,8 +120,8 @@ Rules:
 `nbox status` reports the configured vs effective backend per surface:
 
 ```
-api search  graphql
-api vrf     rest (GraphQL vrf surface unavailable: missing vrf_list)
+api search  rest (NetBox GraphQL exposes no REST-equivalent full-text (q) search)
+api vrf     graphql
 ```
 
 ## UI settings

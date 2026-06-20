@@ -122,12 +122,14 @@ MCP prompts are later. See `docs/MCP.md`.
   active source with `nbox config token status` (never prints the token). Select a
   profile with `--profile <name>` or set the active one.
 - Backends: REST is canonical. GraphQL is an opt-in per-surface accelerator set
-  under `[profiles.<name>.api]` (`search` and/or `vrf` = `rest`|`graphql`; missing
-  = REST). nbox probes `/graphql/`, adapts to NetBox 4.2/4.3/4.5+ filter/pagination
-  shapes, and falls back to REST (with the reason in `nbox status`) when a surface
-  isn't supported. The output shape is identical either way. The old coarse
-  `backend = …` key was removed and is rejected. Identity resolution and all other
-  operations remain REST-backed.
+  under `[profiles.<name>.api]` (`vrf` = `rest`|`graphql`; missing = REST). nbox
+  probes `/graphql/`, adapts to NetBox 4.2/4.3/4.5+ filter/pagination shapes, and
+  falls back to REST (with the reason in `nbox status`) when a surface isn't
+  supported. The output shape is identical either way. **Search is always REST** —
+  NetBox GraphQL has no equivalent to REST's full-text `q`, so a `search =
+  "graphql"` preference transparently falls back. The old coarse `backend = …` key
+  was removed and is rejected. Identity resolution and all other operations remain
+  REST-backed.
 - Logging: quiet by default (warnings to stderr). `--log-level` / `NBOX_LOG` /
   `RUST_LOG` set verbosity; `--log-file <PATH>` (or config `log_file`) also tees
   `tracing` output to a file. stdout stays data-only on every path.

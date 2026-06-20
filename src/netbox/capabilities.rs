@@ -17,24 +17,12 @@ use crate::netbox::client::NetBoxClient;
 use crate::netbox::graphql::GraphqlCapabilities;
 use crate::netbox::status::{MIN_MAJOR, MIN_MINOR, Status, meets_minimum};
 
-/// The GraphQL list fields the search fan-out uses, one per searchable kind.
-const SEARCH_LISTS: [&str; 15] = [
-    "device_list",
-    "site_list",
-    "ip_address_list",
-    "prefix_list",
-    "vlan_list",
-    "circuit_list",
-    "aggregate_list",
-    "asn_list",
-    "ip_range_list",
-    "tenant_list",
-    "contact_list",
-    "provider_list",
-    "virtual_machine_list",
-    "cluster_list",
-    "vrf_list",
-];
+/// Why GraphQL never backs the search surface — a product rule, not a schema
+/// gap. NetBox's GraphQL filtering moved to per-field Strawberry lookups in 4.3
+/// and exposes no equivalent to REST's full-text `q` quick-search, so `nbox
+/// search` keeps canonical NetBox search semantics by always using REST.
+const SEARCH_REST_ONLY_REASON: &str =
+    "NetBox GraphQL exposes no REST-equivalent full-text (q) search";
 
 /// The resolved backend for one operation: the configured preference reconciled
 /// against the live capability probe. `RestFallback` records *why* a GraphQL
@@ -165,21 +153,16 @@ pub struct SurfaceSupport {
     pub missing: Vec<String>,
 }
 
-/// GraphQL search support: nbox runs a bundled query over whatever list fields
-/// exist and skips the rest, so it's *supported* as long as at least one list is
-/// present, and *recommended* only when every searchable list is exposed.
-fn search_support(caps: &GraphqlCapabilities) -> SurfaceSupport {
-    let missing: Vec<String> = SEARCH_LISTS
-        .iter()
-        .filter(|l| caps.list(l).is_none())
-        .map(|l| (*l).to_string())
-        .collect();
-    let supported = missing.len() < SEARCH_LISTS.len();
-    let recommended = missing.is_empty();
+/// GraphQL search support: never. `nbox search` means canonical NetBox search,
+/// which GraphQL can't express (see [`SEARCH_REST_ONLY_REASON`]), so the search
+/// surface is reported unsupported regardless of schema and always routes to
+/// REST. A GraphQL single-POST name/description filter would be a *different*
+/// surface (a future `browse`/typeahead), not search.
+fn search_support() -> SurfaceSupport {
     SurfaceSupport {
-        supported,
-        recommended,
-        missing,
+        supported: false,
+        recommended: false,
+        missing: vec![SEARCH_REST_ONLY_REASON.to_string()],
     }
 }
 
@@ -219,7 +202,7 @@ fn vrf_support(caps: &GraphqlCapabilities) -> SurfaceSupport {
 
 fn surface_support(caps: &GraphqlCapabilities, surface: ApiSurface) -> SurfaceSupport {
     match surface {
-        ApiSurface::Search => search_support(caps),
+        ApiSurface::Search => search_support(),
         ApiSurface::Vrf => vrf_support(caps),
     }
 }
@@ -231,6 +214,13 @@ impl NetBoxClient {
     pub async fn effective_backend(&self, surface: ApiSurface) -> EffectiveBackend {
         if self.api_preference(surface) == BackendPreference::Rest {
             return EffectiveBackend::Rest;
+        }
+        // Search is REST-canonical by product rule, not a schema gap, so a
+        // `graphql` preference falls back without even probing.
+        if surface == ApiSurface::Search {
+            return EffectiveBackend::RestFallback {
+                reason: SEARCH_REST_ONLY_REASON.to_string(),
+            };
         }
         match self.graphql_capabilities().await {
             Ok(caps) => {
@@ -283,7 +273,7 @@ impl NetBoxClient {
                     available: true,
                     error: None,
                     surfaces: Some(GraphqlSurfaces {
-                        search: search_support(&caps),
+                        search: search_support(),
                         vrf: vrf_support(&caps),
                     }),
                 },

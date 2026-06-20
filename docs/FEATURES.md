@@ -60,17 +60,19 @@ orthogonal to the scope filters above — both may be set, and NetBox ANDs them 
 prefixes. An unknown VRF is a not-found error (exit `4`), not a silent empty
 result.
 
-Profiles opt individual read surfaces into NetBox GraphQL under
-`[profiles.<name>.api]` — `search` (the multi-kind fan-out) and `vrf` (the VRF
-view's prefix/address bundle); each is `rest` (default) or `graphql`. A GraphQL
-surface returns the same normalized shape and keeps the same fail-closed/
+Profiles opt the **VRF view** into NetBox GraphQL under `[profiles.<name>.api]` —
+`vrf` (the VRF view's prefix/address bundle) is `rest` (default) or `graphql`. A
+GraphQL surface returns the same normalized shape and keeps the same fail-closed/
 `--partial` behavior, and **falls back to REST** (with the reason shown by `nbox
 status`) when the live schema can't support it. nbox probes `/graphql/` at
 runtime and adapts to the schema: NetBox 4.2's unpaginated list fields, NetBox
 4.3+'s offset pagination, and NetBox 4.5+'s lookup-wrapper filters are all shaped
-from introspection rather than version strings. REST stays canonical and powers
-identity resolution, detail lookups, raw reads, journals, and available-IP/prefix
-commands. (The old coarse `backend = …` profile key was removed.)
+from introspection rather than version strings. **Search is always REST** —
+NetBox's GraphQL API has no equivalent to REST's full-text `q`, so a `search =
+"graphql"` preference transparently falls back. REST stays canonical and powers
+search, identity resolution, detail lookups, raw reads, journals, and
+available-IP/prefix commands. (The old coarse `backend = …` profile key was
+removed.)
 
 ## Output
 

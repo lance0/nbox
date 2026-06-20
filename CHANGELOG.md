@@ -14,8 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per read surface under `[profiles.<name>.api]` instead:
   ```toml
   [profiles.work.api]
-  search = "graphql"   # rest | graphql
-  vrf    = "graphql"   # rest | graphql
+  vrf = "graphql"   # rest | graphql
   ```
   A missing table/key means REST; unknown surfaces (e.g. `detail`) and invalid
   values are config errors. REST stays canonical; a `graphql` surface is honored
@@ -23,6 +22,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `nbox status` (CLI + MCP) drops the single `backend` field for a per-surface
   `api` block (`configured`/`effective`/`reason`), and `capabilities.graphql` is
   now surface-aware (`surfaces.{search,vrf}.{supported,recommended,missing}`).
+- **Search is always REST.** NetBox's GraphQL API has no equivalent to REST's
+  full-text `q` quick-search (filtering moved to per-field Strawberry lookups in
+  4.3), so GraphQL can't reproduce canonical NetBox search. `nbox search` now
+  always runs over REST; a `search = "graphql"` preference is accepted but
+  transparently falls back to REST, with the reason in `nbox status`. The VRF view
+  is currently the only GraphQL-capable surface. (The per-kind GraphQL search
+  fan-out — which silently returned unfiltered results on 4.3+ — was removed.)
+
+### Performance
+- **VRF detail (REST) fetches its prefixes and addresses concurrently** via
+  `tokio::try_join!` instead of sequentially, roughly halving the REST VRF view's
+  latency on a high-RTT link.
 
 ### Added
 - **VRF GraphQL bundle.** With `[profiles.<name>.api] vrf = "graphql"`, the VRF

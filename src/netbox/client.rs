@@ -96,11 +96,12 @@ impl NetBoxClient {
         .unwrap_or_default()
     }
 
-    /// True when any surface prefers GraphQL — the gate for probing the schema so
-    /// a pure-REST profile keeps `nbox status` cheap.
+    /// True when a surface that can actually run over GraphQL prefers it — the
+    /// gate for probing the schema so a pure-REST profile keeps `nbox status`
+    /// cheap. Search is REST-canonical (see [`crate::netbox::capabilities`]), so
+    /// a `search = "graphql"` preference never triggers a probe.
     pub(crate) fn any_graphql_preferred(&self) -> bool {
-        self.api.search == Some(BackendPreference::Graphql)
-            || self.api.vrf == Some(BackendPreference::Graphql)
+        self.api.vrf == Some(BackendPreference::Graphql)
     }
 
     pub(crate) fn graphql_capability_cache(&self) -> &tokio::sync::OnceCell<GraphqlCapabilities> {
