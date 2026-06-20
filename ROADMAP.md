@@ -175,9 +175,23 @@ Consolidated future scope:
   typeahead/incremental browse. Explicitly **not** `search`: different, non-canonical semantics (won't
   match serial/tag/custom-field hits the way REST `q` does). Ship it as its own opt-in `[api]` surface,
   honestly labeled as name/description filtering, where the UI can say so. Long-horizon.
-- ☐ GraphQL detail views after the TUI detail experience settles — start with device detail as a
-  read-only GraphQL query alternative to the REST fan-out; only pursue if the fan-out becomes a
-  latency problem, and don't build both surfaces indefinitely.
+- ☐ **GraphQL accelerator candidates (tracked).** GraphQL fits a surface when it can *bundle* a
+  bounded set of related objects behind *exact* filters with a clean REST fallback — and is wrong for
+  anything that means canonical full-text search. Prioritize as the TUI detail/browse contracts settle;
+  each must keep REST canonical and stay backend-neutral in output (one view shape, like `VrfDetail`).
+  - ☑ **VRF detail** — shipped. Header + `prefixes` + `addresses` in one `vrf_id`-scoped POST.
+  - ☐ **Dashboard / home overview** — counts, recent objects, top prefixes, status buckets,
+    "what changed recently" panels bundled into one request. An *overview*, not search.
+  - ☐ **Browse / list panes** — Nav rail opening `VRFs`/`Sites`/`Prefixes`/`Devices` with sort/limit/
+    basic filters, fetching exactly the columns the TUI renders. Frame as browse/filter, not search
+    (overlaps the typeahead surface above).
+  - ☐ **Relationship-heavy detail views** (once the TUI detail contract settles) — device
+    (header + interfaces + IPs + services), prefix (prefix + children + contained IPs), VLAN
+    (VLAN + prefixes + group/scope), tenant (tenant + devices/prefixes/IPs summary). Read-only GraphQL
+    alternatives to the REST fan-outs; only pursue where the fan-out is a real latency cost, and don't
+    maintain both surfaces for a view indefinitely.
+  - ☐ **Route-target / routing-context views** — bundle the relation graph (a route target ↔ the VRFs
+    that import/export it) cleanly. Needs route targets as a first-class object or expanded VRF views.
 - ☐ GraphQL backend cleanup: typed `Gql*` structs for the VRF bundle (replace the `from_value(json!{})`
   reshape) and a dedicated `netbox/graphql/` submodule for the remaining helpers.
 - ☐ GraphQL capability probing v2 if schema churn demands it: dynamic `*Filter` discovery and/or a
