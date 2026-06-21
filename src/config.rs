@@ -1913,4 +1913,140 @@ url = \"https://a\"
         assert_eq!(lab2.verify_tls, None);
         assert_eq!(lab2.token_env, None);
     }
+
+    #[test]
+    fn select_env_token_precedence_and_empty_skip() {
+        // token_env wins over NBOX_TOKEN; empty values are skipped at each tier; the
+        // keyring tier is layered on only after this returns None (see resolve_token).
+        assert_eq!(
+            select_env_token(Some("env".into()), Some("nbox".into())),
+            Some("env".into()),
+            "token_env beats NBOX_TOKEN"
+        );
+        assert_eq!(
+            select_env_token(Some(String::new()), Some("nbox".into())),
+            Some("nbox".into()),
+            "empty token_env falls through to NBOX_TOKEN"
+        );
+        assert_eq!(
+            select_env_token(None, Some("nbox".into())),
+            Some("nbox".into())
+        );
+        assert_eq!(
+            select_env_token(Some(String::new()), Some(String::new())),
+            None,
+            "both empty ⇒ None (the keyring tier is tried next)"
+        );
+        assert_eq!(select_env_token(None, None), None);
+    }
+
+    #[test]
+    fn needs_onboarding_predicate_cases() {
+        // No profiles at all ⇒ onboard.
+        assert!(needs_onboarding_for(&Config::default(), None));
+
+        let with_active: Config =
+            toml::from_str("active_profile = \"work\"\n[profiles.work]\nurl = \"u\"\n").unwrap();
+        // A resolvable active profile ⇒ normal launch.
+        assert!(!needs_onboarding_for(&with_active, None));
+        // `--profile` naming an existing profile ⇒ normal launch …
+        assert!(!needs_onboarding_for(&with_active, Some("work")));
+        // … naming a missing one ⇒ onboard.
+        assert!(needs_onboarding_for(&with_active, Some("nope")));
+
+        // Profiles exist but no active set ⇒ onboard.
+        let no_active: Config = toml::from_str("[profiles.work]\nurl = \"u\"\n").unwrap();
+        assert!(needs_onboarding_for(&no_active, None));
+
+        // Active names a profile that no longer exists ⇒ onboard.
+        let dangling: Config =
+            toml::from_str("active_profile = \"gone\"\n[profiles.work]\nurl = \"u\"\n").unwrap();
+        assert!(needs_onboarding_for(&dangling, None));
+    }
+
+    /// The format-preserving contract: edits keep user comments and every unrelated
+    /// key/section intact, so an in-place edit (and a `cargo install` upgrade) never
+    /// rewrites the file wholesale.
+    #[test]
+    fn edits_preserve_comments_and_unrelated_keys() {
+        let original = r#"# nbox config — hand-written
+config_version = 1
+active_profile = "work"  # the prod box
+log_level = "info"
+
+[ui]
+theme = "nord"  # favorite
+refresh_secs = 30
+
+[profiles.work]
+url = "https://nb.example"  # keep me
+token_env = "NB_TOKEN"
+"#;
+        let mut doc: DocumentMut = original.parse().unwrap();
+        // A spread of edits across [ui], a profile field, and a top-level key.
+        set_ui_field(&mut doc, &UiField::Theme("gruvbox".to_string()));
+        set_profile_token_env(&mut doc, "work", Some("PROD_TOKEN")).unwrap();
+        set_top_string(&mut doc, "log_level", Some("debug"));
+        let out = doc.to_string();
+
+        // Comments + unrelated keys survive verbatim.
+        assert!(out.contains("# nbox config — hand-written"), "{out}");
+        assert!(out.contains("# the prod box"), "{out}");
+        assert!(out.contains("# keep me"), "{out}");
+        assert!(
+            out.contains("refresh_secs = 30"),
+            "untouched key kept: {out}"
+        );
+        assert!(out.contains("config_version = 1"));
+        // Targeted values changed.
+        assert!(out.contains("theme = \"gruvbox\""), "{out}");
+        assert!(out.contains("token_env = \"PROD_TOKEN\""), "{out}");
+        assert!(out.contains("log_level = \"debug\""), "{out}");
+        // And it still parses to the expected typed values.
+        let cfg: Config = toml::from_str(&out).unwrap();
+        assert_eq!(cfg.ui.theme, "gruvbox");
+        assert_eq!(
+            cfg.profiles["work"].token_env.as_deref(),
+            Some("PROD_TOKEN")
+        );
+        assert_eq!(cfg.log_level.as_deref(), Some("debug"));
+    }
+
+    #[test]
+    fn save_setting_fields_is_atomic_and_preserves_the_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(
+            &path,
+            "# keep\n[ui]\ntheme = \"nord\"\n\n[profiles.work]\nurl = \"u\"\n",
+        )
+        .unwrap();
+
+        // One write spanning [ui], a top-level key, and [cache].
+        save_setting_fields(
+            &path,
+            &[
+                SettingField::Ui(UiField::RefreshSecs(Some(60))),
+                SettingField::LogLevel(Some("nbox=debug".to_string())),
+                SettingField::CacheTtl(45),
+            ],
+        )
+        .unwrap();
+
+        let out = std::fs::read_to_string(&path).unwrap();
+        assert!(out.contains("# keep"), "comment survives: {out}");
+        assert!(out.contains("url = \"u\""), "profile survives: {out}");
+        let cfg: Config = toml::from_str(&out).unwrap();
+        assert_eq!(cfg.ui.refresh_secs, Some(60));
+        assert_eq!(cfg.log_level.as_deref(), Some("nbox=debug"));
+        assert_eq!(cfg.cache.ttl_secs, 45);
+
+        // A cleared optional field removes the key rather than writing 0.
+        save_setting_fields(&path, &[SettingField::Ui(UiField::RefreshSecs(None))]).unwrap();
+        let out2 = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !out2.contains("refresh_secs"),
+            "None clears the key: {out2}"
+        );
+    }
 }
