@@ -215,7 +215,7 @@ jobs:
             org.opencontainers.image.description=Terminal UI and CLI for NetBox — fast search, IPAM lookups, and device context
 
       - name: Build and push image
-        uses: docker/build-push-action@v6
+        uses: docker/build-push-action@v7
         with:
           context: .
           file: Dockerfile.release
