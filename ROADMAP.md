@@ -410,10 +410,12 @@ Consolidated future scope:
   pinned search output, `GetKind` now accepts `ip_address` as a non-breaking alias for `ip` (serde alias on
   the tool arg + `from_str` for `nbox://ip_address/…`), so an agent can chain search → get without
   translating. Documented in `AGENTS.md` / `docs/MCP.md`.
-- ☐ **De-dup the 429-retry loop** (`netbox/client.rs` `send()` vs `graphql()`). `parse_retry_after` +
-  `backoff` are already shared; the `if 429 && attempt < MAX_RETRIES { sleep; retry }` wrapper is copy-pasted
-  across the GET and POST paths. A retry combinator taking a `FnMut() -> impl Future<Output = Response>`
-  would fold them together — marginal, deferred (the GET-params vs POST-body difference makes it fiddly).
+- ☑ **De-dup the 429-retry loop** (`netbox/client.rs` `send()` vs `graphql()`). The copy-pasted
+  `if 429 && attempt < MAX_RETRIES { sleep; retry }` wrapper is now a shared `retry_on_rate_limit(&res,
+  attempt, what)` helper (owns `MAX_RETRIES`, honors `Retry-After`/`backoff`, tags the warn line by `what`);
+  both loops just `if retry_on_rate_limit(..).await { attempt += 1; continue }`. Sidestepped the
+  GET-params-vs-POST-body fiddliness by passing the already-sent `&Response` instead of a request closure.
+  Locked end-to-end by a wiremock test (429 + `Retry-After: 0` → retried → 200).
 - Considered, not worth doing: `nav_section_index_for_slug` linear scan over 9 slugs (a `match` would be
   exhaustive, but the list is tiny); `status_in_banner` elevating only Warning/Error (deliberate — long
   Info/Success messages are transient and stay in the footer slot); the error-body `truncate()` allocating

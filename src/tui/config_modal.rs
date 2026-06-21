@@ -130,6 +130,24 @@ pub struct ProfileForm {
     pub clear_token: bool,
 }
 
+/// The persisted profile fields an edit form is prefilled from, bundled so the
+/// form constructors take one value instead of ten positional args. The app owns
+/// the [`ProfileConfig`](crate::config::ProfileConfig) and builds this from it;
+/// the form copies what it needs into its own inputs, so the borrows only need to
+/// live for the call.
+pub struct ProfileFormData<'a> {
+    pub name: &'a str,
+    pub url: &'a str,
+    pub token_env: Option<&'a str>,
+    pub auth_scheme: AuthScheme,
+    pub verify_tls: bool,
+    pub timeout_secs: Option<u64>,
+    pub page_size: Option<usize>,
+    pub exclude_config_context: bool,
+    pub api_vrf: BackendPreference,
+    pub api_route_target: BackendPreference,
+}
+
 impl ProfileForm {
     /// A blank add form (focus on `name`).
     pub fn add() -> Self {
@@ -173,19 +191,19 @@ impl ProfileForm {
     /// An edit form prefilled from an existing profile's metadata. The token
     /// field starts empty — the stored secret is never read back into the UI;
     /// leaving it blank keeps the existing keyring entry untouched.
-    #[allow(clippy::too_many_arguments)]
-    pub fn edit(
-        name: &str,
-        url: &str,
-        token_env: Option<&str>,
-        auth_scheme: AuthScheme,
-        verify_tls: bool,
-        timeout_secs: Option<u64>,
-        page_size: Option<usize>,
-        exclude_config_context: bool,
-        api_vrf: BackendPreference,
-        api_route_target: BackendPreference,
-    ) -> Self {
+    pub fn edit(data: ProfileFormData<'_>) -> Self {
+        let ProfileFormData {
+            name,
+            url,
+            token_env,
+            auth_scheme,
+            verify_tls,
+            timeout_secs,
+            page_size,
+            exclude_config_context,
+            api_vrf,
+            api_route_target,
+        } = data;
         let mut form = Self::add();
         form.inputs.input_mut(field::NAME).unwrap().set_value(name);
         form.inputs.input_mut(field::URL).unwrap().set_value(url);
@@ -1109,32 +1127,8 @@ impl ConfigModal {
 
     /// Open the edit form for `name`, prefilled from its metadata. Called by the
     /// app (which owns the [`ProfileConfig`]) in response to the edit request.
-    #[allow(clippy::too_many_arguments)]
-    pub fn open_edit_form(
-        &mut self,
-        name: &str,
-        url: &str,
-        token_env: Option<&str>,
-        auth_scheme: AuthScheme,
-        verify_tls: bool,
-        timeout_secs: Option<u64>,
-        page_size: Option<usize>,
-        exclude_config_context: bool,
-        api_vrf: BackendPreference,
-        api_route_target: BackendPreference,
-    ) {
-        self.profiles.mode = ProfilesMode::Form(ProfileForm::edit(
-            name,
-            url,
-            token_env,
-            auth_scheme,
-            verify_tls,
-            timeout_secs,
-            page_size,
-            exclude_config_context,
-            api_vrf,
-            api_route_target,
-        ));
+    pub fn open_edit_form(&mut self, data: ProfileFormData<'_>) {
+        self.profiles.mode = ProfilesMode::Form(ProfileForm::edit(data));
     }
 
     /// Return to the list view (after a save/delete settles), selecting `idx`.
@@ -1188,18 +1182,18 @@ mod tests {
         auth_scheme: AuthScheme,
         verify_tls: bool,
     ) {
-        m.open_edit_form(
+        m.open_edit_form(ProfileFormData {
             name,
             url,
             token_env,
             auth_scheme,
             verify_tls,
-            None,
-            None,
-            true,
-            BackendPreference::Rest,
-            BackendPreference::Rest,
-        );
+            timeout_secs: None,
+            page_size: None,
+            exclude_config_context: true,
+            api_vrf: BackendPreference::Rest,
+            api_route_target: BackendPreference::Rest,
+        });
     }
 
     #[test]
@@ -1536,18 +1530,18 @@ mod tests {
         // The new knobs (timeout/page_size/exclude/api backends) prefill from the
         // ProfileConfig the app passes in.
         let mut m = ConfigModal::default();
-        m.open_edit_form(
-            "work",
-            "https://w",
-            None,
-            AuthScheme::Auto,
-            true,
-            Some(30),
-            Some(250),
-            false,
-            BackendPreference::Graphql,
-            BackendPreference::Rest,
-        );
+        m.open_edit_form(ProfileFormData {
+            name: "work",
+            url: "https://w",
+            token_env: None,
+            auth_scheme: AuthScheme::Auto,
+            verify_tls: true,
+            timeout_secs: Some(30),
+            page_size: Some(250),
+            exclude_config_context: false,
+            api_vrf: BackendPreference::Graphql,
+            api_route_target: BackendPreference::Rest,
+        });
         let f = m.form().unwrap();
         assert_eq!(f.timeout_secs(), Some(30));
         assert_eq!(f.page_size(), Some(250));

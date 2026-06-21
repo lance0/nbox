@@ -161,7 +161,6 @@ impl NetBoxClient {
     /// Issue an authenticated GET, returning the raw response. Retries on HTTP
     /// 429 (rate limited), honoring `Retry-After` when present, up to a small cap.
     async fn send(&self, path: &str, params: &[(&str, String)]) -> Result<reqwest::Response> {
-        const MAX_RETRIES: u32 = 3;
         let url = self.url_for(path)?;
 
         match self.masked_authorization() {
@@ -181,15 +180,7 @@ impl NetBoxClient {
             }
 
             let res = req.send().await.context("sending request to NetBox")?;
-            if res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt < MAX_RETRIES {
-                let wait = parse_retry_after(
-                    res.headers()
-                        .get(reqwest::header::RETRY_AFTER)
-                        .and_then(|v| v.to_str().ok()),
-                )
-                .unwrap_or_else(|| backoff(attempt));
-                tracing::warn!("NetBox rate limited (429); retrying in {wait:?}");
-                tokio::time::sleep(wait).await;
+            if retry_on_rate_limit(&res, attempt, "NetBox").await {
                 attempt += 1;
                 continue;
             }
@@ -257,7 +248,6 @@ impl NetBoxClient {
         T: DeserializeOwned,
         V: Serialize,
     {
-        const MAX_RETRIES: u32 = 3;
         let url = self.url_for("/graphql/")?;
         let body = json!({
             "query": query,
@@ -285,15 +275,7 @@ impl NetBoxClient {
                 .send()
                 .await
                 .context("sending GraphQL request to NetBox")?;
-            if res.status() == reqwest::StatusCode::TOO_MANY_REQUESTS && attempt < MAX_RETRIES {
-                let wait = parse_retry_after(
-                    res.headers()
-                        .get(reqwest::header::RETRY_AFTER)
-                        .and_then(|v| v.to_str().ok()),
-                )
-                .unwrap_or_else(|| backoff(attempt));
-                tracing::warn!("NetBox GraphQL rate limited (429); retrying in {wait:?}");
-                tokio::time::sleep(wait).await;
+            if retry_on_rate_limit(&res, attempt, "NetBox GraphQL").await {
                 attempt += 1;
                 continue;
             }
@@ -389,6 +371,28 @@ fn backoff(attempt: u32) -> Duration {
     Duration::from_millis(500u64 << attempt.min(6))
 }
 
+/// The shared HTTP-429 retry policy for REST and GraphQL. When `res` is a 429 and
+/// `attempt` is below the cap, sleep for the server's `Retry-After` (or
+/// exponential `backoff`) and return `true` so the caller retries; otherwise
+/// return `false`. `what` tags the warn line so REST and GraphQL stay
+/// distinguishable in logs. Centralizing this keeps the two request loops from
+/// drifting apart on the rate-limit policy.
+async fn retry_on_rate_limit(res: &reqwest::Response, attempt: u32, what: &str) -> bool {
+    const MAX_RETRIES: u32 = 3;
+    if res.status() != reqwest::StatusCode::TOO_MANY_REQUESTS || attempt >= MAX_RETRIES {
+        return false;
+    }
+    let wait = parse_retry_after(
+        res.headers()
+            .get(reqwest::header::RETRY_AFTER)
+            .and_then(|v| v.to_str().ok()),
+    )
+    .unwrap_or_else(|| backoff(attempt));
+    tracing::warn!("{what} rate limited (429); retrying in {wait:?}");
+    tokio::time::sleep(wait).await;
+    true
+}
+
 /// Map a non-success HTTP status to a typed [`NboxError`] so exit codes are
 /// consistent no matter which path hit the error: 401→auth, 403→perms, 404→not
 /// found, everything else→generic API error. (Note: `get_optional` intercepts
@@ -465,6 +469,50 @@ mod tests {
     fn truncate_is_char_safe() {
         assert_eq!(truncate("hello", 10), "hello");
         assert_eq!(truncate("hello", 3), "hel…");
+    }
+
+    #[tokio::test]
+    async fn get_retries_a_429_then_succeeds() {
+        use serde_json::json;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // The eventual success (default priority — the fallback).
+        Mock::given(method("GET"))
+            .and(path("/api/x/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({"ok": true})))
+            .mount(&server)
+            .await;
+        // Higher priority, good for exactly one response: a 429 carrying
+        // `Retry-After: 0` so the shared retry policy fires immediately (no test
+        // sleep). Once exhausted it stops matching and the 200 above serves.
+        Mock::given(method("GET"))
+            .and(path("/api/x/"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+
+        let client = NetBoxClient::new(
+            &ProfileConfig {
+                url: server.uri(),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        // `send` (via `get`) transparently retries the 429 and returns the 200.
+        let body: serde_json::Value = client.get("/api/x/", &[]).await.expect("retry then 200");
+        assert_eq!(body["ok"], json!(true));
+        // The retry really happened: the server saw two GETs for the same path.
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            2,
+            "a 429 is retried once, then the request succeeds"
+        );
     }
 
     #[test]

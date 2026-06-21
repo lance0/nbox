@@ -18,7 +18,9 @@ use crate::netbox::dashboard::DashboardData;
 use crate::netbox::prefix_tree::{self, PrefixNode, PrefixTreeData};
 use crate::netbox::search::{ObjectKind, SearchFilters, SearchOutcome, SearchResult};
 use crate::tui::cheese::{Spinner, TextInput};
-use crate::tui::config_modal::{ConfigModal, ModalOutcome, ProfilesMode, TestState};
+use crate::tui::config_modal::{
+    ConfigModal, ModalOutcome, ProfileFormData, ProfilesMode, TestState,
+};
 use crate::tui::filter_modal::{FilterModal, FilterOutcome};
 use crate::tui::palette::{self, PaletteCommand};
 use crate::tui::theme::{Severity, Theme};
@@ -2376,10 +2378,10 @@ impl App {
             .config
             .api_preference(crate::config::ApiSurface::RouteTarget);
         if let Some(Modal::Config(modal)) = &mut self.modal {
-            modal.open_edit_form(
+            modal.open_edit_form(ProfileFormData {
                 name,
-                &url,
-                token_env.as_deref(),
+                url: &url,
+                token_env: token_env.as_deref(),
                 auth_scheme,
                 verify_tls,
                 timeout_secs,
@@ -2387,7 +2389,7 @@ impl App {
                 exclude_config_context,
                 api_vrf,
                 api_route_target,
-            );
+            });
         }
     }
 
