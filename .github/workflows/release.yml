@@ -179,7 +179,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Download Linux musl artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           pattern: nbox-*-linux-musl
           path: artifacts
@@ -234,7 +234,7 @@ jobs:
       - uses: actions/checkout@v6
 
       - name: Download all artifacts
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
 
