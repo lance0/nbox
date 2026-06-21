@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   navigable `devices` (`d`) tab alongside its elevation — Enter opens that device
   or rack, `b`/`Esc` walks back. These lists are fetched best-effort (a fetch error
   shows in the tab; the summary still loads).
+- **The detail screen advertises its tabs and the drill action.** The tab bar now
+  has a leading `tabs:` label with the active tab bolded, and the footer shows
+  `Tab tabs · Enter open` — kind-agnostic (replacing the old device-only
+  `i/p/c/v/s` hint), with `Enter open` shown only when the active tab actually has
+  navigable rows (so it never lies on a summary/text tab). Makes the navigable
+  detail lists discoverable instead of hidden behind an unmarked tab switch.
 
 ## [0.5.0] - 2026-06-20
 

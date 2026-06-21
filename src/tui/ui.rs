@@ -1866,7 +1866,12 @@ fn tab_bar<'a>(app: &App, detail: &'a crate::domain::detail::DetailView) -> Line
     let theme = &app.theme;
     let style = |active: bool| {
         if active {
-            Style::default().fg(theme.text).bg(theme.highlight_bg)
+            // Active tab: highlighted + bold so the bar reads as an interactive
+            // switcher, not a static label row.
+            Style::default()
+                .fg(theme.text)
+                .bg(theme.highlight_bg)
+                .add_modifier(Modifier::BOLD)
         } else {
             Style::default().fg(theme.text_dim)
         }
@@ -1876,10 +1881,12 @@ fn tab_bar<'a>(app: &App, detail: &'a crate::domain::detail::DetailView) -> Line
     } else {
         detail.summary_label.clone()
     };
-    let mut spans = vec![Span::styled(
-        format!(" {summary} "),
-        style(app.detail_tab == 0),
-    )];
+    // A leading label so it's clear these are switchable tabs (Tab / letter keys),
+    // not just headings — the discoverability cue for the navigable sections.
+    let mut spans = vec![
+        Span::styled("tabs: ", Style::default().fg(theme.text_dim)),
+        Span::styled(format!(" {summary} "), style(app.detail_tab == 0)),
+    ];
     for (i, tab) in detail.tabs.iter().enumerate() {
         spans.push(Span::raw(" "));
         spans.push(Span::styled(
@@ -2069,7 +2076,14 @@ fn footer_nav(app: &App) -> &'static str {
             " / search · j/k move · Enter open · D dash · T tree · S settings · Tab preview · o/y open/copy · r refresh · t theme · ? help · q quit "
         }
         Screen::Detail => {
-            " j/k scroll · Tab/i/p/c/v/s tabs · R related · o/y open/copy · b back · r refresh · ? help · q quit "
+            // Mostly static, with a tiny contextual guard: only advertise
+            // `Enter open` when the active tab actually has navigable rows — else it
+            // would lie on a summary/text tab — and say `scroll` vs `move` to match.
+            if app.active_detail_rows().iter().any(|r| r.target.is_some()) {
+                " j/k move · Tab tabs · Enter open · R related · o/y open/copy · b back · r refresh · ? help · q quit "
+            } else {
+                " j/k scroll · Tab tabs · R related · o/y open/copy · b back · r refresh · ? help · q quit "
+            }
         }
         Screen::Dashboard => {
             " r refresh · b/Esc back · T tree · S settings · / search · ? help · q quit "
@@ -2597,8 +2611,90 @@ mod tests {
         a.screen = Screen::Detail;
         let detail = footer_nav(&a);
         assert!(detail.contains("b back"));
-        assert!(detail.contains("i/p/c/v/s tabs"));
-        assert!(!detail.contains("Enter open"));
+        // Kind-agnostic tab hint (not the old device-specific i/p/c/v/s). The
+        // Enter-to-drill action is guarded by whether the active tab has navigable
+        // rows — see detail_footer_guards_enter_open_by_navigable_rows.
+        assert!(detail.contains("Tab tabs"), "detail footer: {detail}");
+    }
+
+    #[test]
+    fn detail_footer_guards_enter_open_by_navigable_rows() {
+        use crate::domain::detail::{DetailRow, DetailView};
+        use crate::netbox::search::ObjectKind;
+        let mut a = app();
+        a.screen = Screen::Detail;
+        a.detail_tab = 0;
+
+        // Summary-only (no navigable rows) → no "Enter open"; j/k scrolls text.
+        a.detail = Some(DetailView {
+            kind: ObjectKind::Site,
+            id: 1,
+            title: "site iad1".into(),
+            body: "name: iad1".into(),
+            tabs: Vec::new(),
+            links: Vec::new(),
+            header: Vec::new(),
+            summary_label: String::new(),
+            summary_rows: Vec::new(),
+        });
+        let f = footer_nav(&a);
+        assert!(!f.contains("Enter open"), "no nav rows ⇒ no Enter: {f}");
+        assert!(f.contains("j/k scroll"), "{f}");
+        assert!(f.contains("Tab tabs"), "{f}");
+
+        // A navigable summary (a prefix's children) → "Enter open" + "j/k move".
+        a.detail = Some(DetailView {
+            kind: ObjectKind::Prefix,
+            id: 2,
+            title: "prefix 10.0.0.0/16".into(),
+            body: String::new(),
+            tabs: Vec::new(),
+            links: Vec::new(),
+            header: Vec::new(),
+            summary_label: "children·1".into(),
+            summary_rows: vec![DetailRow::link("10.0.0.0/24".into(), ObjectKind::Prefix, 9)],
+        });
+        let f = footer_nav(&a);
+        assert!(f.contains("Enter open"), "nav rows ⇒ Enter: {f}");
+        assert!(f.contains("j/k move"), "{f}");
+    }
+
+    #[test]
+    fn tab_bar_has_leading_label_and_lists_tabs() {
+        use crate::domain::detail::{DetailTab, DetailView};
+        use crate::netbox::search::ObjectKind;
+        let mut a = app();
+        a.detail = Some(DetailView {
+            kind: ObjectKind::Prefix,
+            id: 1,
+            title: "prefix 10.10.0.0/16".into(),
+            body: String::new(),
+            tabs: vec![
+                DetailTab {
+                    key: 'c',
+                    label: "children·25".into(),
+                    body: String::new(),
+                    rows: Vec::new(),
+                },
+                DetailTab {
+                    key: 'a',
+                    label: "addresses·5".into(),
+                    body: String::new(),
+                    rows: Vec::new(),
+                },
+            ],
+            links: Vec::new(),
+            header: Vec::new(),
+            summary_label: String::new(),
+            summary_rows: Vec::new(),
+        });
+        let bar = line_text(&tab_bar(&a, a.detail.as_ref().unwrap()));
+        // Leading "tabs:" cue so the bar reads as a switcher, then the summary slot
+        // and each kind-specific tab with its switch key.
+        assert!(bar.starts_with("tabs:"), "leading label: {bar}");
+        assert!(bar.contains("summary"), "{bar}");
+        assert!(bar.contains("c:children·25"), "{bar}");
+        assert!(bar.contains("a:addresses·5"), "{bar}");
     }
 
     #[test]
