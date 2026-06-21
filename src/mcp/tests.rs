@@ -1617,9 +1617,9 @@ async fn read_resource_missing_object_is_invalid_params() {
 // JSON-RPC wire snapshots.
 mod contracts {
     use super::{
-        ErrorCode, GetKind, Json, Mock, MockServer, Parameters, ResponseTemplate, SearchArgs,
-        empty_page, get_args, method, mount_empty, mount_one, one_text, path, query_param,
-        server_for,
+        ErrorCode, GetKind, JournalArgs, Json, ListTagsArgs, Mock, MockServer, NextIpArgs,
+        Parameters, ResponseTemplate, SearchArgs, empty_page, get_args, method, mount_empty,
+        mount_one, one_text, path, query_param, server_for,
     };
     use rmcp::ErrorData;
     use serde_json::{Value, json};
@@ -2054,5 +2054,124 @@ mod contracts {
             "an upstream failure is not caller-fixable: {}",
             err.message
         );
+    }
+
+    /// `nbox_next_ip` / `nbox_next_prefix` → `AvailableReport`: exactly the source
+    /// prefix plus the available CIDR list. Both tools return this same report, so
+    /// one pin fixes the schema for both. (The functional tests above check the
+    /// values; this locks the *key set* so an added field can't drift silently.)
+    #[tokio::test]
+    async fn available_report_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/prefixes/"))
+            .and(query_param("prefix", "10.0.0.0/24"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{"id": 5, "url": "u", "prefix": "10.0.0.0/24"}]
+            })))
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/prefixes/5/available-ips/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+                {"family": 4, "address": "10.0.0.1/24"}
+            ])))
+            .mount(&mock)
+            .await;
+
+        let Json(report) = server_for(&mock)
+            .nbox_next_ip(Parameters(NextIpArgs {
+                prefix: "10.0.0.0/24".to_string(),
+                count: Some(1),
+                vrf: None,
+            }))
+            .await
+            .expect("next ip");
+        let value = serde_json::to_value(&report).expect("serialize report");
+
+        assert_keys(&value, &["prefix", "available"]);
+        assert_eq!(value["prefix"], "10.0.0.0/24");
+        assert_eq!(value["available"][0], "10.0.0.1/24");
+    }
+
+    /// `nbox_cache_clear` → `CacheClearReport`: a single confirmation field, so the
+    /// tool advertises a concrete object output schema (not a bare string).
+    #[tokio::test]
+    async fn cache_clear_report_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        let Json(report) = server_for(&mock)
+            .nbox_cache_clear()
+            .await
+            .expect("cache clear");
+        let value = serde_json::to_value(&report).expect("serialize report");
+
+        assert_keys(&value, &["status"]);
+        assert!(value["status"].is_string(), "status is a string");
+    }
+
+    /// `nbox_journal` → `JournalView`: a top-level `entries` array whose rows carry
+    /// the flattened entry fields. `comments` is always present; `created`/`kind`/
+    /// `author` are skip-if-none (no `author` in this fixture), so the row key set
+    /// here is the common three.
+    #[tokio::test]
+    async fn journal_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/dcim/devices/",
+            json!({"id": 1, "url": "u", "name": "edge01"}),
+        )
+        .await;
+        Mock::given(method("GET"))
+            .and(path("/api/extras/journal-entries/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{
+                    "id": 5, "created": "2024-01-02",
+                    "kind": {"value": "info", "label": "Info"}, "comments": "rebooted"
+                }]
+            })))
+            .mount(&mock)
+            .await;
+
+        let Json(view) = server_for(&mock)
+            .nbox_journal(Parameters(JournalArgs {
+                kind: GetKind::Device,
+                reference: "edge01".to_string(),
+                limit: None,
+            }))
+            .await
+            .expect("journal");
+        let value = serde_json::to_value(&view).expect("serialize view");
+
+        assert_keys(&value, &["entries"]);
+        assert_keys(&value["entries"][0], &["created", "kind", "comments"]);
+    }
+
+    /// `nbox_list_tags` → `TagsView`: a top-level `tags` array of rows. `name`/
+    /// `slug` are always present; `color`/`count` are skip-if-none and present in
+    /// this fixture, so all four keys are pinned here.
+    #[tokio::test]
+    async fn tags_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/extras/tags/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{"id": 1, "name": "Critical", "slug": "critical",
+                             "color": "ff0000", "tagged_items": 3}]
+            })))
+            .mount(&mock)
+            .await;
+
+        let Json(view) = server_for(&mock)
+            .nbox_list_tags(Parameters(ListTagsArgs { limit: None }))
+            .await
+            .expect("list tags");
+        let value = serde_json::to_value(&view).expect("serialize view");
+
+        assert_keys(&value, &["tags"]);
+        assert_keys(&value["tags"][0], &["name", "slug", "color", "count"]);
     }
 }
