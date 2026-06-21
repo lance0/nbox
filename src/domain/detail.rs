@@ -655,6 +655,90 @@ fn device_vlan_rows(vlans: &[VlanRow]) -> Vec<DetailRow> {
         .collect()
 }
 
+/// Navigable rows for a list of devices — each opens that device on Enter. Used by
+/// the site and rack `devices` tabs.
+fn device_link_rows(devices: &[Device]) -> Vec<DetailRow> {
+    if devices.is_empty() {
+        return vec![DetailRow::plain("(no devices)".to_string())];
+    }
+    devices
+        .iter()
+        .map(|d| DetailRow::link(d.name.clone(), ObjectKind::Device, d.id))
+        .collect()
+}
+
+/// Navigable rows for a list of racks — each opens that rack on Enter. Used by the
+/// site `racks` tab.
+fn rack_link_rows(racks: &[Rack]) -> Vec<DetailRow> {
+    if racks.is_empty() {
+        return vec![DetailRow::plain("(no racks)".to_string())];
+    }
+    racks
+        .iter()
+        .map(|r| DetailRow::link(r.name.clone(), ObjectKind::Rack, r.id))
+        .collect()
+}
+
+/// A best-effort navigable `devices` tab: the devices scoped by `param`
+/// (`site_id`/`rack_id`) `= id`, each opening on Enter. A fetch error surfaces in
+/// the tab body instead of failing the whole detail (the summary still loads),
+/// mirroring [`rack_elevation_tab`].
+async fn contained_devices_tab(client: &NetBoxClient, param: &'static str, id: u64) -> DetailTab {
+    match client
+        .list_all::<Device>(
+            Endpoint::Devices,
+            vec![(param, id.to_string())],
+            SECTION_CAP,
+        )
+        .await
+    {
+        Ok(devices) => {
+            let rows = device_link_rows(&devices);
+            DetailTab {
+                key: 'd',
+                label: format!("devices·{}", devices.len()),
+                body: rows_to_text(&rows),
+                rows,
+            }
+        }
+        Err(e) => DetailTab {
+            key: 'd',
+            label: "devices".to_string(),
+            body: format!("(devices unavailable: {e:#})"),
+            rows: Vec::new(),
+        },
+    }
+}
+
+/// A best-effort navigable `racks` tab for a site: the racks in the site, each
+/// opening on Enter. A fetch error surfaces in the tab body (the summary loads).
+async fn site_racks_tab(client: &NetBoxClient, site_id: u64) -> DetailTab {
+    match client
+        .list_all::<Rack>(
+            Endpoint::Racks,
+            vec![("site_id", site_id.to_string())],
+            SECTION_CAP,
+        )
+        .await
+    {
+        Ok(racks) => {
+            let rows = rack_link_rows(&racks);
+            DetailTab {
+                key: 'r',
+                label: format!("racks·{}", racks.len()),
+                body: rows_to_text(&rows),
+                rows,
+            }
+        }
+        Err(e) => DetailTab {
+            key: 'r',
+            label: "racks".to_string(),
+            body: format!("(racks unavailable: {e:#})"),
+            rows: Vec::new(),
+        },
+    }
+}
+
 /// Build a device detail (summary body + i/p/c/v tabs) from its sub-resources.
 /// Reuses the same fan-out + compose path as the CLI/MCP device lookup, then
 /// derives the TUI's title, summary body, and per-section tabs from it. The IP
@@ -1199,6 +1283,8 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             let s: Site = client.get(&format!("/api/dcim/sites/{id}/"), &[]).await?;
             links = site_links(&s);
             let v = SiteView::from_model(s);
+            tabs.push(contained_devices_tab(client, "site_id", id).await);
+            tabs.push(site_racks_tab(client, id).await);
             (format!("site {}", v.name), v.to_key_values().render())
         }
         ObjectKind::Rack => {
@@ -1206,6 +1292,7 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             links = rack_links(&r);
             let u_height = r.u_height;
             let v = RackView::from_model(r);
+            tabs.push(contained_devices_tab(client, "rack_id", id).await);
             if let Some(uh) = u_height.filter(|h| *h > 0) {
                 tabs.push(rack_elevation_tab(client, id, uh).await);
             }
@@ -1375,6 +1462,8 @@ pub async fn load_detail_by_ref(
             let id = s.id;
             links = site_links(&s);
             let v = SiteView::from_model(s);
+            tabs.push(contained_devices_tab(client, "site_id", id).await);
+            tabs.push(site_racks_tab(client, id).await);
             (id, format!("site {}", v.name), v.to_key_values().render())
         }
         ObjectKind::Rack => {
@@ -1386,6 +1475,7 @@ pub async fn load_detail_by_ref(
             links = rack_links(&r);
             let u_height = r.u_height;
             let v = RackView::from_model(r);
+            tabs.push(contained_devices_tab(client, "rack_id", id).await);
             if let Some(uh) = u_height.filter(|h| *h > 0) {
                 tabs.push(rack_elevation_tab(client, id, uh).await);
             }
@@ -1812,6 +1902,35 @@ mod tests {
         assert_eq!(empty.label, "prefixes·0");
         assert_eq!(empty.rows.len(), 1);
         assert_eq!(empty.rows[0].target, None);
+    }
+
+    #[test]
+    fn site_and_rack_contained_rows_are_navigable() {
+        use serde_json::json;
+        let devices: Vec<crate::netbox::models::dcim::Device> = vec![
+            serde_json::from_value(
+                json!({"id": 31, "url": "u", "name": "edge01", "custom_fields": {}}),
+            )
+            .unwrap(),
+            serde_json::from_value(
+                json!({"id": 32, "url": "u", "name": "edge02", "custom_fields": {}}),
+            )
+            .unwrap(),
+        ];
+        let drows = device_link_rows(&devices);
+        assert_eq!(drows[0].target, Some((ObjectKind::Device, 31)));
+        assert_eq!(drows[1].target, Some((ObjectKind::Device, 32)));
+        assert!(drows[0].text.contains("edge01"));
+
+        let racks: Vec<crate::netbox::models::dcim::Rack> =
+            vec![serde_json::from_value(json!({"id": 7, "url": "u", "name": "R12"})).unwrap()];
+        let rrows = rack_link_rows(&racks);
+        assert_eq!(rrows[0].target, Some((ObjectKind::Rack, 7)));
+        assert!(rrows[0].text.contains("R12"));
+
+        // Empty → a single non-navigable placeholder row.
+        assert_eq!(device_link_rows(&[])[0].target, None);
+        assert_eq!(rack_link_rows(&[])[0].target, None);
     }
 
     #[test]

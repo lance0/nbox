@@ -20,6 +20,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Drill into a VLAN's prefixes from the TUI.** The VLAN detail's prefix list is
   now a navigable `p` tab — Enter opens that prefix, `b`/`Esc` walks back. The
   `nbox vlan` CLI/JSON output is unchanged.
+- **Drill into a site's / rack's devices from the TUI.** The site detail gains
+  navigable `devices` (`d`) and `racks` (`r`) tabs, and the rack detail gains a
+  navigable `devices` (`d`) tab alongside its elevation — Enter opens that device
+  or rack, `b`/`Esc` walks back. These lists are fetched best-effort (a fetch error
+  shows in the tab; the summary still loads).
 
 ## [0.5.0] - 2026-06-20
 
