@@ -114,9 +114,10 @@ reviewable PRs that lock contracts and reduce future change cost.
   documented changes, marking the prefix-`utilization` absence and `/api/status` auth as observed-not-noted).
 - ☐ **CLI contract harness** — a thin reusable harness for command-level tests that records
   `(args, stdout, stderr, exit_code)` expectations while preserving the stdout-data-only invariant.
-- ☐ **Release smoke checklist automation** — one local command/script that runs the release-critical
-  gate (`fmt`, diff check, both clippies, both test modes, audit, package/build smoke, man/completion
-  generation) before tags move.
+- ☑ **Release smoke checklist automation** — `scripts/smoke.sh` runs the release-critical gate in one
+  shot (`fmt`, both clippies, both test modes, `cargo audit`, build smoke, man-page + completion
+  generation) before tags move. Referenced from `CONTRIBUTING.md`. (Cross-compiled musl/darwin/windows
+  builds stay the release workflow's matrix, not the local smoke.)
 - ☐ **Observability contracts** — pin `nbox status`, MCP status, and selected debug/audit fields so
   users and agents can tell backend, version, capability, and failure mode without scraping prose.
 - ◐ **Config migration/compat tests** — token-source precedence (`select_env_token`), the onboarding
