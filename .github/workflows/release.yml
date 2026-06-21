@@ -250,11 +250,33 @@ jobs:
           cat SHA256SUMS
           cd -
 
+      - name: Extract release notes from CHANGELOG
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          # Pull the section between "## [<version>]" and the next "## [" heading,
+          # so the published notes are the curated changelog — not a bare PR list.
+          awk -v ver="$version" '
+            $0 ~ "^## \\[" ver "\\]" {f=1; next}
+            f && /^## \[/ {exit}
+            f {print}
+          ' CHANGELOG.md > release-notes.md
+          # Drop the leading blank line(s) after the heading.
+          sed -i -e '/./,$!d' release-notes.md
+          if [ ! -s release-notes.md ]; then
+            echo "::warning::no CHANGELOG entry for ${version}; using auto-generated notes only"
+            printf 'Release %s.\n' "${version}" > release-notes.md
+          fi
+          echo "----- release notes -----"
+          cat release-notes.md
+
       - name: Create Release
         uses: softprops/action-gh-release@v3
         with:
           files: |
             dist/*
+          # Curated CHANGELOG section as the body; GitHub appends its auto-generated
+          # "What's Changed" PR list + full-changelog link below it.
+          body_path: release-notes.md
           generate_release_notes: true
           draft: false
           prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-beta') || contains(github.ref, '-alpha') }}
