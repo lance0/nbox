@@ -60,7 +60,7 @@ jobs:
       # Floor is set by `let`-chains (stable since Rust 1.88), used throughout.
       # Keep this in sync with `rust-version` in Cargo.toml.
       - name: Install MSRV toolchain
-        uses: dtolnay/rust-toolchain@1.88.0
+        uses: dtolnay/rust-toolchain@1.100.0
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
