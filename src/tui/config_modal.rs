@@ -489,6 +489,10 @@ pub enum SettingId {
     TimeoutSecs,
     /// Active profile `exclude_config_context` — a toggle; reconnects.
     ExcludeConfigContext,
+    /// Active profile `[api] vrf` backend — a rest/graphql cycle; reconnects.
+    ApiVrf,
+    /// Active profile `[api] route_target` backend — a rest/graphql cycle; reconnects.
+    ApiRouteTarget,
 }
 
 impl SettingId {
@@ -505,6 +509,8 @@ impl SettingId {
             SettingId::PageSize => "page_size",
             SettingId::TimeoutSecs => "timeout_secs",
             SettingId::ExcludeConfigContext => "exclude_config_context",
+            SettingId::ApiVrf => "api vrf",
+            SettingId::ApiRouteTarget => "api route_target",
         }
     }
 }
@@ -524,6 +530,8 @@ pub const SETTINGS_CATEGORIES: &[(&str, &[SettingId])] = &[
             SettingId::PageSize,
             SettingId::TimeoutSecs,
             SettingId::ExcludeConfigContext,
+            SettingId::ApiVrf,
+            SettingId::ApiRouteTarget,
         ],
     ),
     ("Cache", &[SettingId::CacheEnabled, SettingId::CacheTtl]),
@@ -575,6 +583,10 @@ pub struct SettingsPane {
     pub timeout: TextInput,
     /// Active profile `exclude_config_context` toggle. Reconnects.
     pub exclude_config_context: bool,
+    /// Active profile `[api] vrf` backend (rest/graphql cycle). Reconnects.
+    pub api_vrf: BackendPreference,
+    /// Active profile `[api] route_target` backend (rest/graphql cycle). Reconnects.
+    pub api_route_target: BackendPreference,
     /// A transient info / validation line shown under the form.
     pub message: Option<String>,
 }
@@ -587,6 +599,8 @@ pub struct ConnectionSeed {
     pub page_size: Option<usize>,
     pub timeout_secs: Option<u64>,
     pub exclude_config_context: bool,
+    pub api_vrf: BackendPreference,
+    pub api_route_target: BackendPreference,
 }
 
 impl SettingsPane {
@@ -643,6 +657,8 @@ impl SettingsPane {
             page_size,
             timeout,
             exclude_config_context: connection.exclude_config_context,
+            api_vrf: connection.api_vrf,
+            api_route_target: connection.api_route_target,
             message: None,
         }
     }
@@ -741,11 +757,40 @@ impl SettingsPane {
         self.message = None;
     }
 
-    /// The `TextInput` backing a field, if it has one (theme and the cache toggle
-    /// are non-text controls).
+    /// The working `[api] vrf` backend.
+    pub fn api_vrf(&self) -> BackendPreference {
+        self.api_vrf
+    }
+
+    /// The working `[api] route_target` backend.
+    pub fn api_route_target(&self) -> BackendPreference {
+        self.api_route_target
+    }
+
+    /// Cycle an api backend between `rest` and `graphql` (Left/Right/Space on its
+    /// row). Two values, so any cycle key flips it.
+    fn cycle_api(&mut self, id: SettingId) {
+        let flip = |p: BackendPreference| match p {
+            BackendPreference::Rest => BackendPreference::Graphql,
+            BackendPreference::Graphql => BackendPreference::Rest,
+        };
+        match id {
+            SettingId::ApiVrf => self.api_vrf = flip(self.api_vrf),
+            SettingId::ApiRouteTarget => self.api_route_target = flip(self.api_route_target),
+            _ => {}
+        }
+        self.message = None;
+    }
+
+    /// The `TextInput` backing a field, if it has one (theme, the toggles, and the
+    /// api cycles are non-text controls).
     pub fn input_mut(&mut self, id: SettingId) -> Option<&mut TextInput> {
         match id {
-            SettingId::Theme | SettingId::CacheEnabled | SettingId::ExcludeConfigContext => None,
+            SettingId::Theme
+            | SettingId::CacheEnabled
+            | SettingId::ExcludeConfigContext
+            | SettingId::ApiVrf
+            | SettingId::ApiRouteTarget => None,
             SettingId::RefreshSecs => Some(&mut self.refresh),
             SettingId::OpenBrowserCommand => Some(&mut self.browser),
             SettingId::LogLevel => Some(&mut self.log_level),
@@ -1008,6 +1053,19 @@ impl ConfigModal {
                 // connection knob, so the save (not this keypress) reconnects.
                 if s.focused_field() == Some(SettingId::ExcludeConfigContext) && is_cycle_key {
                     s.toggle_exclude_config_context();
+                    return ModalOutcome::None;
+                }
+                // The api backends cycle rest/graphql with the same keys; also a
+                // connection knob, applied on save (not live, unlike the theme cycle).
+                if is_cycle_key
+                    && matches!(
+                        s.focused_field(),
+                        Some(SettingId::ApiVrf | SettingId::ApiRouteTarget)
+                    )
+                {
+                    if let Some(id) = s.focused_field() {
+                        s.cycle_api(id);
+                    }
                     return ModalOutcome::None;
                 }
                 match key.code {
@@ -1876,13 +1934,17 @@ mod tests {
                 page_size: Some(100),
                 timeout_secs: Some(45),
                 exclude_config_context: false,
+                api_vrf: BackendPreference::Graphql,
+                api_route_target: BackendPreference::Rest,
             },
         );
         assert_eq!(m.settings.page_size(), Some(100));
         assert_eq!(m.settings.timeout_secs(), Some(45));
         assert!(!m.settings.exclude_config_context());
+        assert_eq!(m.settings.api_vrf(), BackendPreference::Graphql);
+        assert_eq!(m.settings.api_route_target(), BackendPreference::Rest);
 
-        // The category exists with the three connection knobs in order.
+        // The category exists with the five connection knobs in order.
         let conn = SETTINGS_CATEGORIES
             .iter()
             .find(|(name, _)| *name == "Connection")
@@ -1892,7 +1954,9 @@ mod tests {
             &[
                 SettingId::PageSize,
                 SettingId::TimeoutSecs,
-                SettingId::ExcludeConfigContext
+                SettingId::ExcludeConfigContext,
+                SettingId::ApiVrf,
+                SettingId::ApiRouteTarget,
             ]
         );
     }
@@ -1911,6 +1975,7 @@ mod tests {
                 page_size: None,
                 timeout_secs: None,
                 exclude_config_context: true,
+                ..ConnectionSeed::default()
             },
         );
         enter_connection_fields(&mut m);
@@ -1939,6 +2004,50 @@ mod tests {
         assert_eq!(out, ModalOutcome::None);
         assert!(m.settings.message.is_some(), "shows a validation message");
         assert_eq!(m.settings.page_size(), None);
+    }
+
+    #[test]
+    fn settings_connection_api_backends_cycle_rest_graphql() {
+        let mut m = ConfigModal::new(
+            "default",
+            None,
+            "",
+            "",
+            "",
+            true,
+            30,
+            ConnectionSeed::default(), // both api backends seed to rest
+        );
+        enter_connection_fields(&mut m);
+        // Fields: page_size, timeout_secs, exclude, api vrf (4th), api route_target.
+        m.handle_key(key(KeyCode::Down), &[], ""); // → timeout_secs
+        m.handle_key(key(KeyCode::Down), &[], ""); // → exclude_config_context
+        m.handle_key(key(KeyCode::Down), &[], ""); // → api vrf
+        assert_eq!(m.settings.focused_field(), Some(SettingId::ApiVrf));
+        assert_eq!(m.settings.api_vrf(), BackendPreference::Rest);
+        m.handle_key(key(KeyCode::Char(' ')), &[], "");
+        assert_eq!(
+            m.settings.api_vrf(),
+            BackendPreference::Graphql,
+            "Space cycles rest→graphql"
+        );
+        m.handle_key(key(KeyCode::Left), &[], "");
+        assert_eq!(
+            m.settings.api_vrf(),
+            BackendPreference::Rest,
+            "Left flips back"
+        );
+
+        // route_target cycles independently of vrf.
+        m.handle_key(key(KeyCode::Down), &[], ""); // → api route_target
+        assert_eq!(m.settings.focused_field(), Some(SettingId::ApiRouteTarget));
+        m.handle_key(key(KeyCode::Right), &[], "");
+        assert_eq!(m.settings.api_route_target(), BackendPreference::Graphql);
+        assert_eq!(
+            m.settings.api_vrf(),
+            BackendPreference::Rest,
+            "vrf is untouched by route_target's cycle"
+        );
     }
 
     #[test]

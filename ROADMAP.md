@@ -75,13 +75,12 @@ Polish the read experience. No writes here.
   dropped when empty). Deliberately NOT surfaced (no-op toggles, like the long-excluded `confirm_writes`):
   the `search` backend (always falls back to REST) and `confirm_writes` (writes deferred).
 - ☑ **Settings-section connection parity (hot-apply).** The Config modal's **Settings** section now has a
-  **Connection** category exposing the active profile's `page_size`, `timeout_secs`, and
-  `exclude_config_context`, seeded from the live profile. Saving a change persists it to that profile
-  (format-preserving) and **reconnects** through the existing switch path so it hot-applies — the client
-  bakes these at construction. (The profile editor remains the place to manage *any* profile; Settings is
-  the quick-tweak surface for the *active* one.) **Deferred:** the per-surface `api` backends
-  (`vrf`/`route_target`) as Settings cycles — already editable in the profile editor (`Ctrl+B`/`Ctrl+R`),
-  so this is low marginal value; revisit if asked.
+  **Connection** category exposing the active profile's `page_size`, `timeout_secs`,
+  `exclude_config_context`, and the per-surface `[api]` `vrf`/`route_target` backends (`rest`/`graphql`
+  cycles), seeded from the live profile. Saving a change persists it to that profile (format-preserving)
+  and **reconnects** through the existing switch path so it hot-applies — the client bakes these at
+  construction. (The profile editor remains the place to manage *any* profile; Settings is the quick-tweak
+  surface for the *active* one.) The api backends were folded in after the initial parity pass.
 - ☑ **Release `0.2.0`** — banked the large read surface accumulated since `0.1.1` (MCP HTTP/OAuth, the new
   read commands, MCP resources, the in-app config layer, three hardening rounds).
 - ☑ **Release `0.4.0`** — per-surface API backends (breaking), REST-canonical search (GraphQL search

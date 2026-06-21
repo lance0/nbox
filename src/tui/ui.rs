@@ -1599,6 +1599,19 @@ fn render_config_settings(frame: &mut Frame, area: Rect, modal: &mut ConfigModal
                 ])),
                 value_area,
             );
+        } else if id == SettingId::ApiVrf || id == SettingId::ApiRouteTarget {
+            let pref = if id == SettingId::ApiVrf {
+                s.api_vrf()
+            } else {
+                s.api_route_target()
+            };
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled(pref.as_str(), Style::default().fg(theme.accent)),
+                    Span::styled("  (←/→/Space)", Style::default().fg(theme.text_dim)),
+                ])),
+                value_area,
+            );
         } else if let Some(input) = s.input_mut(id) {
             let pos = input.render_with_focus(frame, value_area, ' ', theme, focused);
             if focused {
