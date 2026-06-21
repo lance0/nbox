@@ -123,9 +123,6 @@ and gets the same JSON view models the CLI returns. See [docs/MCP.md](docs/MCP.m
 
 ## Installation
 
-> The first published release was **0.1.1** (0.1.0 is a reserved name-camp). Use
-> the latest release unless you need to pin a version.
-
 ### From crates.io (Recommended)
 
 Requires [Rust 1.88+](https://www.rust-lang.org/tools/install):
@@ -546,7 +543,6 @@ Full list with copy-paste fixes: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.
 - [Scripting & automation](docs/SCRIPTING.md) — JSON/CSV/envelope schemas, exit codes, jq recipes, CI
 - [MCP server](docs/MCP.md) — agent setup, tools, HTTP/OIDC
 - [Architecture](docs/ARCHITECTURE.md) — internal design and module structure
-- [Design](DESIGN.md) — the deep design rationale and patterns
 - [Agents](AGENTS.md) — machine-readable surface, output formats, exit codes
 - [Troubleshooting](docs/TROUBLESHOOTING.md) — symptoms and fixes
 - [Known Issues](KNOWN_ISSUES.md) — current limitations
