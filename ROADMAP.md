@@ -430,6 +430,41 @@ Consolidated future scope:
   slice could panic mid-codepoint); `list_all` buffering up to `max` rows in memory (bounded by the caller's
   cap — fine for a one-shot read CLI; streaming would only matter for an unbounded export, which we don't do).
 
+### Performance candidates (evaluated 2026-06-21, agent + code verification)
+
+A batch of proposed perf wins, each verified against the code. Net: one quick win, one medium, one probe; the rest skip. The search path is **network-dominated** — CPU micro-opts there are noise.
+
+- ☐ **Concurrent scope+VRF resolution (quick win).** `search.rs` resolves `--scope` then `--vrf` as two
+  **independent sequential awaits** (`resolve_scope` ~`:329`, `resolve_vrf` ~`:337`) before the 17-way
+  fan-out. `tokio::try_join!` them — saves 1-4 RTTs on *filtered* searches, zero risk. (No filter ⇒ both
+  return `Ok(None)` with zero network calls, so the win only applies when a scope/vrf filter is set.) NOTE:
+  the broader "fire the fan-out optimistically alongside resolution" idea is **unsound** — the fan-out's
+  filters need the resolved ids (`site_id`/`vrf_id`/scope content-type), so it can't start blind; a
+  cancellation token doesn't help when the input is the missing value.
+- ☐ **TUI render dirty-flag (idle-CPU win, medium).** The event loop `terminal.draw`s on every event, and
+  the 180ms `PreviewTick` always arrives → a full widget rebuild ≥5.5 Hz even when idle (500-row `Vec<Row>`
+  clones + `format!`). ratatui diffs the *buffer* (I/O minimal) but not the Rust-side rebuild. A render-dirty
+  flag would skip the redraw when nothing changed — a battery/SSH win, not latency. CARE: the tick also
+  advances the spinner, status-TTL expiry, and the browse/preview debounce flush, so the flag must key on
+  *state mutation* (and still mark dirty on spinner ticks, status changes, async results) — not on "no
+  keypress," or it freezes the spinner / stalls TTL.
+- ☐ **HTTP/2 multiplexing — probe spike first (low priority).** reqwest's `http2` feature is **off** (the
+  `h2` crate in the lockfile is axum's MCP server, not the outbound client), so the client can't negotiate
+  h2 today. h2 *would* sidestep the gunicorn half-close (multiplexing is per-connection) — but only if the
+  operator runs **nginx with h2 on the listener**; gunicorn **sync** workers are HTTP/1.1-only. Spike: probe
+  whether real instances negotiate h2; only then weigh enabling the feature with a capability fallback.
+- ✗ **Connection pooling `pool_max_idle_per_host(1)` — SKIP (dangerous).** Directly reverts the documented
+  fix at `client.rs:60-69` and reintroduces the half-closed-socket stall (sync gunicorn FINs right after each
+  response; a reused idle socket stalls to the 15s timeout). No client-side idle timeout reliably dodges a
+  server that closes per-response. The premise is also overstated — the 17 fan-out connections open
+  *concurrently* (~1 RTT of parallel handshake), not 2-3s serial. See [[netbox-gunicorn-keepalive]].
+- ✗ **Skipped micro-opts (verified negligible):** radix/patricia trie for the prefix tree (the O(n·d)
+  coverage scan runs **once at load**, off the render thread, n≤1000); cache-eviction O(n) oldest-scan (only
+  on a full-1024 insert, microseconds, and a new dep vs the hand-rolled cache); `nav_counts` array-vs-HashMap
+  (8 entries); `score_match` `to_lowercase()` allocations (on the network-return path, dwarfed by the
+  round-trips — and not a clean swap: `starts_with`/`contains` have no ASCII-case-insensitive stdlib form,
+  and names can be Unicode; if ever touched, lowercase the query *once* outside the per-result loop).
+
 ### Dependency maintenance
 
 - ⏸ **`rand` held at `0.8`.** `rsa 0.9.10`'s `RsaPrivateKey::new` (test-only keygen, `mcp/http.rs`) requires
