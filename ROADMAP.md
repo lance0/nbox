@@ -60,9 +60,12 @@ Polish the read experience. No writes here.
 - ☑ **TUI context preservation** — scroll position + active filters retained per view across navigation.
 - ☑ **Profile cycle order** — cycle profiles in config-file order (an order-preserving map) rather than
   alphabetical.
-- ☐ **Cross-object navigation** — jump between related objects from a detail (device↔IP↔prefix↔VLAN↔site,
-  device→rack) without re-searching; an object-level back-stack to walk the drill path. Lands TUI-open +
-  cross-nav for racks (see *full rack integration* below).
+- ◐ **Cross-object navigation** — jump between related objects from a detail without re-searching. The
+  object-level back-stack (`detail_nav`, `b`/`Esc` walks the drill path) and header-relation jumps (the
+  `R` modal: device→site/rack, ip→parent-prefix, prefix→vlan, …) already ship. Remaining work: make the
+  *contained-object lists* navigable like the VRF view does, one kind per PR. ☑ Prefix → children +
+  contained IPs (navigable `c`/`a` tabs). ☐ Device → IP addresses · ☐ VLAN → prefixes · ☐ Site/Rack →
+  devices.
 - ☐ **Demo recording** — an asciinema/VHS cast for the README.
 - ☐ **Deepen the in-app Config modal.** Surface the profile/settings knobs that still need a hand-edited
   `config.toml`: per-surface API backends (`[profiles.<name>.api]` `search`/`vrf`/`route_target` =

@@ -90,8 +90,11 @@ impl PrefixView {
         }
     }
 
-    /// Render header fields plus child-prefix and IP sections for plain output.
-    pub fn to_plain(&self) -> String {
+    /// Render the header key-values only (no child-prefix / IP sections). The TUI
+    /// detail body uses this — its child and address lists render as navigable tabs
+    /// instead of inline text — while the CLI's [`to_plain`](Self::to_plain) keeps
+    /// the inline sections appended below the same header.
+    pub fn to_detail_header(&self) -> String {
         let mut kv = KeyValues::new();
         kv.push("prefix", self.prefix.clone())
             .push_opt("status", self.status.clone())
@@ -108,7 +111,12 @@ impl PrefixView {
             kv.push("tags", self.tags.join(", "));
         }
         custom::append(&mut kv, &self.custom_fields);
-        let mut out = kv.render();
+        kv.render()
+    }
+
+    /// Render header fields plus child-prefix and IP sections for plain output.
+    pub fn to_plain(&self) -> String {
+        let mut out = self.to_detail_header();
 
         if !self.child_prefixes.is_empty() {
             out.push_str("\n\nChild Prefixes\n");

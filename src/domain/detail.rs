@@ -23,7 +23,7 @@ use crate::domain::contact_view::ContactView;
 use crate::domain::device_detail::DeviceDetail;
 use crate::domain::interface_view::InterfaceView;
 use crate::domain::ip_range_view::IpRangeView;
-use crate::domain::ip_view::{IpView, most_specific};
+use crate::domain::ip_view::{IpView, assigned_label, most_specific};
 use crate::domain::journal_view::{JournalEntryRow, JournalView};
 use crate::domain::prefix_view::PrefixView;
 use crate::domain::provider_view::ProviderView;
@@ -745,6 +745,66 @@ fn rows_to_text(rows: &[DetailRow]) -> String {
         .join("\n")
 }
 
+/// Navigable rows for a prefix's child prefixes — each opens that prefix on Enter.
+fn prefix_child_rows(children: &[Prefix]) -> Vec<DetailRow> {
+    if children.is_empty() {
+        return vec![DetailRow::plain("(no child prefixes)".to_string())];
+    }
+    children
+        .iter()
+        .map(|c| DetailRow::link(c.prefix.clone(), ObjectKind::Prefix, c.id))
+        .collect()
+}
+
+/// Navigable rows for a prefix's contained IP addresses — each opens that IP on
+/// Enter. The assignment (device/interface) trails the address, matching the
+/// CLI's inline "IP Addresses" section.
+fn prefix_ip_rows(ips: &[IpAddress]) -> Vec<DetailRow> {
+    if ips.is_empty() {
+        return vec![DetailRow::plain("(no addresses)".to_string())];
+    }
+    ips.iter()
+        .map(|ip| {
+            let text = match ip.assigned_object.as_ref().and_then(assigned_label) {
+                Some(a) => format!("{}  {a}", ip.address),
+                None => ip.address.clone(),
+            };
+            DetailRow::link(text, ObjectKind::IpAddress, ip.id)
+        })
+        .collect()
+}
+
+/// Assemble the prefix detail's title, header body, and navigable child/address
+/// tabs. The child-prefix and contained-IP lists become navigable tabs (Enter
+/// drills into that prefix/IP); the body is the header key-values only, since the
+/// lists now live in the tabs rather than inline. The id-bearing fetches are
+/// consumed here, then folded into the JSON [`PrefixView`] (whose serialized shape
+/// — and the CLI's inline-section output — is unchanged).
+fn prefix_detail_parts(
+    p: Prefix,
+    children: Vec<Prefix>,
+    ips: Vec<IpAddress>,
+) -> (String, String, Vec<DetailTab>) {
+    let child_rows = prefix_child_rows(&children);
+    let ip_rows = prefix_ip_rows(&ips);
+    let tabs = vec![
+        DetailTab {
+            key: 'c',
+            label: format!("children·{}", children.len()),
+            body: rows_to_text(&child_rows),
+            rows: child_rows,
+        },
+        DetailTab {
+            key: 'a',
+            label: format!("addresses·{}", ips.len()),
+            body: rows_to_text(&ip_rows),
+            rows: ip_rows,
+        },
+    ];
+    let v = PrefixView::build(p, children, ips);
+    (format!("prefix {}", v.prefix), v.to_detail_header(), tabs)
+}
+
 /// Sort key for tree order: address family, network address, then prefix length —
 /// reproduces NetBox's tree ordering (a container before its children) so the
 /// depth-based indentation is correct regardless of which backend supplied the
@@ -1131,8 +1191,9 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             let vrf_id = p.vrf.as_ref().map(|v| v.id);
             let children = client.prefix_children(&cidr, vrf_id, SECTION_CAP).await?;
             let ips = client.prefix_ips(&cidr, vrf_id, SECTION_CAP).await?;
-            let v = PrefixView::build(p, children, ips);
-            (format!("prefix {}", v.prefix), v.to_plain())
+            let (title, prefix_body, prefix_tabs) = prefix_detail_parts(p, children, ips);
+            tabs = prefix_tabs;
+            (title, prefix_body)
         }
         ObjectKind::Vlan => {
             let vlan: Vlan = client.get(&format!("/api/ipam/vlans/{id}/"), &[]).await?;
@@ -1323,8 +1384,9 @@ pub async fn load_detail_by_ref(
             let vrf_id = p.vrf.as_ref().map(|v| v.id);
             let children = client.prefix_children(&cidr, vrf_id, SECTION_CAP).await?;
             let ips = client.prefix_ips(&cidr, vrf_id, SECTION_CAP).await?;
-            let v = PrefixView::build(p, children, ips);
-            (id, format!("prefix {}", v.prefix), v.to_plain())
+            let (title, prefix_body, prefix_tabs) = prefix_detail_parts(p, children, ips);
+            tabs = prefix_tabs;
+            (id, title, prefix_body)
         }
         ObjectKind::Vlan => {
             let vlan = client
@@ -1612,6 +1674,47 @@ mod tests {
         assert!(got.contains(&(ObjectKind::Tenant, "tenant")));
         // A VRF has no detail kind, so it is never emitted as a link.
         assert!(!got.iter().any(|(_, r)| *r == "vrf"));
+    }
+
+    #[test]
+    fn prefix_detail_parts_builds_navigable_children_and_address_tabs() {
+        use serde_json::json;
+        let p: Prefix =
+            serde_json::from_value(json!({"id": 2, "url": "u", "prefix": "10.0.0.0/16"})).unwrap();
+        let children: Vec<Prefix> = vec![
+            serde_json::from_value(json!({"id": 6, "url": "u", "prefix": "10.0.0.0/24"})).unwrap(),
+            serde_json::from_value(json!({"id": 7, "url": "u", "prefix": "10.0.1.0/24"})).unwrap(),
+        ];
+        let ips: Vec<IpAddress> = vec![
+            serde_json::from_value(json!({
+                "id": 11, "url": "u", "address": "10.0.0.1/24",
+                "assigned_object": {"display": "eth0", "device": {"display": "edge01"}}
+            }))
+            .unwrap(),
+        ];
+
+        let (title, body, tabs) = prefix_detail_parts(p, children, ips);
+        assert_eq!(title, "prefix 10.0.0.0/16");
+        // Body is the header only — the child/IP lists moved to navigable tabs, so
+        // they must not also appear inline (that would double them).
+        assert!(body.contains("prefix: 10.0.0.0/16"));
+        assert!(!body.contains("Child Prefixes"));
+        assert!(!body.contains("IP Addresses"));
+
+        // children tab: each child prefix opens that prefix on Enter.
+        let children_tab = &tabs[0];
+        assert_eq!(children_tab.key, 'c');
+        assert_eq!(children_tab.label, "children·2");
+        assert_eq!(children_tab.rows[0].target, Some((ObjectKind::Prefix, 6)));
+        assert_eq!(children_tab.rows[1].target, Some((ObjectKind::Prefix, 7)));
+
+        // addresses tab: each IP opens that IP; the assignment trails the address.
+        let addr_tab = &tabs[1];
+        assert_eq!(addr_tab.key, 'a');
+        assert_eq!(addr_tab.label, "addresses·1");
+        assert_eq!(addr_tab.rows[0].target, Some((ObjectKind::IpAddress, 11)));
+        assert!(addr_tab.rows[0].text.contains("10.0.0.1/24"));
+        assert!(addr_tab.rows[0].text.contains("edge01"));
     }
 
     #[test]
