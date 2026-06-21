@@ -214,8 +214,13 @@ Consolidated future scope:
   anything that means canonical full-text search. Prioritize as the TUI detail/browse contracts settle;
   each must keep REST canonical and stay backend-neutral in output (one view shape, like `VrfDetail`).
   - ☑ **VRF detail** — shipped. Header + `prefixes` + `addresses` in one `vrf_id`-scoped POST.
-  - ☐ **Dashboard / home overview** — counts, recent objects, top prefixes, status buckets,
-    "what changed recently" panels bundled into one request. An *overview*, not search.
+  - ✗ **Dashboard / home overview — SKIPPED (poor GraphQL fit, 2026-06-21).** The dashboard's cost is
+    *counts* (total + 6 status buckets = 7 of its 9 calls), which REST does cheaply (`limit=1` → read
+    `page.count`). Probed live 4.5: GraphQL has **no count aggregation and no `total_count`** —
+    `device_list` returns a bare `[DeviceType]`, so a count means fetching the full id list. Bundling the
+    dashboard into one POST would fetch every device id ×7 (and the status filter is an enum, and journal
+    `kind` is value-only) — a regression at any real scale. GraphQL accelerates *bundling related objects*,
+    not *counting*. See [[nbox-graphql-shapes]].
   - ☐ **Browse / list panes** — Nav rail opening `VRFs`/`Sites`/`Prefixes`/`Devices` with sort/limit/
     basic filters, fetching exactly the columns the TUI renders. Frame as browse/filter, not search
     (overlaps the typeahead surface above).
