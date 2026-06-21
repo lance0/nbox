@@ -88,10 +88,10 @@ pub async fn browse(
                 .map(|ip| SearchResult {
                     kind: ObjectKind::IpAddress,
                     id: ip.id,
-                    subtitle: ip
-                        .dns_name
-                        .filter(|s| !s.is_empty())
-                        .or_else(|| ip.status.map(|c| c.value)),
+                    // Status (always set) over a sparse DNS name: a browse index
+                    // reads cleaner with a column that's never empty, and the DNS
+                    // name is in the detail view. Header: STATUS (subtitle_header).
+                    subtitle: ip.status.map(|c| c.value),
                     url: api_to_web_url(&ip.url),
                     display: ip.address,
                     score: 0,
@@ -104,7 +104,9 @@ pub async fn browse(
                 .map(|v| SearchResult {
                     kind: ObjectKind::Vlan,
                     id: v.id,
-                    subtitle: Some(format!("vlan {}", v.vid)),
+                    // The VID identifies the VLAN (the name is the display); show
+                    // the bare number under a VID header (see subtitle_header).
+                    subtitle: Some(v.vid.to_string()),
                     url: api_to_web_url(&v.url),
                     display: v.name,
                     score: 0,
