@@ -387,9 +387,16 @@ Consolidated future scope:
   pinned search output, `GetKind` now accepts `ip_address` as a non-breaking alias for `ip` (serde alias on
   the tool arg + `from_str` for `nbox://ip_address/…`), so an agent can chain search → get without
   translating. Documented in `AGENTS.md` / `docs/MCP.md`.
+- ☐ **De-dup the 429-retry loop** (`netbox/client.rs` `send()` vs `graphql()`). `parse_retry_after` +
+  `backoff` are already shared; the `if 429 && attempt < MAX_RETRIES { sleep; retry }` wrapper is copy-pasted
+  across the GET and POST paths. A retry combinator taking a `FnMut() -> impl Future<Output = Response>`
+  would fold them together — marginal, deferred (the GET-params vs POST-body difference makes it fiddly).
 - Considered, not worth doing: `nav_section_index_for_slug` linear scan over 9 slugs (a `match` would be
   exhaustive, but the list is tiny); `status_in_banner` elevating only Warning/Error (deliberate — long
-  Info/Success messages are transient and stay in the footer slot).
+  Info/Success messages are transient and stay in the footer slot); the error-body `truncate()` allocating
+  via `chars().take().collect()` (required for UTF-8 char-boundary safety on a rare error path — a zero-copy
+  slice could panic mid-codepoint); `list_all` buffering up to `max` rows in memory (bounded by the caller's
+  cap — fine for a one-shot read CLI; streaming would only matter for an unbounded export, which we don't do).
 
 ### Dependency maintenance
 
