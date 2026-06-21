@@ -757,6 +757,38 @@ fn pane_border(theme: &Theme, focused: bool) -> Style {
     }
 }
 
+/// The oriented "getting started" body for the empty Home results pane — what a
+/// first-run user sees before any search and with no recents yet. Mirrors the
+/// help modal's accent-key + plain-description shape so it reads as part of the
+/// same UI, but stays terse: it points at search, browse-by-kind, and the two
+/// overview screens without marketing copy. Pure (no widgets) so it's testable.
+fn home_empty_lines(theme: &Theme) -> Vec<Line<'static>> {
+    // Left-column key, padded so the descriptions line up (like `help_lines`).
+    let key = |k: &str| Span::styled(format!("{k:<7}"), Style::default().fg(theme.accent));
+    // An inline secondary key — the "T prefix tree" sharing the dashboard row.
+    let ikey = |k: &str| Span::styled(format!("{k}  "), Style::default().fg(theme.accent));
+    let desc = |d: &str| Span::styled(d.to_string(), Style::default().fg(theme.text));
+    let dim = |d: &str| Span::styled(d.to_string(), Style::default().fg(theme.text_dim));
+    vec![
+        Line::from(""),
+        Line::from(dim("No recent items yet.")),
+        Line::from(""),
+        Line::from(vec![key("/"), desc("search NetBox")]),
+        Line::from(vec![
+            key("j/k ↵"),
+            desc("browse a kind  "),
+            dim("(rail, left)"),
+        ]),
+        Line::from(vec![
+            key("D"),
+            desc("dashboard   "),
+            ikey("T"),
+            desc("prefix tree"),
+        ]),
+        Line::from(vec![key("?"), desc("all keys")]),
+    ]
+}
+
 fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
     // Stash the inner height (visible rows inside the borders) so the pure
     // PgUp/PgDn handler pages by the live viewport, like the detail/preview panes.
@@ -864,12 +896,7 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
         .title(" Results ")
         .border_style(border)
         .padding(Padding::horizontal(1));
-    frame.render_widget(
-        Paragraph::new("Press / to search NetBox.")
-            .block(block)
-            .style(Style::default().fg(theme.text_dim)),
-        area,
-    );
+    frame.render_widget(Paragraph::new(home_empty_lines(theme)).block(block), area);
 }
 
 /// The right pane: a live peek at the highlighted result. Shows the full loaded
@@ -2586,6 +2613,45 @@ mod tests {
         let total_bindings: usize = groups.iter().map(Vec::len).sum();
         let binding_rows = lines.iter().filter(|l| l.spans.len() == 2).count();
         assert_eq!(binding_rows, total_bindings);
+    }
+
+    #[test]
+    fn home_empty_lines_orient_first_run_with_accent_keys() {
+        let theme = Theme::default_theme();
+        let lines = home_empty_lines(&theme);
+        let text: String = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        // Orients toward the core moves — search, browse, the two overview
+        // screens, help — without marketing copy.
+        for needle in [
+            "No recent items yet.",
+            "search NetBox",
+            "browse a kind",
+            "dashboard",
+            "prefix tree",
+            "all keys",
+        ] {
+            assert!(text.contains(needle), "missing {needle:?} in:\n{text}");
+        }
+
+        // A hint row is an accent key cell + normal-text description — the same
+        // shape as the help modal, so the two read as one UI.
+        let search_row = lines
+            .iter()
+            .find(|l| l.spans.first().is_some_and(|s| s.content.starts_with('/')))
+            .expect("the / row is present");
+        assert_eq!(search_row.spans[0].style.fg, Some(theme.accent));
+        assert_eq!(search_row.spans[1].content, "search NetBox");
+        assert_eq!(search_row.spans[1].style.fg, Some(theme.text));
     }
 
     #[test]
