@@ -48,6 +48,14 @@ cargo build
 cargo test --all-features
 ```
 
+Before tagging a release, run the full pre-tag gate in one shot — it adds the
+`--no-default-features` clippy/test legs, `cargo audit`, a build smoke, and
+man-page / completion generation on top of the above:
+
+```bash
+scripts/smoke.sh
+```
+
 ### Pre-commit hooks
 
 `.pre-commit-config.yaml` runs `cargo fmt` and `cargo clippy` on commit and
