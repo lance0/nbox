@@ -25,6 +25,10 @@ pub struct IfaceRow {
 /// One address row in the device's IP Addresses section.
 #[derive(Debug, Clone, Serialize)]
 pub struct IpRow {
+    /// The IP's own id, for TUI navigation (Enter → open the IP). Not serialized,
+    /// so the `nbox device` JSON contract is unchanged.
+    #[serde(skip_serializing)]
+    pub id: u64,
     pub address: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub interface: Option<String>,
@@ -124,6 +128,7 @@ impl DeviceDetail {
         let ip_rows = ips
             .into_iter()
             .map(|ip| IpRow {
+                id: ip.id,
                 interface: ip.assigned_object.as_ref().and_then(iface_name),
                 address: ip.address,
             })

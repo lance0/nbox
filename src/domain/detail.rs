@@ -20,7 +20,7 @@ use crate::domain::asn_view::AsnView;
 use crate::domain::circuit_view::CircuitView;
 use crate::domain::cluster_view::ClusterView;
 use crate::domain::contact_view::ContactView;
-use crate::domain::device_detail::DeviceDetail;
+use crate::domain::device_detail::{DeviceDetail, IpRow, VlanRow};
 use crate::domain::interface_view::InterfaceView;
 use crate::domain::ip_range_view::IpRangeView;
 use crate::domain::ip_view::{IpView, assigned_label, most_specific};
@@ -632,9 +632,34 @@ impl DetailView {
     }
 }
 
+/// Navigable rows for a device's assigned IP addresses — each opens that IP on
+/// Enter. The interface trails the address, matching the plain `ip_lines` body.
+fn device_ip_rows(ips: &[IpRow]) -> Vec<DetailRow> {
+    ips.iter()
+        .map(|ip| {
+            let text = match &ip.interface {
+                Some(name) => format!("{}  {name}", ip.address),
+                None => ip.address.clone(),
+            };
+            DetailRow::link(text, ObjectKind::IpAddress, ip.id)
+        })
+        .collect()
+}
+
+/// Navigable rows for the VLANs seen on a device's interfaces — each opens that
+/// VLAN on Enter.
+fn device_vlan_rows(vlans: &[VlanRow]) -> Vec<DetailRow> {
+    vlans
+        .iter()
+        .map(|v| DetailRow::link(v.vlan.clone(), ObjectKind::Vlan, v.id))
+        .collect()
+}
+
 /// Build a device detail (summary body + i/p/c/v tabs) from its sub-resources.
 /// Reuses the same fan-out + compose path as the CLI/MCP device lookup, then
-/// derives the TUI's title, summary body, and per-section tabs from it.
+/// derives the TUI's title, summary body, and per-section tabs from it. The IP
+/// (`p`) and VLAN (`v`) tabs get navigable rows so Enter drills into that IP/VLAN;
+/// the others (interfaces, cables, services) stay plain text (not object kinds).
 async fn load_device_detail(
     client: &NetBoxClient,
     device: Device,
@@ -644,11 +669,18 @@ async fn load_device_detail(
     let tabs = detail
         .sections()
         .into_iter()
-        .map(|(key, label, body)| DetailTab {
-            key,
-            label: label.to_string(),
-            body,
-            rows: Vec::new(),
+        .map(|(key, label, body)| {
+            let rows = match key {
+                'p' => device_ip_rows(&detail.ip_addresses),
+                'v' => device_vlan_rows(&detail.vlans),
+                _ => Vec::new(),
+            };
+            DetailTab {
+                key,
+                label: label.to_string(),
+                body,
+                rows,
+            }
         })
         .collect();
     Ok((format!("device {name}"), detail.summary_plain(), tabs))
@@ -1715,6 +1747,35 @@ mod tests {
         assert_eq!(addr_tab.rows[0].target, Some((ObjectKind::IpAddress, 11)));
         assert!(addr_tab.rows[0].text.contains("10.0.0.1/24"));
         assert!(addr_tab.rows[0].text.contains("edge01"));
+    }
+
+    #[test]
+    fn device_ip_and_vlan_rows_are_navigable() {
+        let ips = vec![
+            IpRow {
+                id: 11,
+                address: "10.0.0.1/24".to_string(),
+                interface: Some("eth0".to_string()),
+            },
+            IpRow {
+                id: 12,
+                address: "10.0.0.2/24".to_string(),
+                interface: None,
+            },
+        ];
+        let ip_rows = device_ip_rows(&ips);
+        assert_eq!(ip_rows[0].target, Some((ObjectKind::IpAddress, 11)));
+        assert!(ip_rows[0].text.contains("10.0.0.1/24"));
+        assert!(ip_rows[0].text.contains("eth0"));
+        assert_eq!(ip_rows[1].target, Some((ObjectKind::IpAddress, 12)));
+
+        let vlans = vec![VlanRow {
+            id: 20,
+            vlan: "20 (prod)".to_string(),
+        }];
+        let vlan_rows = device_vlan_rows(&vlans);
+        assert_eq!(vlan_rows[0].target, Some((ObjectKind::Vlan, 20)));
+        assert!(vlan_rows[0].text.contains("20 (prod)"));
     }
 
     #[test]
