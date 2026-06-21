@@ -24,3 +24,10 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # `dtolnay/rust-toolchain` is pinned to the project MSRV (1.88) on purpose to
+    # keep a low support floor: building CI on a newer toolchain would stop
+    # catching code that needs features beyond 1.88, silently eroding the floor.
+    # Ignore all version bumps for it — raise the pin by hand when the MSRV is
+    # intentionally raised (the version is a deliberate policy choice, not a dep).
+    ignore:
+      - dependency-name: "dtolnay/rust-toolchain"
