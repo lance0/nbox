@@ -434,10 +434,10 @@ Consolidated future scope:
 
 A batch of proposed perf wins, each verified against the code. Net: one quick win, one medium, one probe; the rest skip. The search path is **network-dominated** — CPU micro-opts there are noise.
 
-- ☐ **Concurrent scope+VRF resolution (quick win).** `search.rs` resolves `--scope` then `--vrf` as two
-  **independent sequential awaits** (`resolve_scope` ~`:329`, `resolve_vrf` ~`:337`) before the 17-way
-  fan-out. `tokio::try_join!` them — saves 1-4 RTTs on *filtered* searches, zero risk. (No filter ⇒ both
-  return `Ok(None)` with zero network calls, so the win only applies when a scope/vrf filter is set.) NOTE:
+- ☑ **Concurrent scope+VRF resolution (quick win).** `search.rs` resolved `--scope` then `--vrf` as two
+  **independent sequential awaits** before the 17-way fan-out; now `tokio::try_join!`ed — saves 1-4 RTTs on
+  *filtered* searches, zero risk, byte-identical results. (No filter ⇒ both return `Ok(None)` with zero
+  network calls, so the win only applies when a scope/vrf filter is set.) NOTE:
   the broader "fire the fan-out optimistically alongside resolution" idea is **unsound** — the fan-out's
   filters need the resolved ids (`site_id`/`vrf_id`/scope content-type), so it can't start blind; a
   cancellation token doesn't help when the input is the missing value.

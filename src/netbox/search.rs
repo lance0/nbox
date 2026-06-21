@@ -326,15 +326,18 @@ impl NetBoxClient {
         // unknown ref is a hard not-found error (exit 4) so search fails loudly
         // rather than quietly returning nothing. Scope is an *exact* match: each
         // flag filters by its own scope only — no hierarchy/descendant semantics.
-        let scope = self.resolve_scope(f).await?;
-
         // Resolve the (optional) `--vrf` reference (id | rd | name) to a numeric
         // id once, up front. An unknown VRF is a hard not-found error (exit 4) so
         // search fails loudly rather than quietly returning nothing — matching the
         // scope-filter behavior. The resolved id is applied as `vrf_id=` on the
         // VRF-capable endpoints (IPs, prefixes); the rest skip the vrf filter.
         // `--vrf` is orthogonal to the scope filters: both may be active at once.
-        let vrf_id = self.resolve_vrf(f).await?;
+        //
+        // The scope and VRF resolvers are independent and each can make 1-4
+        // round-trips, so run them concurrently — a `--scope` + `--vrf` search would
+        // otherwise pay both serial tails before the fan-out even starts. (With
+        // neither filter set both return `Ok(None)` after zero network calls.)
+        let (scope, vrf_id) = tokio::try_join!(self.resolve_scope(f), self.resolve_vrf(f))?;
 
         let (
             devices,
