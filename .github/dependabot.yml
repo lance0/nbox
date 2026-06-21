@@ -8,6 +8,17 @@ updates:
       rust-dependencies:
         patterns:
           - "*"
+    # `rand` is held at 0.8: the test-only RSA keygen (`rsa` 0.9.x) needs a
+    # `rand_core` 0.6 RNG, and `rand` 0.9/0.10 moved to `rand_core` 0.9, so the
+    # bump doesn't compile. Ignore its minor/major updates (0.8.x patches still
+    # flow) so one held crate stops blocking every other safe bump in the group.
+    # Unpin when `rsa` ships on `rand_core` 0.9 (then take rand 0.9+ and switch
+    # `thread_rng()` → `rng()`).
+    ignore:
+      - dependency-name: "rand"
+        update-types:
+          - "version-update:semver-minor"
+          - "version-update:semver-major"
 
   - package-ecosystem: github-actions
     directory: /
