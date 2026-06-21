@@ -1583,8 +1583,12 @@ fn render_config_settings(frame: &mut Frame, area: Rect, modal: &mut ConfigModal
                 ])),
                 value_area,
             );
-        } else if id == SettingId::CacheEnabled {
-            let on = s.cache_enabled();
+        } else if id == SettingId::CacheEnabled || id == SettingId::ExcludeConfigContext {
+            let on = if id == SettingId::CacheEnabled {
+                s.cache_enabled()
+            } else {
+                s.exclude_config_context()
+            };
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
                     Span::styled(

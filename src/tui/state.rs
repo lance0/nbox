@@ -19,7 +19,7 @@ use crate::netbox::prefix_tree::{self, PrefixNode, PrefixTreeData};
 use crate::netbox::search::{ObjectKind, SearchFilters, SearchOutcome, SearchResult};
 use crate::tui::cheese::{Spinner, TextInput};
 use crate::tui::config_modal::{
-    ConfigModal, ModalOutcome, ProfileFormData, ProfilesMode, TestState,
+    ConfigModal, ConnectionSeed, ModalOutcome, ProfileFormData, ProfilesMode, TestState,
 };
 use crate::tui::filter_modal::{FilterModal, FilterOutcome};
 use crate::tui::palette::{self, PaletteCommand};
@@ -1778,6 +1778,17 @@ impl App {
 
     fn open_config_modal(&mut self) {
         if self.modal.is_none() {
+            // Seed the Settings "Connection" category from the active profile's
+            // live knobs (absent `exclude_config_context` ⇒ true, the client's
+            // default), so the form shows the current connection as it stands.
+            let connection =
+                self.profiles
+                    .get(self.profile_index)
+                    .map_or_else(ConnectionSeed::default, |p| ConnectionSeed {
+                        page_size: p.config.page_size,
+                        timeout_secs: p.config.timeout_secs,
+                        exclude_config_context: p.config.exclude_config_context.unwrap_or(true),
+                    });
             self.modal = Some(Modal::Config(Box::new(ConfigModal::new(
                 self.theme.name(),
                 self.refresh_secs,
@@ -1786,6 +1797,7 @@ impl App {
                 self.log_file.as_deref().unwrap_or(""),
                 self.cache.enabled(),
                 self.cache.ttl_secs(),
+                connection,
             ))));
         }
     }
@@ -1953,6 +1965,10 @@ impl App {
         let new_log_file = modal.settings.log_file_value();
         let new_cache_enabled = modal.settings.cache_enabled();
         let new_cache_ttl = modal.settings.cache_ttl_secs();
+        // Active-profile connection knobs (a change reconnects; see below).
+        let new_page_size = modal.settings.page_size();
+        let new_timeout = modal.settings.timeout_secs();
+        let new_exclude = modal.settings.exclude_config_context();
 
         let refresh_changed = new_refresh != self.refresh_secs;
 
@@ -1998,13 +2014,89 @@ impl App {
         });
         self.cache = self.cache.with_config(cache_cfg);
 
-        self.set_status("settings saved", Severity::Success);
         self.modal = None;
-        if refresh_changed {
+        let mut commands = if refresh_changed {
             vec![AppCommand::ArmRefresh(new_refresh)]
         } else {
             Vec::new()
+        };
+
+        // Connection knobs live on the active profile (not `[ui]`), and the client
+        // bakes timeout/page_size/exclude at construction — so a change is persisted
+        // to that profile and hot-applied by reconnecting through the existing
+        // switch path. Unchanged ⇒ no reconnect, just the plain "saved" confirmation.
+        match self.apply_connection_settings(new_page_size, new_timeout, new_exclude) {
+            Some(reconnect) => commands.extend(reconnect),
+            None => self.set_status("settings saved", Severity::Success),
         }
+        commands
+    }
+
+    /// Persist a change to the active profile's connection knobs (`page_size`,
+    /// `timeout_secs`, `exclude_config_context`) and reconnect so it takes effect
+    /// live. Returns `None` when nothing changed (the caller shows the plain "saved"
+    /// status); `Some(commands)` when a change was attempted — the reconnect
+    /// commands, or empty if the persist failed (this method sets the error status).
+    /// The profile's identity/auth/api fields are carried through unchanged.
+    fn apply_connection_settings(
+        &mut self,
+        page_size: Option<usize>,
+        timeout_secs: Option<u64>,
+        exclude_config_context: bool,
+    ) -> Option<Vec<AppCommand>> {
+        let idx = self.profile_index;
+        let entry = self.profiles.get(idx)?;
+        let cfg = &entry.config;
+        let changed = cfg.page_size != page_size
+            || cfg.timeout_secs != timeout_secs
+            || cfg.exclude_config_context.unwrap_or(true) != exclude_config_context;
+        if !changed {
+            return None;
+        }
+
+        // Snapshot the unchanged identity/auth/api fields for the format-preserving
+        // write (no rename: original == name == the active profile).
+        let name = entry.name.clone();
+        let url = cfg.url.clone();
+        let token_env = cfg.token_env.clone();
+        let auth_scheme = cfg.auth_scheme.unwrap_or(AuthScheme::Auto);
+        let verify_tls = cfg.verify_tls.unwrap_or(true);
+        let api_vrf = cfg.api_preference(crate::config::ApiSurface::Vrf);
+        let api_route_target = cfg.api_preference(crate::config::ApiSurface::RouteTarget);
+
+        let Some(path) = self.config_path.clone() else {
+            self.set_status(
+                "can't save connection settings: no config file path".to_string(),
+                Severity::Error,
+            );
+            return Some(Vec::new());
+        };
+        if let Err(e) = Self::persist_profile(
+            &path,
+            Some(&name),
+            &name,
+            &url,
+            token_env.as_deref(),
+            auth_scheme,
+            verify_tls,
+            timeout_secs,
+            page_size,
+            exclude_config_context,
+            api_vrf,
+            api_route_target,
+        ) {
+            self.set_status(format!("save failed: {e:#}"), Severity::Error);
+            return Some(Vec::new());
+        }
+
+        // Reflect into the live profile entry so the reconnect rebuilds the client
+        // with the new knobs, then ride the existing switch path.
+        if let Some(entry) = self.profiles.get_mut(idx) {
+            entry.config.timeout_secs = timeout_secs;
+            entry.config.page_size = page_size;
+            entry.config.exclude_config_context = Some(exclude_config_context);
+        }
+        Some(self.switch_to_index(idx))
     }
 
     /// Build a [`ConnectRequest`] from the open form: the form's url/auth/tls plus
@@ -7908,8 +8000,10 @@ mod tests {
         let (mut a, _dir, path) = app_with_config(&["a"]);
         a.set_ui_settings(None, String::new(), None, None);
         open_settings(&mut a);
-        // Logging is the fourth category (Appearance, Behavior, Cache, Logging).
+        // Logging is the fifth category (Appearance, Behavior, Connection, Cache,
+        // Logging).
         a.handle_event(press(KeyCode::Down)); // → Behavior
+        a.handle_event(press(KeyCode::Down)); // → Connection
         a.handle_event(press(KeyCode::Down)); // → Cache
         a.handle_event(press(KeyCode::Down)); // → Logging
         a.handle_event(press(KeyCode::Right)); // enter fields (log_level)
@@ -7939,8 +8033,10 @@ mod tests {
         ));
         assert!(a.cache.enabled());
         open_settings(&mut a);
-        // Cache is the third category (Appearance, Behavior, Cache, Logging).
+        // Cache is the fourth category (Appearance, Behavior, Connection, Cache,
+        // Logging).
         a.handle_event(press(KeyCode::Down)); // → Behavior
+        a.handle_event(press(KeyCode::Down)); // → Connection
         a.handle_event(press(KeyCode::Down)); // → Cache
         a.handle_event(press(KeyCode::Right)); // enter fields (cache on/off)
         a.handle_event(press(KeyCode::Char(' '))); // toggle the cache off
@@ -7953,6 +8049,31 @@ mod tests {
         let cfg = crate::config::load(&path).unwrap();
         assert!(!cfg.cache.enabled);
         assert_eq!(cfg.cache.ttl_secs, 30);
+    }
+
+    #[test]
+    fn settings_save_connection_knob_persists_to_profile_and_reconnects() {
+        let (mut a, _dir, path) = app_with_config(&["a"]);
+        open_settings(&mut a);
+        // Connection is the third category; page_size is its first field.
+        a.handle_event(press(KeyCode::Down)); // → Behavior
+        a.handle_event(press(KeyCode::Down)); // → Connection
+        a.handle_event(press(KeyCode::Right)); // enter fields (page_size)
+        type_form(&mut a, "250");
+        let cmds = a.handle_event(press(KeyCode::Enter)); // save
+
+        assert!(a.modal.is_none(), "save closes the modal");
+        // Persisted to the ACTIVE profile (not [ui]); a format-preserving round-trip.
+        let cfg = crate::config::load(&path).unwrap();
+        assert_eq!(cfg.profiles.get("a").unwrap().page_size, Some(250));
+        // Reflected on the live profile entry, and hot-applied via a reconnect so
+        // the running client picks up the new page_size.
+        assert_eq!(a.profiles[a.profile_index].config.page_size, Some(250));
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, AppCommand::SwitchProfile { .. })),
+            "a connection-knob change reconnects to hot-apply it"
+        );
     }
 
     #[test]
