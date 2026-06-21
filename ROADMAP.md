@@ -381,11 +381,11 @@ Consolidated future scope:
 - ☑ **(test) `live_browse_on_recent_clears_the_results` checks state, not the recents render.** _(done, PR #18)_ It asserts
   `browse_kind == None` + empty view but seeds no recents, so it doesn't prove the fallback paints. Seed a
   recent and assert `home_target()` falls back to it.
-- ☐ **MCP `nbox_search` hit `kind` is snake_case (`ip_address`), but `nbox_get`/CLI use `ip`.** Surfaced by
-  the MCP contract tests (PR #20) and pinned as-is. An agent chaining search → get must translate the kind
-  (`ip_address` → `ip`, etc.). Minor surface inconsistency — candidate small follow-up: align the
-  search-result `kind` with the `nbox_get` kind set for a frictionless chain, or document the mapping in
-  AGENTS.md / docs/MCP.md.
+- ☑ **MCP search → get kind chaining.** `nbox_search` returns `kind = "ip_address"` while `nbox_get`
+  canonically uses `ip` (the only divergence — every other kind already matches). Rather than change the
+  pinned search output, `GetKind` now accepts `ip_address` as a non-breaking alias for `ip` (serde alias on
+  the tool arg + `from_str` for `nbox://ip_address/…`), so an agent can chain search → get without
+  translating. Documented in `AGENTS.md` / `docs/MCP.md`.
 - Considered, not worth doing: `nav_section_index_for_slug` linear scan over 9 slugs (a `match` would be
   exhaustive, but the list is tiny); `status_in_banner` elevating only Warning/Error (deliberate — long
   Info/Success messages are transient and stay in the footer slot).

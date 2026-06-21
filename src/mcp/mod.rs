@@ -51,6 +51,12 @@ pub struct NboxMcp {
 #[serde(rename_all = "snake_case")]
 pub enum GetKind {
     Device,
+    /// IP address. Accepts both `ip` and `ip_address` — the latter is what
+    /// `nbox_search` returns as a result `kind`, so an agent can chain
+    /// search → get (and `nbox://ip_address/…`) without translating. (Search uses
+    /// `ObjectKind::IpAddress` = `"ip_address"`; every other kind already matches
+    /// between the two enums, so this is the only alias needed.)
+    #[serde(alias = "ip_address")]
     Ip,
     Prefix,
     Vlan,
@@ -116,9 +122,14 @@ impl GetKind {
         }
     }
 
-    /// Parse a URI kind slug back to a `GetKind`. Inverse of [`Self::as_str`].
+    /// Parse a URI kind slug back to a `GetKind`. Inverse of [`Self::as_str`],
+    /// plus the `ip_address` alias for `ip` (the form `nbox_search` emits), so
+    /// `nbox://ip_address/…` resolves like `nbox://ip/…`.
     fn from_str(s: &str) -> Option<GetKind> {
-        GetKind::ALL.into_iter().find(|k| k.as_str() == s)
+        GetKind::ALL
+            .into_iter()
+            .find(|k| k.as_str() == s)
+            .or_else(|| (s == "ip_address").then_some(GetKind::Ip))
     }
 }
 
