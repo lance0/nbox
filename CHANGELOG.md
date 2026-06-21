@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `a` addresses): select a row and press Enter to open that prefix or IP, with
   `b`/`Esc` walking back through the drill path. The `nbox prefix` CLI/JSON output
   is unchanged.
+- **Drill into a device's IPs and VLANs from the TUI.** The device detail's
+  IP-address (`p`) and VLAN (`v`) tabs are now navigable — Enter opens that IP or
+  VLAN, `b`/`Esc` walks back. (Interfaces, cables, and services stay plain text;
+  they aren't standalone objects.) The `nbox device` CLI/JSON output is unchanged.
 
 ## [0.5.0] - 2026-06-20
 

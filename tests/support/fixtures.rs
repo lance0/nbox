@@ -346,6 +346,7 @@ pub fn device_detail() -> DeviceDetailBuilder {
                 description: Some("uplink".to_string()),
             }],
             ip_addresses: vec![IpRow {
+                id: 9001,
                 address: "10.44.208.55/24".to_string(),
                 interface: Some("xe-0/0/0".to_string()),
             }],
