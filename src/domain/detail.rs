@@ -1283,8 +1283,13 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             let s: Site = client.get(&format!("/api/dcim/sites/{id}/"), &[]).await?;
             links = site_links(&s);
             let v = SiteView::from_model(s);
-            tabs.push(contained_devices_tab(client, "site_id", id).await);
-            tabs.push(site_racks_tab(client, id).await);
+            // Devices and racks are independent fetches — run them concurrently.
+            let (devices, racks) = tokio::join!(
+                contained_devices_tab(client, "site_id", id),
+                site_racks_tab(client, id),
+            );
+            tabs.push(devices);
+            tabs.push(racks);
             (format!("site {}", v.name), v.to_key_values().render())
         }
         ObjectKind::Rack => {
@@ -1292,9 +1297,18 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             links = rack_links(&r);
             let u_height = r.u_height;
             let v = RackView::from_model(r);
-            tabs.push(contained_devices_tab(client, "rack_id", id).await);
-            if let Some(uh) = u_height.filter(|h| *h > 0) {
-                tabs.push(rack_elevation_tab(client, id, uh).await);
+            // Devices and the elevation are independent — fetch concurrently when
+            // the rack has a height; otherwise just the devices tab.
+            match u_height.filter(|h| *h > 0) {
+                Some(uh) => {
+                    let (devices, elevation) = tokio::join!(
+                        contained_devices_tab(client, "rack_id", id),
+                        rack_elevation_tab(client, id, uh),
+                    );
+                    tabs.push(devices);
+                    tabs.push(elevation);
+                }
+                None => tabs.push(contained_devices_tab(client, "rack_id", id).await),
             }
             (format!("rack {}", v.name), v.to_key_values().render())
         }
@@ -1462,8 +1476,13 @@ pub async fn load_detail_by_ref(
             let id = s.id;
             links = site_links(&s);
             let v = SiteView::from_model(s);
-            tabs.push(contained_devices_tab(client, "site_id", id).await);
-            tabs.push(site_racks_tab(client, id).await);
+            // Devices and racks are independent fetches — run them concurrently.
+            let (devices, racks) = tokio::join!(
+                contained_devices_tab(client, "site_id", id),
+                site_racks_tab(client, id),
+            );
+            tabs.push(devices);
+            tabs.push(racks);
             (id, format!("site {}", v.name), v.to_key_values().render())
         }
         ObjectKind::Rack => {
@@ -1475,9 +1494,18 @@ pub async fn load_detail_by_ref(
             links = rack_links(&r);
             let u_height = r.u_height;
             let v = RackView::from_model(r);
-            tabs.push(contained_devices_tab(client, "rack_id", id).await);
-            if let Some(uh) = u_height.filter(|h| *h > 0) {
-                tabs.push(rack_elevation_tab(client, id, uh).await);
+            // Devices and the elevation are independent — fetch concurrently when
+            // the rack has a height; otherwise just the devices tab.
+            match u_height.filter(|h| *h > 0) {
+                Some(uh) => {
+                    let (devices, elevation) = tokio::join!(
+                        contained_devices_tab(client, "rack_id", id),
+                        rack_elevation_tab(client, id, uh),
+                    );
+                    tabs.push(devices);
+                    tabs.push(elevation);
+                }
+                None => tabs.push(contained_devices_tab(client, "rack_id", id).await),
             }
             (id, format!("rack {}", v.name), v.to_key_values().render())
         }
