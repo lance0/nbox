@@ -480,6 +480,13 @@ pub enum SettingId {
     CacheEnabled,
     /// `[cache].ttl_secs` — numeric text (the read-cache de-dupe window).
     CacheTtl,
+    /// Active profile `page_size` — numeric text (empty = default); a connection
+    /// knob, so saving it reconnects the live session.
+    PageSize,
+    /// Active profile `timeout_secs` — numeric text (empty = default); reconnects.
+    TimeoutSecs,
+    /// Active profile `exclude_config_context` — a toggle; reconnects.
+    ExcludeConfigContext,
 }
 
 impl SettingId {
@@ -493,6 +500,9 @@ impl SettingId {
             SettingId::LogFile => "log_file",
             SettingId::CacheEnabled => "cache",
             SettingId::CacheTtl => "cache_ttl",
+            SettingId::PageSize => "page_size",
+            SettingId::TimeoutSecs => "timeout_secs",
+            SettingId::ExcludeConfigContext => "exclude_config_context",
         }
     }
 }
@@ -505,6 +515,14 @@ pub const SETTINGS_CATEGORIES: &[(&str, &[SettingId])] = &[
     (
         "Behavior",
         &[SettingId::RefreshSecs, SettingId::OpenBrowserCommand],
+    ),
+    (
+        "Connection",
+        &[
+            SettingId::PageSize,
+            SettingId::TimeoutSecs,
+            SettingId::ExcludeConfigContext,
+        ],
     ),
     ("Cache", &[SettingId::CacheEnabled, SettingId::CacheTtl]),
     ("Logging", &[SettingId::LogLevel, SettingId::LogFile]),
@@ -548,12 +566,31 @@ pub struct SettingsPane {
     pub cache_enabled: bool,
     /// `[cache].ttl_secs` as typed (digits; the engine clamps to 5–300s).
     pub cache_ttl: TextInput,
+    /// Active profile `page_size` as typed (digits; empty = default). A connection
+    /// knob — saving a change reconnects the live session.
+    pub page_size: TextInput,
+    /// Active profile `timeout_secs` as typed (digits; empty = default). Reconnects.
+    pub timeout: TextInput,
+    /// Active profile `exclude_config_context` toggle. Reconnects.
+    pub exclude_config_context: bool,
     /// A transient info / validation line shown under the form.
     pub message: Option<String>,
 }
 
+/// The active profile's connection knobs the Settings "Connection" category seeds
+/// from and edits. Bundled so [`SettingsPane::new`]/[`ConfigModal::new`] take one
+/// value rather than three more positional args.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ConnectionSeed {
+    pub page_size: Option<usize>,
+    pub timeout_secs: Option<u64>,
+    pub exclude_config_context: bool,
+}
+
 impl SettingsPane {
-    /// Build the form seeded from the live settings.
+    /// Build the form seeded from the live settings. Aggregates many independent
+    /// live values, so the arg count is allowed rather than bundled.
+    #[allow(clippy::too_many_arguments)]
     fn new(
         theme_name: &str,
         refresh_secs: Option<u64>,
@@ -562,6 +599,7 @@ impl SettingsPane {
         log_file: &str,
         cache_enabled: bool,
         cache_ttl_secs: u64,
+        connection: ConnectionSeed,
     ) -> Self {
         let mut refresh = TextInput::new("seconds (empty = off)");
         if let Some(secs) = refresh_secs.filter(|s| *s > 0) {
@@ -581,6 +619,14 @@ impl SettingsPane {
         }
         let mut cache_ttl = TextInput::new("seconds (5–300)");
         cache_ttl.set_value(cache_ttl_secs.to_string());
+        let mut page_size = TextInput::new("rows per page (empty = default)");
+        if let Some(n) = connection.page_size {
+            page_size.set_value(n.to_string());
+        }
+        let mut timeout = TextInput::new("seconds (empty = default)");
+        if let Some(s) = connection.timeout_secs {
+            timeout.set_value(s.to_string());
+        }
         Self {
             focus: SettingsFocus::Categories,
             category: 0,
@@ -592,6 +638,9 @@ impl SettingsPane {
             log_file: log_file_in,
             cache_enabled,
             cache_ttl,
+            page_size,
+            timeout,
+            exclude_config_context: connection.exclude_config_context,
             message: None,
         }
     }
@@ -660,16 +709,48 @@ impl SettingsPane {
         self.message = None;
     }
 
+    /// The typed active-profile `page_size`: empty ⇒ `None` (default); non-numeric
+    /// ⇒ `None` too (rejected by [`validate`](Self::validate) on save).
+    pub fn page_size(&self) -> Option<usize> {
+        let t = self.page_size.value().trim();
+        if t.is_empty() {
+            return None;
+        }
+        t.parse::<usize>().ok().filter(|n| *n > 0)
+    }
+
+    /// The typed active-profile `timeout_secs`: empty ⇒ `None` (default).
+    pub fn timeout_secs(&self) -> Option<u64> {
+        let t = self.timeout.value().trim();
+        if t.is_empty() {
+            return None;
+        }
+        t.parse::<u64>().ok().filter(|s| *s > 0)
+    }
+
+    /// The working `exclude_config_context` state.
+    pub fn exclude_config_context(&self) -> bool {
+        self.exclude_config_context
+    }
+
+    /// Flip `exclude_config_context` (Left/Right/Space on its row).
+    fn toggle_exclude_config_context(&mut self) {
+        self.exclude_config_context = !self.exclude_config_context;
+        self.message = None;
+    }
+
     /// The `TextInput` backing a field, if it has one (theme and the cache toggle
     /// are non-text controls).
     pub fn input_mut(&mut self, id: SettingId) -> Option<&mut TextInput> {
         match id {
-            SettingId::Theme | SettingId::CacheEnabled => None,
+            SettingId::Theme | SettingId::CacheEnabled | SettingId::ExcludeConfigContext => None,
             SettingId::RefreshSecs => Some(&mut self.refresh),
             SettingId::OpenBrowserCommand => Some(&mut self.browser),
             SettingId::LogLevel => Some(&mut self.log_level),
             SettingId::LogFile => Some(&mut self.log_file),
             SettingId::CacheTtl => Some(&mut self.cache_ttl),
+            SettingId::PageSize => Some(&mut self.page_size),
+            SettingId::TimeoutSecs => Some(&mut self.timeout),
         }
     }
 
@@ -739,6 +820,14 @@ impl SettingsPane {
         if !c.is_empty() && c.parse::<u64>().is_err() {
             return Err("cache_ttl must be a whole number of seconds".to_string());
         }
+        let p = self.page_size.value().trim();
+        if !p.is_empty() && p.parse::<usize>().is_err() {
+            return Err("page_size must be a whole number".to_string());
+        }
+        let t = self.timeout.value().trim();
+        if !t.is_empty() && t.parse::<u64>().is_err() {
+            return Err("timeout_secs must be a whole number of seconds".to_string());
+        }
         Ok(())
     }
 }
@@ -752,7 +841,10 @@ pub struct ConfigModal {
 
 impl ConfigModal {
     /// Open the modal on the Profiles section, seeding the Settings form from the
-    /// live UI settings (so a switch to Settings shows the current values).
+    /// live UI settings + active-profile connection knobs (so a switch to Settings
+    /// shows the current values). Aggregates many independent live settings, so the
+    /// arg count is allowed rather than bundled into a one-use struct.
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         theme_name: &str,
         refresh_secs: Option<u64>,
@@ -761,6 +853,7 @@ impl ConfigModal {
         log_file: &str,
         cache_enabled: bool,
         cache_ttl_secs: u64,
+        connection: ConnectionSeed,
     ) -> Self {
         Self {
             section: ConfigSection::Profiles,
@@ -773,6 +866,7 @@ impl ConfigModal {
                 log_file,
                 cache_enabled,
                 cache_ttl_secs,
+                connection,
             ),
         }
     }
@@ -780,10 +874,19 @@ impl ConfigModal {
 
 impl Default for ConfigModal {
     /// A modal seeded with default settings (the `default` theme, no auto-refresh,
-    /// the OS default opener, no log overrides, cache on at 30s) — used by tests /
-    /// when no live settings are handy.
+    /// the OS default opener, no log overrides, cache on at 30s, default connection
+    /// knobs) — used by tests / when no live settings are handy.
     fn default() -> Self {
-        Self::new("default", None, "", "", "", true, 30)
+        Self::new(
+            "default",
+            None,
+            "",
+            "",
+            "",
+            true,
+            30,
+            ConnectionSeed::default(),
+        )
     }
 }
 
@@ -897,6 +1000,12 @@ impl ConfigModal {
                 // save, so no live outcome (unlike the theme cycle).
                 if s.focused_field() == Some(SettingId::CacheEnabled) && is_cycle_key {
                     s.toggle_cache_enabled();
+                    return ModalOutcome::None;
+                }
+                // The exclude-config-context toggle flips with the same keys; it's a
+                // connection knob, so the save (not this keypress) reconnects.
+                if s.focused_field() == Some(SettingId::ExcludeConfigContext) && is_cycle_key {
+                    s.toggle_exclude_config_context();
                     return ModalOutcome::None;
                 }
                 match key.code {
@@ -1689,7 +1798,16 @@ mod tests {
 
     /// Open a modal and switch it to the Settings section (Categories pane).
     fn on_settings(theme: &str, refresh: Option<u64>, browser: &str) -> ConfigModal {
-        let mut m = ConfigModal::new(theme, refresh, browser, "", "", true, 30);
+        let mut m = ConfigModal::new(
+            theme,
+            refresh,
+            browser,
+            "",
+            "",
+            true,
+            30,
+            ConnectionSeed::default(),
+        );
         m.handle_key(key(KeyCode::Tab), &[], ""); // Profiles list → Settings
         assert_eq!(m.section, ConfigSection::Settings);
         m
@@ -1710,7 +1828,16 @@ mod tests {
 
     #[test]
     fn settings_seeds_and_reads_log_fields() {
-        let mut m = ConfigModal::new("default", None, "", "nbox=debug", "/tmp/x.log", true, 30);
+        let mut m = ConfigModal::new(
+            "default",
+            None,
+            "",
+            "nbox=debug",
+            "/tmp/x.log",
+            true,
+            30,
+            ConnectionSeed::default(),
+        );
         m.handle_key(key(KeyCode::Tab), &[], "");
         assert_eq!(m.settings.log_level_value().as_deref(), Some("nbox=debug"));
         assert_eq!(m.settings.log_file_value().as_deref(), Some("/tmp/x.log"));
@@ -1718,6 +1845,98 @@ mod tests {
         let blank = on_settings("default", None, "");
         assert_eq!(blank.settings.log_level_value(), None);
         assert_eq!(blank.settings.log_file_value(), None);
+    }
+
+    /// Move the Settings cursor into the "Connection" category's fields.
+    fn enter_connection_fields(m: &mut ConfigModal) {
+        m.handle_key(key(KeyCode::Tab), &[], ""); // Profiles list → Settings
+        let conn = SETTINGS_CATEGORIES
+            .iter()
+            .position(|(name, _)| *name == "Connection")
+            .expect("Connection category exists");
+        for _ in 0..conn {
+            m.handle_key(key(KeyCode::Down), &[], "");
+        }
+        m.handle_key(key(KeyCode::Right), &[], ""); // enter the fields pane
+    }
+
+    #[test]
+    fn settings_connection_category_seeds_from_the_active_profile() {
+        let m = ConfigModal::new(
+            "default",
+            None,
+            "",
+            "",
+            "",
+            true,
+            30,
+            ConnectionSeed {
+                page_size: Some(100),
+                timeout_secs: Some(45),
+                exclude_config_context: false,
+            },
+        );
+        assert_eq!(m.settings.page_size(), Some(100));
+        assert_eq!(m.settings.timeout_secs(), Some(45));
+        assert!(!m.settings.exclude_config_context());
+
+        // The category exists with the three connection knobs in order.
+        let conn = SETTINGS_CATEGORIES
+            .iter()
+            .find(|(name, _)| *name == "Connection")
+            .expect("Connection category");
+        assert_eq!(
+            conn.1,
+            &[
+                SettingId::PageSize,
+                SettingId::TimeoutSecs,
+                SettingId::ExcludeConfigContext
+            ]
+        );
+    }
+
+    #[test]
+    fn settings_connection_exclude_toggles_with_space() {
+        let mut m = ConfigModal::new(
+            "default",
+            None,
+            "",
+            "",
+            "",
+            true,
+            30,
+            ConnectionSeed {
+                page_size: None,
+                timeout_secs: None,
+                exclude_config_context: true,
+            },
+        );
+        enter_connection_fields(&mut m);
+        m.handle_key(key(KeyCode::Down), &[], ""); // page_size → timeout_secs
+        m.handle_key(key(KeyCode::Down), &[], ""); // → exclude_config_context
+        assert_eq!(
+            m.settings.focused_field(),
+            Some(SettingId::ExcludeConfigContext)
+        );
+        assert!(m.settings.exclude_config_context());
+        m.handle_key(key(KeyCode::Char(' ')), &[], "");
+        assert!(
+            !m.settings.exclude_config_context(),
+            "Space flips the exclude toggle"
+        );
+    }
+
+    #[test]
+    fn settings_connection_rejects_non_numeric_page_size() {
+        let mut m = ConfigModal::default();
+        enter_connection_fields(&mut m);
+        assert_eq!(m.settings.focused_field(), Some(SettingId::PageSize));
+        type_into(&mut m, "abc");
+        // A non-numeric page_size blocks the save and surfaces a validation line.
+        let out = m.handle_key(key(KeyCode::Enter), &[], "");
+        assert_eq!(out, ModalOutcome::None);
+        assert!(m.settings.message.is_some(), "shows a validation message");
+        assert_eq!(m.settings.page_size(), None);
     }
 
     #[test]
@@ -1739,20 +1958,25 @@ mod tests {
         // Starts in the Categories pane on the first category (Appearance).
         assert_eq!(m.settings.focus, SettingsFocus::Categories);
         assert_eq!(m.settings.category, 0);
-        // Down cycles through the categories (wrapping at the last).
+        // Down cycles through the categories (wrapping at the last). Order:
+        // Appearance, Behavior, Connection, Cache, Logging.
         m.handle_key(key(KeyCode::Down), &[], "");
         assert_eq!(m.settings.category, 1); // Behavior
         m.handle_key(key(KeyCode::Down), &[], "");
-        assert_eq!(m.settings.category, 2); // Cache
+        assert_eq!(m.settings.category, 2); // Connection
         m.handle_key(key(KeyCode::Down), &[], "");
-        assert_eq!(m.settings.category, 3); // Logging
+        assert_eq!(m.settings.category, 3); // Cache
+        m.handle_key(key(KeyCode::Down), &[], "");
+        assert_eq!(m.settings.category, 4); // Logging
         m.handle_key(key(KeyCode::Down), &[], ""); // wraps
         assert_eq!(m.settings.category, 0);
         m.handle_key(key(KeyCode::Up), &[], ""); // wraps back to Logging
-        assert_eq!(m.settings.category, 3);
+        assert_eq!(m.settings.category, 4);
         // Back to Behavior, then → enters its fields; Down moves; Esc returns.
         m.handle_key(key(KeyCode::Up), &[], "");
-        assert_eq!(m.settings.category, 2); // Cache
+        assert_eq!(m.settings.category, 3); // Cache
+        m.handle_key(key(KeyCode::Up), &[], "");
+        assert_eq!(m.settings.category, 2); // Connection
         m.handle_key(key(KeyCode::Up), &[], "");
         assert_eq!(m.settings.category, 1); // Behavior
         m.handle_key(key(KeyCode::Right), &[], "");
