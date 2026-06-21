@@ -281,3 +281,49 @@ async fn binary_search_csv_honors_cols_order() {
          edge01,device,http://nb/dcim/devices/1/\n"
     );
 }
+
+#[tokio::test]
+async fn binary_search_csv_quotes_a_value_containing_a_comma() {
+    // RFC 4180 escaping survives the full binary path: a cell value containing a
+    // comma (here a device's site display) is wrapped in quotes on real stdout, so
+    // the row stays one logical record for a downstream parser. The render-layer
+    // `escape` is unit-tested in `output::csv`; this pins it end-to-end.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![json!({
+                "id": 1, "url": "http://nb/api/dcim/devices/1/", "name": "edge01",
+                "site": {"id": 9, "display": "iad1, dc1"}
+        })])))
+        .mount(&server)
+        .await;
+    for ep in [
+        "/api/dcim/sites/",
+        "/api/ipam/ip-addresses/",
+        "/api/ipam/prefixes/",
+        "/api/ipam/vlans/",
+        "/api/circuits/circuits/",
+        "/api/ipam/aggregates/",
+        "/api/ipam/asns/",
+        "/api/ipam/ip-ranges/",
+    ] {
+        mount_empty_list(&server, ep).await;
+    }
+
+    let config = temp_config(&server.uri());
+    let output = run_nbox([
+        "--config".as_ref(),
+        config.path().as_os_str(),
+        "search".as_ref(),
+        "edge01".as_ref(),
+        "-o".as_ref(),
+        "csv".as_ref(),
+        "--cols".as_ref(),
+        "display,subtitle".as_ref(),
+        "--partial".as_ref(),
+    ]);
+
+    assert_eq!(output.code, Some(0), "stderr: {}", output.stderr);
+    // The comma-bearing subtitle is quoted; the row is a single record.
+    assert_eq!(output.stdout, "display,subtitle\nedge01,\"iad1, dc1\"\n");
+}
