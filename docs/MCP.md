@@ -341,6 +341,10 @@ tools accept the full set. `ref` is the natural reference for that kind: a
 name/slug/ID for named objects, a CIDR for prefix and aggregate, an address for
 ip, a VID or name for vlan, the AS number for asn, a name/RD/ID for vrf, a name (e.g. 65000:100) or ID for route_target.
 
+`nbox_get` also accepts `ip_address` as an alias for `ip` — that's the `kind` a
+`nbox_search` result carries, so a search → get chain can pass the hit's `kind`
+through unchanged (it's the one kind whose spelling differs between the two).
+
 ## Resources
 
 The same objects are also exposed as MCP **resources**, for hosts that browse or

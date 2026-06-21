@@ -8,6 +8,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **`nbox_get` (MCP) accepts `ip_address` as an alias for `ip`.** A `nbox_search`
+  result's `kind` is `ip_address` (the one kind whose spelling differs from
+  `nbox_get`'s `ip`; all others already match), so a search → get chain — and the
+  `nbox://ip_address/<ref>` resource URI — now works without translating the kind.
 - **Edit more profile knobs from the in-app Config modal.** The profile add/edit
   form now sets the settings that used to need hand-editing `config.toml`:
   `timeout_secs` and `page_size` (numeric fields; empty = default),

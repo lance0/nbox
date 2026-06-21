@@ -1460,6 +1460,27 @@ fn parse_resource_uri_round_trips_kind_and_ref() {
 }
 
 #[test]
+fn get_accepts_the_ip_address_alias_from_search() {
+    // nbox_search returns `kind = "ip_address"` (ObjectKind::IpAddress) while
+    // nbox_get canonically uses `ip`. The alias lets an agent chain search → get
+    // (and `nbox://ip_address/…`) without translating the kind. Every other kind
+    // already matches between the two enums, so `ip_address` is the only alias.
+    // Tool-arg path (serde Deserialize):
+    assert!(matches!(
+        serde_json::from_value::<GetKind>(serde_json::json!("ip_address")).unwrap(),
+        GetKind::Ip
+    ));
+    assert!(matches!(
+        serde_json::from_value::<GetKind>(serde_json::json!("ip")).unwrap(),
+        GetKind::Ip
+    ));
+    // Resource-URI path:
+    let (kind, reference) = parse_resource_uri("nbox://ip_address/10.0.0.1").expect("parse");
+    assert!(matches!(kind, GetKind::Ip));
+    assert_eq!(reference, "10.0.0.1");
+}
+
+#[test]
 fn parse_resource_uri_rejects_bad_scheme_kind_and_empty_ref() {
     for uri in ["file:///etc/passwd", "device/edge01", "nbox:/device/edge01"] {
         let err = parse_resource_uri(uri).expect_err("bad scheme");
