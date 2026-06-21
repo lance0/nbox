@@ -219,16 +219,27 @@ Consolidated future scope:
   - ☐ **Browse / list panes** — Nav rail opening `VRFs`/`Sites`/`Prefixes`/`Devices` with sort/limit/
     basic filters, fetching exactly the columns the TUI renders. Frame as browse/filter, not search
     (overlaps the typeahead surface above).
-  - ☐ **Relationship-heavy detail views** (once the TUI detail contract settles) — device
-    (header + interfaces + IPs + services), prefix (prefix + children + contained IPs), VLAN
-    (VLAN + prefixes + group/scope), tenant (tenant + devices/prefixes/IPs summary). Read-only GraphQL
-    alternatives to the REST fan-outs; only pursue where the fan-out is a real latency cost, and don't
-    maintain both surfaces for a view indefinitely.
+  - ✗ **Device detail bundle — SKIPPED (not byte-identical, 2026-06-21).** Probed the live 4.5 schema:
+    NetBox GraphQL returns enum *values* as plain strings with no label/display variant (`InterfaceType`
+    exposes `type -> String` = `"10gbase-x-sfpp"`), but the REST device detail renders the interface
+    **type label** (`SFP+ (10GE)`, via `IfaceRow.type_ = c.label`). A byte-identical bundle would need a
+    client-side ~100-entry interface-type `value→label` map kept in sync across NetBox versions — exactly
+    the brittle maintenance the accelerator bar avoids. (`status`/service `protocol` use `.value`, fine;
+    role/site/vlan/cable use `.label()`=display, which GraphQL can supply — interface `type` is the lone
+    blocker, and it's load-bearing on the most-used tab.) VRF/RT worked because their data is flat strings
+    with no value/label duality; the device detail is enum-label-heavy, so it doesn't fit. See
+    [[nbox-graphql-shapes]].
+  - ☐ **Other relationship-heavy detail views** (once the TUI detail contract settles) — prefix (prefix +
+    children + contained IPs), VLAN (VLAN + prefixes + group/scope), tenant (tenant + devices/prefixes/IPs
+    summary). Read-only GraphQL alternatives to the REST fan-outs; only pursue where the fan-out is a real
+    latency cost AND the view has no value-only-enum label like device's interface type; don't maintain
+    both surfaces for a view indefinitely.
   - ☑ **Route-target / routing-context views** _(PR #22)_ — route targets are a first-class object
     (lookup, search, open, journal, MCP); the detail's importing/exporting VRF relation graph is now a
     GraphQL accelerator surface (`[profiles.<name>.api] route_target = "graphql"`): one
     `route_target_list` query replaces the two REST `vrfs` list calls, identity stays REST, output is
-    byte-identical, with REST fallback. Next accelerator: the device detail bundle.
+    byte-identical, with REST fallback. (The device detail bundle was evaluated next and **skipped** — see
+    above; the dashboard overview is the next accelerator instead.)
 - ☑ **GraphQL backend cleanup.** Typed `GqlVrf{Prefix,Address}` + `VrfBundleResponse` structs replace
   the `from_value(json!{})` row reshape (`Default` on the `Prefix`/`IpAddress` wire models lets the
   conversion set only the VRF-relevant fields). All GraphQL — capabilities probe + VRF bundle + helpers
