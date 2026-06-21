@@ -329,9 +329,9 @@ Consolidated future scope:
   heading and the next `## [`) into `body_path`, with `generate_release_notes: true`
   appending GitHub's "What's Changed" PR list + full-changelog link below it — so the
   published notes match the changelog automatically, no by-hand patching. Falls back to
-  auto-notes (with a `::warning::`) if the section is missing. ☐ Optional follow-up: a
-  hard CHANGELOG-has-an-entry check that *fails* a tag missing its section (needs its
-  own tag-triggered job, since `ci.yml` only runs on branch pushes).
+  auto-notes (with a `::warning::`) if the section is missing — warn-and-fallback is the
+  deliberate choice; a hard tag-fails-without-an-entry check was considered and declined
+  (2026-06-20).
 - ☑ `clippy::pedantic` enforced whole-project (incl. test crates) via a `Cargo.toml [lints]` table.
 - ☑ Golden output contracts + shared integration-test support (`tests/golden/`, `tests/support/`).
 - ☑ Binary-level error contracts for stable exit codes and stdout cleanliness.
