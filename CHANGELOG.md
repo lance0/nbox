@@ -7,6 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-06-21
+
+### Added
+
+- **First-run orientation on the home screen.** A fresh launch (or any time there
+  are no recent items yet) now lands on an oriented getting-started panel — `/`
+  search, `j/k ↵` browse a kind from the rail, `D` dashboard, `T` prefix tree, `?`
+  help — instead of a bare "Press / to search". Returning users with recents are
+  unaffected.
+- **Connection status at launch, and a recoverable connection banner.** A
+  successful start shows a `connected to NetBox vX.Y` confirmation in the footer. A
+  connection or auth failure (bad token, unreachable host) no longer hard-exits
+  before the TUI opens — it launches with an actionable banner ("Press S to edit
+  the profile or set NBOX_TOKEN"), so you fix the profile in-app and reconnect
+  without re-running the binary. A server below the supported NetBox floor stays a
+  hard, explicit error.
+- **Edit the active connection from the Settings modal.** The Config modal's
+  Settings section gains a **Connection** category for the active profile's
+  `page_size`, `timeout_secs`, `exclude_config_context`, and the per-surface
+  `[api]` `vrf` / `route_target` backends (`rest`/`graphql`). Saving a change
+  persists it to the profile (format-preserving) and reconnects so it takes effect
+  live. The profile editor still manages every profile; Settings is the quick-tweak
+  surface for the active one.
+
+### Performance
+
+- **Prefix detail loads its child prefixes and contained IPs concurrently** — one
+  combined fetch after the prefix header instead of two sequential round-trips.
+- **Search resolves the `--scope` and `--vrf` references concurrently** before the
+  multi-endpoint fan-out, so a scoped + VRF-filtered search pays one resolution
+  tail instead of two.
+
+### Internal
+
+- Deepened machine-facing contract tests: strict response-shape pins for the MCP
+  `nbox_next_ip` / `nbox_next_prefix` / `nbox_cache_clear` / `nbox_journal` /
+  `nbox_list_tags` tools, and CSV RFC-4180 quoting verified through the compiled
+  binary.
+- Refactors with no behavior change: bundled the profile-edit-form arguments
+  (`ProfileFormData`), shared one HTTP 429 retry policy across the REST and GraphQL
+  paths, and slimmed `persist_profile`'s signature.
+- Dependency maintenance: `sha2` 0.11, several GitHub Actions bumps, and the Rust
+  toolchain pinned to the project MSRV (1.88) so CI keeps a low support floor.
+
 ## [0.6.0] - 2026-06-21
 
 ### Added
