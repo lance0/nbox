@@ -75,6 +75,9 @@ Polish the read experience. No writes here.
   dropped), route targets + VRFs first-class, the connection-pool timeout fix, live-browse, the
   config/keyring layer, dashboard, prefix tree, and cross-object nav. Shipped to crates.io / Homebrew
   tap / GHCR via the `/ship` skill.
+- ☑ **Release `0.5.0`** — route-target relation graph as a GraphQL accelerator surface, and kind-aware
+  browse list columns (per-kind secondary column, content-fit width). Shipped to crates.io / Homebrew
+  tap / GHCR via the `/ship` skill.
 
 ---
 

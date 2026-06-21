@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-06-20
+
 ### Added
 - **Route-target view can use GraphQL.** Set `[profiles.<name>.api] route_target =
   "graphql"` to fetch a route target's importing + exporting VRFs in one `/graphql/`
