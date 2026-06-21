@@ -131,10 +131,12 @@ pub struct ProfileForm {
 }
 
 /// The persisted profile fields an edit form is prefilled from, bundled so the
-/// form constructors take one value instead of ten positional args. The app owns
-/// the [`ProfileConfig`](crate::config::ProfileConfig) and builds this from it;
-/// the form copies what it needs into its own inputs, so the borrows only need to
-/// live for the call.
+/// form constructors (and `persist_profile`) take one value instead of ten
+/// positional args. The app owns the [`ProfileConfig`](crate::config::ProfileConfig)
+/// and builds this from it; the form copies what it needs into its own inputs, so
+/// the borrows only need to live for the call. `Copy` (every field is) so callers
+/// can destructure it without moves.
+#[derive(Clone, Copy)]
 pub struct ProfileFormData<'a> {
     pub name: &'a str,
     pub url: &'a str,

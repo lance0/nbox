@@ -2074,16 +2074,18 @@ impl App {
         if let Err(e) = Self::persist_profile(
             &path,
             Some(&name),
-            &name,
-            &url,
-            token_env.as_deref(),
-            auth_scheme,
-            verify_tls,
-            timeout_secs,
-            page_size,
-            exclude_config_context,
-            api_vrf,
-            api_route_target,
+            &ProfileFormData {
+                name: &name,
+                url: &url,
+                token_env: token_env.as_deref(),
+                auth_scheme,
+                verify_tls,
+                timeout_secs,
+                page_size,
+                exclude_config_context,
+                api_vrf,
+                api_route_target,
+            },
         ) {
             self.set_status(format!("save failed: {e:#}"), Severity::Error);
             return Some(Vec::new());
@@ -2195,16 +2197,18 @@ impl App {
         if let Err(e) = Self::persist_profile(
             &path,
             original.as_deref(),
-            &name,
-            &url,
-            token_env.as_deref(),
-            auth_scheme,
-            verify_tls,
-            timeout_secs,
-            page_size,
-            exclude_config_context,
-            api_vrf,
-            api_route_target,
+            &ProfileFormData {
+                name: &name,
+                url: &url,
+                token_env: token_env.as_deref(),
+                auth_scheme,
+                verify_tls,
+                timeout_secs,
+                page_size,
+                exclude_config_context,
+                api_vrf,
+                api_route_target,
+            },
         ) {
             self.set_status(format!("save failed: {e:#}"), Severity::Error);
             return Vec::new();
@@ -2288,22 +2292,24 @@ impl App {
     /// removed (H1) so a phantom profile can't return on the next launch; if the
     /// renamed profile was the active one, `active_profile` is repointed to the new
     /// name so the file stays self-consistent.
-    #[allow(clippy::too_many_arguments)]
     fn persist_profile(
         path: &std::path::Path,
         original: Option<&str>,
-        name: &str,
-        url: &str,
-        token_env: Option<&str>,
-        auth_scheme: AuthScheme,
-        verify_tls: bool,
-        timeout_secs: Option<u64>,
-        page_size: Option<usize>,
-        exclude_config_context: bool,
-        api_vrf: BackendPreference,
-        api_route_target: BackendPreference,
+        data: &ProfileFormData<'_>,
     ) -> anyhow::Result<()> {
         use crate::config::ApiSurface;
+        let ProfileFormData {
+            name,
+            url,
+            token_env,
+            auth_scheme,
+            verify_tls,
+            timeout_secs,
+            page_size,
+            exclude_config_context,
+            api_vrf,
+            api_route_target,
+        } = *data;
         let mut doc = crate::config::load_doc_or_new(path)?;
         // Rename: drop the old section and repoint active_profile if it named it.
         if let Some(orig) = original
