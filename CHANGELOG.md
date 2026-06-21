@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-06-21
+
 ### Added
 - **`nbox_get` (MCP) accepts `ip_address` as an alias for `ip`.** A `nbox_search`
   result's `kind` is `ip_address` (the one kind whose spelling differs from

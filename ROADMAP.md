@@ -83,6 +83,11 @@ Polish the read experience. No writes here.
 - ☑ **Release `0.5.0`** — route-target relation graph as a GraphQL accelerator surface, and kind-aware
   browse list columns (per-kind secondary column, content-fit width). Shipped to crates.io / Homebrew
   tap / GHCR via the `/ship` skill.
+- ☑ **Release `0.6.0`** — cross-object navigation (navigable contained-object lists on prefix/device/
+  VLAN/site/rack detail tabs + a detail tab/footer discoverability cue), `nbox_get` accepting the
+  `ip_address` search kind, an in-app profile editor for the API/timeout/page-size/exclude knobs, config
+  contract tests, `scripts/smoke.sh`, the Dependabot `rand` ignore, and ratatui 0.30.2. First release to
+  use the auto-extracted CHANGELOG release notes. Shipped to crates.io / Homebrew tap / GHCR.
 
 ---
 
