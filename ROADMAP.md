@@ -64,8 +64,8 @@ Polish the read experience. No writes here.
   object-level back-stack (`detail_nav`, `b`/`Esc` walks the drill path) and header-relation jumps (the
   `R` modal: device→site/rack, ip→parent-prefix, prefix→vlan, …) already ship. Remaining work: make the
   *contained-object lists* navigable like the VRF view does, one kind per PR. ☑ Prefix → children +
-  contained IPs (navigable `c`/`a` tabs). ☑ Device → IP addresses + VLANs (`p`/`v` tabs). ☐ VLAN →
-  prefixes · ☐ Site/Rack → devices.
+  contained IPs (navigable `c`/`a` tabs). ☑ Device → IP addresses + VLANs (`p`/`v` tabs). ☑ VLAN →
+  prefixes (`p` tab). ☐ Site/Rack → devices.
 - ☐ **Demo recording** — an asciinema/VHS cast for the README.
 - ☐ **Deepen the in-app Config modal.** Surface the profile/settings knobs that still need a hand-edited
   `config.toml`: per-surface API backends (`[profiles.<name>.api]` `search`/`vrf`/`route_target` =

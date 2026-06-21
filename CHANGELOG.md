@@ -17,6 +17,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   IP-address (`p`) and VLAN (`v`) tabs are now navigable — Enter opens that IP or
   VLAN, `b`/`Esc` walks back. (Interfaces, cables, and services stay plain text;
   they aren't standalone objects.) The `nbox device` CLI/JSON output is unchanged.
+- **Drill into a VLAN's prefixes from the TUI.** The VLAN detail's prefix list is
+  now a navigable `p` tab — Enter opens that prefix, `b`/`Esc` walks back. The
+  `nbox vlan` CLI/JSON output is unchanged.
 
 ## [0.5.0] - 2026-06-20
 

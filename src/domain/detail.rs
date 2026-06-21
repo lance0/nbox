@@ -777,14 +777,16 @@ fn rows_to_text(rows: &[DetailRow]) -> String {
         .join("\n")
 }
 
-/// Navigable rows for a prefix's child prefixes — each opens that prefix on Enter.
-fn prefix_child_rows(children: &[Prefix]) -> Vec<DetailRow> {
-    if children.is_empty() {
-        return vec![DetailRow::plain("(no child prefixes)".to_string())];
+/// Navigable rows for a list of prefixes — each opens that prefix on Enter. Used
+/// for a prefix's child prefixes and for the prefixes that reference a VLAN; the
+/// `empty` placeholder names the absent case for each.
+fn prefix_link_rows(prefixes: &[Prefix], empty: &str) -> Vec<DetailRow> {
+    if prefixes.is_empty() {
+        return vec![DetailRow::plain(empty.to_string())];
     }
-    children
+    prefixes
         .iter()
-        .map(|c| DetailRow::link(c.prefix.clone(), ObjectKind::Prefix, c.id))
+        .map(|p| DetailRow::link(p.prefix.clone(), ObjectKind::Prefix, p.id))
         .collect()
 }
 
@@ -817,7 +819,7 @@ fn prefix_detail_parts(
     children: Vec<Prefix>,
     ips: Vec<IpAddress>,
 ) -> (String, String, Vec<DetailTab>) {
-    let child_rows = prefix_child_rows(&children);
+    let child_rows = prefix_link_rows(&children, "(no child prefixes)");
     let ip_rows = prefix_ip_rows(&ips);
     let tabs = vec![
         DetailTab {
@@ -835,6 +837,17 @@ fn prefix_detail_parts(
     ];
     let v = PrefixView::build(p, children, ips);
     (format!("prefix {}", v.prefix), v.to_detail_header(), tabs)
+}
+
+/// The navigable `prefixes` tab for a VLAN — each referencing prefix opens on Enter.
+fn vlan_prefixes_tab(prefixes: &[Prefix]) -> DetailTab {
+    let rows = prefix_link_rows(prefixes, "(no prefixes)");
+    DetailTab {
+        key: 'p',
+        label: format!("prefixes·{}", prefixes.len()),
+        body: rows_to_text(&rows),
+        rows,
+    }
 }
 
 /// Sort key for tree order: address family, network address, then prefix length —
@@ -1232,8 +1245,9 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             links = vlan_links(&vlan);
             let prefixes = client.vlan_prefixes(vlan.id, SECTION_CAP).await?;
             let group = vlan_group_scope(client, &vlan).await?;
+            tabs = vec![vlan_prefixes_tab(&prefixes)];
             let v = VlanView::build(vlan, prefixes, group);
-            (format!("vlan {}", v.vid), v.to_plain())
+            (format!("vlan {}", v.vid), v.to_detail_header())
         }
         ObjectKind::Circuit => {
             let c: Circuit = client
@@ -1429,8 +1443,9 @@ pub async fn load_detail_by_ref(
             links = vlan_links(&vlan);
             let prefixes = client.vlan_prefixes(vlan.id, SECTION_CAP).await?;
             let group = vlan_group_scope(client, &vlan).await?;
+            tabs = vec![vlan_prefixes_tab(&prefixes)];
             let v = VlanView::build(vlan, prefixes, group);
-            (id, format!("vlan {}", v.vid), v.to_plain())
+            (id, format!("vlan {}", v.vid), v.to_detail_header())
         }
         ObjectKind::Circuit => {
             let c = client
@@ -1776,6 +1791,27 @@ mod tests {
         let vlan_rows = device_vlan_rows(&vlans);
         assert_eq!(vlan_rows[0].target, Some((ObjectKind::Vlan, 20)));
         assert!(vlan_rows[0].text.contains("20 (prod)"));
+    }
+
+    #[test]
+    fn vlan_prefixes_tab_is_navigable() {
+        use serde_json::json;
+        let prefixes: Vec<Prefix> = vec![
+            serde_json::from_value(json!({"id": 21, "url": "u", "prefix": "10.44.208.0/24"}))
+                .unwrap(),
+            serde_json::from_value(json!({"id": 22, "url": "u", "prefix": "10.45.208.0/24"}))
+                .unwrap(),
+        ];
+        let tab = vlan_prefixes_tab(&prefixes);
+        assert_eq!(tab.key, 'p');
+        assert_eq!(tab.label, "prefixes·2");
+        assert_eq!(tab.rows[0].target, Some((ObjectKind::Prefix, 21)));
+        assert_eq!(tab.rows[1].target, Some((ObjectKind::Prefix, 22)));
+        // Empty → one non-navigable placeholder row.
+        let empty = vlan_prefixes_tab(&[]);
+        assert_eq!(empty.label, "prefixes·0");
+        assert_eq!(empty.rows.len(), 1);
+        assert_eq!(empty.rows[0].target, None);
     }
 
     #[test]

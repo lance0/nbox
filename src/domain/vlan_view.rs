@@ -102,8 +102,10 @@ impl VlanView {
         }
     }
 
-    /// Render header fields plus a prefixes section for plain output.
-    pub fn to_plain(&self) -> String {
+    /// Render the header key-values only (no prefixes section). The TUI detail body
+    /// uses this — its prefix list renders as a navigable tab instead of inline text
+    /// — while the CLI's [`to_plain`](Self::to_plain) appends the inline section below.
+    pub fn to_detail_header(&self) -> String {
         let mut kv = KeyValues::new();
         kv.push("vid", self.vid.to_string())
             .push("name", self.name.clone())
@@ -120,7 +122,12 @@ impl VlanView {
             kv.push("tags", self.tags.join(", "));
         }
         custom::append(&mut kv, &self.custom_fields);
-        let mut out = kv.render();
+        kv.render()
+    }
+
+    /// Render header fields plus a prefixes section for plain output.
+    pub fn to_plain(&self) -> String {
+        let mut out = self.to_detail_header();
 
         if !self.prefixes.is_empty() {
             out.push_str("\n\nPrefixes\n");
