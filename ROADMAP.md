@@ -60,12 +60,13 @@ Polish the read experience. No writes here.
 - ☑ **TUI context preservation** — scroll position + active filters retained per view across navigation.
 - ☑ **Profile cycle order** — cycle profiles in config-file order (an order-preserving map) rather than
   alphabetical.
-- ◐ **Cross-object navigation** — jump between related objects from a detail without re-searching. The
+- ☑ **Cross-object navigation** — jump between related objects from a detail without re-searching. The
   object-level back-stack (`detail_nav`, `b`/`Esc` walks the drill path) and header-relation jumps (the
-  `R` modal: device→site/rack, ip→parent-prefix, prefix→vlan, …) already ship. Remaining work: make the
-  *contained-object lists* navigable like the VRF view does, one kind per PR. ☑ Prefix → children +
-  contained IPs (navigable `c`/`a` tabs). ☑ Device → IP addresses + VLANs (`p`/`v` tabs). ☑ VLAN →
-  prefixes (`p` tab). ☐ Site/Rack → devices.
+  `R` modal: device→site/rack, ip→parent-prefix, prefix→vlan, …) ship, and every detail's
+  *contained-object lists* are now navigable like the VRF view: ☑ Prefix → children + contained IPs
+  (`c`/`a` tabs) · ☑ Device → IP addresses + VLANs (`p`/`v` tabs) · ☑ VLAN → prefixes (`p` tab) · ☑
+  Site → devices + racks (`d`/`r` tabs) and Rack → devices (`d` tab). Enter opens the highlighted row,
+  `b`/`Esc` walks back through the drill path.
 - ☐ **Demo recording** — an asciinema/VHS cast for the README.
 - ☐ **Deepen the in-app Config modal.** Surface the profile/settings knobs that still need a hand-edited
   `config.toml`: per-surface API backends (`[profiles.<name>.api]` `search`/`vrf`/`route_target` =
