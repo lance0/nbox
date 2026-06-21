@@ -324,13 +324,14 @@ Consolidated future scope:
 - ☑ Completions + the full man-page set shipped as a release artifact.
 - ☑ MSRV CI job (pins `rust-version` 1.88).
 - ☑ Real-NetBox integration workflow (`netbox-integration.yml`).
-- ☐ **Auto-populate the GitHub Release body from the CHANGELOG.** The `release` job
-  currently uses GitHub's `generate_release_notes` (a bare commit-compare link); the
-  curated `## [X.Y.Z]` section from `CHANGELOG.md` is added by hand after the fact.
-  Extract that section in the workflow (awk between the `## [X.Y.Z]` and the next
-  `## [` heading, keyed off the tag) and pass it as the release `body`, so the
-  published notes match the changelog automatically. A CHANGELOG-has-an-entry check
-  in CI would also fail a tag that forgot to add its section.
+- ☑ **Auto-populate the GitHub Release body from the CHANGELOG.** The `release` job now
+  extracts the curated `## [X.Y.Z]` section from `CHANGELOG.md` (awk between the tag's
+  heading and the next `## [`) into `body_path`, with `generate_release_notes: true`
+  appending GitHub's "What's Changed" PR list + full-changelog link below it — so the
+  published notes match the changelog automatically, no by-hand patching. Falls back to
+  auto-notes (with a `::warning::`) if the section is missing. ☐ Optional follow-up: a
+  hard CHANGELOG-has-an-entry check that *fails* a tag missing its section (needs its
+  own tag-triggered job, since `ci.yml` only runs on branch pushes).
 - ☑ `clippy::pedantic` enforced whole-project (incl. test crates) via a `Cargo.toml [lints]` table.
 - ☑ Golden output contracts + shared integration-test support (`tests/golden/`, `tests/support/`).
 - ☑ Binary-level error contracts for stable exit codes and stdout cleanliness.
