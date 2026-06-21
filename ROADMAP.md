@@ -377,8 +377,9 @@ Consolidated future scope:
   purpose (`Cargo.toml` comment). **Unblock when `rsa` ships on `rand_core` 0.9**, then take the bump and
   switch `thread_rng()` → `rng()`. Dependabot PR #15 (group bump incl. `rand` 0.10) is parked on this.
 - ☐ **Ungroup Dependabot cargo updates.** `dependabot.yml` groups all crates (`patterns: ["*"]`), so one
-  incompatible bump (e.g. `rand`) blocks safe ones in the same PR (a `ratatui` 0.30.2 patch is stuck behind
-  `rand` in #15). Split the group (or `ignore` `rand`) so safe updates flow independently.
+  incompatible bump (e.g. `rand`) blocks safe ones in the same PR. `ratatui` 0.30.1→0.30.2 (+ the family)
+  was taken manually to unblock it from `rand` in #15; the root cause stands — split the group (or `ignore`
+  `rand`) so safe updates flow independently without hand-bumps.
 - ☑ **GitHub Actions on Node 24.** Bumped `actions/cache@v5`, `actions/upload-artifact@v7`, and the
   `docker/*` actions (Dependabot #4–8, 2026-06-20) to clear the Node-20 deprecation warnings in `release.yml`.
 
