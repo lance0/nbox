@@ -118,8 +118,11 @@ reviewable PRs that lock contracts and reduce future change cost.
   generation) before tags move.
 - ☐ **Observability contracts** — pin `nbox status`, MCP status, and selected debug/audit fields so
   users and agents can tell backend, version, capability, and failure mode without scraping prose.
-- ☐ **Config migration/compat tests** — table-driven fixtures for old/current/future `config.toml`
-  shapes, token-source precedence, redaction, and format-preserving edits.
+- ◐ **Config migration/compat tests** — token-source precedence (`select_env_token`), the onboarding
+  predicate (`needs_onboarding_for`), redaction (`config show`/`Debug`), and format-preserving edits
+  (comments + unrelated keys survive; `save_setting_fields` atomic) are locked in `config.rs` tests.
+  ☐ Remaining: explicit old/future `config_version` shape fixtures (forward-compat warn is covered; a
+  versioned-migration matrix is not yet needed).
 - ☐ **Dependency and feature matrix** — CI or scripted local checks for default, `--no-default-features`,
   `http`, `keyring`, `keyring-secret-service`, and release-musl-relevant feature combinations.
 - ☐ **Performance baseline, narrow** — bench or measured smoke for search fan-out and JSON rendering
