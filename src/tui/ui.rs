@@ -1438,8 +1438,8 @@ fn render_config(
     // Size to content, capped to the screen — the ttl/xfr modal idiom
     // (`base_height.min(area.height - 4)`), so the modal floats as a centered box
     // instead of filling the screen like a page. `CONTENT_H` covers the tallest
-    // section (the profile add/edit form); on a standard 80x24 it's unchanged.
-    const CONTENT_H: u16 = 20;
+    // section (the profile add/edit form: 6 text rows + 5 control rows + test/help).
+    const CONTENT_H: u16 = 22;
     let popup = centered_popup(area, 60, CONTENT_H.min(area.height.saturating_sub(4)));
     frame.render_widget(Clear, popup);
 
@@ -1647,12 +1647,16 @@ fn render_config_profiles(
             frame.render_widget(Paragraph::new(lines), area);
         }
         ProfilesMode::Form(form) => {
-            // Layout: the 4 form rows up top, then the auth/tls controls, the test
-            // state, the help line, and an optional message.
+            // Layout: the 6 form rows up top (name/url/token_env/token + the two
+            // numeric fields), then the non-text controls (auth/tls/exclude + the
+            // two API backends), the test state, the help line, and a message.
             let rows = Layout::vertical([
-                Constraint::Length(4), // the FormInput rows
+                Constraint::Length(6), // the FormInput rows
                 Constraint::Length(1), // auth_scheme
                 Constraint::Length(1), // verify_tls
+                Constraint::Length(1), // exclude_config_context
+                Constraint::Length(1), // api vrf
+                Constraint::Length(1), // api route_target
                 Constraint::Length(1), // blank
                 Constraint::Length(1), // test state
                 Constraint::Length(1), // message
@@ -1671,7 +1675,7 @@ fn render_config_profiles(
             };
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
-                    Span::styled("auth_scheme  ", Style::default().fg(theme.header)),
+                    Span::styled("auth_scheme   ", Style::default().fg(theme.header)),
                     Span::styled(scheme, Style::default().fg(theme.accent)),
                     Span::styled("  (Ctrl+S cycles)", Style::default().fg(theme.text_dim)),
                 ])),
@@ -1679,7 +1683,7 @@ fn render_config_profiles(
             );
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
-                    Span::styled("verify_tls   ", Style::default().fg(theme.header)),
+                    Span::styled("verify_tls    ", Style::default().fg(theme.header)),
                     Span::styled(
                         if form.verify_tls { "on" } else { "off" },
                         Style::default().fg(theme.accent),
@@ -1687,6 +1691,40 @@ fn render_config_profiles(
                     Span::styled("  (Ctrl+L toggles)", Style::default().fg(theme.text_dim)),
                 ])),
                 rows[2],
+            );
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("config_ctx    ", Style::default().fg(theme.header)),
+                    Span::styled(
+                        if form.exclude_config_context {
+                            "excluded"
+                        } else {
+                            "included"
+                        },
+                        Style::default().fg(theme.accent),
+                    ),
+                    Span::styled("  (Ctrl+E toggles)", Style::default().fg(theme.text_dim)),
+                ])),
+                rows[3],
+            );
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("api vrf       ", Style::default().fg(theme.header)),
+                    Span::styled(form.api_vrf.as_str(), Style::default().fg(theme.accent)),
+                    Span::styled("  (Ctrl+B cycles)", Style::default().fg(theme.text_dim)),
+                ])),
+                rows[4],
+            );
+            frame.render_widget(
+                Paragraph::new(Line::from(vec![
+                    Span::styled("api rtgt      ", Style::default().fg(theme.header)),
+                    Span::styled(
+                        form.api_route_target.as_str(),
+                        Style::default().fg(theme.accent),
+                    ),
+                    Span::styled("  (Ctrl+R cycles)", Style::default().fg(theme.text_dim)),
+                ])),
+                rows[5],
             );
 
             let (test_text, test_style) = match &form.test {
@@ -1701,12 +1739,12 @@ fn render_config_profiles(
                 ),
                 TestState::Failed(e) => (format!("✗ {e}"), Style::default().fg(theme.error)),
             };
-            frame.render_widget(Paragraph::new(Span::styled(test_text, test_style)), rows[4]);
+            frame.render_widget(Paragraph::new(Span::styled(test_text, test_style)), rows[7]);
 
             if let Some(msg) = &form.message {
                 frame.render_widget(
                     Paragraph::new(Span::styled(msg.clone(), Style::default().fg(theme.error))),
-                    rows[5],
+                    rows[8],
                 );
             }
 
@@ -1719,7 +1757,7 @@ fn render_config_profiles(
             };
             frame.render_widget(
                 Paragraph::new(Span::styled(help, Style::default().fg(theme.text_dim))),
-                rows[6],
+                rows[9],
             );
         }
         ProfilesMode::ConfirmDelete { name, .. } => {

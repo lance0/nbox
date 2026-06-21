@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::TableState;
 
 use crate::cache::{Cache, Freshness};
-use crate::config::ProfileConfig;
+use crate::config::{ApiConfig, BackendPreference, ProfileConfig};
 use crate::domain::detail::{DetailRow, DetailView, ObjectLink};
 use crate::netbox::auth::AuthScheme;
 use crate::netbox::client::NetBoxClient;
@@ -345,6 +345,21 @@ pub struct RecentItem {
 pub struct ProfileEntry {
     pub name: String,
     pub config: ProfileConfig,
+}
+
+/// Build the live [`ApiConfig`] for a profile from the editor's per-surface
+/// backend choices. REST is the implicit default, so a REST-everywhere profile
+/// gets `None` (no `[api]` table) — mirroring what `set_profile_api_backend`
+/// writes to disk. Only a GraphQL surface is recorded; `search` is never set here
+/// (search always falls back to REST, so the editor doesn't surface it).
+fn build_api_config(vrf: BackendPreference, route_target: BackendPreference) -> Option<ApiConfig> {
+    let some_if_graphql = |p: BackendPreference| (p == BackendPreference::Graphql).then_some(p);
+    let api = ApiConfig {
+        search: None,
+        vrf: some_if_graphql(vrf),
+        route_target: some_if_graphql(route_target),
+    };
+    (api != ApiConfig::default()).then_some(api)
 }
 
 /// Most-recent-first cap for the recents list.
@@ -2062,6 +2077,11 @@ impl App {
         let token_env = form.token_env();
         let auth_scheme = form.auth_scheme;
         let verify_tls = form.verify_tls;
+        let timeout_secs = form.timeout_secs();
+        let page_size = form.page_size();
+        let exclude_config_context = form.exclude_config_context;
+        let api_vrf = form.api_vrf;
+        let api_route_target = form.api_route_target;
         let token_action = form.token_action();
         let original = form.editing.clone();
 
@@ -2086,6 +2106,11 @@ impl App {
             token_env.as_deref(),
             auth_scheme,
             verify_tls,
+            timeout_secs,
+            page_size,
+            exclude_config_context,
+            api_vrf,
+            api_route_target,
         ) {
             self.set_status(format!("save failed: {e:#}"), Severity::Error);
             return Vec::new();
@@ -2104,22 +2129,21 @@ impl App {
         );
 
         // Build the live profile entry from the form + reflect it into `profiles`.
-        let mut config = ProfileConfig {
+        // The form now owns timeout/page_size/exclude/api too, so these come
+        // straight off it (mirroring what persist_profile wrote to disk): an empty
+        // numeric field is `None` (default), and a REST backend leaves `api` clean.
+        let api = build_api_config(api_vrf, api_route_target);
+        let config = ProfileConfig {
             url: url.clone(),
             token_env: token_env.clone(),
             auth_scheme: Some(auth_scheme),
             verify_tls: Some(verify_tls),
+            timeout_secs,
+            page_size,
+            exclude_config_context: Some(exclude_config_context),
+            api,
             ..Default::default()
         };
-        // Carry over any non-editor fields (timeout/page_size/…) when editing.
-        if let Some(orig) = &original
-            && let Some(existing) = self.profiles.iter().find(|p| &p.name == orig)
-        {
-            config.timeout_secs = existing.config.timeout_secs;
-            config.page_size = existing.config.page_size;
-            config.exclude_config_context = existing.config.exclude_config_context;
-            config.api.clone_from(&existing.config.api);
-        }
         self.upsert_live_profile(original.as_deref(), &name, config);
 
         // Return to the list, selecting the saved profile.
@@ -2170,6 +2194,7 @@ impl App {
     /// removed (H1) so a phantom profile can't return on the next launch; if the
     /// renamed profile was the active one, `active_profile` is repointed to the new
     /// name so the file stays self-consistent.
+    #[allow(clippy::too_many_arguments)]
     fn persist_profile(
         path: &std::path::Path,
         original: Option<&str>,
@@ -2178,7 +2203,13 @@ impl App {
         token_env: Option<&str>,
         auth_scheme: AuthScheme,
         verify_tls: bool,
+        timeout_secs: Option<u64>,
+        page_size: Option<usize>,
+        exclude_config_context: bool,
+        api_vrf: BackendPreference,
+        api_route_target: BackendPreference,
     ) -> anyhow::Result<()> {
+        use crate::config::ApiSurface;
         let mut doc = crate::config::load_doc_or_new(path)?;
         // Rename: drop the old section and repoint active_profile if it named it.
         if let Some(orig) = original
@@ -2197,6 +2228,24 @@ impl App {
         crate::config::set_profile_token_env(&mut doc, name, token_env)?;
         crate::config::set_profile_auth_scheme(&mut doc, name, Some(auth_scheme))?;
         crate::config::set_profile_verify_tls(&mut doc, name, Some(verify_tls))?;
+        // Empty numeric fields clear the key (built-in default); a positive value
+        // writes it. `exclude_config_context` is written explicitly (like
+        // verify_tls), so the form value is authoritative. REST backends drop the
+        // `[api]` key (and an empty `[api]` table) to keep REST profiles clean.
+        crate::config::set_profile_timeout_secs(&mut doc, name, timeout_secs)?;
+        crate::config::set_profile_page_size(&mut doc, name, page_size)?;
+        crate::config::set_profile_exclude_config_context(
+            &mut doc,
+            name,
+            Some(exclude_config_context),
+        )?;
+        crate::config::set_profile_api_backend(&mut doc, name, ApiSurface::Vrf, api_vrf)?;
+        crate::config::set_profile_api_backend(
+            &mut doc,
+            name,
+            ApiSurface::RouteTarget,
+            api_route_target,
+        )?;
         // First profile in a fresh file becomes active.
         if doc.get("active_profile").is_none() {
             crate::config::set_active_profile(&mut doc, name);
@@ -2318,8 +2367,27 @@ impl App {
         let token_env = entry.config.token_env.clone();
         let auth_scheme = entry.config.auth_scheme.unwrap_or(AuthScheme::Auto);
         let verify_tls = entry.config.verify_tls.unwrap_or(true);
+        let timeout_secs = entry.config.timeout_secs;
+        let page_size = entry.config.page_size;
+        // Absent key ⇒ exclude (matches NetBox client's `unwrap_or(true)` default).
+        let exclude_config_context = entry.config.exclude_config_context.unwrap_or(true);
+        let api_vrf = entry.config.api_preference(crate::config::ApiSurface::Vrf);
+        let api_route_target = entry
+            .config
+            .api_preference(crate::config::ApiSurface::RouteTarget);
         if let Some(Modal::Config(modal)) = &mut self.modal {
-            modal.open_edit_form(name, &url, token_env.as_deref(), auth_scheme, verify_tls);
+            modal.open_edit_form(
+                name,
+                &url,
+                token_env.as_deref(),
+                auth_scheme,
+                verify_tls,
+                timeout_secs,
+                page_size,
+                exclude_config_context,
+                api_vrf,
+                api_route_target,
+            );
         }
     }
 
@@ -7342,6 +7410,110 @@ mod tests {
         let live = a.profiles.iter().find(|p| p.name == "beta").unwrap();
         assert_eq!(live.config.auth_scheme, Some(AuthScheme::Bearer));
         assert_eq!(live.config.verify_tls, Some(false));
+    }
+
+    #[test]
+    fn save_writes_the_new_profile_knobs_and_defaults_stay_clean() {
+        use crate::config::{ApiSurface, BackendPreference};
+        let (mut a, _dir, path) = app_with_config(&["alpha"]);
+        a.handle_event(press(KeyCode::Char('S'))); // open modal
+        a.handle_event(press(KeyCode::Char('a'))); // add form
+        type_form(&mut a, "lab"); // name
+        a.handle_event(press(KeyCode::Tab));
+        type_form(&mut a, "https://nb.lab"); // url
+        // Tab to timeout_secs (url→token_env→token→timeout_secs) and type a value.
+        for _ in 0..3 {
+            a.handle_event(press(KeyCode::Tab));
+        }
+        type_form(&mut a, "30"); // timeout_secs
+        a.handle_event(press(KeyCode::Tab));
+        type_form(&mut a, "250"); // page_size
+        // exclude defaults on → flip it OFF with Ctrl+E; route vrf through graphql.
+        a.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('e'),
+            KeyModifiers::CONTROL,
+        )));
+        a.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('b'),
+            KeyModifiers::CONTROL,
+        )));
+        a.handle_event(press(KeyCode::Enter)); // save
+
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            text.contains("[profiles.lab.api]"),
+            "api table written: {text}"
+        );
+        assert!(text.contains("vrf = \"graphql\""), "{text}");
+        // route_target stayed REST → no key for it.
+        assert!(
+            !text.contains("route_target"),
+            "REST surface stays clean: {text}"
+        );
+
+        let cfg = crate::config::load(&path).unwrap();
+        let lab = &cfg.profiles["lab"];
+        assert_eq!(lab.timeout_secs, Some(30));
+        assert_eq!(lab.page_size, Some(250));
+        assert_eq!(lab.exclude_config_context, Some(false));
+        assert_eq!(
+            lab.api_preference(ApiSurface::Vrf),
+            BackendPreference::Graphql
+        );
+        assert_eq!(
+            lab.api_preference(ApiSurface::RouteTarget),
+            BackendPreference::Rest
+        );
+
+        // Now edit it back to defaults: clear the numeric fields, flip exclude on,
+        // cycle vrf back to REST — the keys should drop and the [api] table vanish.
+        a.handle_event(press(KeyCode::Char('e'))); // edit the (selected) saved profile
+        // Tab to timeout_secs and clear it (Ctrl+U), same for page_size.
+        for _ in 0..4 {
+            a.handle_event(press(KeyCode::Tab));
+        }
+        a.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+        ))); // clear timeout_secs
+        a.handle_event(press(KeyCode::Tab));
+        a.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('u'),
+            KeyModifiers::CONTROL,
+        ))); // clear page_size
+        a.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('e'),
+            KeyModifiers::CONTROL,
+        ))); // exclude back on (default)
+        a.handle_event(AppEvent::Key(KeyEvent::new(
+            KeyCode::Char('b'),
+            KeyModifiers::CONTROL,
+        ))); // vrf back to REST
+        a.handle_event(press(KeyCode::Enter)); // save
+
+        let text2 = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !text2.contains("timeout_secs"),
+            "cleared timeout drops the key: {text2}"
+        );
+        assert!(
+            !text2.contains("page_size"),
+            "cleared page_size drops the key: {text2}"
+        );
+        assert!(
+            !text2.contains("[profiles.lab.api]"),
+            "REST-everywhere drops the api table: {text2}"
+        );
+        // exclude is written explicitly (like verify_tls), so it's present as true.
+        let cfg2 = crate::config::load(&path).unwrap();
+        let lab2 = &cfg2.profiles["lab"];
+        assert_eq!(lab2.timeout_secs, None);
+        assert_eq!(lab2.page_size, None);
+        assert_eq!(lab2.exclude_config_context, Some(true));
+        assert_eq!(
+            lab2.api_preference(ApiSurface::Vrf),
+            BackendPreference::Rest
+        );
     }
 
     #[test]
