@@ -1335,8 +1335,13 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             links = prefix_links(&p);
             let cidr = p.prefix.clone();
             let vrf_id = p.vrf.as_ref().map(|v| v.id);
-            let children = client.prefix_children(&cidr, vrf_id, SECTION_CAP).await?;
-            let ips = client.prefix_ips(&cidr, vrf_id, SECTION_CAP).await?;
+            // Children and contained IPs are independent; fetch them concurrently
+            // (as build_vrf_detail does) so prefix detail costs one round-trip for
+            // the header plus one for both child collections, not two sequential.
+            let (children, ips) = tokio::try_join!(
+                client.prefix_children(&cidr, vrf_id, SECTION_CAP),
+                client.prefix_ips(&cidr, vrf_id, SECTION_CAP),
+            )?;
             let (title, prefix_body, prefix_tabs) = prefix_detail_parts(p, children, ips);
             tabs = prefix_tabs;
             (title, prefix_body)
@@ -1546,8 +1551,13 @@ pub async fn load_detail_by_ref(
             links = prefix_links(&p);
             let cidr = p.prefix.clone();
             let vrf_id = p.vrf.as_ref().map(|v| v.id);
-            let children = client.prefix_children(&cidr, vrf_id, SECTION_CAP).await?;
-            let ips = client.prefix_ips(&cidr, vrf_id, SECTION_CAP).await?;
+            // Children and contained IPs are independent; fetch them concurrently
+            // (as build_vrf_detail does) so prefix detail costs one round-trip for
+            // the header plus one for both child collections, not two sequential.
+            let (children, ips) = tokio::try_join!(
+                client.prefix_children(&cidr, vrf_id, SECTION_CAP),
+                client.prefix_ips(&cidr, vrf_id, SECTION_CAP),
+            )?;
             let (title, prefix_body, prefix_tabs) = prefix_detail_parts(p, children, ips);
             tabs = prefix_tabs;
             (id, title, prefix_body)

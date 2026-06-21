@@ -244,17 +244,35 @@ Consolidated future scope:
     blocker, and it's load-bearing on the most-used tab.) VRF/RT worked because their data is flat strings
     with no value/label duality; the device detail is enum-label-heavy, so it doesn't fit. See
     [[nbox-graphql-shapes]].
-  - ☐ **Other relationship-heavy detail views** (once the TUI detail contract settles) — prefix (prefix +
-    children + contained IPs), VLAN (VLAN + prefixes + group/scope), tenant (tenant + devices/prefixes/IPs
-    summary). Read-only GraphQL alternatives to the REST fan-outs; only pursue where the fan-out is a real
-    latency cost AND the view has no value-only-enum label like device's interface type; don't maintain
-    both surfaces for a view indefinitely.
+  - ✗ **Prefix detail bundle — SKIPPED (not byte-identical, 2026-06-21).** Probed live 4.5.10:
+    `PrefixFilter` has **no `within`/`within_include`/any descendant lookup** — its only network filters are
+    `contains` (the *opposite*, supernet direction: `contains:"10.10.5.0/24"` → `["10.10.0.0/16"]`) and
+    exact `prefix`. The children tab is built with REST `?within=<cidr>`; GraphQL can't express that without
+    pulling the whole prefix table and filtering client-side (a scale regression, already rejected for the
+    dashboard). The IP half *would* reproduce byte-identically (`IPAddressFilter.parent` works, and the
+    `assigned_object` union `... on InterfaceType { name device { name } }` reshapes to REST's
+    `display`/`device.display` so the existing `assigned_label` is byte-identical) — but accelerating only
+    IPs yields **zero round-trip reduction**. Deeper: children/IP filters both need the prefix's cidr+vrf_id,
+    which only the header fetch provides, so even a GraphQL bundle is header(REST)+bundle = 2 round-trips —
+    identical to the pure-REST concurrency fix below. See [[nbox-graphql-shapes]].
+  - ☐ **Make prefix-detail children + IPs concurrent (pure-REST, byte-identical micro-win).** The prefix
+    detail currently fetches `prefix_children` then `prefix_ips` **sequentially** (two awaits in
+    `domain/detail.rs`'s `ObjectKind::Prefix` arm); `build_vrf_detail` already runs its two child fetches
+    with `tokio::try_join!`. Mirror that for prefix → header(REST) + concurrent children+IPs = 2 round-trips,
+    the same latency the (infeasible) GraphQL bundle targeted, with no new backend and trivially identical
+    output. This is the actual deliverable that the prefix accelerator was standing in for.
+  - ☐ **VLAN / tenant detail views** (once the TUI detail contract settles) — VLAN (VLAN + prefixes +
+    group/scope), tenant (tenant + devices/prefixes/IPs summary). Read-only GraphQL alternatives to the REST
+    fan-outs; only pursue where the fan-out is a real latency cost, the relations sit behind *exact* filters
+    (NetBox GraphQL has no hierarchy/`within` lookups — see the prefix skip), and the view has no
+    value-only-enum label like device's interface type. Don't maintain both surfaces for a view indefinitely.
   - ☑ **Route-target / routing-context views** _(PR #22)_ — route targets are a first-class object
     (lookup, search, open, journal, MCP); the detail's importing/exporting VRF relation graph is now a
     GraphQL accelerator surface (`[profiles.<name>.api] route_target = "graphql"`): one
     `route_target_list` query replaces the two REST `vrfs` list calls, identity stays REST, output is
-    byte-identical, with REST fallback. (The device detail bundle was evaluated next and **skipped** — see
-    above; the dashboard overview is the next accelerator instead.)
+    byte-identical, with REST fallback. **Track status (2026-06-21): exhausted.** VRF + route-target are the
+    only two accelerators; device, dashboard, and prefix were each probed live and skipped (see above). No
+    further accelerator surfaces are planned — the prefix latency win is a pure-REST concurrency fix.
 - ☑ **GraphQL backend cleanup.** Typed `GqlVrf{Prefix,Address}` + `VrfBundleResponse` structs replace
   the `from_value(json!{})` row reshape (`Default` on the `Prefix`/`IpAddress` wire models lets the
   conversion set only the VRF-relevant fields). All GraphQL — capabilities probe + VRF bundle + helpers
