@@ -2112,8 +2112,9 @@ mod contracts {
 
     /// `nbox_journal` → `JournalView`: a top-level `entries` array whose rows carry
     /// the flattened entry fields. `comments` is always present; `created`/`kind`/
-    /// `author` are skip-if-none (no `author` in this fixture), so the row key set
-    /// here is the common three.
+    /// `author` are skip-if-none. This fixture carries all four (the `created_by`
+    /// user resolves to the `author` label) so the FULL row key set is pinned —
+    /// catching a drop/rename of `author`, which a minimal fixture would miss.
     #[tokio::test]
     async fn journal_view_shape_is_pinned() {
         let mock = MockServer::start().await;
@@ -2129,7 +2130,9 @@ mod contracts {
                 "count": 1, "next": null, "previous": null,
                 "results": [{
                     "id": 5, "created": "2024-01-02",
-                    "kind": {"value": "info", "label": "Info"}, "comments": "rebooted"
+                    "kind": {"value": "info", "label": "Info"},
+                    "created_by": {"id": 1, "username": "neteng", "display": "neteng"},
+                    "comments": "rebooted"
                 }]
             })))
             .mount(&mock)
@@ -2146,7 +2149,10 @@ mod contracts {
         let value = serde_json::to_value(&view).expect("serialize view");
 
         assert_keys(&value, &["entries"]);
-        assert_keys(&value["entries"][0], &["created", "kind", "comments"]);
+        let entry = &value["entries"][0];
+        assert_keys(entry, &["created", "kind", "author", "comments"]);
+        // `author` is the resolved user label (display), not the raw user object.
+        assert_eq!(entry["author"], "neteng");
     }
 
     /// `nbox_list_tags` → `TagsView`: a top-level `tags` array of rows. `name`/
