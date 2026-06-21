@@ -95,6 +95,12 @@ Polish the read experience. No writes here.
   `ip_address` search kind, an in-app profile editor for the API/timeout/page-size/exclude knobs, config
   contract tests, `scripts/smoke.sh`, the Dependabot `rand` ignore, and ratatui 0.30.2. First release to
   use the auto-extracted CHANGELOG release notes. Shipped to crates.io / Homebrew tap / GHCR.
+- ☑ **Release `0.7.0`** — first-run UX (oriented empty home screen + a recoverable connect banner / "connected
+  to NetBox vX" cue instead of a hard exit), in-Settings connection editing (the Connection category:
+  page_size/timeout_secs/exclude_config_context + the `[api]` vrf/route_target backends, hot-applied via
+  reconnect), concurrent prefix-detail and scope+VRF fetches, deepened CSV/MCP contract tests, the
+  persist_profile/429-retry refactors, and dependency maintenance (sha2 0.11, rust-toolchain pinned to MSRV).
+  Shipped to crates.io / Homebrew tap / GHCR.
 
 ---
 
