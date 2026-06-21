@@ -448,11 +448,18 @@ A batch of proposed perf wins, each verified against the code. Net: one quick wi
   advances the spinner, status-TTL expiry, and the browse/preview debounce flush, so the flag must key on
   *state mutation* (and still mark dirty on spinner ticks, status changes, async results) — not on "no
   keypress," or it freezes the spinner / stalls TTL.
-- ☐ **HTTP/2 multiplexing — probe spike first (low priority).** reqwest's `http2` feature is **off** (the
-  `h2` crate in the lockfile is axum's MCP server, not the outbound client), so the client can't negotiate
-  h2 today. h2 *would* sidestep the gunicorn half-close (multiplexing is per-connection) — but only if the
-  operator runs **nginx with h2 on the listener**; gunicorn **sync** workers are HTTP/1.1-only. Spike: probe
-  whether real instances negotiate h2; only then weigh enabling the feature with a capability fallback.
+- ☐ **HTTP/2 multiplexing — probe DONE (2026-06-21), promising; implement+verify next.** reqwest's `http2`
+  feature is **off** (the `h2` in the lockfile is axum's MCP server, not the outbound client), so the client
+  can't negotiate h2 today — that's the one prerequisite. **Probe result:** the official `netboxcommunity/netbox`
+  image fronts the app with **nginx-unit, not gunicorn**, and unit **speaks HTTP/2** — `curl --http2-prior-knowledge`
+  against the demo returned `http_version=2` (cleartext h2c; a normal request stays h1.1 because ALPN needs
+  TLS). So over a real **https** instance, ALPN would negotiate h2 and all 17 fan-out requests could ride one
+  multiplexed connection — eliminating the connection churn AND sidestepping the half-close (one live
+  connection, concurrent streams; `pool_max_idle_per_host(0)` still prevents stale-idle reuse across bursts).
+  Caveats: needs the reqwest `http2` feature (+ musl/rustls ALPN build surface); **gunicorn sync** deployments
+  are HTTP/1.1-only and must **fall back cleanly** (no-op, safe). Next step is implementation + an h2-negotiation
+  capability check, not more probing. (NOTE: the demo being nginx-unit, not gunicorn, is a nuance vs
+  [[netbox-gunicorn-keepalive]] — the keep-alive fix targets gunicorn installs, which exist alongside unit ones.)
 - ✗ **Connection pooling `pool_max_idle_per_host(1)` — SKIP (dangerous).** Directly reverts the documented
   fix at `client.rs:60-69` and reintroduces the half-closed-socket stall (sync gunicorn FINs right after each
   response; a reused idle socket stalls to the 15s timeout). No client-side idle timeout reliably dodges a
