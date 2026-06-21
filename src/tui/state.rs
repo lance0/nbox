@@ -1788,6 +1788,10 @@ impl App {
                         page_size: p.config.page_size,
                         timeout_secs: p.config.timeout_secs,
                         exclude_config_context: p.config.exclude_config_context.unwrap_or(true),
+                        api_vrf: p.config.api_preference(crate::config::ApiSurface::Vrf),
+                        api_route_target: p
+                            .config
+                            .api_preference(crate::config::ApiSurface::RouteTarget),
                     });
             self.modal = Some(Modal::Config(Box::new(ConfigModal::new(
                 self.theme.name(),
@@ -1969,6 +1973,8 @@ impl App {
         let new_page_size = modal.settings.page_size();
         let new_timeout = modal.settings.timeout_secs();
         let new_exclude = modal.settings.exclude_config_context();
+        let new_api_vrf = modal.settings.api_vrf();
+        let new_api_route_target = modal.settings.api_route_target();
 
         let refresh_changed = new_refresh != self.refresh_secs;
 
@@ -2025,7 +2031,13 @@ impl App {
         // bakes timeout/page_size/exclude at construction — so a change is persisted
         // to that profile and hot-applied by reconnecting through the existing
         // switch path. Unchanged ⇒ no reconnect, just the plain "saved" confirmation.
-        match self.apply_connection_settings(new_page_size, new_timeout, new_exclude) {
+        match self.apply_connection_settings(
+            new_page_size,
+            new_timeout,
+            new_exclude,
+            new_api_vrf,
+            new_api_route_target,
+        ) {
             Some(reconnect) => commands.extend(reconnect),
             None => self.set_status("settings saved", Severity::Success),
         }
@@ -2033,36 +2045,40 @@ impl App {
     }
 
     /// Persist a change to the active profile's connection knobs (`page_size`,
-    /// `timeout_secs`, `exclude_config_context`) and reconnect so it takes effect
-    /// live. Returns `None` when nothing changed (the caller shows the plain "saved"
-    /// status); `Some(commands)` when a change was attempted — the reconnect
-    /// commands, or empty if the persist failed (this method sets the error status).
-    /// The profile's identity/auth/api fields are carried through unchanged.
+    /// `timeout_secs`, `exclude_config_context`, and the `[api]` `vrf`/`route_target`
+    /// backends) and reconnect so it takes effect live. Returns `None` when nothing
+    /// changed (the caller shows the plain "saved" status); `Some(commands)` when a
+    /// change was attempted — the reconnect commands, or empty if the persist failed
+    /// (this method sets the error status). The profile's identity/auth fields are
+    /// carried through unchanged.
     fn apply_connection_settings(
         &mut self,
         page_size: Option<usize>,
         timeout_secs: Option<u64>,
         exclude_config_context: bool,
+        api_vrf: BackendPreference,
+        api_route_target: BackendPreference,
     ) -> Option<Vec<AppCommand>> {
+        use crate::config::ApiSurface;
         let idx = self.profile_index;
         let entry = self.profiles.get(idx)?;
         let cfg = &entry.config;
         let changed = cfg.page_size != page_size
             || cfg.timeout_secs != timeout_secs
-            || cfg.exclude_config_context.unwrap_or(true) != exclude_config_context;
+            || cfg.exclude_config_context.unwrap_or(true) != exclude_config_context
+            || cfg.api_preference(ApiSurface::Vrf) != api_vrf
+            || cfg.api_preference(ApiSurface::RouteTarget) != api_route_target;
         if !changed {
             return None;
         }
 
-        // Snapshot the unchanged identity/auth/api fields for the format-preserving
+        // Snapshot the unchanged identity/auth fields for the format-preserving
         // write (no rename: original == name == the active profile).
         let name = entry.name.clone();
         let url = cfg.url.clone();
         let token_env = cfg.token_env.clone();
         let auth_scheme = cfg.auth_scheme.unwrap_or(AuthScheme::Auto);
         let verify_tls = cfg.verify_tls.unwrap_or(true);
-        let api_vrf = cfg.api_preference(crate::config::ApiSurface::Vrf);
-        let api_route_target = cfg.api_preference(crate::config::ApiSurface::RouteTarget);
 
         let Some(path) = self.config_path.clone() else {
             self.set_status(
@@ -2097,6 +2113,7 @@ impl App {
             entry.config.timeout_secs = timeout_secs;
             entry.config.page_size = page_size;
             entry.config.exclude_config_context = Some(exclude_config_context);
+            entry.config.api = build_api_config(api_vrf, api_route_target);
         }
         Some(self.switch_to_index(idx))
     }
@@ -8079,6 +8096,45 @@ mod tests {
             cmds.iter()
                 .any(|c| matches!(c, AppCommand::SwitchProfile { .. })),
             "a connection-knob change reconnects to hot-apply it"
+        );
+    }
+
+    #[test]
+    fn settings_save_api_backend_persists_to_profile_and_reconnects() {
+        use crate::config::{ApiSurface, BackendPreference};
+        let (mut a, _dir, path) = app_with_config(&["a"]);
+        open_settings(&mut a);
+        // Connection category; api vrf is the 4th field (page_size, timeout_secs,
+        // exclude_config_context, api vrf, api route_target).
+        a.handle_event(press(KeyCode::Down)); // → Behavior
+        a.handle_event(press(KeyCode::Down)); // → Connection
+        a.handle_event(press(KeyCode::Right)); // enter fields (page_size)
+        a.handle_event(press(KeyCode::Down)); // → timeout_secs
+        a.handle_event(press(KeyCode::Down)); // → exclude_config_context
+        a.handle_event(press(KeyCode::Down)); // → api vrf
+        a.handle_event(press(KeyCode::Char(' '))); // cycle rest → graphql
+        let cmds = a.handle_event(press(KeyCode::Enter)); // save
+
+        assert!(a.modal.is_none(), "save closes the modal");
+        // The [api] vrf backend persisted to the active profile and is reflected live.
+        let cfg = crate::config::load(&path).unwrap();
+        assert_eq!(
+            cfg.profiles
+                .get("a")
+                .unwrap()
+                .api_preference(ApiSurface::Vrf),
+            BackendPreference::Graphql
+        );
+        assert_eq!(
+            a.profiles[a.profile_index]
+                .config
+                .api_preference(ApiSurface::Vrf),
+            BackendPreference::Graphql
+        );
+        assert!(
+            cmds.iter()
+                .any(|c| matches!(c, AppCommand::SwitchProfile { .. })),
+            "an api-backend change reconnects to hot-apply it"
         );
     }
 
