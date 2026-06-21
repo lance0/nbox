@@ -771,6 +771,35 @@ async fn run_tui_onboarding(
     tui::app::run_on(terminal, &mut app, cfg.ui.refresh_secs).await
 }
 
+/// Decide a freshly-launched TUI's version string + startup status from the
+/// connect probe (`client.status()`). A reachable-but-too-old server is fatal
+/// (`Err`) — nothing the user can fix in-app. A connection/auth failure is
+/// recoverable (fix the profile via `S`, then reconnect), so it yields an empty
+/// version + an actionable Error banner instead of a hard exit. Success yields
+/// the version + a brief Success "connected" cue. Pure, so it's unit-testable.
+fn tui_startup_status(
+    probe: Result<crate::netbox::status::Status>,
+) -> Result<(String, String, crate::tui::theme::Severity)> {
+    use crate::netbox::status::{MIN_MAJOR, MIN_MINOR, meets_minimum};
+    use crate::tui::theme::Severity;
+    match probe {
+        Ok(status) => {
+            anyhow::ensure!(
+                meets_minimum(&status.netbox_version, MIN_MAJOR, MIN_MINOR),
+                "NetBox {} is unsupported; nbox requires {MIN_MAJOR}.{MIN_MINOR}+",
+                status.netbox_version
+            );
+            let msg = format!("connected to NetBox v{}", status.netbox_version);
+            Ok((status.netbox_version, msg, Severity::Success))
+        }
+        Err(e) => Ok((
+            String::new(),
+            format!("not connected — {e:#}. Press S to edit the profile or set NBOX_TOKEN."),
+            Severity::Error,
+        )),
+    }
+}
+
 /// Build a connected [`tui::state::App`] from a loaded config: resolve the active
 /// (or `--profile`) profile, build + probe the client (the 4.2 floor + version
 /// for the status line), and seed the session profiles + live UI settings. Shared
@@ -797,9 +826,13 @@ async fn build_tui_app(
     let client = NetBoxClient::new(profile, token)?;
 
     // Probe the instance on connect: confirms reachability + the 4.2 floor, and
-    // gives us the version for the status line. (CLI commands skip this to stay
-    // fast.)
-    let status = client.verify_compatible().await?;
+    // gives the version for the status line. (CLI commands skip this to stay
+    // fast.) A version below the floor is fatal — nothing the user can fix in-app
+    // — but a connection/auth failure launches the TUI anyway with a clear,
+    // recoverable banner so they can fix the profile (`S`) and reconnect without
+    // re-running the binary.
+    let (netbox_version, connect_status, connect_severity) =
+        tui_startup_status(client.status().await)?;
 
     // All configured profiles the running session can cycle between without
     // restarting, in config-file (TOML document) order — `profiles` is an
@@ -824,11 +857,16 @@ async fn build_tui_app(
         &theme_name,
         name,
         base_url,
-        status.netbox_version,
+        netbox_version,
         Some(path.to_path_buf()),
     )
     .with_last_browsed(cfg.ui.last_browsed.clone());
     app.set_profiles(profiles);
+    // Seed the startup status: a Success "connected to NetBox vX" cue (footer
+    // slot), or — when the probe couldn't reach/authenticate — an actionable
+    // Error banner. Onboarding's env-var guidance, set after this returns, takes
+    // precedence when it applies.
+    app.set_initial_status(connect_status, connect_severity);
     app.set_cache(crate::cache::Cache::from_settings(
         cache_partition,
         &cfg.cache,
@@ -1555,11 +1593,42 @@ fn not_found(noun: &str, value: &str) -> anyhow::Error {
 mod tests {
     use super::{
         Cli, CommandFactory, check_raw_method, error, first_subnet_of_length, init_logging,
-        no_tui_refusal, not_found, parse_object_ref, resolve_logging, run_man, wants_journal,
+        no_tui_refusal, not_found, parse_object_ref, resolve_logging, run_man, tui_startup_status,
+        wants_journal,
     };
     use crate::domain::detail::resolve_unique;
     use crate::netbox::models::ipam::AvailablePrefix;
     use std::path::PathBuf;
+
+    // --- TUI startup status (connect probe → version + banner) -------------
+
+    #[test]
+    fn tui_startup_status_branches_on_the_probe() {
+        use crate::tui::theme::Severity;
+
+        // Connected + compatible → version + a Success "connected" cue.
+        let ok: crate::netbox::status::Status =
+            serde_json::from_value(serde_json::json!({"netbox-version": "4.5.10"})).unwrap();
+        let (ver, msg, sev) = tui_startup_status(Ok(ok)).expect("compatible");
+        assert_eq!(ver, "4.5.10");
+        assert!(msg.contains("connected to NetBox v4.5.10"), "got: {msg}");
+        assert!(matches!(sev, Severity::Success));
+
+        // Reachable but below the 4.2 floor → fatal (Err), not an in-app banner.
+        let old: crate::netbox::status::Status =
+            serde_json::from_value(serde_json::json!({"netbox-version": "4.1.0"})).unwrap();
+        assert!(tui_startup_status(Ok(old)).is_err(), "old version is fatal");
+
+        // Connection/auth failure → recoverable: empty version + an actionable
+        // Error banner (the user fixes the profile via S, then reconnects).
+        let (ver, msg, sev) =
+            tui_startup_status(Err(anyhow::anyhow!("authentication failed (HTTP 401)")))
+                .expect("recoverable");
+        assert!(ver.is_empty());
+        assert!(msg.contains("authentication failed"), "got: {msg}");
+        assert!(msg.contains("Press S to edit the profile"), "got: {msg}");
+        assert!(matches!(sev, Severity::Error));
+    }
 
     // --- logging resolution (pure precedence) ------------------------------
 
