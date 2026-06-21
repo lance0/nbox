@@ -198,6 +198,30 @@ pub fn persist(form: &ProfileForm, path: &Path) -> Result<PersistOutcome> {
     crate::config::set_profile_token_env(&mut doc, &name, token_env.as_deref())?;
     crate::config::set_profile_auth_scheme(&mut doc, &name, Some(auth_scheme))?;
     crate::config::set_profile_verify_tls(&mut doc, &name, Some(verify_tls))?;
+    // The wizard renders the shared add-form, so its numeric fields (timeout_secs /
+    // page_size) accept input — persist them too, the same way the editor does, so a
+    // value typed during onboarding isn't silently dropped. The Ctrl-toggled knobs
+    // (exclude / api) aren't reachable in the wizard, so they write their defaults
+    // (exclude = the runtime default; REST ⇒ no `[api]` table).
+    crate::config::set_profile_timeout_secs(&mut doc, &name, form.timeout_secs())?;
+    crate::config::set_profile_page_size(&mut doc, &name, form.page_size())?;
+    crate::config::set_profile_exclude_config_context(
+        &mut doc,
+        &name,
+        Some(form.exclude_config_context),
+    )?;
+    crate::config::set_profile_api_backend(
+        &mut doc,
+        &name,
+        crate::config::ApiSurface::Vrf,
+        form.api_vrf,
+    )?;
+    crate::config::set_profile_api_backend(
+        &mut doc,
+        &name,
+        crate::config::ApiSurface::RouteTarget,
+        form.api_route_target,
+    )?;
     crate::config::set_active_profile(&mut doc, &name);
     crate::config::write_doc(path, &doc)?;
 
@@ -550,6 +574,34 @@ mod tests {
         assert!(!text.contains("token ="), "raw token never written to TOML");
         // A freshly written config is no longer first-run.
         assert!(!crate::config::needs_onboarding(&path, None));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn persist_writes_typed_timeout_and_page_size() {
+        // Regression: the wizard renders the shared add-form, so the timeout_secs /
+        // page_size fields are visible + editable — a value typed there must persist,
+        // not be silently dropped (it was, before the persist() setters were added).
+        let path = temp_config("tuning");
+        let _ = std::fs::remove_file(&path);
+        let mut w = OnboardingWizard::new();
+        for (idx, val) in [
+            (field::URL, "https://nb.example"),
+            (field::TIMEOUT_SECS, "30"),
+            (field::PAGE_SIZE, "250"),
+        ] {
+            w.form
+                .form_input_mut()
+                .input_mut(idx)
+                .unwrap()
+                .set_value(val);
+        }
+        persist(&w.form, &path).unwrap();
+
+        let cfg: Config = toml::from_str(&std::fs::read_to_string(&path).unwrap()).unwrap();
+        let prof = &cfg.profiles["default"];
+        assert_eq!(prof.timeout_secs, Some(30), "typed timeout persisted");
+        assert_eq!(prof.page_size, Some(250), "typed page_size persisted");
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 
