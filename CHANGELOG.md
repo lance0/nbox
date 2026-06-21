@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **Drill into a prefix's children and contained IPs from the TUI.** The prefix
+  detail's child-prefix and IP-address lists are now navigable tabs (`c` children,
+  `a` addresses): select a row and press Enter to open that prefix or IP, with
+  `b`/`Esc` walking back through the drill path. The `nbox prefix` CLI/JSON output
+  is unchanged.
+
 ## [0.5.0] - 2026-06-20
 
 ### Added
