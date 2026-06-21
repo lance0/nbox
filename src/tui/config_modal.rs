@@ -4,6 +4,11 @@
 //! The Profiles section lists the configured profiles (active marked) with add /
 //! edit / select / delete actions, and an add/edit [`FormInput`] form whose token
 //! field is masked (never written to TOML; stored in the OS keyring on save). The
+//! form also carries the profile knobs that used to need hand-editing config.toml:
+//! `timeout_secs` / `page_size` (numeric text fields), `exclude_config_context`
+//! (Ctrl+E), and the per-surface API backends `vrf` (Ctrl+B) / `route_target`
+//! (Ctrl+R), each rest ↔ graphql. The `search` backend and `confirm_writes` are
+//! deliberately excluded — both would be no-op toggles here. The
 //! Settings section is a small form over the *real* `[ui]` settings — theme (a
 //! cycle), `refresh_secs` (numeric), and `open_browser_command` (text); the no-op
 //! `confirm_writes` knob is deliberately excluded.
@@ -16,6 +21,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
+use crate::config::BackendPreference;
 use crate::netbox::auth::AuthScheme;
 use crate::tui::cheese::{FormInput, TextInput};
 use crate::tui::theme::Theme;
@@ -35,6 +41,8 @@ pub mod field {
     pub const URL: usize = 1;
     pub const TOKEN_ENV: usize = 2;
     pub const TOKEN: usize = 3;
+    pub const TIMEOUT_SECS: usize = 4;
+    pub const PAGE_SIZE: usize = 5;
 }
 
 /// What the profile-save path should do with the OS-keyring token, derived from
@@ -76,16 +84,37 @@ pub enum TestState {
     Failed(String),
 }
 
-/// The add/edit profile form: the masked-token-aware text fields plus the two
-/// non-text controls (auth-scheme cycle, verify-tls toggle), the edit target (if
-/// editing), and the latest test-connect state.
+/// Cycle a per-surface backend preference: rest → graphql → rest. Only the two
+/// values exist, so this is a flip; written as a cycle to mirror
+/// [`ProfileForm::cycle_auth_scheme`] (and to stay correct if a third backend is
+/// ever added).
+fn cycle_backend(pref: BackendPreference) -> BackendPreference {
+    match pref {
+        BackendPreference::Rest => BackendPreference::Graphql,
+        BackendPreference::Graphql => BackendPreference::Rest,
+    }
+}
+
+/// The add/edit profile form: the masked-token-aware text fields plus the
+/// non-text controls (auth-scheme cycle, verify-tls toggle, exclude-config-context
+/// toggle, two per-surface API backend cycles), the edit target (if editing), and
+/// the latest test-connect state.
 pub struct ProfileForm {
-    /// name, url, token_env, token(masked) — see [`field`].
+    /// name, url, token_env, token(masked), timeout_secs, page_size — see [`field`].
     pub inputs: FormInput,
     /// Cycled with the dedicated control key (auto → bearer → token → auto).
     pub auth_scheme: AuthScheme,
     /// Toggled with the dedicated control key.
     pub verify_tls: bool,
+    /// `exclude_config_context` — toggled with `Ctrl+E`. `true` (the default, both
+    /// here and at runtime when the key is absent) drops the rendered, expensive
+    /// config-context field from reads; `false` includes it. Always written
+    /// explicitly on save (like `verify_tls`), so the form is the source of truth.
+    pub exclude_config_context: bool,
+    /// `[profiles.<name>.api].vrf` backend — cycled with `Ctrl+B` (rest → graphql).
+    pub api_vrf: BackendPreference,
+    /// `[profiles.<name>.api].route_target` backend — cycled with `Ctrl+R`.
+    pub api_route_target: BackendPreference,
     /// `Some(original_name)` when editing an existing profile (so a rename can be
     /// detected and the old keyring entry migrated); `None` when adding.
     pub editing: Option<String>,
@@ -118,11 +147,22 @@ impl ProfileForm {
                 "token".to_string(),
                 TextInput::masked("paste a token to store in the keyring (optional)"),
             ),
+            (
+                "timeout_secs".to_string(),
+                TextInput::new("seconds (empty = 15 default)"),
+            ),
+            (
+                "page_size".to_string(),
+                TextInput::new("rows per page (empty = default)"),
+            ),
         ]);
         Self {
             inputs,
             auth_scheme: AuthScheme::Auto,
             verify_tls: true,
+            exclude_config_context: true,
+            api_vrf: BackendPreference::Rest,
+            api_route_target: BackendPreference::Rest,
             editing: None,
             test: TestState::Idle,
             message: None,
@@ -133,12 +173,18 @@ impl ProfileForm {
     /// An edit form prefilled from an existing profile's metadata. The token
     /// field starts empty — the stored secret is never read back into the UI;
     /// leaving it blank keeps the existing keyring entry untouched.
+    #[allow(clippy::too_many_arguments)]
     pub fn edit(
         name: &str,
         url: &str,
         token_env: Option<&str>,
         auth_scheme: AuthScheme,
         verify_tls: bool,
+        timeout_secs: Option<u64>,
+        page_size: Option<usize>,
+        exclude_config_context: bool,
+        api_vrf: BackendPreference,
+        api_route_target: BackendPreference,
     ) -> Self {
         let mut form = Self::add();
         form.inputs.input_mut(field::NAME).unwrap().set_value(name);
@@ -149,8 +195,23 @@ impl ProfileForm {
                 .unwrap()
                 .set_value(env);
         }
+        if let Some(secs) = timeout_secs {
+            form.inputs
+                .input_mut(field::TIMEOUT_SECS)
+                .unwrap()
+                .set_value(secs.to_string());
+        }
+        if let Some(size) = page_size {
+            form.inputs
+                .input_mut(field::PAGE_SIZE)
+                .unwrap()
+                .set_value(size.to_string());
+        }
         form.auth_scheme = auth_scheme;
         form.verify_tls = verify_tls;
+        form.exclude_config_context = exclude_config_context;
+        form.api_vrf = api_vrf;
+        form.api_route_target = api_route_target;
         form.editing = Some(name.to_string());
         form
     }
@@ -196,6 +257,28 @@ impl ProfileForm {
             .trim()
             .to_string();
         if v.is_empty() { None } else { Some(v) }
+    }
+
+    /// The trimmed `timeout_secs` field parsed to an optional interval: empty ⇒
+    /// `None` (use the built-in default); non-numeric or `0` ⇒ `None` too (rejected
+    /// by [`validate`](Self::validate) on save).
+    pub fn timeout_secs(&self) -> Option<u64> {
+        let t = self.inputs.value(field::TIMEOUT_SECS).unwrap_or("").trim();
+        if t.is_empty() {
+            return None;
+        }
+        t.parse::<u64>().ok().filter(|s| *s > 0)
+    }
+
+    /// The trimmed `page_size` field parsed to an optional count: empty ⇒ `None`
+    /// (use the built-in default); non-numeric or `0` ⇒ `None` too (rejected on
+    /// save by [`validate`](Self::validate)).
+    pub fn page_size(&self) -> Option<usize> {
+        let t = self.inputs.value(field::PAGE_SIZE).unwrap_or("").trim();
+        if t.is_empty() {
+            return None;
+        }
+        t.parse::<usize>().ok().filter(|s| *s > 0)
     }
 
     /// What the save path should do with the keyring token, from the form state:
@@ -250,6 +333,24 @@ impl ProfileForm {
         self.invalidate_test();
     }
 
+    /// Flip the `exclude_config_context` toggle (`Ctrl+E`).
+    pub fn toggle_exclude_config_context(&mut self) {
+        self.exclude_config_context = !self.exclude_config_context;
+        self.invalidate_test();
+    }
+
+    /// Advance the VRF API backend: rest → graphql → rest (`Ctrl+B`).
+    pub fn cycle_api_vrf(&mut self) {
+        self.api_vrf = cycle_backend(self.api_vrf);
+        self.invalidate_test();
+    }
+
+    /// Advance the route-target API backend: rest → graphql → rest (`Ctrl+R`).
+    pub fn cycle_api_route_target(&mut self) {
+        self.api_route_target = cycle_backend(self.api_route_target);
+        self.invalidate_test();
+    }
+
     /// Public wrapper for [`Self::invalidate_test`], for the onboarding wizard
     /// (which routes edits through `FormInput` directly and must invalidate a
     /// prior test result the same way the editor form does).
@@ -279,6 +380,16 @@ impl ProfileForm {
         }
         if !(url.starts_with("http://") || url.starts_with("https://")) {
             return Err("url must start with http:// or https://".to_string());
+        }
+        // The two numeric fields, when non-empty, must be positive whole numbers
+        // (empty = the built-in default). Mirrors the Settings `refresh_secs` style.
+        let timeout = self.inputs.value(field::TIMEOUT_SECS).unwrap_or("").trim();
+        if !timeout.is_empty() && !timeout.parse::<u64>().is_ok_and(|s| s > 0) {
+            return Err("timeout_secs must be a positive whole number of seconds".to_string());
+        }
+        let page = self.inputs.value(field::PAGE_SIZE).unwrap_or("").trim();
+        if !page.is_empty() && !page.parse::<usize>().is_ok_and(|s| s > 0) {
+            return Err("page_size must be a positive whole number".to_string());
         }
         Ok(())
     }
@@ -904,6 +1015,21 @@ impl ConfigModal {
                 form.toggle_verify_tls();
                 ModalOutcome::None
             }
+            // Ctrl+E toggles exclude_config_context; Ctrl+B/Ctrl+R cycle the VRF /
+            // route-target API backends (rest ↔ graphql). Ctrl-prefixed so the bare
+            // letters keep flowing into the focused text field.
+            KeyCode::Char('e') if ctrl => {
+                form.toggle_exclude_config_context();
+                ModalOutcome::None
+            }
+            KeyCode::Char('b') if ctrl => {
+                form.cycle_api_vrf();
+                ModalOutcome::None
+            }
+            KeyCode::Char('r') if ctrl => {
+                form.cycle_api_route_target();
+                ModalOutcome::None
+            }
             // Ctrl+T tests the connection; Enter saves; Ctrl+G saves + uses it.
             KeyCode::Char('t') if ctrl => match form.validate() {
                 Ok(()) => {
@@ -983,6 +1109,7 @@ impl ConfigModal {
 
     /// Open the edit form for `name`, prefilled from its metadata. Called by the
     /// app (which owns the [`ProfileConfig`]) in response to the edit request.
+    #[allow(clippy::too_many_arguments)]
     pub fn open_edit_form(
         &mut self,
         name: &str,
@@ -990,6 +1117,11 @@ impl ConfigModal {
         token_env: Option<&str>,
         auth_scheme: AuthScheme,
         verify_tls: bool,
+        timeout_secs: Option<u64>,
+        page_size: Option<usize>,
+        exclude_config_context: bool,
+        api_vrf: BackendPreference,
+        api_route_target: BackendPreference,
     ) {
         self.profiles.mode = ProfilesMode::Form(ProfileForm::edit(
             name,
@@ -997,6 +1129,11 @@ impl ConfigModal {
             token_env,
             auth_scheme,
             verify_tls,
+            timeout_secs,
+            page_size,
+            exclude_config_context,
+            api_vrf,
+            api_route_target,
         ));
     }
 
@@ -1039,6 +1176,30 @@ mod tests {
         for c in s.chars() {
             m.handle_key(key(KeyCode::Char(c)), &[], "");
         }
+    }
+
+    /// Open the edit form with the new profile knobs at their defaults — most edit
+    /// tests only care about name/url/token_env/auth/tls.
+    fn open_edit(
+        m: &mut ConfigModal,
+        name: &str,
+        url: &str,
+        token_env: Option<&str>,
+        auth_scheme: AuthScheme,
+        verify_tls: bool,
+    ) {
+        m.open_edit_form(
+            name,
+            url,
+            token_env,
+            auth_scheme,
+            verify_tls,
+            None,
+            None,
+            true,
+            BackendPreference::Rest,
+            BackendPreference::Rest,
+        );
     }
 
     #[test]
@@ -1186,7 +1347,7 @@ mod tests {
     fn token_action_models_set_clear_and_keep() {
         // Edit form: token blank, no clear intent ⇒ Keep.
         let mut m = ConfigModal::default();
-        m.open_edit_form("work", "https://w", None, AuthScheme::Auto, true);
+        open_edit(&mut m, "work", "https://w", None, AuthScheme::Auto, true);
         assert_eq!(m.form().unwrap().token_action(), TokenAction::Keep);
         // Ctrl+X toggles the clear intent ⇒ Clear.
         m.handle_key(ctrl('x'), &[], "");
@@ -1240,9 +1401,119 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_e_toggles_exclude_and_ctrl_b_ctrl_r_cycle_the_api_backends() {
+        let mut m = ConfigModal::default();
+        m.handle_key(key(KeyCode::Char('a')), &[], "");
+        // Defaults: exclude on, both backends REST.
+        assert!(m.form().unwrap().exclude_config_context);
+        assert_eq!(m.form().unwrap().api_vrf, BackendPreference::Rest);
+        assert_eq!(m.form().unwrap().api_route_target, BackendPreference::Rest);
+        // Ctrl+E flips exclude off (and back).
+        m.handle_key(ctrl('e'), &[], "");
+        assert!(!m.form().unwrap().exclude_config_context);
+        m.handle_key(ctrl('e'), &[], "");
+        assert!(m.form().unwrap().exclude_config_context);
+        // Ctrl+B cycles vrf rest → graphql → rest.
+        m.handle_key(ctrl('b'), &[], "");
+        assert_eq!(m.form().unwrap().api_vrf, BackendPreference::Graphql);
+        m.handle_key(ctrl('b'), &[], "");
+        assert_eq!(m.form().unwrap().api_vrf, BackendPreference::Rest);
+        // Ctrl+R cycles route_target independently.
+        m.handle_key(ctrl('r'), &[], "");
+        assert_eq!(
+            m.form().unwrap().api_route_target,
+            BackendPreference::Graphql
+        );
+        assert_eq!(
+            m.form().unwrap().api_vrf,
+            BackendPreference::Rest,
+            "vrf untouched"
+        );
+    }
+
+    #[test]
+    fn the_new_controls_invalidate_a_prior_test_result() {
+        // Each non-text control must clear a stale OK (mirrors auth/tls).
+        for k in [ctrl('e'), ctrl('b'), ctrl('r')] {
+            let mut m = ConfigModal::default();
+            m.handle_key(key(KeyCode::Char('a')), &[], "");
+            if let Some(f) = m.form_mut() {
+                f.test = TestState::Ok("4.2.0".to_string());
+            }
+            m.handle_key(k, &[], "");
+            assert_eq!(m.form().unwrap().test, TestState::Idle);
+        }
+    }
+
+    #[test]
+    fn form_validate_rejects_non_numeric_timeout_and_page_size() {
+        // A non-numeric timeout_secs blocks save with a clear message.
+        let mut m = ConfigModal::default();
+        m.handle_key(key(KeyCode::Char('a')), &[], "");
+        type_into(&mut m, "lab");
+        m.handle_key(key(KeyCode::Tab), &[], ""); // → url
+        type_into(&mut m, "https://nb.lab");
+        // Tab to timeout_secs (NAME→URL→TOKEN_ENV→TOKEN→TIMEOUT_SECS).
+        for _ in field::URL..field::TIMEOUT_SECS {
+            m.handle_key(key(KeyCode::Tab), &[], "");
+        }
+        type_into(&mut m, "soon");
+        let out = m.handle_key(key(KeyCode::Enter), &[], "");
+        assert_eq!(out, ModalOutcome::None, "non-numeric timeout blocks save");
+        assert!(
+            m.form()
+                .unwrap()
+                .message
+                .as_deref()
+                .unwrap()
+                .contains("timeout_secs")
+        );
+
+        // A non-numeric page_size is likewise rejected.
+        let mut m = ConfigModal::default();
+        m.handle_key(key(KeyCode::Char('a')), &[], "");
+        type_into(&mut m, "lab");
+        m.handle_key(key(KeyCode::Tab), &[], "");
+        type_into(&mut m, "https://nb.lab");
+        for _ in field::URL..field::PAGE_SIZE {
+            m.handle_key(key(KeyCode::Tab), &[], "");
+        }
+        type_into(&mut m, "lots");
+        let out = m.handle_key(key(KeyCode::Enter), &[], "");
+        assert_eq!(out, ModalOutcome::None, "non-numeric page_size blocks save");
+        assert!(
+            m.form()
+                .unwrap()
+                .message
+                .as_deref()
+                .unwrap()
+                .contains("page_size")
+        );
+    }
+
+    #[test]
+    fn form_numeric_fields_parse_and_empty_is_none() {
+        let mut m = ConfigModal::default();
+        m.handle_key(key(KeyCode::Char('a')), &[], "");
+        // Empty fields read back as None (use the built-in default).
+        assert_eq!(m.form().unwrap().timeout_secs(), None);
+        assert_eq!(m.form().unwrap().page_size(), None);
+        // Type valid digits into each.
+        for _ in field::NAME..field::TIMEOUT_SECS {
+            m.handle_key(key(KeyCode::Tab), &[], "");
+        }
+        type_into(&mut m, "30");
+        m.handle_key(key(KeyCode::Tab), &[], ""); // → page_size
+        type_into(&mut m, "250");
+        assert_eq!(m.form().unwrap().timeout_secs(), Some(30));
+        assert_eq!(m.form().unwrap().page_size(), Some(250));
+    }
+
+    #[test]
     fn editing_form_keeps_token_blank_and_records_original_name() {
         let mut m = ConfigModal::default();
-        m.open_edit_form(
+        open_edit(
+            &mut m,
             "work",
             "https://w",
             Some("W_TOKEN"),
@@ -1258,6 +1529,35 @@ mod tests {
         assert_eq!(f.editing.as_deref(), Some("work"));
         // The token field starts empty — the stored secret is never read back.
         assert!(f.token().is_none());
+    }
+
+    #[test]
+    fn editing_form_prefills_the_new_profile_knobs() {
+        // The new knobs (timeout/page_size/exclude/api backends) prefill from the
+        // ProfileConfig the app passes in.
+        let mut m = ConfigModal::default();
+        m.open_edit_form(
+            "work",
+            "https://w",
+            None,
+            AuthScheme::Auto,
+            true,
+            Some(30),
+            Some(250),
+            false,
+            BackendPreference::Graphql,
+            BackendPreference::Rest,
+        );
+        let f = m.form().unwrap();
+        assert_eq!(f.timeout_secs(), Some(30));
+        assert_eq!(f.page_size(), Some(250));
+        assert!(!f.exclude_config_context, "prefilled from the config value");
+        assert_eq!(f.api_vrf, BackendPreference::Graphql);
+        assert_eq!(f.api_route_target, BackendPreference::Rest);
+        // The numeric fields render their seeded values back as digits.
+        let lines = f.inputs.rendered_lines();
+        assert_eq!(lines[field::TIMEOUT_SECS].1, "30");
+        assert_eq!(lines[field::PAGE_SIZE].1, "250");
     }
 
     #[test]
@@ -1300,12 +1600,12 @@ mod tests {
         );
         // Editing 'work' and saving under its own name is allowed.
         let mut m2 = ConfigModal::default();
-        m2.open_edit_form("work", "https://w", None, AuthScheme::Auto, true);
+        open_edit(&mut m2, "work", "https://w", None, AuthScheme::Auto, true);
         let out = m2.handle_key(key(KeyCode::Enter), &names, "work");
         assert_eq!(out, ModalOutcome::Save { use_it: false });
         // …but renaming 'work' to the *other* existing name 'lab' is rejected.
         let mut m3 = ConfigModal::default();
-        m3.open_edit_form("work", "https://w", None, AuthScheme::Auto, true);
+        open_edit(&mut m3, "work", "https://w", None, AuthScheme::Auto, true);
         // Clear the name field and retype 'lab'.
         m3.handle_key(ctrl('u'), &names, "work");
         type_into(&mut m3, "lab");

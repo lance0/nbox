@@ -8,6 +8,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Edit more profile knobs from the in-app Config modal.** The profile add/edit
+  form now sets the settings that used to need hand-editing `config.toml`:
+  `timeout_secs` and `page_size` (numeric fields; empty = default),
+  `exclude_config_context` (Ctrl+E), and the per-surface API backends
+  `[profiles.<name>.api] vrf` (Ctrl+B) / `route_target` (Ctrl+R), each cycling
+  `rest`/`graphql`. REST backends and default/empty values leave the file clean
+  (no `[api]` table, no redundant keys), and writes stay format-preserving. The
+  API token is still never written to `config.toml`.
 - **Drill into a prefix's children and contained IPs from the TUI.** The prefix
   detail's child-prefix and IP-address lists are now navigable tabs (`c` children,
   `a` addresses): select a row and press Enter to open that prefix or IP, with

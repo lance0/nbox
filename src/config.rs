@@ -614,6 +614,96 @@ pub fn set_profile_verify_tls(
     Ok(())
 }
 
+/// Set (or clear) `profiles.<name>.timeout_secs` in a format-preserving document.
+/// `None` removes the key (falls back to the built-in default). Mirrors
+/// [`set_profile_verify_tls`]'s pattern; the in-app editor writes an empty field
+/// as `None` so a default-timeout profile stays clean.
+pub fn set_profile_timeout_secs(
+    doc: &mut DocumentMut,
+    name: &str,
+    timeout_secs: Option<u64>,
+) -> Result<()> {
+    let prof = profile_table_mut(doc, name)?;
+    match timeout_secs {
+        // toml stores integers as i64; clamp the (tiny) interval into range.
+        Some(s) => prof["timeout_secs"] = value(i64::try_from(s).unwrap_or(i64::MAX)),
+        None => {
+            prof.remove("timeout_secs");
+        }
+    }
+    Ok(())
+}
+
+/// Set (or clear) `profiles.<name>.page_size` in a format-preserving document.
+/// `None` removes the key (falls back to the built-in default).
+pub fn set_profile_page_size(
+    doc: &mut DocumentMut,
+    name: &str,
+    page_size: Option<usize>,
+) -> Result<()> {
+    let prof = profile_table_mut(doc, name)?;
+    match page_size {
+        Some(s) => prof["page_size"] = value(i64::try_from(s).unwrap_or(i64::MAX)),
+        None => {
+            prof.remove("page_size");
+        }
+    }
+    Ok(())
+}
+
+/// Set (or clear) `profiles.<name>.exclude_config_context` in a format-preserving
+/// document. `None` removes the key (falls back to the built-in default).
+pub fn set_profile_exclude_config_context(
+    doc: &mut DocumentMut,
+    name: &str,
+    exclude: Option<bool>,
+) -> Result<()> {
+    let prof = profile_table_mut(doc, name)?;
+    match exclude {
+        Some(v) => prof["exclude_config_context"] = value(v),
+        None => {
+            prof.remove("exclude_config_context");
+        }
+    }
+    Ok(())
+}
+
+/// Set `profiles.<name>.api.<surface>` in a format-preserving document. REST is
+/// the implicit default, so a `Rest` preference REMOVES the key (and the
+/// `[profiles.<name>.api]` table if it becomes empty) to keep REST profiles
+/// clean; only `Graphql` is written out. The `[api]` sub-table and its parent
+/// profile are created on demand. Comments and other keys/surfaces survive.
+pub fn set_profile_api_backend(
+    doc: &mut DocumentMut,
+    name: &str,
+    surface: ApiSurface,
+    pref: BackendPreference,
+) -> Result<()> {
+    let profile = profile_table_mut(doc, name)?;
+    let key = surface.key();
+    match pref {
+        BackendPreference::Graphql => {
+            let api = profile
+                .entry("api")
+                .or_insert_with(|| Item::Table(Table::new()))
+                .as_table_mut()
+                .with_context(|| format!("`profiles.{name}.api` is not a table"))?;
+            api[key] = value(pref.as_str());
+        }
+        // REST is the default: drop the key, and the whole `[api]` table once it
+        // holds nothing, so a REST-everywhere profile carries no `[api]` section.
+        BackendPreference::Rest => {
+            if let Some(api) = profile.get_mut("api").and_then(Item::as_table_mut) {
+                api.remove(key);
+                if api.is_empty() {
+                    profile.remove("api");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Remove `profiles.<name>` from a format-preserving document. Returns
 /// `Ok(false)` when there was no such profile (idempotent), `Ok(true)` when one
 /// was removed. Comments and other keys are preserved.
@@ -1912,6 +2002,138 @@ url = \"https://a\"
         assert_eq!(lab2.auth_scheme, None);
         assert_eq!(lab2.verify_tls, None);
         assert_eq!(lab2.token_env, None);
+    }
+
+    #[test]
+    fn profile_numeric_and_bool_setters_round_trip_and_clear() {
+        // A realistic file: a comment and a sibling key on the same profile, so the
+        // setters must touch only their own key.
+        let original = "\
+# keep me
+[profiles.lab]
+url = \"https://nb.lab\"  # keep inline
+token_env = \"LAB_TOKEN\"
+";
+        let mut doc = original.parse::<DocumentMut>().unwrap();
+        set_profile_timeout_secs(&mut doc, "lab", Some(30)).unwrap();
+        set_profile_page_size(&mut doc, "lab", Some(250)).unwrap();
+        set_profile_exclude_config_context(&mut doc, "lab", Some(true)).unwrap();
+
+        let out = doc.to_string();
+        assert!(out.contains("# keep me"), "top comment preserved: {out}");
+        assert!(out.contains("# keep inline"), "inline comment preserved");
+        assert!(
+            out.contains("token_env = \"LAB_TOKEN\""),
+            "sibling key kept"
+        );
+
+        let cfg: Config = toml::from_str(&out).unwrap();
+        let lab = &cfg.profiles["lab"];
+        assert_eq!(lab.timeout_secs, Some(30));
+        assert_eq!(lab.page_size, Some(250));
+        assert_eq!(lab.exclude_config_context, Some(true));
+
+        // Clearing each (None) drops the key back to the implicit default.
+        set_profile_timeout_secs(&mut doc, "lab", None).unwrap();
+        set_profile_page_size(&mut doc, "lab", None).unwrap();
+        set_profile_exclude_config_context(&mut doc, "lab", None).unwrap();
+        let out = doc.to_string();
+        assert!(!out.contains("timeout_secs"), "None clears timeout_secs");
+        assert!(!out.contains("page_size"), "None clears page_size");
+        assert!(
+            !out.contains("exclude_config_context"),
+            "None clears exclude_config_context"
+        );
+        // The sibling key and comments are still there.
+        assert!(out.contains("token_env = \"LAB_TOKEN\""));
+        let cfg2: Config = toml::from_str(&out).unwrap();
+        let lab2 = &cfg2.profiles["lab"];
+        assert_eq!(lab2.timeout_secs, None);
+        assert_eq!(lab2.page_size, None);
+        assert_eq!(lab2.exclude_config_context, None);
+    }
+
+    #[test]
+    fn set_profile_api_backend_writes_graphql_and_clears_to_rest() {
+        let mut doc = DocumentMut::new();
+        upsert_profile(&mut doc, "lab", "https://nb.lab", None).unwrap();
+        // GraphQL on two surfaces writes the `[api]` table with both keys.
+        set_profile_api_backend(&mut doc, "lab", ApiSurface::Vrf, BackendPreference::Graphql)
+            .unwrap();
+        set_profile_api_backend(
+            &mut doc,
+            "lab",
+            ApiSurface::RouteTarget,
+            BackendPreference::Graphql,
+        )
+        .unwrap();
+        let out = doc.to_string();
+        assert!(
+            out.contains("[profiles.lab.api]"),
+            "api table written: {out}"
+        );
+        assert!(out.contains("vrf = \"graphql\""));
+        assert!(out.contains("route_target = \"graphql\""));
+        let cfg: Config = toml::from_str(&out).unwrap();
+        assert_eq!(
+            cfg.profiles["lab"].api_preference(ApiSurface::Vrf),
+            BackendPreference::Graphql
+        );
+        assert_eq!(
+            cfg.profiles["lab"].api_preference(ApiSurface::RouteTarget),
+            BackendPreference::Graphql
+        );
+
+        // Clearing one surface back to REST removes just that key; the table stays
+        // for the other GraphQL surface.
+        set_profile_api_backend(&mut doc, "lab", ApiSurface::Vrf, BackendPreference::Rest).unwrap();
+        let out = doc.to_string();
+        assert!(!out.contains("vrf = "), "vrf key removed: {out}");
+        assert!(
+            out.contains("route_target = \"graphql\""),
+            "other surface kept"
+        );
+        assert!(
+            out.contains("[profiles.lab.api]"),
+            "table kept while non-empty"
+        );
+
+        // Clearing the last GraphQL surface drops the whole `[api]` table.
+        set_profile_api_backend(
+            &mut doc,
+            "lab",
+            ApiSurface::RouteTarget,
+            BackendPreference::Rest,
+        )
+        .unwrap();
+        let out = doc.to_string();
+        assert!(
+            !out.contains("[profiles.lab.api]"),
+            "empty api table removed: {out}"
+        );
+        let cfg2: Config = toml::from_str(&out).unwrap();
+        assert_eq!(
+            cfg2.profiles["lab"].api_preference(ApiSurface::Vrf),
+            BackendPreference::Rest
+        );
+        assert_eq!(
+            cfg2.profiles["lab"].api_preference(ApiSurface::RouteTarget),
+            BackendPreference::Rest
+        );
+    }
+
+    #[test]
+    fn set_profile_api_backend_rest_on_a_profile_with_no_api_table_is_a_noop() {
+        // Setting REST (the default) where there is no `[api]` table must not create
+        // one — a REST-everywhere profile stays clean.
+        let mut doc = DocumentMut::new();
+        upsert_profile(&mut doc, "lab", "https://nb.lab", None).unwrap();
+        set_profile_api_backend(&mut doc, "lab", ApiSurface::Vrf, BackendPreference::Rest).unwrap();
+        let out = doc.to_string();
+        assert!(
+            !out.contains("[profiles.lab.api]"),
+            "no api table created: {out}"
+        );
     }
 
     #[test]

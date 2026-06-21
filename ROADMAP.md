@@ -68,11 +68,12 @@ Polish the read experience. No writes here.
   Site → devices + racks (`d`/`r` tabs) and Rack → devices (`d` tab). Enter opens the highlighted row,
   `b`/`Esc` walks back through the drill path.
 - ☐ **Demo recording** — an asciinema/VHS cast for the README.
-- ☐ **Deepen the in-app Config modal.** Surface the profile/settings knobs that still need a hand-edited
-  `config.toml`: per-surface API backends (`[profiles.<name>.api]` `search`/`vrf`/`route_target` =
-  `rest`|`graphql`), `timeout_secs`, `page_size`, `exclude_config_context`, and `confirm_writes` — each
-  hot-applied where it can be, with the existing test-connect on profile fields. The modal is the
-  onboarding/edit path; it shouldn't bottom out at "now go edit the TOML by hand."
+- ☑ **Deepen the in-app Config modal.** The profile editor now sets the knobs that used to need a
+  hand-edited `config.toml`: per-surface API backends (`[profiles.<name>.api]` `vrf`/`route_target` =
+  `rest`|`graphql`, cycled with `Ctrl+B`/`Ctrl+R`), `timeout_secs` + `page_size` (numeric fields), and
+  `exclude_config_context` (`Ctrl+E`). REST/default values stay out of the file (the `[api]` table is
+  dropped when empty). Deliberately NOT surfaced (no-op toggles, like the long-excluded `confirm_writes`):
+  the `search` backend (always falls back to REST) and `confirm_writes` (writes deferred).
 - ☑ **Release `0.2.0`** — banked the large read surface accumulated since `0.1.1` (MCP HTTP/OAuth, the new
   read commands, MCP resources, the in-app config layer, three hardening rounds).
 - ☑ **Release `0.4.0`** — per-surface API backends (breaking), REST-canonical search (GraphQL search
