@@ -19,12 +19,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 - **Browsing one kind shows kind-aware list columns.** Opening a kind from the Nav
-  rail (e.g. VRFs, Route Targets) now drops the redundant per-row KIND tag — the
-  pane title already names the kind — and labels the second column for that kind
-  (`RD` for VRFs, `TENANT` for route targets, `RIR` for ASNs, `SCOPE` for
-  prefixes/VLANs, and so on) instead of a fixed, often-empty `SITE` column, so a
-  site-less kind no longer reads as a ragged, empty column. Mixed search results
-  and Recent keep the `KIND / DISPLAY / SITE` layout.
+  rail now drops the redundant per-row KIND tag — the pane title already names the
+  kind — and labels the second column with the attribute that kind actually carries:
+  `STATUS` for prefixes/IPs, `VID` for VLANs, `RD/TENANT` for VRFs, `TENANT` for
+  route targets, `SITE` for devices/racks, `SLUG` for sites. The column sizes to its
+  content. This replaces the fixed, often-empty `SITE` column, so a site-less kind no
+  longer reads as a ragged, empty row. Mixed search results and Recent keep the
+  `KIND / DISPLAY / SITE` layout.
 
 ## [0.4.0] - 2026-06-19
 

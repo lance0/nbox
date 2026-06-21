@@ -172,11 +172,13 @@ Consolidated future scope:
   Nav-focused footer hint (`j/k browse · Enter results`).
 - ☑ **Kind-aware browse list columns.** A homogeneous browse (the Nav rail opening one kind) now drops
   the redundant per-row KIND tag — the pane title already names the kind — and labels the secondary column
-  for that kind (`RD` for VRFs, `TENANT` for route targets, `RIR` for ASNs, `SCOPE` for prefixes/VLANs, …,
-  via `ObjectKind::subtitle_header`), tinting the header with the kind's domain color. Site-less kinds no
-  longer read as a ragged, empty SITE column; mixed search results + Recent keep the generic
-  `KIND/DISPLAY/SITE` layout. (A richer multi-column layout — e.g. device name/site/role/status — would
-  need `SearchResult` enriched with those fields; deferred.)
+  with the attribute that kind carries in `browse.rs` (`STATUS` for prefixes/IPs, `VID` for VLANs,
+  `RD/TENANT` for VRFs, `TENANT` for route targets, `SITE` for devices/racks, `SLUG` for sites — via
+  `ObjectKind::subtitle_header`), tinting the header with the kind's domain color and sizing the column to
+  its content. Header and values agree (the labels match what `browse.rs` actually puts in the subtitle).
+  Site-less kinds no longer read as a ragged, empty SITE column; mixed search results + Recent keep the
+  generic `KIND/DISPLAY/SITE` layout. (A richer multi-column layout — e.g. device name/site/role/status —
+  would need `SearchResult` enriched with those fields; deferred.)
 - ☑ **VRF-pivoted navigation (a dedicated VRF view).** VRF is now a first-class `ObjectKind`:
   searchable (REST + GraphQL), browsable from the Nav rail with a live count, `nbox vrf <name|rd|id>`,
   palette `vrf`, `open`/`journal` resolvers, and MCP `nbox_get`/`nbox://vrf/<ref>`. The TUI detail is a

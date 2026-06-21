@@ -80,17 +80,25 @@ impl ObjectKind {
         }
     }
 
-    /// Header for the secondary column of a homogeneous (single-kind) browse list:
-    /// the attribute each `search_*` builder puts in [`SearchResult::subtitle`]
-    /// (e.g. a VRF's RD, a route target's tenant, a device's site). A *mixed*
-    /// search keeps the generic `SITE` header instead, since one header can't name
-    /// every kind's subtitle at once. Keep in sync with the `search_*` subtitles.
+    /// Header for the secondary column of a homogeneous browse list — the attribute
+    /// [`crate::netbox::browse::browse`] puts in [`SearchResult::subtitle`] for that
+    /// kind (a VRF's RD, a route target's tenant, a prefix's/IP's status, a VLAN's
+    /// VID). Only the kinds the Nav rail actually browses are reachable here (the
+    /// two-column layout is gated on a `browse_kind`); the rest are best-effort and
+    /// never rendered. Keep the browsable kinds in sync with `browse.rs`. A *mixed*
+    /// search keeps the generic `SITE` header, since one header can't name every
+    /// kind's subtitle at once.
     pub fn subtitle_header(self) -> &'static str {
         match self {
             ObjectKind::Device | ObjectKind::Rack => "SITE",
             ObjectKind::Site => "SLUG",
-            ObjectKind::IpAddress => "DNS",
-            ObjectKind::Prefix | ObjectKind::Vlan => "SCOPE",
+            // Browse shows status for prefixes/IPs (always set) and the bare VID for
+            // VLANs; VRFs show the RD, falling back to the tenant when RD-less.
+            ObjectKind::Prefix | ObjectKind::IpAddress => "STATUS",
+            ObjectKind::Vlan => "VID",
+            ObjectKind::Vrf => "RD/TENANT",
+            ObjectKind::RouteTarget => "TENANT",
+            // Not Nav-browsable today — never rendered; labelled for completeness.
             ObjectKind::Circuit => "PROVIDER",
             ObjectKind::Aggregate | ObjectKind::Asn => "RIR",
             ObjectKind::IpRange => "VRF",
@@ -98,8 +106,6 @@ impl ObjectKind {
             ObjectKind::Provider => "ASN",
             ObjectKind::Vm => "CLUSTER",
             ObjectKind::Cluster => "TYPE",
-            ObjectKind::Vrf => "RD",
-            ObjectKind::RouteTarget => "TENANT",
         }
     }
 }
@@ -1175,16 +1181,19 @@ mod tests {
 
     #[test]
     fn subtitle_header_names_each_kinds_secondary_field() {
-        // The site-less kinds the kind-aware browse columns target get a meaningful
-        // header instead of an empty "SITE" — matching what `search_*` puts in the
-        // subtitle (VRF → its RD, route target → tenant, ASN → RIR, tenant → group).
-        assert_eq!(ObjectKind::Vrf.subtitle_header(), "RD");
+        // The browsable kinds' headers name exactly what `browse.rs` puts in the
+        // subtitle, so the header and the values under it agree: prefixes/IPs show
+        // status, VLANs their VID, VRFs the RD (tenant fallback), route targets the
+        // tenant. (These four are the kinds the Nav rail actually browses.)
+        assert_eq!(ObjectKind::Prefix.subtitle_header(), "STATUS");
+        assert_eq!(ObjectKind::IpAddress.subtitle_header(), "STATUS");
+        assert_eq!(ObjectKind::Vlan.subtitle_header(), "VID");
+        assert_eq!(ObjectKind::Vrf.subtitle_header(), "RD/TENANT");
         assert_eq!(ObjectKind::RouteTarget.subtitle_header(), "TENANT");
-        assert_eq!(ObjectKind::Asn.subtitle_header(), "RIR");
-        assert_eq!(ObjectKind::Tenant.subtitle_header(), "GROUP");
-        // Site-bearing kinds keep "SITE".
+        // Site-bearing kinds keep "SITE"; sites show their slug.
         assert_eq!(ObjectKind::Device.subtitle_header(), "SITE");
         assert_eq!(ObjectKind::Rack.subtitle_header(), "SITE");
+        assert_eq!(ObjectKind::Site.subtitle_header(), "SLUG");
         // Every kind yields a short, non-empty, uppercase header.
         for kind in [
             ObjectKind::Device,

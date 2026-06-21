@@ -24,6 +24,10 @@ use crate::tui::theme::{Severity, Theme};
 /// give ratatui the [`Constraint`]s it needs to align the cells into columns.
 const KIND_COL: u16 = 8;
 const SITE_COL: u16 = 14;
+/// Upper bound on the homogeneous-browse secondary column. It sizes to its content
+/// (status/RD/tenant/…), floored at the header width, but never grows past this so a
+/// long value can't crowd out the display column.
+const SUBTITLE_COL_CAP: usize = 28;
 
 /// A compact scroll-position hint for a scrollable pane's title, e.g. `" 23% "`,
 /// or `None` when all the content fits (nothing scrolls, so no hint is shown).
@@ -789,6 +793,19 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
         // no longer reads as a ragged, empty SITE column.
         if let Some(kind) = app.browse_kind {
             let accent = kind_accent(kind.as_str(), theme);
+            // Size the secondary column to its widest value (RD ≈ short, tenant/
+            // status ≈ longer), floored at the header width and capped so a long
+            // value can't crowd out the display column.
+            let sub_w = app
+                .view
+                .iter()
+                .filter_map(|&idx| app.results.get(idx))
+                .filter_map(|r| r.subtitle.as_deref())
+                .map(UnicodeWidthStr::width)
+                .max()
+                .unwrap_or(0)
+                .max(kind.subtitle_header().len())
+                .min(SUBTITLE_COL_CAP) as u16;
             let rows: Vec<Row> = app
                 .view
                 .iter()
@@ -801,7 +818,7 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
                     ])
                 })
                 .collect();
-            let table = browse_table(rows, block, kind, accent, theme);
+            let table = browse_table(rows, block, kind, accent, sub_w, theme);
             frame.render_stateful_widget(table, area, &mut app.table_state);
             return;
         }
@@ -1052,15 +1069,16 @@ fn browse_header<'a>(kind: ObjectKind, accent: Color, theme: &Theme) -> Row<'a> 
 
 /// A stateful table for a homogeneous browse: two columns (DISPLAY + the kind's
 /// secondary field), without the redundant KIND column. Same selection marker and
-/// highlight as [`results_table`]; the secondary column reuses [`SITE_COL`]'s width.
+/// highlight as [`results_table`]; `sub_w` is the content-fit secondary width.
 fn browse_table<'a>(
     rows: Vec<Row<'a>>,
     block: Block<'a>,
     kind: ObjectKind,
     accent: Color,
+    sub_w: u16,
     theme: &Theme,
 ) -> Table<'a> {
-    let widths = [Constraint::Min(1), Constraint::Length(SITE_COL)];
+    let widths = [Constraint::Min(1), Constraint::Length(sub_w)];
     Table::new(rows, widths)
         .header(browse_header(kind, accent, theme))
         .block(block)
