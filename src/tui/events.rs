@@ -5,13 +5,38 @@ use std::time::Duration;
 use crossterm::event::{Event, EventStream, KeyEventKind};
 use futures::StreamExt;
 use tokio::sync::mpsc::Sender;
+use tokio::task::JoinHandle;
 use tokio::time::MissedTickBehavior;
 
 use crate::tui::state::AppEvent;
 
+/// Abort a spawned task when this guard leaves scope.
+///
+/// Terminal event readers block inside crossterm until input arrives. Relying on
+/// a dropped receiver to stop them means the task can survive a UI phase handoff
+/// and steal the next keypress before it notices the send failed.
+#[must_use]
+pub struct AbortOnDrop<T> {
+    handle: JoinHandle<T>,
+}
+
+impl<T> AbortOnDrop<T> {
+    pub fn new(handle: JoinHandle<T>) -> Self {
+        Self { handle }
+    }
+}
+
+impl<T> Drop for AbortOnDrop<T> {
+    fn drop(&mut self) {
+        self.handle.abort();
+    }
+}
+
 /// Spawn a task that reads terminal events and forwards them as [`AppEvent`]s.
-/// Exits when the receiver is dropped.
-pub fn spawn_terminal_events(tx: Sender<AppEvent>) {
+/// Exits when the receiver is dropped after an event is read. The returned handle
+/// should be aborted when the owning UI phase ends, so a pending read cannot leak
+/// across handoffs.
+pub fn spawn_terminal_events(tx: Sender<AppEvent>) -> JoinHandle<()> {
     tokio::spawn(async move {
         let mut stream = EventStream::new();
         while let Some(Ok(event)) = stream.next().await {
@@ -25,7 +50,7 @@ pub fn spawn_terminal_events(tx: Sender<AppEvent>) {
                 break;
             }
         }
-    });
+    })
 }
 
 /// Spawn a task that emits [`AppEvent::Tick`] every `secs` seconds. Exits when

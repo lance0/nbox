@@ -21,7 +21,9 @@ server for AI agents.
 ## Quick Start
 
 First run? Just launch the TUI — with no config it opens a first-run wizard that
-captures a profile (url + token), test-connects, and drops you into the app:
+captures a profile, test-connects it, and drops you into the app. The wizard can
+store the token in a persistent OS keyring when this build has one; otherwise it
+keeps you on the portable path and asks for `token_env`/`NBOX_TOKEN` instead.
 
 ```bash
 nbox                              # first run: guided onboarding, then the TUI
@@ -32,7 +34,7 @@ Prefer the shell? Configure a profile by hand:
 ```bash
 nbox profile add work https://netbox.example.com --token-env NETBOX_TOKEN
 nbox profile use work
-export NETBOX_TOKEN=...           # or store the token: nbox config token set
+export NETBOX_TOKEN=...           # portable; desktop keyring builds can use `nbox config token set`
 
 # Look things up from the shell
 nbox search edge01
@@ -206,6 +208,12 @@ all on by default. There are no feature-variant builds to choose between.
 | `updates` | Yes | GitHub update notifications |
 | `keyring-secret-service` | No | Linux D-Bus (Secret Service) keyring backend — for desktop packagers |
 
+`keyring` means macOS Keychain / Windows Credential Manager support is compiled
+in. Default Linux and musl builds intentionally do **not** link the D-Bus Secret
+Service backend; on those builds pasted-token saves are blocked and env vars are
+the supported token path. Build with `--features keyring-secret-service` only when
+you want a Linux desktop keyring build.
+
 ```bash
 # Lean stdio-only build (drops all of the above):
 cargo install nbox --no-default-features
@@ -354,7 +362,7 @@ in-app: list them (active marked), and add / edit / select / delete without
 hand-editing `config.toml`. The add/edit form covers `name`, `url`, `token_env`,
 `auth_scheme`, and `verify_tls`, plus an optional masked token field. When a
 keyring is available, a typed token is stored there (never in `config.toml`);
-otherwise nbox saves the profile metadata and tells you to use `token_env` or
+otherwise pasted-token saves are blocked and nbox tells you to use `token_env` or
 `NBOX_TOKEN`. `Ctrl+T` test-connects before you commit; `Enter` saves, `Ctrl+G`
 saves and switches to it. Unlike the quick `P` cycle, selecting or adding-and-using
 a profile here **persists** `active_profile` to your config. Deleting the active
@@ -392,10 +400,9 @@ TUI renders without color and marks the selection with a `>` cursor.
 ## Configuration
 
 First-time setup needs no hand-edited TOML: launch `nbox` with no config and the
-TUI runs a first-run wizard that captures a profile (url, token or `token_env`,
-`auth_scheme`, `verify_tls`), test-connects, writes it, and continues into the
-app. The same wizard appears when a config exists but has no resolvable active
-profile. You can still configure by hand — the file lives at:
+TUI runs a first-run wizard that captures a profile, test-connects, writes it, and
+continues into the app. The same wizard appears when a config exists but has no
+resolvable active profile. You can still configure by hand — the file lives at:
 
 | OS | Path |
 |----|------|
@@ -435,10 +442,22 @@ vrf = "graphql"               # rest | graphql
 route_target = "graphql"      # rest | graphql
 ```
 
-Tokens are **never written to config**. nbox resolves them in order: the profile's
-`token_env` variable (if set & present), then `NBOX_TOKEN`, then the OS keyring
-entry for the profile (`nbox config token set` — input hidden, never echoed). Env
-always overrides the keyring. `nbox config token status` shows the active source
+Tokens are **never written to config**. The config stores only profile metadata
+and, optionally, the *name* of an env var (`token_env`), not its value.
+
+Token sources are resolved in this order:
+
+1. the env var named by the profile's `token_env` (if set & present)
+2. `NBOX_TOKEN`
+3. the OS keyring entry for the profile (`nbox config token set`)
+4. none
+
+Use env vars for CI, SSH, Docker, static Linux/musl builds, and anything
+headless. Use the OS keyring for interactive desktop onboarding when the binary
+has a persistent backend: macOS Keychain, Windows Credential Manager, or a Linux
+build with `keyring-secret-service`. Default Linux/musl release binaries have no
+D-Bus keyring backend, so pasted-token saves are refused rather than accepted into
+a non-persistent mock store. `nbox config token status` shows the active source
 (never the token). See [docs/CONFIG.md](docs/CONFIG.md) for the full reference.
 
 ## MCP Server

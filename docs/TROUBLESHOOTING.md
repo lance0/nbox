@@ -233,8 +233,10 @@ nbox serve --http 0.0.0.0:8080 \
 ### `keyring not available on this system` (Linux)
 
 The default static binary ships no D-Bus (Secret Service) backend, so
-`nbox config token` can't reach a keyring. Use an env var instead, or install a
-build with the Linux backend compiled in:
+`nbox config token` and the TUI pasted-token field cannot persist a token there.
+This is deliberate: without the backend, keyring v3 would fall back to an
+in-process mock store that disappears when nbox exits. Use an env var instead, or
+install a build with the Linux backend compiled in:
 
 ```bash
 export NBOX_TOKEN=...                              # or set the profile's token_env

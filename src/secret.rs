@@ -64,42 +64,49 @@ pub const fn keyring_available() -> bool {
     }
 }
 
-/// Read the token for `account` from the OS keyring, or `None` when absent /
-/// unavailable. Never panics; a missing entry, an unusable keystore, or the
-/// feature being off all yield `None` so token resolution simply falls through.
-#[must_use]
-pub fn keyring_get(account: &str) -> Option<String> {
+/// Read the token for `account` from the OS keyring.
+///
+/// A missing entry, unavailable persistent keystore, or feature-off build returns
+/// `Ok(None)`. A real backend failure (locked keychain, D-Bus failure, etc.)
+/// returns an error so transactional callers can avoid committing metadata that
+/// depends on a secret move they could not verify.
+pub fn keyring_get_checked(account: &str) -> anyhow::Result<Option<String>> {
     #[cfg(feature = "keyring")]
     {
         if !keyring_available() {
-            return None;
+            return Ok(None);
         }
-        let entry = match keyring::Entry::new(SERVICE, account) {
-            Ok(e) => e,
-            Err(e) => {
-                tracing::debug!("keyring open failed: {e}");
-                return None;
-            }
-        };
+        let entry = keyring::Entry::new(SERVICE, account)
+            .map_err(|e| anyhow::anyhow!("keyring open failed: {e}"))?;
         match entry.get_password() {
             // An empty stored value is treated as "no token" — an empty string
             // would otherwise flow through `resolve_token` and produce a confusing
             // 401 instead of a clean "no token from any source".
-            Ok(token) => (!token.is_empty()).then_some(token),
+            Ok(token) => Ok((!token.is_empty()).then_some(token)),
             // A missing entry is the normal "no token here" case (silent). A real
-            // backend failure (locked keystore, D-Bus error) is logged at debug so
-            // it's diagnosable, but still returns None so the UI falls through (L5).
-            Err(keyring::Error::NoEntry) => None,
-            Err(e) => {
-                tracing::debug!("keyring read failed: {e}");
-                None
-            }
+            // backend failure is returned so save/rename paths can fail closed.
+            Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(anyhow::anyhow!("keyring read failed: {e}")),
         }
     }
     #[cfg(not(feature = "keyring"))]
     {
         let _ = account;
-        None
+        Ok(None)
+    }
+}
+
+/// Read the token for `account` from the OS keyring, or `None` when absent /
+/// unavailable. Never panics; a missing entry, an unusable keystore, or the
+/// feature being off all yield `None` so token resolution simply falls through.
+#[must_use]
+pub fn keyring_get(account: &str) -> Option<String> {
+    match keyring_get_checked(account) {
+        Ok(token) => token,
+        Err(e) => {
+            tracing::debug!("{e:#}");
+            None
+        }
     }
 }
 
