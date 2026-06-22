@@ -115,14 +115,16 @@ Polish the read experience. No writes here.
   TOML token). Precedence: `token_env` → `NBOX_TOKEN` → config token → opt-in keyring → none. Deferred minors:
   `config init` 0644, the 0600 write-then-chmod race, Windows perms, a cosmetic keyring-migrate message.
   Shipped to crates.io / Homebrew tap / GHCR.
-- ☐ **Release `0.8.0`** — **remove the OS keyring entirely.** It was net-negative surface: a frictional prompt
+- ☑ **Release `0.8.0`** — **remove the OS keyring entirely.** It was net-negative surface: a frictional prompt
   on some platforms, an "unavailable" dead-end on default Linux/musl, and a whole transactional machinery to
   keep two stores in sync. The token now lives only in `config.toml` (`token = "..."`, `0600`, redacted) or an
   env var; precedence collapses to `token_env` → `NBOX_TOKEN` → config token → none, with each source
   scheme-prefix/whitespace-normalized before it competes (so `NBOX_TOKEN="Bearer "` can't mask a valid config
   token). Drops the `keyring`/`keyring-secret-service` Cargo features, `nbox config token set`/`clear`, the
-  TUI `Ctrl+K` toggle, and the `token_store` key (now ignored). `config token status` stays. Migration: re-enter
-  any keyring-stored token as a config `token` or `token_env`.
+  TUI `Ctrl+K` toggle, and the `token_store` key (now ignored). `config token status` stays. Also: `config init`
+  + every config write keep the token file `0600` across the whole write; TUI `Ctrl+T` test-connect shares the
+  normalized resolution; README/CONFIG call out `token` vs `token_env`. Migration: re-enter any keyring-stored
+  token as a config `token` or `token_env`. Shipped to crates.io / Homebrew tap / GHCR.
 
 ---
 
