@@ -186,6 +186,12 @@ cover. All of these stay within the read-only product and the explicit non-goals
 - ☐ **4.6 pagination/caching primitives (infra).** Optional, version-gated: the `start` cursor
   param for constant-time deep pagination on large fan-outs, and `ETag`/`If-None-Match`
   revalidation for the in-memory cache (cheap freshness without a full refetch). Falls back to offset.
+- ☐ **Credential preflight via `/api/authentication-check/` (4.5).** A dedicated token-validity probe
+  (cleaner than inferring auth from `/api/status/`) — surface it in `nbox status` and as an MCP preflight
+  tool so an operator/agent gets an unambiguous "is this token valid?" before a run.
+- ☐ **Schema-drift canary (CI).** Pin NetBox's OpenAPI spec and add a CI job that diffs it across
+  releases for the endpoints/filters nbox actually uses, so a breaking change (e.g. 4.7) trips the build
+  before it reaches users. Lightweight — nbox stays hand-curated; this is just an early-warning signal.
 
 ## Agent / MCP wedge
 
@@ -202,6 +208,10 @@ all read-only. (Market positioning itself stays out of the repo — see private 
   document per-tool token footprints (the official server's headline is ~90% reduction via field filtering).
 - ☐ **First-class install recipes.** Copy-paste MCP config for Claude Code / Desktop / Cursor, plus an
   `nbox serve --print-config` helper. (SKILL.md + the README "Add it to Claude" block are the start.)
+- ☐ **Per-domain agent-skills catalog.** Grow the single root `SKILL.md` into a small catalog of focused
+  skills (e.g. search, IPAM, device/interface context, `serve`) in the standard agent-skills layout
+  (`skills/<name>/SKILL.md`). Keep them flag-free — point at `nbox <cmd> --help` rather than enumerating
+  flags, so they can't silently drift as the CLI evolves — and lint the shape in CI.
 - ☐ **Read-only history/changelog tool.** `nbox history <object>` / an MCP tool that summarizes an
   object's changelog ("what changed and when") — answers agent "what happened to this prefix?" queries.
 - ☐ **Structured read-only exports.** An export mode producing Prometheus targets / firewall
@@ -485,6 +495,9 @@ Consolidated future scope:
 
 ## Infrastructure & quality
 
+- ☐ **`cargo binstall` support.** Add `[package.metadata.binstall]` mapping to the release archives so
+  `cargo binstall nbox` fetches the prebuilt binary (sub-second, no compile) instead of building from
+  source. The archives + `SHA256SUMS` already ship; this is metadata only.
 - ☑ `cargo-audit` CI (the `audit` job gating every release).
 - ☑ Pre-commit hooks (fmt/clippy on commit, test on push).
 - ☑ musl Linux targets in the release matrix (static x86_64/aarch64; gnu aarch64 kept).
