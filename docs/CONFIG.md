@@ -28,7 +28,9 @@ ttl_secs = 30              # reuse window in seconds (clamped to 5–300)
 
 [profiles.work]
 url = "https://netbox.example.com"
+# token = "nbt_..."              # default TUI paste path; redacted by config show
 token_env = "NETBOX_TOKEN"
+# token_store = "keyring"        # optional: opt into OS keyring instead of token
 auth_scheme = "auto"          # auto | bearer | token
 verify_tls = true
 timeout_secs = 15
@@ -48,15 +50,19 @@ mishandle a newer schema.
 
 ## Tokens
 
-Tokens are **never written to config**. The TOML stores profile metadata and,
-optionally, the *name* of an env var (`token_env`), never the token value.
+Tokens can be stored directly in the profile as `token = "..."` for the normal
+single-user desktop flow. `nbox config show`, JSON output, and `Debug` output
+redact that value, and config files are written user-only on Unix. If you prefer
+external secret handling, store only the *name* of an env var (`token_env`) or
+opt into the OS keyring with `token_store = "keyring"`.
 
 Resolution order:
 
 1. the env var named by the profile's `token_env` (if set & present)
 2. `NBOX_TOKEN`
-3. the OS keyring entry for the profile (`nbox config token set`)
-4. none — nbox reports a clear "no token" error
+3. the profile's `token = "..."`
+4. the OS keyring entry for profiles with `token_store = "keyring"`
+5. none — nbox reports a clear "no token" error
 
 Who stores what:
 
@@ -64,18 +70,19 @@ Who stores what:
 |--------|------------------------|-----------------------------------|----------|
 | `token_env` | Your shell, systemd unit, CI secret, MCP host env, etc. | The env var name only, e.g. `token_env = "NETBOX_TOKEN"` | CI, SSH, Docker, agents, static Linux/musl |
 | `NBOX_TOKEN` | Your process environment | Nothing | One-off overrides and break-glass runs |
-| OS keyring | macOS Keychain, Windows Credential Manager, or Linux Secret Service when built in | Nothing | Interactive desktop use |
+| `token` | `config.toml` | `token = "..."` | Normal single-user desktop/TUI use |
+| OS keyring | macOS Keychain, Windows Credential Manager, or Linux Secret Service when built in | `token_store = "keyring"` | Users who explicitly want OS secret-store prompts/integration |
 
-Env always overrides the keyring. This is intentional: CI/SSH/Docker can inject a
-known token without editing config, and a temporary `NBOX_TOKEN` can override a
-desktop keyring entry. Inspect the active source with `nbox config token status`
-(it prints the source — `token_env`/`NBOX_TOKEN`/`keyring`/`none` — never the
-token).
+Env always overrides config/keyring tokens. This is intentional: CI/SSH/Docker
+can inject a known token without editing config, and a temporary `NBOX_TOKEN` can
+override a saved desktop token. Inspect the active source with
+`nbox config token status` (it prints the source —
+`token_env`/`NBOX_TOKEN`/`config`/`keyring`/`none` — never the token).
 
 ### OS keyring
 
-Store the token in your OS keyring instead of an env var, when this build has a
-real persistent keyring backend:
+OS keyring is opt-in. Store the token there instead of `config.toml`, when this
+build has a real persistent keyring backend:
 
 ```bash
 nbox config token set      # prompts, input hidden (or reads a piped line)
@@ -86,24 +93,27 @@ nbox config token clear    # removes the stored token
 `set`/`clear` act on the active profile (or `--profile <name>`). The token is read
 without echo from a TTY prompt, or as a single line from stdin when piped
 (scripting) — there is no positional token argument, so it can't leak into shell
-history. The entry is keyed by config path + profile name (service `nbox`).
+history. `set` writes `token_store = "keyring"` and clears any plaintext profile
+`token`; `clear` removes the keyring entry and returns the profile to config-token
+mode. The entry is keyed by config path + profile name (service `nbox`).
 
 Backends: macOS Keychain and Windows Credential Manager are built in. On Linux
 the Secret Service (D-Bus) backend is **off by default** — build with
 `--features keyring-secret-service` to enable it; otherwise `nbox config token`
 reports the keyring as unavailable and you should use `NBOX_TOKEN` or a
-`token_env` instead. (This keeps static/musl builds free of a D-Bus link
-dependency.)
+config/token_env token instead. (This keeps static/musl builds free of a D-Bus
+link dependency.)
 
-The TUI onboarding wizard and Config modal follow the same rule. If a pasted
-token cannot be stored in a persistent keyring, the save is blocked and the form
-stays open with guidance to use `token_env`/`NBOX_TOKEN`; nbox does not create a
-profile that pretends a newly pasted token was saved. Explicit token set/clear
-actions fail closed if the runtime keyring operation fails (for example a locked
-keychain), with profile metadata and keyring changes rolled back together as far
-as the platform allows. A profile rename with "keep stored token" is best-effort:
-if the old token cannot be read or copied, the rename still saves and nbox warns
-you to re-enter the token or set `token_env`.
+The TUI onboarding wizard and Config modal default to `token_store = "config"`;
+`Ctrl+K` opts a profile into `keyring`. If a pasted token cannot be stored in a
+persistent keyring after that explicit opt-in, the save is blocked and the form
+stays open with guidance to switch back to config storage or use
+`token_env`/`NBOX_TOKEN`. Explicit keyring set/clear actions fail closed if the
+runtime keyring operation fails (for example a locked keychain), with profile
+metadata and keyring changes rolled back together as far as the platform allows.
+A profile rename with "keep stored token" is best-effort: if the old keyring
+token cannot be read or copied, the rename still saves and nbox warns you to
+re-enter the token or set `token_env`.
 
 `auth_scheme = "auto"` detects NetBox 4.5+ v2 tokens (`nbt_…` → `Authorization:
 Bearer`) versus legacy v1 tokens (`Authorization: Token`). Force one with

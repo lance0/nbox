@@ -118,11 +118,11 @@ MCP prompts are later. See `docs/MCP.md`.
 ## Configuration
 
 - Config: `~/.config/nbox/config.toml` (`nbox config init` to create).
-- Token: never stored in the config. Resolved in order: the profile's `token_env`
-  variable (if set & present) → `NBOX_TOKEN` → the OS keyring entry for the profile
-  (`nbox config token set`) → none. Env always overrides the keyring. Inspect the
-  active source with `nbox config token status` (never prints the token). Select a
-  profile with `--profile <name>` or set the active one.
+- Token: resolved in order: the profile's `token_env` variable (if set & present)
+  → `NBOX_TOKEN` → the profile's config `token` → the OS keyring entry when
+  `token_store = "keyring"` → none. Env always overrides saved tokens. Inspect
+  the active source with `nbox config token status` (never prints the token).
+  Select a profile with `--profile <name>` or set the active one.
 - Backends: REST is canonical. GraphQL is an opt-in per-surface accelerator set
   under `[profiles.<name>.api]` (`vrf` = `rest`|`graphql`; missing = REST). nbox
   probes `/graphql/`, adapts to NetBox 4.2/4.3/4.5+ filter/pagination shapes, and

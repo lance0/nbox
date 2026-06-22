@@ -503,8 +503,8 @@ pub enum ConfigCommand {
     },
 }
 
-/// `nbox config token` subcommands. The token is stored in the OS keyring, never
-/// in the config file; it is never echoed or printed.
+/// `nbox config token` subcommands. These manage the opt-in OS-keyring token
+/// path; token values are never echoed or printed.
 #[derive(Debug, Subcommand)]
 pub enum TokenCommand {
     /// Store the API token in the OS keyring for the active (or `--profile`)
@@ -514,8 +514,9 @@ pub enum TokenCommand {
     Set,
     /// Remove the stored keyring token for the active (or `--profile`) profile.
     Clear,
-    /// Report the resolved token *source* (token_env / NBOX_TOKEN / keyring /
-    /// none) for the active (or `--profile`) profile. Never prints the token.
+    /// Report the resolved token *source* (token_env / NBOX_TOKEN / config /
+    /// keyring / none) for the active (or `--profile`) profile. Never prints the
+    /// token.
     Status,
 }
 

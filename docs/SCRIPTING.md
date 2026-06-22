@@ -10,10 +10,11 @@ launches the interactive TUI, which blocks on a terminal; `--no-tui` turns that
 into a usage error (exit 2) instead — so a misfired invocation in CI fails fast
 rather than hanging on a TTY that isn't there.
 
-The token never lives in a config file. Resolve it from the environment for
-scripts: export `NBOX_TOKEN` (or point a profile's `token_env` at a set
-variable). The full order is `token_env` → `NBOX_TOKEN` → OS keyring → none; env
-always wins. Requires NetBox 4.2+.
+For scripts and agents, prefer resolving the token from the environment: export
+`NBOX_TOKEN` (or point a profile's `token_env` at a set variable). Desktop users
+may also store `token = "..."` in the profile, and keyring is opt-in with
+`token_store = "keyring"`. The full order is `token_env` → `NBOX_TOKEN` →
+config `token` → opt-in keyring → none; env always wins. Requires NetBox 4.2+.
 
 ## Output formats
 

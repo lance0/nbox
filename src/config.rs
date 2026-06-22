@@ -17,8 +17,8 @@ use crate::netbox::auth::AuthScheme;
 
 /// Starter config written by `nbox config init`.
 const INIT_TEMPLATE: &str = r#"# nbox configuration
-# Tokens are NOT stored here — point `token_env` at an environment variable,
-# or export NBOX_TOKEN to override.
+# Tokens can be stored in this user-only config file (`token = "..."`) or kept
+# outside it with `token_env` / NBOX_TOKEN. Env vars override config tokens.
 
 config_version = 1
 
@@ -226,6 +226,12 @@ pub struct ProfileConfig {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub token_env: Option<String>,
 
+    #[serde(default, skip_serializing_if = "is_default_token_store")]
+    pub token_store: TokenStore,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub token: Option<ConfigToken>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_scheme: Option<AuthScheme>,
 
@@ -249,6 +255,69 @@ pub struct ProfileConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub exclude_config_context: Option<bool>,
+}
+
+/// A NetBox API token stored in config.
+///
+/// This intentionally serializes as a normal TOML string, but `Debug` and
+/// `config show` redact it. The config file is written with user-only
+/// permissions on Unix.
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(transparent)]
+pub struct ConfigToken(String);
+
+impl ConfigToken {
+    #[must_use]
+    pub fn new(token: impl Into<String>) -> Self {
+        Self(token.into())
+    }
+
+    #[must_use]
+    pub fn expose(&self) -> &str {
+        &self.0
+    }
+
+    #[must_use]
+    pub fn redacted() -> Self {
+        Self("<redacted>".to_string())
+    }
+}
+
+impl std::fmt::Debug for ConfigToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("\"<redacted>\"")
+    }
+}
+
+/// Where a profile may persist an in-app pasted token.
+///
+/// The default is `config`: a pasted token is written to `config.toml` and
+/// redacted from display. `Keyring` is an explicit opt-in that stores pasted
+/// tokens in the OS keyring and enables the keyring as the lowest-precedence token
+/// source.
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum TokenStore {
+    #[default]
+    Config,
+    Keyring,
+}
+
+impl TokenStore {
+    #[must_use]
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Config => "config",
+            Self::Keyring => "keyring",
+        }
+    }
+}
+
+#[allow(clippy::trivially_copy_pass_by_ref)] // serde skip_serializing_if requires &T
+fn is_default_token_store(store: &TokenStore) -> bool {
+    *store == TokenStore::Config
 }
 
 /// Which NetBox read backend a profile should prefer.
@@ -465,6 +534,8 @@ pub enum TokenSource {
     TokenEnv(String),
     /// The `NBOX_TOKEN` environment variable.
     NboxToken,
+    /// The token value stored in the profile config file.
+    Config,
     /// The OS keyring entry for this profile.
     Keyring,
     /// No token from any source.
@@ -475,9 +546,8 @@ pub enum TokenSource {
 /// the keyring lookup.
 ///
 /// Precedence (highest first): the profile's `token_env` (if set & present), then
-/// `NBOX_TOKEN`, then the OS keyring entry for this profile, then `None`. Env
-/// always overrides the keyring — CI/SSH/break-glass paths set an env var; the
-/// keyring is for interactive human onboarding.
+/// `NBOX_TOKEN`, then the profile's config token, then the OS keyring entry for
+/// this profile only when `token_store = "keyring"`, then `None`.
 pub fn resolve_token(
     profile: &ProfileConfig,
     config_path: &Path,
@@ -490,6 +560,14 @@ pub fn resolve_token(
     let nbox = std::env::var("NBOX_TOKEN").ok();
     if let Some(t) = select_env_token(token_env, nbox) {
         return Some(t);
+    }
+    if let Some(token) = &profile.token
+        && !token.expose().is_empty()
+    {
+        return Some(token.expose().to_string());
+    }
+    if profile.token_store != TokenStore::Keyring {
+        return None;
     }
     let account = crate::secret::account_key(&config_path.display().to_string(), profile_name);
     crate::secret::keyring_get(&account)
@@ -510,16 +588,26 @@ pub fn resolve_token_source(
     if std::env::var("NBOX_TOKEN").is_ok_and(|t| !t.is_empty()) {
         return TokenSource::NboxToken;
     }
-    let account = crate::secret::account_key(&config_path.display().to_string(), profile_name);
-    if crate::secret::keyring_get(&account).is_some() {
-        return TokenSource::Keyring;
+    if profile
+        .token
+        .as_ref()
+        .is_some_and(|t| !t.expose().is_empty())
+    {
+        return TokenSource::Config;
+    }
+    if profile.token_store == TokenStore::Keyring {
+        let account = crate::secret::account_key(&config_path.display().to_string(), profile_name);
+        if crate::secret::keyring_get(&account).is_some() {
+            return TokenSource::Keyring;
+        }
     }
     TokenSource::None
 }
 
 /// Pure env-token precedence: the profile's `token_env` value wins over
-/// `NBOX_TOKEN`; empty values are skipped. Keyring (the next tier) is layered on
-/// in [`resolve_token`] after this returns `None`.
+/// `NBOX_TOKEN`; empty values are skipped. The keyring tier, when the profile
+/// explicitly opts into it, is layered on in [`resolve_token`] after this returns
+/// `None`.
 fn select_env_token(token_env: Option<String>, nbox_token: Option<String>) -> Option<String> {
     token_env
         .filter(|t| !t.is_empty())
@@ -571,6 +659,34 @@ pub fn set_profile_token_env(
         Some(env) => prof["token_env"] = value(env),
         None => {
             prof.remove("token_env");
+        }
+    }
+    Ok(())
+}
+
+/// Set (or clear) `profiles.<name>.token_store` in a format-preserving document.
+/// `Config` is the implicit default and removes the key; `Keyring` writes an
+/// explicit opt-in so token resolution may consult the OS keyring.
+pub fn set_profile_token_store(doc: &mut DocumentMut, name: &str, store: TokenStore) -> Result<()> {
+    let prof = profile_table_mut(doc, name)?;
+    match store {
+        TokenStore::Config => {
+            prof.remove("token_store");
+        }
+        TokenStore::Keyring => prof["token_store"] = value(store.as_str()),
+    }
+    Ok(())
+}
+
+/// Set (or clear) `profiles.<name>.token` in a format-preserving document.
+/// `None` (or an empty value) removes the key. Display paths must redact this
+/// field; `write_doc` makes the file user-only on Unix.
+pub fn set_profile_token(doc: &mut DocumentMut, name: &str, token: Option<&str>) -> Result<()> {
+    let prof = profile_table_mut(doc, name)?;
+    match token.filter(|t| !t.is_empty()) {
+        Some(token) => prof["token"] = value(token),
+        None => {
+            prof.remove("token");
         }
     }
     Ok(())
@@ -969,6 +1085,11 @@ pub fn write_doc(path: &Path, doc: &DocumentMut) -> Result<()> {
         fs::create_dir_all(parent)?;
     }
     fs::write(path, doc.to_string())?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
     Ok(())
 }
 
@@ -1025,6 +1146,11 @@ pub(crate) fn redact_secrets(cfg: &mut Config) {
     if cfg.serve.http_token.is_some() {
         cfg.serve.http_token = Some("<redacted>".to_string());
     }
+    for profile in cfg.profiles.values_mut() {
+        if profile.token.is_some() {
+            profile.token = Some(ConfigToken::redacted());
+        }
+    }
 }
 
 /// Resolve the active (or `--profile`) profile name for a token command. The
@@ -1041,6 +1167,18 @@ fn token_profile_name(path: &Path, profile: Option<&str>) -> String {
         .unwrap_or_else(|| "default".to_string())
 }
 
+fn ensure_profile_exists(doc: &DocumentMut, name: &str) -> Result<()> {
+    let exists = doc
+        .get("profiles")
+        .and_then(Item::as_table)
+        .is_some_and(|profiles| profiles.contains_key(name));
+    if exists {
+        Ok(())
+    } else {
+        bail!("no profile named '{name}' — add the profile before storing a keyring token")
+    }
+}
+
 /// Handle `nbox config token {set,clear,status}`. The token value is never
 /// printed, echoed, or logged.
 fn run_config_token(
@@ -1054,6 +1192,8 @@ fn run_config_token(
     let account = crate::secret::account_key(&path.display().to_string(), &name);
     match cmd {
         TokenCommand::Set => {
+            let mut doc = load_doc_or_new(path)?;
+            ensure_profile_exists(&doc, &name)?;
             if !crate::secret::keyring_available() {
                 bail!(
                     "keyring not available on this system — set NBOX_TOKEN or a \
@@ -1067,6 +1207,12 @@ fn run_config_token(
                 bail!("no token entered");
             }
             crate::secret::keyring_set(&account, &token)?;
+            set_profile_token_store(&mut doc, &name, TokenStore::Keyring)?;
+            set_profile_token(&mut doc, &name, None)?;
+            if let Err(e) = write_doc(path, &doc) {
+                let _ = crate::secret::keyring_delete(&account);
+                return Err(e);
+            }
             eprintln!("stored token for profile '{name}' in the OS keyring");
             Ok(())
         }
@@ -1078,6 +1224,15 @@ fn run_config_token(
                 );
             }
             crate::secret::keyring_delete(&account)?;
+            if let Ok(mut doc) = load_doc_or_new(path)
+                && doc
+                    .get("profiles")
+                    .and_then(Item::as_table)
+                    .is_some_and(|profiles| profiles.contains_key(&name))
+            {
+                set_profile_token_store(&mut doc, &name, TokenStore::Config)?;
+                write_doc(path, &doc)?;
+            }
             eprintln!("cleared keyring token for profile '{name}'");
             Ok(())
         }
@@ -1093,6 +1248,7 @@ fn run_config_token(
             let label = match &source {
                 TokenSource::TokenEnv(var) => format!("token_env {var}"),
                 TokenSource::NboxToken => "NBOX_TOKEN".to_string(),
+                TokenSource::Config => "config".to_string(),
                 TokenSource::Keyring => "keyring".to_string(),
                 TokenSource::None => "none".to_string(),
             };
@@ -1101,9 +1257,11 @@ fn run_config_token(
                 "source": match &source {
                     TokenSource::TokenEnv(_) => "token_env",
                     TokenSource::NboxToken => "NBOX_TOKEN",
+                    TokenSource::Config => "config",
                     TokenSource::Keyring => "keyring",
                     TokenSource::None => "none",
                 },
+                "token_store": prof.token_store.as_str(),
                 "token_env": match &source {
                     TokenSource::TokenEnv(var) => Some(var.clone()),
                     _ => None,
@@ -1550,6 +1708,64 @@ search = "graphql"
     }
 
     #[test]
+    fn config_token_is_resolved_before_keyring() {
+        let profile = ProfileConfig {
+            url: "https://nb.example".into(),
+            token_env: Some("NBOX_TEST_DEFINITELY_UNSET_VAR_XYZ".into()),
+            token: Some(ConfigToken::new("config-secret")),
+            token_store: TokenStore::Keyring,
+            ..Default::default()
+        };
+        if std::env::var("NBOX_TOKEN").is_err() {
+            let path = Path::new("/nbox/test/config-token/config.toml");
+            assert_eq!(
+                resolve_token(&profile, path, "default").as_deref(),
+                Some("config-secret")
+            );
+            assert_eq!(
+                resolve_token_source(&profile, path, "default"),
+                TokenSource::Config
+            );
+        }
+    }
+
+    #[test]
+    fn keyring_is_ignored_without_explicit_opt_in() {
+        let profile = ProfileConfig {
+            url: "https://nb.example".into(),
+            token_env: Some("NBOX_TEST_DEFINITELY_UNSET_VAR_XYZ".into()),
+            ..Default::default()
+        };
+        if std::env::var("NBOX_TOKEN").is_err() {
+            let path = Path::new("/nbox/test/no-keyring-opt-in/config.toml");
+            assert_eq!(resolve_token(&profile, path, "default"), None);
+            assert_eq!(
+                resolve_token_source(&profile, path, "default"),
+                TokenSource::None
+            );
+        }
+    }
+
+    #[test]
+    fn config_token_debug_and_redaction_do_not_expose_secret() {
+        let mut cfg = Config::default();
+        cfg.profiles.insert(
+            "work".to_string(),
+            ProfileConfig {
+                url: "https://nb.example".to_string(),
+                token: Some(ConfigToken::new("nbt_supersecret.value")),
+                ..Default::default()
+            },
+        );
+
+        assert!(!format!("{cfg:?}").contains("nbt_supersecret"));
+        redact_secrets(&mut cfg);
+        let rendered = serde_json::to_string(&cfg).unwrap();
+        assert!(rendered.contains("<redacted>"));
+        assert!(!rendered.contains("nbt_supersecret"));
+    }
+
+    #[test]
     fn token_status_label_maps_each_source() {
         // The CLI's `status` label is a pure mapping over TokenSource; assert each
         // arm produces the documented, token-free label. (Mirrors the match in
@@ -1557,6 +1773,7 @@ search = "graphql"
         let label = |s: &TokenSource| match s {
             TokenSource::TokenEnv(var) => format!("token_env {var}"),
             TokenSource::NboxToken => "NBOX_TOKEN".to_string(),
+            TokenSource::Config => "config".to_string(),
             TokenSource::Keyring => "keyring".to_string(),
             TokenSource::None => "none".to_string(),
         };
@@ -1565,12 +1782,14 @@ search = "graphql"
             "token_env NETBOX_TOKEN"
         );
         assert_eq!(label(&TokenSource::NboxToken), "NBOX_TOKEN");
+        assert_eq!(label(&TokenSource::Config), "config");
         assert_eq!(label(&TokenSource::Keyring), "keyring");
         assert_eq!(label(&TokenSource::None), "none");
         // No label ever contains a token value — only the source / env-var name.
         for s in [
             TokenSource::TokenEnv("X".into()),
             TokenSource::NboxToken,
+            TokenSource::Config,
             TokenSource::Keyring,
             TokenSource::None,
         ] {
@@ -1601,7 +1820,10 @@ search = "graphql"
             return;
         }
 
-        let prof = ProfileConfig::default();
+        let prof = ProfileConfig {
+            token_store: TokenStore::Keyring,
+            ..Default::default()
+        };
         // With no env vars overriding, the source is the keyring entry we just set.
         if std::env::var("NBOX_TOKEN").is_err() {
             assert_eq!(
