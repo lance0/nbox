@@ -44,7 +44,17 @@ pub async fn browse(
                 .collect()
         }
         ObjectKind::Site => {
-            let rows: Vec<Site> = client.list_all(Endpoint::Sites, vec![], max).await?;
+            // The full site serializer attaches per-site aggregate counts
+            // (device/prefix/rack/vlan/circuit), each a subquery over a large table
+            // — slow enough to time out the list on a sizable instance (observed:
+            // 100 sites > 120s, vs 0.3s with brief). The browse index only needs
+            // name + slug, both in NetBox's `brief` representation, so ask for brief
+            // to skip the counts. Opening a site still fetches the full object for
+            // its detail view, so nothing is lost there. Sites is the only browse
+            // kind heavy enough to need this; the rest list fine at full.
+            let rows: Vec<Site> = client
+                .list_all(Endpoint::Sites, vec![("brief", "true".to_string())], max)
+                .await?;
             rows.into_iter()
                 .map(|s| SearchResult {
                     kind: ObjectKind::Site,
@@ -186,4 +196,50 @@ pub async fn nav_counts(client: &NetBoxClient) -> Vec<(ObjectKind, u32)> {
     .into_iter()
     .filter_map(|(kind, res)| res.ok().map(|c| (kind, c)))
     .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ProfileConfig;
+    use serde_json::json;
+    use wiremock::matchers::{method, path, query_param};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn client_for(server: &MockServer) -> NetBoxClient {
+        let profile = ProfileConfig {
+            url: server.uri(),
+            ..Default::default()
+        };
+        NetBoxClient::new(&profile, None).unwrap()
+    }
+
+    #[tokio::test]
+    async fn site_browse_requests_brief_to_skip_count_annotations() {
+        // Regression: the site list serializer's per-site aggregate counts are slow
+        // enough to time out the list on a large instance, so browse must request
+        // `brief=true`. This mock matches ONLY when brief=true is present, so a
+        // browse that drops it gets no response and the call fails here.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/sites/"))
+            .and(query_param("brief", "true"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{
+                    "id": 7, "url": "http://nb/api/dcim/sites/7/", "name": "iad1", "slug": "iad1"
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let results = browse(&client_for(&server), ObjectKind::Site, BROWSE_CAP)
+            .await
+            .expect("browse sites");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].display, "iad1");
+        // The subtitle is the slug, which brief includes — so the browse column
+        // survives the brief switch (no column loss for sites).
+        assert_eq!(results[0].subtitle.as_deref(), Some("iad1"));
+    }
 }

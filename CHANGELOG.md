@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-06-22
+
+### Fixed
+
+- **Browsing sites no longer times out on large instances.** NetBox's full site
+  list serializer attaches per-site aggregate counts (device / prefix / rack / vlan
+  / circuit), each a subquery over a large table — slow enough to exceed the request
+  timeout on a sizable instance (observed: 100 sites > 120s, while the nav count and
+  every other browse kind return in well under a second). The site browse now
+  requests NetBox's `brief` representation, which omits those counts and returns the
+  `name` + `slug` the browse index shows (~400× faster in testing). Opening a site
+  still fetches the full object for its detail view, so nothing is lost there. Only
+  the site browse is affected; the other kinds already list quickly and keep their
+  full columns.
+
 ## [0.8.0] - 2026-06-22
 
 ### Changed
