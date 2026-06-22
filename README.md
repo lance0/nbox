@@ -489,6 +489,29 @@ The same objects are also exposed as MCP **resources** via one template,
 attach resources instead of calling tools — reading one returns the same JSON
 view `nbox_get` does.
 
+### Add it to Claude
+
+**Claude Code** — register the server in one command:
+
+```bash
+claude mcp add nbox -- nbox serve
+```
+
+**Claude Desktop** — add to your MCP config:
+
+```json
+{
+  "mcpServers": {
+    "nbox": { "command": "nbox", "args": ["serve"] }
+  }
+}
+```
+
+Both reuse the same `config.toml` / `NBOX_TOKEN` as the CLI. Prefer driving the CLI
+directly? Install nbox as a **Claude Code Agent Skill** — `mkdir -p
+~/.claude/skills/nbox && cp SKILL.md ~/.claude/skills/nbox/` — and Claude runs the
+`nbox` subcommands on matching requests. [SKILL.md](SKILL.md) documents both paths.
+
 ### HTTP transport and OIDC
 
 Stdio is the default. For local clients that prefer HTTP framing, serve the same
