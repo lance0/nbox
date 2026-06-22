@@ -1,9 +1,13 @@
 # NetBox Compatibility
 
-nbox targets **NetBox 4.2+** over the REST API. Each release in the 4.2–4.5 range
-moved an API contract nbox depends on; nbox handles the differences at runtime
-(version probe + schema probe) rather than pinning a single version. The table
-below is the matrix; the behavior is pinned by `tests/compat_tests.rs`.
+nbox targets **NetBox 4.2+** over the REST API and is verified through **4.6** (the
+current stable). Each release in the 4.2–4.6 range moved an API contract nbox
+depends on; nbox handles the differences at runtime (version probe + schema probe)
+rather than pinning a single version. The table below is the matrix; the behavior is
+pinned by `tests/compat_tests.rs`.
+
+> NetBox uses a tick-tock cadence: even minors (4.4, 4.6) are non-breaking, odd
+> minors (4.5, 4.7) may break. **4.7 ("tock") is the next compatibility watch.**
 
 The floor is enforced on connect via `/api/status/`
 (`netbox_version` < 4.2 → fail fast). `nbox status --json` and MCP `nbox_status`
@@ -12,7 +16,7 @@ flag, and the per-surface backend routing.
 
 ## Matrix
 
-| Concern | 4.2 | 4.3 | 4.5+ |
+| Concern | 4.2 | 4.3 | 4.5 / 4.6 |
 |---|---|---|---|
 | Scope model | polymorphic `scope` (`scope_type` + `scope_id`); prefix `site` FK dropped ¹ | same | same |
 | Search backend | REST `q=` fan-out | REST (GraphQL has no `q`) | REST (GraphQL has no `q`) |
@@ -21,7 +25,9 @@ flag, and the per-surface backend routing.
 | `/api/status/` auth | open by default | open by default | requires auth ³ |
 | Token scheme | v1 `Authorization: Token` | v1 `Token` | v1 `Token` **+ v2 `Authorization: Bearer nbt_…`** ¹ |
 
-¹ In the official NetBox release notes — the `4.2.0` scope change (Jan 2025) and the `4.5` v2 tokens (HMAC, `nbt_` prefix, `Bearer`; v1 retained until 4.7).
+¹ In the official NetBox release notes — the `4.2.0` scope change (Jan 2025) and the `4.5` v2 tokens (HMAC, `nbt_` prefix, `Bearer`). v1 tokens are **deprecated but retained through the 4.x line; removal is planned for v5.0** (4.6 pushed this out from the originally-announced 4.7). nbox auto-detects the scheme, so the timeline doesn't affect it.
+
+⁴ NetBox 4.6 adds `GRAPHQL_MAX_QUERY_DEPTH`. nbox's GraphQL accelerators (the VRF and route-target bundles) issue nested queries; against an instance with a low cap they fail closed and fall back to REST (the reason surfaces in `nbox status`). Search is REST regardless, so it's unaffected.
 ² NetBox [#7598](https://github.com/netbox-community/netbox/issues/7598), "adopt advanced query filtering in GraphQL." GraphQL never had a REST-style full-text `q`; this rework is why a per-kind GraphQL search can't stand in for REST search.
 ³ **Observed** against live instances (4.2 vs 4.5.10), **not called out in the release notes** — so treat as empirical, not a documented contract. `/api/status/` auth may reflect instance `LOGIN_REQUIRED`-style config rather than a strict version change; either way nbox authenticates **every** request (including the version probe), so it is unaffected.
 

@@ -158,6 +158,57 @@ Polish the read experience. No writes here.
 
 ---
 
+## Keeping current with NetBox (4.6 → 4.7)
+
+NetBox has moved to 4.6 (tick-tock cadence; 4.7 "tock" — may break — is the next watch).
+A 2026-06 feature scan surfaced read-only, non-goal-respecting surface nbox doesn't yet
+cover. All of these stay within the read-only product and the explicit non-goals.
+
+- ☐ **MAC addresses as a first-class kind** _(NetBox 4.2)_. MACs became standalone objects
+  (multi-per-interface, primary designation). Add `nbox mac <addr>` to reverse-resolve
+  MAC → interface → device — a top operator/agent query nbox can't answer today. Highest value.
+- ☐ **New object kinds from 4.2/4.6.** `virtual-circuit` (+ terminations, 4.2), and the 4.6
+  additions `virtual-machine-type`, `rack-group`, `cable-bundle` — small, formulaic lookups
+  that keep kind coverage current. (Each: model + `nbox <kind>` + detail view; `cable-bundle`
+  pairs with the cable-path visualizer.)
+- ☐ **`owner` field + `--owner` filter** _(4.5)_. NetBox added a native `owner` (users/groups)
+  on most objects — structured ownership that beats tag-scraping for agents. Surface it on
+  detail views and as a search filter.
+- ☐ **Reverse tag lookup** _(4.3, `/api/extras/tagged-objects/`)_. "What objects carry tag X"
+  across kinds — a natural CLI verb + MCP tool, complementing the existing `tags` listing.
+- ☐ **NAT inside/outside enrichment** _(4.6)_. 4.6 embeds `nat_inside`/`nat_outside` on
+  primary-IP fields; surface them in `nbox ip` / `nbox device` for free.
+- ☐ **Cable-profile / bundle-aware cable-path visualizer** _(4.5 cable profiles, 4.6 CableBundle)_.
+  Breakout/lane cables otherwise trace inaccurately — keep the 0.9.0 visualizer correct on new NetBox.
+- ☐ **4.7 compatibility watch + GraphQL depth-cap defense.** Re-verify the matrix against 4.7
+  when it lands (~Aug 2026). 4.6's `GRAPHQL_MAX_QUERY_DEPTH` can fail nbox's GraphQL accelerators
+  on a low cap — already falls back to REST; surface the reason clearly. Docs: `docs/COMPATIBILITY.md`.
+- ☐ **4.6 pagination/caching primitives (infra).** Optional, version-gated: the `start` cursor
+  param for constant-time deep pagination on large fan-outs, and `ETag`/`If-None-Match`
+  revalidation for the in-memory cache (cheap freshness without a full refetch). Falls back to offset.
+
+## Agent / MCP wedge
+
+A 2026-06 competitive scan confirmed the wedge is unoccupied: nobody else ships **CLI + TUI +
+read-only MCP in one (Rust) binary**. The benchmark competitor is the official
+`netboxlabs/netbox-mcp-server` (read-only, Python, 3 generic tools). These items widen the lead;
+all read-only. (Market positioning itself stays out of the repo — see private notes.)
+
+- ☐ **Lean into "the agent-native NetBox binary."** One static musl binary, zero runtime, drops into
+  any agent sandbox — vs the all-Python MCP field. Worth a measured cold-start/latency comparison.
+- ☐ **MCP prompts catalog.** Curated read-only prompt templates for common investigations (IP
+  utilization audit, path trace, find stale/unused prefixes) alongside the existing tools + resources.
+- ☐ **Token-budget discipline as a headline.** Lean default view models + `--fields` across CLI/MCP;
+  document per-tool token footprints (the official server's headline is ~90% reduction via field filtering).
+- ☐ **First-class install recipes.** Copy-paste MCP config for Claude Code / Desktop / Cursor, plus an
+  `nbox serve --print-config` helper. (SKILL.md + the README "Add it to Claude" block are the start.)
+- ☐ **Read-only history/changelog tool.** `nbox history <object>` / an MCP tool that summarizes an
+  object's changelog ("what changed and when") — answers agent "what happened to this prefix?" queries.
+- ☐ **Structured read-only exports.** An export mode producing Prometheus targets / firewall
+  address-lists / device inventories from live NetBox (the `netbox-lists` niche, as one fast binary).
+
+---
+
 ## Foundation before scale
 
 These are the highest-leverage engineering items before the repo grows much more. Bias toward small,
