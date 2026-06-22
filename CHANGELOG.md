@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-06-22
+
+### Changed
+
+- **Pasting an API token now just works — OS keyring storage is opt-in.** A token
+  pasted in the first-run wizard or the Settings profile builder is saved to
+  `config.toml` (`token = "..."`) and you're connected — no OS keychain prompt.
+  This replaces the 0.7.1 behavior that blocked a pasted token unless a persistent
+  keyring backend was available. The config token is redacted from `config show` /
+  `--json` / `Debug`, and the file is written with `0600` permissions on Unix.
+- **Opt into the OS keyring** with `Ctrl+K` in the TUI or `nbox config token set`:
+  that sets `token_store = "keyring"`, moves the token into the keychain, and
+  clears it from `config.toml`. The keyring is only ever consulted for profiles
+  that opt in.
+- Token resolution precedence is now `token_env` → `NBOX_TOKEN` → config token →
+  (opt-in) keyring → none.
+
 ## [0.7.1] - 2026-06-22
 
 ### Fixed
