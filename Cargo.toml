@@ -11,6 +11,20 @@ readme = "README.md"
 keywords = ["netbox", "network", "ipam", "tui", "dcim"]
 categories = ["command-line-utilities", "network-programming"]
 
+# `cargo binstall nbox` fetches the prebuilt archive from the GitHub Release
+# (no compile) instead of building from source. Archive names match the release
+# workflow (`nbox-<target>.tar.gz`, the binary at the archive root); Windows is a
+# `.zip`. Takes effect for the release that publishes this metadata to crates.io —
+# crates.io versions are immutable, so it can't be retrofitted onto an existing
+# one. On x86_64 Linux (gnu host) binstall falls back to the musl archive we ship.
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }{ archive-suffix }"
+bin-dir = "{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-fmt = "zip"
+
 [dependencies]
 # Async runtime
 tokio = { version = "1", features = ["full"] }

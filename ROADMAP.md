@@ -495,9 +495,10 @@ Consolidated future scope:
 
 ## Infrastructure & quality
 
-- ☐ **`cargo binstall` support.** Add `[package.metadata.binstall]` mapping to the release archives so
-  `cargo binstall nbox` fetches the prebuilt binary (sub-second, no compile) instead of building from
-  source. The archives + `SHA256SUMS` already ship; this is metadata only.
+- ☑ **`cargo binstall` support.** `[package.metadata.binstall]` maps to the release archives so
+  `cargo binstall nbox` fetches the prebuilt binary (no compile) instead of building from source.
+  Metadata-only; takes effect from the release that publishes it (crates.io versions are immutable, so it
+  can't be retrofitted onto 0.9.0).
 - ☑ `cargo-audit` CI (the `audit` job gating every release).
 - ☑ Pre-commit hooks (fmt/clippy on commit, test on push).
 - ☑ musl Linux targets in the release matrix (static x86_64/aarch64; gnu aarch64 kept).
