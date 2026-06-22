@@ -676,6 +676,36 @@ fn browse_label(kind: ObjectKind) -> &'static str {
     }
 }
 
+/// Humanize a per-kind count for the narrow Nav rail: exact below 1000, then
+/// `k`/`M` with one decimal under ten (`1.2k`, `30k`, `2.6M`) so it stays ≤ ~5
+/// columns and the right-aligned count never clips on a large instance. Truncates
+/// rather than rounds — it's an at-a-glance magnitude, and truncation avoids a
+/// `9.99k → 10.0k` style jump.
+fn humanize_count(n: usize) -> String {
+    const K: usize = 1_000;
+    const M: usize = 1_000_000;
+    let scaled = |n: usize, unit: usize, suffix: char| {
+        let whole = n / unit;
+        if whole < 10 {
+            let tenths = (n % unit) / (unit / 10);
+            if tenths == 0 {
+                format!("{whole}{suffix}")
+            } else {
+                format!("{whole}.{tenths}{suffix}")
+            }
+        } else {
+            format!("{whole}{suffix}")
+        }
+    };
+    if n < K {
+        n.to_string()
+    } else if n < M {
+        scaled(n, K, 'k')
+    } else {
+        scaled(n, M, 'M')
+    }
+}
+
 /// The left Navigation rail: browse-by-kind sections (domain-colored bullets) with
 /// a divider before Recent. The highlighted row gets an accent gutter while the
 /// pane holds focus.
@@ -730,7 +760,7 @@ fn render_home_nav(frame: &mut Frame, area: Rect, app: &App) {
                 .map(|n| *n as usize)
         };
         if let Some(n) = count {
-            let count_str = n.to_string();
+            let count_str = humanize_count(n);
             // inner width = pane minus both borders and the 1-col horizontal padding.
             // Measure by display width (not char count) so the column stays aligned
             // even if a label ever holds a wide/CJK glyph; the gutter + "● " is 2 cols.
@@ -2357,6 +2387,29 @@ mod tests {
         assert_eq!(kind_accent("tenant", &t), t.graph_primary);
         // Anything unmapped falls back to dim text.
         assert_eq!(kind_accent("mystery", &t), t.text_dim);
+    }
+
+    #[test]
+    fn humanize_count_abbreviates_large_counts() {
+        // Exact below 1000.
+        assert_eq!(humanize_count(0), "0");
+        assert_eq!(humanize_count(149), "149");
+        assert_eq!(humanize_count(999), "999");
+        // Thousands: one decimal under 10k (trailing .0 dropped), integer above.
+        assert_eq!(humanize_count(1_000), "1k");
+        assert_eq!(humanize_count(1_234), "1.2k");
+        assert_eq!(humanize_count(9_999), "9.9k"); // truncates, never rounds to 10.0k
+        assert_eq!(humanize_count(10_000), "10k");
+        assert_eq!(humanize_count(30_142), "30k");
+        assert_eq!(humanize_count(302_142), "302k");
+        // Millions (your cable count lands here).
+        assert_eq!(humanize_count(1_000_000), "1M");
+        assert_eq!(humanize_count(2_613_585), "2.6M");
+        assert_eq!(humanize_count(12_000_000), "12M");
+        // Every abbreviation stays within the rail's count budget (≤ 5 cols).
+        for n in [999, 1_000, 9_999, 999_999, 2_613_585, 999_000_000] {
+            assert!(humanize_count(n).len() <= 6, "{n} → {}", humanize_count(n));
+        }
     }
 
     #[test]
