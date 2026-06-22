@@ -8,7 +8,7 @@ use crate::cache::{Cache, CacheKey};
 use crate::domain::detail::{load_detail, load_detail_by_ref};
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::search::SearchRequest;
-use crate::tui::events::{spawn_preview_ticks, spawn_terminal_events, spawn_ticks};
+use crate::tui::events::{AbortOnDrop, spawn_preview_ticks, spawn_terminal_events, spawn_ticks};
 use crate::tui::state::{App, AppCommand, AppEvent};
 use crate::tui::ui;
 
@@ -61,7 +61,7 @@ async fn event_loop(
     refresh_secs: Option<u64>,
 ) -> Result<()> {
     let (tx, mut rx) = mpsc::channel::<AppEvent>(64);
-    spawn_terminal_events(tx.clone());
+    let _terminal_events = AbortOnDrop::new(spawn_terminal_events(tx.clone()));
     // The preview debounce is always on (independent of the optional auto-refresh).
     spawn_preview_ticks(tx.clone());
     // The auto-refresh ticker, kept as a handle so the Settings section can re-arm

@@ -3,7 +3,7 @@
 //! When the TUI launches with no usable config (no file, no profiles, or no
 //! resolvable active profile — see [`crate::config::needs_onboarding`]) we run a
 //! short guided wizard instead of dying with "run `nbox config init`". It
-//! captures one profile (name, url, token/token_env, auth_scheme, verify_tls),
+//! captures one profile (name, url, token source, auth_scheme, verify_tls),
 //! reusing Phase B's [`ProfileForm`]/`FormInput` add-form and its
 //! test-connect/`verify_compatible` path verbatim — no re-implemented
 //! form/validation/probe. On success it writes the profile via the same config
@@ -13,9 +13,9 @@
 //! keyring, and returns the chosen profile name so `run_tui` continues into the
 //! normal `App` with that profile active.
 //!
-//! Keyring-unavailable path: the wizard still completes. The metadata is saved
-//! and `token_env` is persisted when given; we surface env-var guidance rather
-//! than hard-failing because the keychain is missing.
+//! Keyring-unavailable path: a pasted token cannot be stored, so save is blocked
+//! with guidance to use `token_env`/`NBOX_TOKEN` instead. Metadata-only profiles
+//! can still be saved intentionally.
 //!
 //! The state + key handling here are PURE (no terminal, no network): [`handle_key`]
 //! is a state transition returning a [`WizardAction`] the driver acts on, and
@@ -36,7 +36,7 @@ use tokio::sync::mpsc;
 use crate::netbox::auth::AuthScheme;
 use crate::netbox::client::NetBoxClient;
 use crate::tui::config_modal::{ProfileForm, TestState, field};
-use crate::tui::events::spawn_terminal_events;
+use crate::tui::events::{AbortOnDrop, spawn_terminal_events};
 use crate::tui::state::{AppEvent, ConnectRequest};
 use crate::tui::theme::Theme;
 
@@ -116,7 +116,7 @@ impl OnboardingWizard {
                     WizardAction::None
                 }
             },
-            KeyCode::Enter => match self.form.validate() {
+            KeyCode::Enter => match validate_for_onboarding_save(&self.form) {
                 Ok(()) => WizardAction::Save,
                 Err(e) => {
                     self.form.message = Some(e);
@@ -160,6 +160,22 @@ impl OnboardingWizard {
     }
 }
 
+/// Onboarding-specific save validation.
+///
+/// The shared profile form only checks syntax. First-run onboarding also has to
+/// prevent a misleading "saved" path when the user pasted a token but this build
+/// has no persistent keyring backend to store it.
+fn validate_for_onboarding_save(form: &ProfileForm) -> Result<(), String> {
+    form.validate()?;
+    if form.token().is_some() && !crate::secret::keyring_available() {
+        return Err(
+            "this build can't store pasted tokens; clear token and use token_env or NBOX_TOKEN"
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// What [`persist`] did, so the driver can show the right status / steer the user.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PersistOutcome {
@@ -176,13 +192,16 @@ pub struct PersistOutcome {
 
 /// Persist the wizard's profile: write the metadata (format-preserving) via the
 /// same setters the editor uses, then store a typed token in the OS keyring when
-/// one was given and the keyring is available. Returns a [`PersistOutcome`]
+/// one was given and the keyring is available. The interactive wizard validates
+/// that case before calling this, so a pasted token is not silently accepted on
+/// builds with no persistent keyring. Returns a [`PersistOutcome`]
 /// describing what happened so the driver can guide the user when no token landed
 /// anywhere. The token is NEVER written to TOML.
 ///
 /// Pure but for the file/keyring writes (mirroring the editor's profile save plus
 /// keyring set on the render thread). The keyring being unavailable is **not** an
-/// error — the metadata still saves and `token_env` is persisted when given.
+/// error at this layer — the metadata still saves and `token_env` is persisted
+/// when given. The UI guard decides whether to keep the user in the wizard.
 pub fn persist(form: &ProfileForm, path: &Path) -> Result<PersistOutcome> {
     let name = form.name();
     let url = form.url();
@@ -226,7 +245,8 @@ pub fn persist(form: &ProfileForm, path: &Path) -> Result<PersistOutcome> {
     crate::config::write_doc(path, &doc)?;
 
     // A typed token goes to the OS keyring (never TOML). Keyring-unavailable is
-    // not fatal — the metadata is already saved; we fall back to env guidance.
+    // not fatal at this low-level writer — the interactive wizard blocks this
+    // path before saving, while direct tests/uses report env guidance below.
     let mut stored_in_keyring = false;
     if let Some(token) = &token {
         let account = crate::secret::account_key(&path.display().to_string(), &name);
@@ -262,7 +282,7 @@ pub async fn run(
     theme: &Theme,
 ) -> Result<Option<PersistOutcome>> {
     let (tx, mut rx) = mpsc::channel::<AppEvent>(64);
-    spawn_terminal_events(tx.clone());
+    let _terminal_events = AbortOnDrop::new(spawn_terminal_events(tx.clone()));
 
     let mut wizard = OnboardingWizard::new();
     // Latest-test-wins guard: each test bumps `test_seq`; a `ConnectTested` with
@@ -511,6 +531,29 @@ mod tests {
         // Type a valid url ⇒ Enter saves.
         type_into(&mut w, "https://nb.example");
         assert_eq!(w.handle_key(key(KeyCode::Enter)), WizardAction::Save);
+    }
+
+    #[test]
+    fn enter_blocks_pasted_token_when_keyring_is_unavailable() {
+        if crate::secret::keyring_available() {
+            return;
+        }
+        let mut w = OnboardingWizard::new();
+        type_into(&mut w, "https://nb.example");
+        for _ in field::URL..field::TOKEN {
+            w.handle_key(key(KeyCode::Tab));
+        }
+        type_into(&mut w, "nbt_secret");
+
+        assert_eq!(w.handle_key(key(KeyCode::Enter)), WizardAction::None);
+        assert!(
+            w.form
+                .message
+                .as_deref()
+                .is_some_and(|m| m.contains("can't store pasted tokens")),
+            "message: {:?}",
+            w.form.message
+        );
     }
 
     #[test]

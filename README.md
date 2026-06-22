@@ -21,7 +21,8 @@ server for AI agents.
 ## Quick Start
 
 First run? Just launch the TUI — with no config it opens a first-run wizard that
-captures a profile (url + token), test-connects, and drops you into the app:
+captures a profile (URL plus a keyring-backed or env-backed token source),
+test-connects, and drops you into the app:
 
 ```bash
 nbox                              # first run: guided onboarding, then the TUI
@@ -354,7 +355,7 @@ in-app: list them (active marked), and add / edit / select / delete without
 hand-editing `config.toml`. The add/edit form covers `name`, `url`, `token_env`,
 `auth_scheme`, and `verify_tls`, plus an optional masked token field. When a
 keyring is available, a typed token is stored there (never in `config.toml`);
-otherwise nbox saves the profile metadata and tells you to use `token_env` or
+otherwise pasted-token saves are blocked and nbox tells you to use `token_env` or
 `NBOX_TOKEN`. `Ctrl+T` test-connects before you commit; `Enter` saves, `Ctrl+G`
 saves and switches to it. Unlike the quick `P` cycle, selecting or adding-and-using
 a profile here **persists** `active_profile` to your config. Deleting the active
@@ -392,9 +393,9 @@ TUI renders without color and marks the selection with a `>` cursor.
 ## Configuration
 
 First-time setup needs no hand-edited TOML: launch `nbox` with no config and the
-TUI runs a first-run wizard that captures a profile (url, token or `token_env`,
-`auth_scheme`, `verify_tls`), test-connects, writes it, and continues into the
-app. The same wizard appears when a config exists but has no resolvable active
+TUI runs a first-run wizard that captures a profile (url, `token_env`/`NBOX_TOKEN`,
+or a pasted token when keyring storage is available), test-connects, writes it,
+and continues into the app. The same wizard appears when a config exists but has no resolvable active
 profile. You can still configure by hand — the file lives at:
 
 | OS | Path |

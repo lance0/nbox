@@ -2209,6 +2209,12 @@ impl App {
             return Vec::new();
         };
 
+        if let Some(message) = Self::token_action_preflight_error(&token_action) {
+            self.set_form_error(message.clone());
+            self.set_status(message, Severity::Error);
+            return Vec::new();
+        }
+
         // Write the metadata to the config file (format-preserving). The token is
         // NEVER written here. On a rename the old TOML section is removed (H1).
         if let Err(e) = Self::persist_profile(
@@ -2233,15 +2239,18 @@ impl App {
 
         // Reconcile the OS-keyring token (H2/H3/H5): store a new value, clear on the
         // explicit clear intent, or migrate the existing entry across a rename. The
-        // token is never written to TOML; a keyring-unavailable store surfaces a
-        // clear warning so the user knows the token did NOT land anywhere.
-        let token_status = Self::apply_token_change(
-            &path,
-            original.as_deref(),
-            &name,
-            &token_action,
-            token_env.is_some(),
-        );
+        // token is never written to TOML; a failed explicit set/clear keeps the user
+        // in the form so the UI can't imply a token landed when it did not.
+        let token_status =
+            match Self::apply_token_change(&path, original.as_deref(), &name, &token_action) {
+                Ok(status) => status,
+                Err(e) => {
+                    let message = format!("token save failed: {e:#}");
+                    self.set_form_error(message.clone());
+                    self.set_status(message, Severity::Error);
+                    return Vec::new();
+                }
+            };
 
         // Build the live profile entry from the form + reflect it into `profiles`.
         // The form now owns timeout/page_size/exclude/api too, so these come
@@ -2299,6 +2308,14 @@ impl App {
             None => self.set_status(format!("saved profile '{name}'"), Severity::Success),
         }
         Vec::new()
+    }
+
+    fn set_form_error(&mut self, message: String) {
+        if let Some(Modal::Config(modal)) = &mut self.modal
+            && let Some(form) = modal.form_mut()
+        {
+            form.message = Some(message);
+        }
     }
 
     /// Persist a profile's editor metadata to the config file (format-preserving).
@@ -2373,13 +2390,13 @@ impl App {
 
     /// Reconcile the OS-keyring token for a profile save (H2/H3/H5). Returns an
     /// optional `(message, severity)` to surface when something noteworthy happened
-    /// (a dropped token, a clear, a migration) — `None` on the quiet happy path.
+    /// (a clear or best-effort migration warning) — `None` on the quiet happy path.
     ///
     /// The token value never appears in the returned message or any log.
     ///
-    /// - [`TokenAction::Set`]: store the new token under the (new) key. If the
-    ///   keyring is unavailable, the token is NOT stored — warn the user clearly and
-    ///   point them at `token_env`/`NBOX_TOKEN`. On a rename, also delete the old key.
+    /// - [`TokenAction::Set`]: store the new token under the (new) key. If storage
+    ///   fails, return an error; on a rename, delete the old key only after the new
+    ///   token is safely stored.
     /// - [`TokenAction::Clear`]: delete the entry under the current (and, on rename,
     ///   the old) key.
     /// - [`TokenAction::Keep`]: leave the value; on a rename, migrate the existing
@@ -2389,8 +2406,7 @@ impl App {
         original: Option<&str>,
         name: &str,
         action: &crate::tui::config_modal::TokenAction,
-        has_token_env: bool,
-    ) -> Option<(String, Severity)> {
+    ) -> anyhow::Result<Option<(String, Severity)>> {
         use crate::tui::config_modal::TokenAction;
         let path_str = path.display().to_string();
         let new_key = crate::secret::account_key(&path_str, name);
@@ -2401,28 +2417,38 @@ impl App {
 
         match action {
             TokenAction::Set(token) => {
-                // Drop any old-key entry first (rename), then store under the new key.
-                if let Some(old) = &old_key {
-                    let _ = crate::secret::keyring_delete(old);
+                crate::secret::keyring_set(&new_key, token).map_err(|e| {
+                    anyhow::anyhow!(
+                        "pasted token was NOT stored ({e}); clear it and use token_env/NBOX_TOKEN or enable keyring storage"
+                    )
+                })?;
+                // If this was a rename, remove the old-key entry only after the new
+                // token is safely stored, so a write failure can't strand the profile
+                // without its previous secret.
+                if let Some(old) = &old_key
+                    && let Err(e) = crate::secret::keyring_delete(old)
+                {
+                    tracing::debug!("failed to delete old keyring entry after token set: {e:#}");
                 }
-                match crate::secret::keyring_set(&new_key, token) {
-                    Ok(()) => None,
-                    Err(_) => Some((
-                        if has_token_env {
-                            "saved — keyring unavailable, token NOT stored; the token_env will be used".to_string()
-                        } else {
-                            "saved, but the token was NOT stored: keyring unavailable — set a token_env or export NBOX_TOKEN".to_string()
-                        },
-                        Severity::Warning,
-                    )),
-                }
+                Ok(None)
             }
             TokenAction::Clear => {
-                let _ = crate::secret::keyring_delete(&new_key);
+                crate::secret::keyring_delete(&new_key).map_err(|e| {
+                    anyhow::anyhow!(
+                        "stored token was NOT cleared ({e}); try again or clear it outside nbox"
+                    )
+                })?;
                 if let Some(old) = &old_key {
-                    let _ = crate::secret::keyring_delete(old);
+                    crate::secret::keyring_delete(old).map_err(|e| {
+                        anyhow::anyhow!(
+                            "old stored token was NOT cleared after rename ({e}); try again or clear it outside nbox"
+                        )
+                    })?;
                 }
-                Some(("saved — stored token cleared".to_string(), Severity::Info))
+                Ok(Some((
+                    "saved — stored token cleared".to_string(),
+                    Severity::Info,
+                )))
             }
             TokenAction::Keep => {
                 // Migrate the existing entry across a rename so auth follows the name.
@@ -2432,14 +2458,31 @@ impl App {
                     let migrated = crate::secret::keyring_set(&new_key, &existing).is_ok();
                     let _ = crate::secret::keyring_delete(old);
                     if !migrated {
-                        return Some((
+                        return Ok(Some((
                             "saved — could not migrate the stored token to the new name; re-enter it or set a token_env".to_string(),
                             Severity::Warning,
-                        ));
+                        )));
                     }
                 }
-                None
+                Ok(None)
             }
+        }
+    }
+
+    fn token_action_preflight_error(
+        action: &crate::tui::config_modal::TokenAction,
+    ) -> Option<String> {
+        use crate::tui::config_modal::TokenAction;
+        match action {
+            TokenAction::Set(_) if !crate::secret::keyring_available() => Some(
+                "this build can't store pasted tokens; clear token and use token_env or NBOX_TOKEN"
+                    .to_string(),
+            ),
+            TokenAction::Clear if !crate::secret::keyring_available() => Some(
+                "this build has no keyring to clear; remove token_env/NBOX_TOKEN instead"
+                    .to_string(),
+            ),
+            _ => None,
         }
     }
 
@@ -7471,8 +7514,7 @@ mod tests {
         a.handle_event(press(KeyCode::Tab));
         type_form(&mut a, "https://nb.lab"); // url
         a.handle_event(press(KeyCode::Tab)); // → token_env
-        a.handle_event(press(KeyCode::Tab)); // → token (masked)
-        type_form(&mut a, "nbt_supersecret.value"); // token → keyring only
+        type_form(&mut a, "NETBOX_TOKEN"); // env-backed token source
         // Enter saves (no test required).
         let cmds = a.handle_event(press(KeyCode::Enter));
         assert!(cmds.is_empty(), "plain save does not switch");
@@ -7482,6 +7524,7 @@ mod tests {
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("[profiles.lab]"));
         assert!(text.contains("https://nb.lab"));
+        assert!(text.contains("token_env = \"NETBOX_TOKEN\""));
         assert!(
             !text.contains("nbt_supersecret"),
             "the token must never be written to TOML"
@@ -7489,6 +7532,53 @@ mod tests {
         // Back on the list, the saved profile is selected.
         if let Some(Modal::Config(m)) = &a.modal {
             assert!(matches!(m.profiles.mode, ProfilesMode::List { .. }));
+        }
+    }
+
+    #[test]
+    fn add_profile_with_pasted_token_blocks_when_keyring_is_unavailable() {
+        if crate::secret::keyring_available() {
+            return;
+        }
+        let (mut a, _dir, path) = app_with_config(&["alpha"]);
+        a.handle_event(press(KeyCode::Char('S'))); // open modal
+        a.handle_event(press(KeyCode::Char('a'))); // add form
+        type_form(&mut a, "lab"); // name
+        a.handle_event(press(KeyCode::Tab));
+        type_form(&mut a, "https://nb.lab"); // url
+        a.handle_event(press(KeyCode::Tab)); // → token_env
+        a.handle_event(press(KeyCode::Tab)); // → token (masked)
+        type_form(&mut a, "nbt_supersecret.value");
+
+        let cmds = a.handle_event(press(KeyCode::Enter));
+
+        assert!(cmds.is_empty());
+        assert!(
+            a.profiles.iter().all(|p| p.name != "lab"),
+            "profile should not be added live when token storage is impossible"
+        );
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            !text.contains("[profiles.lab]"),
+            "metadata should not be written when a pasted token cannot be stored: {text}"
+        );
+        assert_eq!(a.status_severity, Severity::Error);
+        assert!(
+            a.status.contains("can't store pasted tokens"),
+            "{}",
+            a.status
+        );
+        if let Some(Modal::Config(m)) = &a.modal {
+            let f = m.form().expect("form stays open");
+            assert!(
+                f.message
+                    .as_deref()
+                    .is_some_and(|m| m.contains("can't store pasted tokens")),
+                "form message: {:?}",
+                f.message
+            );
+        } else {
+            panic!("config modal should remain open");
         }
     }
 
