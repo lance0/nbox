@@ -317,7 +317,7 @@ fn dispatch(command: AppCommand, client: NetBoxClient, cache: Cache, tx: mpsc::S
                 // Reconnect the TUI way: rebuild the client from the target
                 // profile and re-probe `/api/status/` — the same connect/probe
                 // code paths launch uses — off the render thread. Token resolution
-                // reads the env + keyring here (not in the pure handler). The
+                // reads the env + config token here (not in the pure handler). The
                 // switch `id` is echoed back so a superseded switch is dropped on
                 // arrival.
                 let result = reconnect(&config, config_path.as_deref(), &name).await;
@@ -350,8 +350,6 @@ fn dispatch(command: AppCommand, client: NetBoxClient, cache: Cache, tx: mpsc::S
 /// errors. The token is moved straight into the client; it is never logged.
 async fn test_connect(req: &crate::tui::state::ConnectRequest) -> Result<String> {
     let profile = req.to_profile();
-    // Resolve the token here, inside the spawned task, so the keyring read (the
-    // last tier) never blocks the render thread (M9).
     let client = NetBoxClient::new(&profile, req.resolved_token())?;
     let status = client.verify_compatible().await?;
     Ok(status.netbox_version)
@@ -367,9 +365,8 @@ async fn reconnect(
     config_path: Option<&std::path::Path>,
     profile_name: &str,
 ) -> Result<(NetBoxClient, String)> {
-    // Token resolution needs the config path + profile name to key the keyring.
-    // With no backing file (config_path None), fall back to env-only resolution
-    // by keying off an empty path — the keyring lookup just misses.
+    // `resolve_token` keeps the config-path + profile-name params for signature
+    // stability; with no backing file (config_path None) we pass an empty path.
     let path = config_path.unwrap_or_else(|| std::path::Path::new(""));
     let token = crate::config::resolve_token(profile, path, profile_name);
     let client = NetBoxClient::new(profile, token)?;

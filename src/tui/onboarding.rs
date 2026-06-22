@@ -9,13 +9,12 @@
 //! form/validation/probe. On success it writes the profile via the same config
 //! setters the editor uses ([`upsert_profile`](crate::config::upsert_profile) +
 //! [`set_active_profile`](crate::config::set_active_profile) +
-//! [`write_doc`](crate::config::write_doc)), optionally stores the token in the OS
-//! keyring, and returns the chosen profile name so `run_tui` continues into the
-//! normal `App` with that profile active.
+//! [`write_doc`](crate::config::write_doc)), writing a pasted token to
+//! `config.toml`, and returns the chosen profile name so `run_tui` continues into
+//! the normal `App` with that profile active.
 //!
-//! Keyring-unavailable path: a pasted token cannot be stored, so save is blocked
-//! with guidance to use `token_env`/`NBOX_TOKEN` instead. Metadata-only profiles
-//! can still be saved intentionally.
+//! No-token path: a profile saved with neither a pasted token nor a `token_env`
+//! completes, with guidance to export `NBOX_TOKEN` / set a `token_env` to connect.
 //!
 //! The state + key handling here are PURE (no terminal, no network): [`handle_key`]
 //! is a state transition returning a [`WizardAction`] the driver acts on, and
@@ -35,22 +34,21 @@ use tokio::sync::mpsc;
 
 use crate::netbox::auth::AuthScheme;
 use crate::netbox::client::NetBoxClient;
-use crate::tui::config_modal::{ProfileForm, TestState, TokenAction, field};
+use crate::tui::config_modal::{ProfileForm, TestState, field};
 use crate::tui::events::{AbortOnDrop, spawn_terminal_events};
-use crate::tui::profile_token::PreparedTokenChange;
 use crate::tui::state::{AppEvent, ConnectRequest};
 use crate::tui::theme::Theme;
 
 /// What the driver should do after the wizard handles a key. The wizard stays
 /// pure — it returns one of these and the driver performs the I/O (the
-/// test-connect probe, the config/keyring write, exiting).
+/// test-connect probe, the config write, exiting).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WizardAction {
     /// Nothing to do (state changed in place, or the key was inert).
     None,
     /// Test-connect the form's current contents (builds a temp client + probes).
     TestConnect,
-    /// Persist the form (config metadata + optional keyring) and finish.
+    /// Persist the form (config metadata + optional token) and finish.
     Save,
     /// Quit the wizard without writing anything (Esc / Ctrl+C).
     Quit,
@@ -105,10 +103,6 @@ impl OnboardingWizard {
                 self.form.toggle_verify_tls();
                 WizardAction::None
             }
-            KeyCode::Char('k') if ctrl => {
-                self.form.toggle_token_store();
-                WizardAction::None
-            }
             // Ctrl+T tests the connection; Enter saves (and finishes).
             KeyCode::Char('t') if ctrl => match self.form.validate() {
                 Ok(()) => {
@@ -121,7 +115,7 @@ impl OnboardingWizard {
                     WizardAction::None
                 }
             },
-            KeyCode::Enter => match validate_for_onboarding_save(&self.form) {
+            KeyCode::Enter => match self.form.validate() {
                 Ok(()) => WizardAction::Save,
                 Err(e) => {
                     self.form.message = Some(e);
@@ -140,48 +134,24 @@ impl OnboardingWizard {
     }
 
     /// Build a [`ConnectRequest`] from the current form for a test-connect probe.
-    /// The probe token uses the same precedence as the eventual launch (M15): the
-    /// typed (masked) token wins, else the form's `token_env` (resolved from the
-    /// environment), else `NBOX_TOKEN`. There's no profile yet, so there's no
-    /// keyring tier here. The token is passed straight to the temp client, never
-    /// logged.
+    /// The probe token uses the same normalized precedence as the eventual launch
+    /// (M15) via the shared helper: the typed (masked) token wins, else the form's
+    /// `token_env` (resolved from the environment), else `NBOX_TOKEN`. There's no
+    /// saved profile yet, so there's no config token. The token is passed straight
+    /// to the temp client, never logged.
     #[must_use]
     pub fn connect_request(&self) -> ConnectRequest {
-        let token = self.form.token().or_else(|| {
-            self.form
-                .token_env()
-                .and_then(|name| std::env::var(&name).ok())
-                .filter(|t| !t.is_empty())
-                .or_else(|| std::env::var("NBOX_TOKEN").ok().filter(|t| !t.is_empty()))
-        });
+        let typed = self.form.token();
+        let token_env = self.form.token_env();
+        let token =
+            crate::config::resolve_probe_token(typed.as_deref(), token_env.as_deref(), None);
         ConnectRequest {
             url: self.form.url(),
             auth_scheme: self.form.auth_scheme,
             verify_tls: self.form.verify_tls,
             token,
-            // Onboarding has no saved profile yet, so there's no keyring tier.
-            keyring_account: None,
         }
     }
-}
-
-/// Onboarding-specific save validation.
-///
-/// The shared profile form only checks syntax. First-run onboarding also has to
-/// prevent a misleading "saved" path when the user pasted a token but this build
-/// has no persistent keyring backend to store it.
-fn validate_for_onboarding_save(form: &ProfileForm) -> Result<(), String> {
-    form.validate()?;
-    if form.token().is_some()
-        && form.token_store == crate::config::TokenStore::Keyring
-        && !crate::secret::keyring_available()
-    {
-        return Err(
-            "this build can't store tokens in a keyring; switch token_store to config or use token_env"
-                .to_string(),
-        );
-    }
-    Ok(())
 }
 
 /// What [`persist`] did, so the driver can show the right status / steer the user.
@@ -189,26 +159,21 @@ fn validate_for_onboarding_save(form: &ProfileForm) -> Result<(), String> {
 pub struct PersistOutcome {
     /// The profile name that was written + made active.
     pub name: String,
-    /// True when a typed token was stored in the OS keyring.
-    pub stored_in_keyring: bool,
+    /// True when a typed token was stored in `config.toml`.
+    pub stored_in_config: bool,
     /// `Some(var)` when the user gave a `token_env` (persisted to the file).
     pub token_env: Option<String>,
-    /// True when no token landed anywhere (no keyring entry, no token_env): the
+    /// True when no token landed anywhere (no config token, no token_env): the
     /// driver tells the user to export `NBOX_TOKEN` / set a `token_env`.
     pub needs_env_guidance: bool,
 }
 
-/// Persist the wizard's profile. Pasted tokens are stored in config by default;
-/// if the user explicitly selected keyring, prepare that write first, then write
-/// metadata (format-preserving) via the same setters the editor uses. If the
-/// metadata write fails, the keyring change is rolled back. The interactive
-/// wizard validates the no-keyring case before calling this, and any runtime
-/// keyring write failure keeps the user in the wizard instead of creating a
-/// profile without the pasted token. Returns a [`PersistOutcome`] describing what
-/// happened so the driver can guide the user when no token source was given.
-/// Pure but for the file/keyring writes (mirroring the editor's profile save).
-/// Metadata-only, config-token, and `token_env`-backed profiles save without
-/// touching the keyring.
+/// Persist the wizard's profile. A pasted token is written to `config.toml`
+/// (`token = "…"`, `0600` on Unix, redacted in display) via the same setters the
+/// editor uses; metadata-only and `token_env`-backed profiles just skip it.
+/// Returns a [`PersistOutcome`] describing what happened so the driver can guide
+/// the user when no token source was given. Pure but for the file write
+/// (mirroring the editor's profile save).
 pub fn persist(form: &ProfileForm, path: &Path) -> Result<PersistOutcome> {
     let name = form.name();
     let url = form.url();
@@ -216,7 +181,6 @@ pub fn persist(form: &ProfileForm, path: &Path) -> Result<PersistOutcome> {
     let auth_scheme = form.auth_scheme;
     let verify_tls = form.verify_tls;
     let token = form.token();
-    let token_store = form.token_store;
 
     // Write the metadata (format-preserving), the same way `ProfileCommand::Add`
     // and the editor do: upsert + the field setters + activate.
@@ -249,37 +213,18 @@ pub fn persist(form: &ProfileForm, path: &Path) -> Result<PersistOutcome> {
         crate::config::ApiSurface::RouteTarget,
         form.api_route_target,
     )?;
-    crate::config::set_profile_token_store(&mut doc, &name, token_store)?;
-    if token_store == crate::config::TokenStore::Config {
-        crate::config::set_profile_token(&mut doc, &name, token.as_deref())?;
-    } else {
-        crate::config::set_profile_token(&mut doc, &name, None)?;
-    }
+    crate::config::set_profile_token(&mut doc, &name, token.as_deref())?;
     crate::config::set_active_profile(&mut doc, &name);
+    crate::config::write_doc(path, &doc)?;
 
-    let token_action = if token_store == crate::config::TokenStore::Keyring {
-        token
-            .as_ref()
-            .map_or(TokenAction::Keep, |token| TokenAction::Set(token.clone()))
-    } else {
-        TokenAction::Keep
-    };
-    let token_change = PreparedTokenChange::prepare(path, None, &name, &token_action)?;
-    if let Err(e) = crate::config::write_doc(path, &doc) {
-        token_change.rollback();
-        return Err(e);
-    }
-    let stored_in_keyring = token_change.stored_token();
-    let _ = token_change.commit();
-    let stored_in_config = token_store == crate::config::TokenStore::Config && token.is_some();
-
-    // If nothing authenticatable landed — no keyring entry and no token_env — the
+    let stored_in_config = token.is_some();
+    // If nothing authenticatable landed — no config token and no token_env — the
     // user must export NBOX_TOKEN or set a token_env to connect.
-    let needs_env_guidance = !stored_in_keyring && !stored_in_config && token_env.is_none();
+    let needs_env_guidance = !stored_in_config && token_env.is_none();
 
     Ok(PersistOutcome {
         name,
-        stored_in_keyring,
+        stored_in_config,
         token_env,
         needs_env_guidance,
     })
@@ -402,7 +347,7 @@ fn render(frame: &mut ratatui::Frame, area: Rect, wizard: &mut OnboardingWizard,
     }
     // A roomy centered panel; clamp to the available area.
     let popup_w = 64.min(area.width);
-    let popup_h = 17.min(area.height);
+    let popup_h = 16.min(area.height);
     let popup_x = area.x + area.width.saturating_sub(popup_w) / 2;
     let popup_y = area.y + area.height.saturating_sub(popup_h) / 2;
     let popup = Rect::new(popup_x, popup_y, popup_w, popup_h);
@@ -425,7 +370,6 @@ fn render(frame: &mut ratatui::Frame, area: Rect, wizard: &mut OnboardingWizard,
         Constraint::Length(4), // the FormInput rows
         Constraint::Length(1), // auth_scheme
         Constraint::Length(1), // verify_tls
-        Constraint::Length(1), // token_store
         Constraint::Length(1), // blank
         Constraint::Length(1), // test state
         Constraint::Length(1), // message
@@ -440,7 +384,7 @@ fn render(frame: &mut ratatui::Frame, area: Rect, wizard: &mut OnboardingWizard,
                 Style::default().fg(theme.header),
             )),
             Line::from(Span::styled(
-                "Paste a token to save it, name a token_env, or Ctrl+K for Keychain.",
+                "Paste a token to save it, or name a token_env / set NBOX_TOKEN.",
                 Style::default().fg(theme.text_dim),
             )),
         ]),
@@ -475,20 +419,6 @@ fn render(frame: &mut ratatui::Frame, area: Rect, wizard: &mut OnboardingWizard,
         ])),
         rows[3],
     );
-    frame.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::styled("token_store ", Style::default().fg(theme.header)),
-            Span::styled(
-                match wizard.form.token_store {
-                    crate::config::TokenStore::Config => "config",
-                    crate::config::TokenStore::Keyring => "keyring",
-                },
-                Style::default().fg(theme.accent),
-            ),
-            Span::styled("  (Ctrl+K toggles)", Style::default().fg(theme.text_dim)),
-        ])),
-        rows[4],
-    );
 
     let (test_text, test_style) = match &wizard.form.test {
         TestState::Idle => (String::new(), Style::default().fg(theme.text_dim)),
@@ -502,21 +432,21 @@ fn render(frame: &mut ratatui::Frame, area: Rect, wizard: &mut OnboardingWizard,
         ),
         TestState::Failed(e) => (format!("✗ {e}"), Style::default().fg(theme.error)),
     };
-    frame.render_widget(Paragraph::new(Span::styled(test_text, test_style)), rows[6]);
+    frame.render_widget(Paragraph::new(Span::styled(test_text, test_style)), rows[5]);
 
     if let Some(msg) = &wizard.form.message {
         frame.render_widget(
             Paragraph::new(Span::styled(msg.clone(), Style::default().fg(theme.error))),
-            rows[7],
+            rows[6],
         );
     }
 
     frame.render_widget(
         Paragraph::new(Span::styled(
-            "Tab: field  Ctrl+T: test  Ctrl+K: token store  Enter: save & continue  Esc: quit",
+            "Tab: field  Ctrl+T: test  Enter: save & continue  Esc: quit",
             Style::default().fg(theme.text_dim),
         )),
-        rows[8],
+        rows[7],
     );
 }
 
@@ -576,30 +506,6 @@ mod tests {
         type_into(&mut w, "nbt_secret");
 
         assert_eq!(w.handle_key(key(KeyCode::Enter)), WizardAction::Save);
-    }
-
-    #[test]
-    fn enter_blocks_keyring_token_when_keyring_is_unavailable() {
-        if crate::secret::keyring_available() {
-            return;
-        }
-        let mut w = OnboardingWizard::new();
-        type_into(&mut w, "https://nb.example");
-        w.handle_key(ctrl('k')); // opt into keyring
-        for _ in field::URL..field::TOKEN {
-            w.handle_key(key(KeyCode::Tab));
-        }
-        type_into(&mut w, "nbt_secret");
-
-        assert_eq!(w.handle_key(key(KeyCode::Enter)), WizardAction::None);
-        assert!(
-            w.form
-                .message
-                .as_deref()
-                .is_some_and(|m| m.contains("can't store tokens in a keyring")),
-            "message: {:?}",
-            w.form.message
-        );
     }
 
     #[test]
@@ -679,7 +585,7 @@ mod tests {
 
         let outcome = persist(&w.form, &path).unwrap();
 
-        assert!(!outcome.stored_in_keyring);
+        assert!(outcome.stored_in_config);
         assert!(!outcome.needs_env_guidance);
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("token = \"nbt_secret.value\""), "{text}");
@@ -723,9 +629,9 @@ mod tests {
     }
 
     #[test]
-    fn persist_no_keyring_with_token_env_completes_and_persists_env() {
-        // A token_env (no typed token) is persisted; with no keyring entry the
-        // outcome doesn't ask for env guidance (the token_env is the guidance).
+    fn persist_token_env_completes_and_persists_env() {
+        // A token_env (no typed token) is persisted; the outcome doesn't ask for env
+        // guidance (the token_env is the guidance) and nothing lands in config.
         let path = temp_config("tokenenv");
         let _ = std::fs::remove_file(&path);
         let mut w = OnboardingWizard::new();
@@ -736,7 +642,7 @@ mod tests {
         }
         type_into(&mut w, "NETBOX_TOKEN");
         let outcome = persist(&w.form, &path).unwrap();
-        assert!(!outcome.stored_in_keyring);
+        assert!(!outcome.stored_in_config);
         assert_eq!(outcome.token_env.as_deref(), Some("NETBOX_TOKEN"));
         assert!(
             !outcome.needs_env_guidance,
@@ -753,16 +659,14 @@ mod tests {
 
     #[test]
     fn persist_no_token_anywhere_requests_env_guidance() {
-        // No typed token and no token_env: when the keyring is unavailable the
-        // outcome flags that the user must export NBOX_TOKEN / set a token_env.
-        // (Where a real keystore IS available, a typed token would store there;
-        // here we type none, so guidance is requested regardless of backend.)
+        // No typed token and no token_env: the outcome flags that the user must
+        // export NBOX_TOKEN / set a token_env to connect.
         let path = temp_config("noenv");
         let _ = std::fs::remove_file(&path);
         let mut w = OnboardingWizard::new();
         type_into(&mut w, "https://nb.example");
         let outcome = persist(&w.form, &path).unwrap();
-        assert!(!outcome.stored_in_keyring);
+        assert!(!outcome.stored_in_config);
         assert!(outcome.token_env.is_none());
         assert!(outcome.needs_env_guidance);
         let _ = std::fs::remove_dir_all(path.parent().unwrap());

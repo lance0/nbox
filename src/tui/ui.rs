@@ -1692,14 +1692,12 @@ fn render_config_profiles(
         }
         ProfilesMode::Form(form) => {
             // Layout: the 6 form rows up top (name/url/token_env/token + the two
-            // numeric fields), then the non-text controls (auth/tls/token store/
-            // exclude + the two API backends), the test state, the help line, and
-            // a message.
+            // numeric fields), then the non-text controls (auth/tls/exclude + the
+            // two API backends), the test state, the help line, and a message.
             let rows = Layout::vertical([
                 Constraint::Length(6), // the FormInput rows
                 Constraint::Length(1), // auth_scheme
                 Constraint::Length(1), // verify_tls
-                Constraint::Length(1), // token_store
                 Constraint::Length(1), // exclude_config_context
                 Constraint::Length(1), // api vrf
                 Constraint::Length(1), // api route_target
@@ -1740,20 +1738,6 @@ fn render_config_profiles(
             );
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
-                    Span::styled("token_store   ", Style::default().fg(theme.header)),
-                    Span::styled(
-                        match form.token_store {
-                            crate::config::TokenStore::Config => "config",
-                            crate::config::TokenStore::Keyring => "keyring",
-                        },
-                        Style::default().fg(theme.accent),
-                    ),
-                    Span::styled("  (Ctrl+K toggles)", Style::default().fg(theme.text_dim)),
-                ])),
-                rows[3],
-            );
-            frame.render_widget(
-                Paragraph::new(Line::from(vec![
                     Span::styled("config_ctx    ", Style::default().fg(theme.header)),
                     Span::styled(
                         if form.exclude_config_context {
@@ -1765,7 +1749,7 @@ fn render_config_profiles(
                     ),
                     Span::styled("  (Ctrl+E toggles)", Style::default().fg(theme.text_dim)),
                 ])),
-                rows[4],
+                rows[3],
             );
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
@@ -1773,7 +1757,7 @@ fn render_config_profiles(
                     Span::styled(form.api_vrf.as_str(), Style::default().fg(theme.accent)),
                     Span::styled("  (Ctrl+B cycles)", Style::default().fg(theme.text_dim)),
                 ])),
-                rows[5],
+                rows[4],
             );
             frame.render_widget(
                 Paragraph::new(Line::from(vec![
@@ -1784,7 +1768,7 @@ fn render_config_profiles(
                     ),
                     Span::styled("  (Ctrl+R cycles)", Style::default().fg(theme.text_dim)),
                 ])),
-                rows[6],
+                rows[5],
             );
 
             let (test_text, test_style) = match &form.test {
@@ -1799,25 +1783,25 @@ fn render_config_profiles(
                 ),
                 TestState::Failed(e) => (format!("✗ {e}"), Style::default().fg(theme.error)),
             };
-            frame.render_widget(Paragraph::new(Span::styled(test_text, test_style)), rows[8]);
+            frame.render_widget(Paragraph::new(Span::styled(test_text, test_style)), rows[7]);
 
             if let Some(msg) = &form.message {
                 frame.render_widget(
                     Paragraph::new(Span::styled(msg.clone(), Style::default().fg(theme.error))),
-                    rows[9],
+                    rows[8],
                 );
             }
 
             // Save+use is Ctrl+G (Ctrl+U is the field clear-line). On an edit form
             // also advertise Ctrl+X, which clears the stored token on save.
             let help = if form.editing.is_some() {
-                "Tab: field  Ctrl+K: token store  Ctrl+T: test  Enter: save  Ctrl+G: save+use  Ctrl+X: clear token  Esc: back"
+                "Tab: field  Ctrl+T: test  Enter: save  Ctrl+G: save+use  Ctrl+X: clear token  Esc: back"
             } else {
-                "Tab: field  Ctrl+K: token store  Ctrl+T: test  Enter: save  Ctrl+G: save+use  Esc: back"
+                "Tab: field  Ctrl+T: test  Enter: save  Ctrl+G: save+use  Esc: back"
             };
             frame.render_widget(
                 Paragraph::new(Span::styled(help, Style::default().fg(theme.text_dim))),
-                rows[10],
+                rows[9],
             );
         }
         ProfilesMode::ConfirmDelete { name, .. } => {

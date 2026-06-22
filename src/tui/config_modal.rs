@@ -3,9 +3,9 @@
 //! A single modal with two sections (`Profiles` | `Settings`), `Tab` to switch.
 //! The Profiles section lists the configured profiles (active marked) with add /
 //! edit / select / delete actions, and an add/edit [`FormInput`] form whose token
-//! field is masked (stored in config by default, or stored in the OS keyring only
-//! when `token_store = keyring`). The form also carries the profile knobs that
-//! used to need hand-editing config.toml:
+//! field is masked; a pasted token is written to `config.toml` (`token = "…"`,
+//! `0600` on Unix, redacted in display) — there is no OS-keyring storage. The form
+//! also carries the profile knobs that used to need hand-editing config.toml:
 //! `timeout_secs` / `page_size` (numeric text fields), `exclude_config_context`
 //! (Ctrl+E), and the per-surface API backends `vrf` (Ctrl+B) / `route_target`
 //! (Ctrl+R), each rest ↔ graphql. The `search` backend and `confirm_writes` are
@@ -17,12 +17,12 @@
 //! Everything here is PURE: key handling mutates the modal's own state and yields
 //! a [`ModalOutcome`] describing what the app should *do* (test-connect, save,
 //! select, delete, close). The app (`tui::state`) performs the I/O —
-//! config-file writes, the keyring, the reconnect/switch path — never this module.
-//! That keeps the modal unit-testable without a terminal or a network.
+//! config-file writes, the reconnect/switch path — never this module. That keeps
+//! the modal unit-testable without a terminal or a network.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::config::{BackendPreference, TokenStore};
+use crate::config::BackendPreference;
 use crate::netbox::auth::AuthScheme;
 use crate::tui::cheese::{FormInput, TextInput};
 use crate::tui::theme::Theme;
@@ -44,33 +44,6 @@ pub mod field {
     pub const TOKEN: usize = 3;
     pub const TIMEOUT_SECS: usize = 4;
     pub const PAGE_SIZE: usize = 5;
-}
-
-/// What the profile-save path should do with the OS-keyring token when the
-/// profile explicitly opts into keyring storage, derived from the edit form's
-/// token field + clear intent (see [`ProfileForm::token_action`]). The token
-/// value is never logged; only this intent crosses the pure/IO seam.
-#[derive(Clone, PartialEq, Eq)]
-pub enum TokenAction {
-    /// Store this freshly-typed token under the (possibly renamed) keyring key.
-    Set(String),
-    /// Delete the stored keyring entry (the explicit `Ctrl+X` clear).
-    Clear,
-    /// Leave the stored token as-is (blank field, no clear intent). On a rename,
-    /// the existing entry is migrated to the new key.
-    Keep,
-}
-
-impl std::fmt::Debug for TokenAction {
-    /// Redacts the token value: a `Set` shows as `Set(<redacted>)`, never the
-    /// secret, so a `{:?}` of an outcome carrying it can't leak.
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::Set(_) => f.write_str("Set(<redacted>)"),
-            Self::Clear => f.write_str("Clear"),
-            Self::Keep => f.write_str("Keep"),
-        }
-    }
 }
 
 /// The result of a test-connect attempt, shown in the form before committing.
@@ -117,21 +90,18 @@ pub struct ProfileForm {
     pub api_vrf: BackendPreference,
     /// `[profiles.<name>.api].route_target` backend — cycled with `Ctrl+R`.
     pub api_route_target: BackendPreference,
-    /// Where pasted tokens are persisted. Defaults to config; keyring is an
-    /// explicit opt-in toggled with `Ctrl+K`.
-    pub token_store: TokenStore,
     /// `Some(original_name)` when editing an existing profile (so a rename can be
-    /// detected and the old keyring entry migrated); `None` when adding.
+    /// detected and the old token section dropped); `None` when adding.
     pub editing: Option<String>,
     /// Latest test-connect outcome for the current contents.
     pub test: TestState,
     /// A transient validation / info line shown under the form.
     pub message: Option<String>,
-    /// "Clear the stored keyring token" intent, toggled with `Ctrl+X` on an edit
+    /// "Clear the stored config token" intent, toggled with `Ctrl+X` on an edit
     /// form. The token field starts blank on edit (the secret is never read back),
     /// so blank-means-keep can't express "delete it"; this flag does. When set,
-    /// save deletes the keyring entry. Typing a new token clears the flag (a value
-    /// to store overrides a clear).
+    /// save removes the `token` key from the profile. Typing a new token clears the
+    /// flag (a value to store overrides a clear).
     pub clear_token: bool,
 }
 
@@ -153,7 +123,6 @@ pub struct ProfileFormData<'a> {
     pub exclude_config_context: bool,
     pub api_vrf: BackendPreference,
     pub api_route_target: BackendPreference,
-    pub token_store: TokenStore,
     pub config_token: Option<&'a str>,
 }
 
@@ -190,7 +159,6 @@ impl ProfileForm {
             exclude_config_context: true,
             api_vrf: BackendPreference::Rest,
             api_route_target: BackendPreference::Rest,
-            token_store: TokenStore::Config,
             editing: None,
             test: TestState::Idle,
             message: None,
@@ -213,7 +181,6 @@ impl ProfileForm {
             exclude_config_context,
             api_vrf,
             api_route_target,
-            token_store,
             config_token: _,
         } = data;
         let mut form = Self::add();
@@ -242,7 +209,6 @@ impl ProfileForm {
         form.exclude_config_context = exclude_config_context;
         form.api_vrf = api_vrf;
         form.api_route_target = api_route_target;
-        form.token_store = token_store;
         form.editing = Some(name.to_string());
         form
     }
@@ -309,19 +275,9 @@ impl ProfileForm {
         t.parse::<usize>().ok().filter(|s| *s > 0)
     }
 
-    /// What the save path should do with a typed token / clear intent. The app
-    /// save path only applies this to the OS keyring when the profile explicitly
-    /// uses `token_store = keyring`; config-token saves derive their own action.
-    pub fn token_action(&self) -> TokenAction {
-        match self.token() {
-            Some(t) => TokenAction::Set(t),
-            None if self.clear_token => TokenAction::Clear,
-            None => TokenAction::Keep,
-        }
-    }
-
     /// Toggle the "clear stored token" intent (`Ctrl+X`). A no-op model change;
-    /// the deletion happens on save. Returns the new flag for the caller's hint.
+    /// the `token` key is removed from the profile on save. Returns the new flag
+    /// for the caller's hint.
     pub fn toggle_clear_token(&mut self) -> bool {
         self.clear_token = !self.clear_token;
         self.message = Some(if self.clear_token {
@@ -376,15 +332,6 @@ impl ProfileForm {
     /// Advance the route-target API backend: rest → graphql → rest (`Ctrl+R`).
     pub fn cycle_api_route_target(&mut self) {
         self.api_route_target = cycle_backend(self.api_route_target);
-        self.invalidate_test();
-    }
-
-    /// Toggle token persistence between config and explicit keyring.
-    pub fn toggle_token_store(&mut self) {
-        self.token_store = match self.token_store {
-            TokenStore::Config => TokenStore::Keyring,
-            TokenStore::Keyring => TokenStore::Config,
-        };
         self.invalidate_test();
     }
 
@@ -964,14 +911,14 @@ pub enum ModalOutcome {
     Close,
     /// Test-connect the form's current contents (builds a temp client + probes).
     TestConnect,
-    /// Persist the form (upsert + keyring) and, when `use_it`, switch to it.
+    /// Persist the form (upsert into config) and, when `use_it`, switch to it.
     Save { use_it: bool },
     /// Switch the live session to (and persist as active) the named profile.
     Select(String),
     /// Open the edit form for the named profile. The app fills it in via
     /// [`ConfigModal::open_edit_form`] (it owns the [`ProfileConfig`]).
     Edit(String),
-    /// Remove the named profile (config + keyring).
+    /// Remove the named profile from the config file.
     Delete(String),
     /// Hot-apply the named theme to the running app (the Settings theme cycle).
     /// The app routes this through the same theme path as the `t` cycle / palette
@@ -1234,10 +1181,6 @@ impl ConfigModal {
                 form.cycle_api_route_target();
                 ModalOutcome::None
             }
-            KeyCode::Char('k') if ctrl => {
-                form.toggle_token_store();
-                ModalOutcome::None
-            }
             // Ctrl+T tests the connection; Enter saves; Ctrl+G saves + uses it.
             KeyCode::Char('t') if ctrl => match form.validate() {
                 Ok(()) => {
@@ -1267,8 +1210,8 @@ impl ConfigModal {
                 }
             },
             // Ctrl+X toggles "clear the stored token on save". Only meaningful
-            // while editing (a fresh add has no stored token to clear),
-            // but harmless on add — token_action ignores Clear when a value is typed.
+            // while editing (a fresh add has no stored token to clear), but
+            // harmless on add — a typed value overrides the clear intent below.
             KeyCode::Char('x') if ctrl => {
                 form.toggle_clear_token();
                 ModalOutcome::None
@@ -1383,7 +1326,6 @@ mod tests {
             exclude_config_context: true,
             api_vrf: BackendPreference::Rest,
             api_route_target: BackendPreference::Rest,
-            token_store: TokenStore::Config,
             config_token: None,
         });
     }
@@ -1530,31 +1472,25 @@ mod tests {
     }
 
     #[test]
-    fn token_action_models_set_clear_and_keep() {
-        // Edit form: token blank, no clear intent ⇒ Keep.
+    fn token_field_models_keep_clear_and_set() {
+        // Edit form: token blank, no clear intent ⇒ keep (blank field, flag off).
         let mut m = ConfigModal::default();
         open_edit(&mut m, "work", "https://w", None, AuthScheme::Auto, true);
-        assert_eq!(m.form().unwrap().token_action(), TokenAction::Keep);
-        // Ctrl+X toggles the clear intent ⇒ Clear.
+        assert_eq!(m.form().unwrap().token(), None);
+        assert!(!m.form().unwrap().clear_token);
+        // Ctrl+X toggles the clear intent ⇒ blank field + flag on = remove.
         m.handle_key(ctrl('x'), &[], "");
-        assert_eq!(m.form().unwrap().token_action(), TokenAction::Clear);
-        // Tab to the token field and type a value ⇒ Set wins over a pending clear.
+        assert_eq!(m.form().unwrap().token(), None);
+        assert!(m.form().unwrap().clear_token);
+        // Tab to the token field and type a value ⇒ a typed token overrides clear.
         for _ in 0..field::TOKEN {
             m.handle_key(key(KeyCode::Tab), &[], "");
         }
         type_into(&mut m, "nbt_new");
-        assert_eq!(
-            m.form().unwrap().token_action(),
-            TokenAction::Set("nbt_new".to_string())
-        );
+        assert_eq!(m.form().unwrap().token().as_deref(), Some("nbt_new"));
         assert!(
             !m.form().unwrap().clear_token,
             "typing a token clears the flag"
-        );
-        // The Debug of a Set never leaks the value.
-        assert_eq!(
-            format!("{:?}", m.form().unwrap().token_action()),
-            "Set(<redacted>)"
         );
     }
 
@@ -1733,13 +1669,11 @@ mod tests {
             exclude_config_context: false,
             api_vrf: BackendPreference::Graphql,
             api_route_target: BackendPreference::Rest,
-            token_store: TokenStore::Keyring,
             config_token: None,
         });
         let f = m.form().unwrap();
         assert_eq!(f.timeout_secs(), Some(30));
         assert_eq!(f.page_size(), Some(250));
-        assert_eq!(f.token_store, TokenStore::Keyring);
         assert!(!f.exclude_config_context, "prefilled from the config value");
         assert_eq!(f.api_vrf, BackendPreference::Graphql);
         assert_eq!(f.api_route_target, BackendPreference::Rest);
@@ -1759,7 +1693,7 @@ mod tests {
         }
         type_into(&mut m, "nbt_secret");
         let f = m.form().unwrap();
-        // The raw value is available for the keyring…
+        // The raw value is available to write to config…
         assert_eq!(f.token().as_deref(), Some("nbt_secret"));
         // …but the rendered token line is all bullets.
         let lines = f.inputs.rendered_lines();

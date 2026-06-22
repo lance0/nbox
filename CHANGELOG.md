@@ -7,7 +7,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.7.3] - 2026-06-22
+## [0.8.0] - 2026-06-22
+
+### Changed
+
+- **The OS keyring is gone — the API token lives in `config.toml` or an env var,
+  full stop.** A token pasted in the first-run wizard or the Settings profile
+  builder is saved to `config.toml` (`token = "..."`, `0600` on Unix, redacted from
+  `config show` / `--json` / `Debug`) and you're connected. Resolution precedence is
+  `token_env` → `NBOX_TOKEN` → config token → none, with each source normalized (a
+  pasted `Bearer `/`Token ` prefix or stray whitespace stripped) *before* it
+  competes — so a high-precedence source that's set but blank (e.g.
+  `NBOX_TOKEN="Bearer "`) can't mask a valid lower one. This removes the 0.7.2
+  opt-in keychain entirely: the `keyring` dependency and Cargo features,
+  `nbox config token set`/`clear`, the TUI `Ctrl+K` toggle, and the `token_store`
+  config key are all gone. `nbox config token status` still reports the resolved
+  *source* (never the value).
+
+  **Migration:** if you previously opted a profile into the keyring
+  (`token_store = "keyring"`), re-enter its token in the TUI Settings profile editor
+  (or add `token = "..."` under `[profiles.<name>]` in `config.toml`), or point it at
+  a `token_env` / set `NBOX_TOKEN`. The `token_store` key is now ignored; you can
+  delete it and any orphaned entry from your OS keychain app.
+
+- **`nbox config init` now creates `config.toml` owner-only (`0600` on Unix).**
+  Since the token can live in the file, a freshly-created config is locked down up
+  front — before you uncomment/add `token = "..."` — matching the permissions used
+  when the TUI writes a token.
 
 ### Fixed
 
@@ -16,10 +42,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   nbox now strips a leading scheme word (and stray whitespace) from any token
   source — the config token, `token_env`, or `NBOX_TOKEN` — and adds the scheme
   itself from `auth_scheme`. Already-saved configs with a prefixed token start
-  working on the next run.
+  working on the next run. The TUI/onboarding `Ctrl+T` test-connect resolves its
+  token through the same normalized precedence, so a test result matches what a real
+  connection will do.
 - **Auth errors now show NetBox's reason.** A 401/403 surfaces the server's
-  `detail` (e.g. *"authentication failed (HTTP 403): Invalid v2 token"*) instead of
-  a generic "permission denied," so a bad or expired token is obvious at a glance.
+  `detail` (e.g. *"permission denied (HTTP 403): Invalid v2 token — check the token
+  or permissions for this profile"*) instead of a generic message, so a bad or
+  expired token is obvious at a glance.
 
 ## [0.7.2] - 2026-06-22
 

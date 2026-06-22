@@ -3,8 +3,8 @@
 # Real config lives at ~/.config/nbox/config.toml (Linux/macOS) or
 # %APPDATA%\nbox\config.toml (Windows) — create it with `nbox config init`.
 # Tokens can be stored here as `token = "..."` for the normal desktop/TUI flow,
-# or kept outside the file with `token_env` / NBOX_TOKEN. Env vars override saved
-# config/keyring tokens.
+# or kept outside the file with `token_env` / NBOX_TOKEN. Env vars override the
+# saved config token.
 
 config_version = 1
 active_profile = "work"
@@ -27,9 +27,8 @@ ttl_secs = 30              # reuse window in seconds (clamped to 5–300)
 
 [profiles.work]
 url = "https://netbox.example.com"
-# token = "nbt_..."              # default TUI paste path; redacted by config show
-token_env = "NETBOX_TOKEN"   # nbox reads the token from this env var
-# token_store = "keyring"     # optional: opt into OS keyring instead of token
+# token = "nbt_..."              # the actual token value (TUI paste path; redacted by config show)
+token_env = "NETBOX_TOKEN"   # NAME of the env var holding the token (not the token itself)
 auth_scheme = "auto"         # auto | bearer | token (auto-detects v2 nbt_ tokens)
 verify_tls = true
 timeout_secs = 15

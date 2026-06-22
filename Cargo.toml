@@ -1,6 +1,6 @@
 [package]
 name = "nbox"
-version = "0.7.3"
+version = "0.8.0"
 edition = "2024"
 rust-version = "1.88" # floor: `let`-chains, stable since 1.88, used throughout
 description = "Terminal UI and CLI for NetBox — fast search, IPAM lookups, and device context"
@@ -71,14 +71,6 @@ open = "5"
 # IP/network handling
 ipnet = "2"
 
-# OS keyring for the API token (`nbox config token set`). Pinned to v3 (=3.6.3):
-# v4 is a restructured "sample" crate, not an upgrade path. The real D-Bus
-# backend is its own off-by-default feature (`keyring-secret-service`); with no
-# backend selected (the default, and on musl) keyring v3 compiles to its built-in
-# mock keystore — runtime Err, no D-Bus/C deps — so static builds link cleanly and
-# degrade gracefully. The apple/windows backends are cfg(target_os)-inert off-OS.
-keyring = { version = "=3.6.3", optional = true }
-
 # Update notifications, later
 update-informer = { version = "1", default-features = false, features = ["github", "ureq", "rustls-tls"], optional = true }
 
@@ -114,26 +106,12 @@ libc = "0.2"
 
 [features]
 # The default set is the canonical shipped binary — every cross-platform user
-# feature on (clipboard, http/MCP, native keyring, the update notifier). nbox ships
-# a single binary; `--no-default-features` is a dev-only lean stdio build, and the
-# D-Bus `keyring-secret-service` backend stays opt-in so the musl build links clean.
-default = ["clipboard", "http", "keyring", "updates"]
+# feature on (clipboard, http/MCP, the update notifier). nbox ships a single binary;
+# `--no-default-features` is a dev-only lean stdio build. The API token lives in
+# `config.toml` (user-only `0600`) or an env var — there is no OS-keyring storage.
+default = ["clipboard", "http", "updates"]
 clipboard = ["dep:arboard"]
 updates = ["dep:update-informer"]
-# OS keyring token storage (`nbox config token`). Default-on like `http`. Selects
-# the apple/windows native backends, which are cfg(target_os)-inert off their OS,
-# so on Linux with no further backend feature this resolves to keyring v3's mock
-# keystore (no D-Bus/C link dep) — keeping the static musl build identical.
-keyring = ["dep:keyring", "keyring/apple-native", "keyring/windows-native"]
-# The real Linux D-Bus (Secret Service) backend — OFF by default; desktop
-# packagers opt in. `vendored` builds libdbus from source so `--all-features` CI
-# needs no `libdbus-1-dev`; `crypto-rust` keeps the encrypted transport pure-Rust.
-keyring-secret-service = [
-    "keyring",
-    "keyring/sync-secret-service",
-    "keyring/crypto-rust",
-    "keyring/vendored",
-]
 # Loopback HTTP transport for `nbox serve --http` (rung 2 of the MCP transport
 # ladder, DESIGN §24). In `default` — HTTP/MCP is the agent-first headline
 # feature, so it ships out of the box; drop it with `--no-default-features` for

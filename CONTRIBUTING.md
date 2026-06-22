@@ -30,9 +30,9 @@ cargo run -- search edge01
 cargo run             # launch the TUI
 ```
 
-The default build is the full single binary (clipboard, HTTP/MCP, keyring,
-updates); `--no-default-features` gives a lean stdio-only build. The only opt-in
-is `--features keyring-secret-service` (the Linux D-Bus keyring backend).
+The default build is the full single binary (clipboard, HTTP/MCP, updates);
+`--no-default-features` gives a lean stdio-only build. There are no other
+feature-variant builds.
 
 ## Code style
 
