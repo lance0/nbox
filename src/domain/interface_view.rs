@@ -42,6 +42,12 @@ pub struct InterfaceView {
     pub ip_addresses: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub trace: Vec<String>,
+    /// The cable path as a multi-line ASCII diagram (a vertical A↔Z chain with any
+    /// intermediate panels), derived from the same trace hops as `trace`. Not
+    /// serialized — it's a rendering of `trace` for the plain/TUI surfaces, while
+    /// the structured flat `trace` lines remain the machine-readable form.
+    #[serde(skip)]
+    pub diagram: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -72,13 +78,14 @@ impl InterfaceView {
             description: i.description.and_then(non_empty),
             ip_addresses: ips.into_iter().map(|ip| ip.address).collect(),
             trace: format_trace(&trace),
+            diagram: format_trace_diagram(&trace),
             tags: i.tags.into_iter().map(|tag| tag.slug).collect(),
             custom_fields: custom::fields(&i.custom_fields),
         }
     }
 
-    /// Render header fields plus tagged-VLAN / connection / IP sections.
-    pub fn to_plain(&self) -> String {
+    /// The interface's attribute key-values (no sections).
+    fn attributes(&self) -> String {
         let mut kv = KeyValues::new();
         kv.push_opt("device", self.device.clone())
             .push("name", self.name.clone())
@@ -94,11 +101,26 @@ impl InterfaceView {
             kv.push("tags", self.tags.join(", "));
         }
         custom::append(&mut kv, &self.custom_fields);
-        let mut out = kv.render();
+        kv.render()
+    }
 
+    /// Render header fields plus tagged-VLAN / connection / IP sections, with the
+    /// cable path drawn as the A↔Z diagram. The CLI's full `nbox interface` output.
+    pub fn to_plain(&self) -> String {
+        let mut out = self.attributes();
         out.push_str(&section("Tagged VLANs", &self.tagged_vlans));
         out.push_str(&section("Connected To", &self.connected_to));
-        out.push_str(&section("Cable Path", &self.trace));
+        out.push_str(&section("Cable Path", &self.diagram));
+        out.push_str(&section("IP Addresses", &self.ip_addresses));
+        out
+    }
+
+    /// The TUI detail body: like [`Self::to_plain`] but without the cable path —
+    /// the TUI surfaces that in a dedicated, scrollable Path tab instead.
+    pub fn to_summary_plain(&self) -> String {
+        let mut out = self.attributes();
+        out.push_str(&section("Tagged VLANs", &self.tagged_vlans));
+        out.push_str(&section("Connected To", &self.connected_to));
         out.push_str(&section("IP Addresses", &self.ip_addresses));
         out
     }
@@ -170,6 +192,97 @@ fn cable_label(v: &Value) -> Option<String> {
         .map(std::string::ToString::to_string)
 }
 
+/// Draw the cable path as a vertical A↔Z diagram: each termination on its own
+/// line, joined by a `┿`-marked cable segment carrying the cable's descriptor.
+/// A through-panel hop whose near end repeats the previous far end isn't doubled.
+/// Tolerates the polymorphic trace JSON (a malformed hop is skipped).
+///
+/// ```text
+/// edge01 xe-0/0/0
+///   │
+///   ┿ #3 · CAT6 · 5m · Connected
+///   │
+/// core01 xe-1/0/0
+/// ```
+fn format_trace_diagram(hops: &[Value]) -> Vec<String> {
+    let mut lines: Vec<String> = Vec::new();
+    let mut prev_far: Option<String> = None;
+    for hop in hops {
+        let Some(arr) = hop.as_array() else { continue };
+        let near = termination_labels(arr.first());
+        let far = termination_labels(arr.get(2));
+        if near.is_empty() && far.is_empty() {
+            continue;
+        }
+        // Skip the near node when it repeats the previous hop's far end (a panel
+        // through-connection chains the same termination across two hops).
+        if !near.is_empty() && prev_far.as_deref() != Some(near.as_str()) {
+            lines.push(near);
+        }
+        lines.push("  │".to_string());
+        lines.push(format!("  ┿ {}", cable_descr(arr.get(1))));
+        lines.push("  │".to_string());
+        if far.is_empty() {
+            prev_far = None;
+        } else {
+            lines.push(far.clone());
+            prev_far = Some(far);
+        }
+    }
+    lines
+}
+
+/// A cable's one-line descriptor for the diagram: `label · type · length · status`
+/// from whichever fields the trace's cable object carries (all optional). Falls
+/// back to `"cable"` when the object is absent or carries nothing legible.
+fn cable_descr(v: Option<&Value>) -> String {
+    let Some(v) = v else {
+        return "cable".to_string();
+    };
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(label) = cable_label(v) {
+        parts.push(label);
+    }
+    if let Some(t) = choice_label(v.get("type")) {
+        parts.push(t);
+    }
+    if let Some(len) = v.get("length").and_then(Value::as_f64) {
+        let unit = choice_value(v.get("length_unit")).unwrap_or_default();
+        parts.push(format!("{len}{unit}"));
+    }
+    if let Some(status) = choice_label(v.get("status")) {
+        parts.push(status);
+    }
+    if parts.is_empty() {
+        "cable".to_string()
+    } else {
+        parts.join(" · ")
+    }
+}
+
+/// The human label of a NetBox choice (`{value,label}`), preferring `label`;
+/// tolerates a plain string. Empty → `None`.
+fn choice_label(v: Option<&Value>) -> Option<String> {
+    let v = v?;
+    v.get("label")
+        .or_else(|| v.get("value"))
+        .and_then(Value::as_str)
+        .or_else(|| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(std::string::ToString::to_string)
+}
+
+/// The short value of a NetBox choice (`{value,label}`), preferring `value`;
+/// tolerates a plain string. Used for the length unit (`m`, not `Meters`).
+fn choice_value(v: Option<&Value>) -> Option<String> {
+    let v = v?;
+    v.get("value")
+        .and_then(Value::as_str)
+        .or_else(|| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(std::string::ToString::to_string)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -237,13 +350,82 @@ mod tests {
         ])];
 
         let view = InterfaceView::build(iface, vec![], trace);
+        // The flat, machine-readable trace is unchanged (the JSON contract).
         assert_eq!(
             view.trace,
             vec!["edge01 xe-0/0/0 --[Cable #3]-- core01 xe-1/0/0"]
         );
-        assert!(
-            view.to_plain()
-                .contains("Cable Path\n  edge01 xe-0/0/0 --[Cable #3]-- core01 xe-1/0/0")
+        // The diagram draws the same hop as a vertical A↔Z chain.
+        assert_eq!(
+            view.diagram,
+            vec![
+                "edge01 xe-0/0/0",
+                "  │",
+                "  ┿ Cable #3",
+                "  │",
+                "core01 xe-1/0/0",
+            ]
         );
+        // Plain output renders the diagram under the Cable Path heading.
+        let plain = view.to_plain();
+        assert!(plain.contains("Cable Path"));
+        assert!(plain.contains("┿ Cable #3"));
+        // The TUI summary body omits the cable path (it lives in the Path tab).
+        assert!(!view.to_summary_plain().contains("Cable Path"));
+    }
+
+    #[test]
+    fn cable_diagram_includes_type_length_and_status() {
+        let iface: Interface =
+            serde_json::from_value(json!({"id": 1, "url": "u", "name": "xe-0/0/0"})).unwrap();
+        let trace = vec![json!([
+            [{"display": "xe-0/0/0", "device": {"display": "edge01"}}],
+            {
+                "display": "#3",
+                "type": {"value": "cat6", "label": "CAT6"},
+                "status": {"value": "connected", "label": "Connected"},
+                "length": 5, "length_unit": {"value": "m", "label": "Meters"}
+            },
+            [{"display": "xe-1/0/0", "device": {"display": "core01"}}]
+        ])];
+        let view = InterfaceView::build(iface, vec![], trace);
+        // The cable segment carries label · type · length(unit) · status.
+        assert!(
+            view.diagram
+                .iter()
+                .any(|l| l == "  ┿ #3 · CAT6 · 5m · Connected"),
+            "got: {:?}",
+            view.diagram
+        );
+    }
+
+    #[test]
+    fn cable_diagram_chains_through_a_panel_without_doubling() {
+        let iface: Interface =
+            serde_json::from_value(json!({"id": 1, "url": "u", "name": "xe-0/0/0"})).unwrap();
+        // Two hops through a patch panel: hop 2's near end repeats hop 1's far end.
+        let trace = vec![
+            json!([
+                [{"display": "xe-0/0/0", "device": {"display": "edge01"}}],
+                {"display": "#3"},
+                [{"display": "front1", "device": {"display": "panel-a"}}]
+            ]),
+            json!([
+                [{"display": "front1", "device": {"display": "panel-a"}}],
+                {"display": "#4"},
+                [{"display": "xe-1/0/0", "device": {"display": "core01"}}]
+            ]),
+        ];
+        let view = InterfaceView::build(iface, vec![], trace);
+        // The shared panel termination appears exactly once, not doubled.
+        let panel_lines = view
+            .diagram
+            .iter()
+            .filter(|l| l.as_str() == "panel-a front1")
+            .count();
+        assert_eq!(panel_lines, 1, "panel doubled: {:?}", view.diagram);
+        // Both cables in the path are drawn.
+        assert!(view.diagram.iter().any(|l| l.contains("┿ #3")));
+        assert!(view.diagram.iter().any(|l| l.contains("┿ #4")));
     }
 }

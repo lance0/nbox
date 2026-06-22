@@ -1331,7 +1331,22 @@ async fn load_interface_detail_view(client: &NetBoxClient, id: u64) -> Result<De
         client.interface_trace(iface.id),
     )?;
     let view = InterfaceView::build(iface, ips, trace);
-    Ok(DetailView::new(ObjectKind::Interface, id, title, view.to_plain()).with_links(links))
+    // The cable path is a dedicated, scrollable Path tab (the diagram); the body
+    // is the interface's attributes + VLAN/connection/IP sections without it.
+    let mut tabs = Vec::new();
+    if !view.diagram.is_empty() {
+        tabs.push(DetailTab {
+            key: 'c',
+            label: "cable path".to_string(),
+            body: view.diagram.join("\n"),
+            rows: Vec::new(),
+        });
+    }
+    Ok(
+        DetailView::new(ObjectKind::Interface, id, title, view.to_summary_plain())
+            .with_tabs(tabs)
+            .with_links(links),
+    )
 }
 
 pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Result<DetailView> {
