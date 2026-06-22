@@ -208,9 +208,11 @@ fn term_one(v: Option<&Value>) -> Option<(Option<String>, String)> {
         .and_then(Value::as_str)
         .filter(|s| !s.is_empty())?
         .to_string();
+    // Prefer the bare device `name` over `display` (which can carry an asset tag);
+    // the diagram reads cleaner with stable names.
     let device = first.get("device").and_then(|d| {
-        d.get("display")
-            .or_else(|| d.get("name"))
+        d.get("name")
+            .or_else(|| d.get("display"))
             .and_then(Value::as_str)
             .filter(|s| !s.is_empty())
             .map(std::string::ToString::to_string)
@@ -335,7 +337,10 @@ fn cable_descr(v: Option<&Value>) -> String {
         parts.push(format!("{len}{unit}"));
     }
     if let Some(status) = choice_label(v.get("status")) {
-        parts.push(status);
+        // The trace serializes status as a bare value string (`connected`); a
+        // `{value,label}` choice already carries a cased label. Title-case the
+        // first letter so the diagram reads `Connected` either way (idempotent).
+        parts.push(title_first(&status));
     }
     if parts.is_empty() {
         "cable".to_string()
@@ -354,6 +359,17 @@ fn choice_label(v: Option<&Value>) -> Option<String> {
         .or_else(|| v.as_str())
         .filter(|s| !s.is_empty())
         .map(std::string::ToString::to_string)
+}
+
+/// Uppercase the first character of `s`, leaving the rest as-is. Idempotent for
+/// already-capitalized text. Used to present a bare status value (`connected`) as
+/// `Connected` without disturbing an all-caps label like `CAT6`.
+fn title_first(s: &str) -> String {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+        None => String::new(),
+    }
 }
 
 /// The short value of a NetBox choice (`{value,label}`), preferring `value`;
@@ -493,21 +509,28 @@ mod tests {
         // name must fall back to `#<id>` rather than vanishing.
         let iface: Interface =
             serde_json::from_value(json!({"id": 1, "url": "u", "name": "swp25"})).unwrap();
+        // The far device carries an asset-tagged display plus a bare name.
         let trace = vec![json!([
             [{"display": "swp25", "device": {"display": "edge01"}}],
             {"id": 4120, "display_url": "u", "label": "", "type": null, "status": "connected"},
-            [{"display": "1/1/c13/1", "device": {"display": "core01"}}]
+            [{"display": "1/1/c13/1", "device": {"display": "core01 (m999)", "name": "core01"}}]
         ])];
         let view = InterfaceView::build(iface, vec![], trace);
+        // Cable id falls back to `#<id>`; the bare status value is title-cased.
         assert!(
-            view.diagram.iter().any(|l| l == "    ┿ #4120 · connected"),
+            view.diagram.iter().any(|l| l == "    ┿ #4120 · Connected"),
             "got: {:?}",
             view.diagram
         );
-        // The far device is named (A/Z), not just the port.
+        // The far device shows its stable name (A/Z), not the asset-tagged display.
         assert!(
             view.diagram.iter().any(|l| l == " Z  core01"),
             "{:?}",
+            view.diagram
+        );
+        assert!(
+            !view.diagram.iter().any(|l| l.contains("(m999)")),
+            "asset tag leaked into the diagram: {:?}",
             view.diagram
         );
         assert!(

@@ -1320,7 +1320,7 @@ async fn load_interface_detail_view(client: &NetBoxClient, id: u64) -> Result<De
         ObjectKind::Device,
         iface.device.as_ref(),
     );
-    let device_label = iface.device.as_ref().map(BriefObject::label);
+    let device_label = iface.device.as_ref().map(BriefObject::name_label);
     let title = match &device_label {
         Some(d) => format!("interface {d} {}", iface.name),
         None => format!("interface {}", iface.name),

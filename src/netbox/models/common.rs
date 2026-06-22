@@ -40,13 +40,26 @@ impl BriefObject {
             .unwrap_or_else(|| format!("#{}", self.id))
     }
 
-    /// A cable endpoint's label as `device port` — the nested device's label plus
-    /// this object's own (its interface name), so "where the cable goes" names the
-    /// far *device*, not just its port. Falls back to the bare label when there's
-    /// no device (a non-interface termination).
+    /// Like [`label`](Self::label) but preferring the stable `name` over `display`.
+    /// NetBox's device `display` can append an asset tag (e.g. `edge01 (m075216)`);
+    /// lists, diagrams, and titles read cleaner with the bare name, and the asset
+    /// tag still lives in the object's own detail fields. Falls back to `display`,
+    /// then `slug`, then `#id`.
+    pub fn name_label(&self) -> String {
+        self.name
+            .clone()
+            .or_else(|| self.display.clone())
+            .or_else(|| self.slug.clone())
+            .unwrap_or_else(|| format!("#{}", self.id))
+    }
+
+    /// A cable endpoint's label as `device port` — the nested device's (bare) name
+    /// plus this object's own (its interface name), so "where the cable goes" names
+    /// the far *device*, not just its port. Falls back to the bare label when
+    /// there's no device (a non-interface termination).
     pub fn endpoint_label(&self) -> String {
         match &self.device {
-            Some(dev) => format!("{} {}", dev.label(), self.label()),
+            Some(dev) => format!("{} {}", dev.name_label(), self.label()),
             None => self.label(),
         }
     }
@@ -125,6 +138,32 @@ mod tests {
 
         let bare: BriefObject = serde_json::from_value(json!({"id": 7})).unwrap();
         assert_eq!(bare.label(), "#7");
+    }
+
+    #[test]
+    fn name_label_prefers_name_and_endpoint_label_strips_asset_tag() {
+        // A device brief whose display carries an asset tag, with a bare name.
+        let dev: BriefObject = serde_json::from_value(
+            json!({"id": 1, "name": "dsr1-us-west-01a", "display": "dsr1-us-west-01a (m057545)"}),
+        )
+        .unwrap();
+        // label() keeps NetBox's display; name_label() prefers the stable name.
+        assert_eq!(dev.label(), "dsr1-us-west-01a (m057545)");
+        assert_eq!(dev.name_label(), "dsr1-us-west-01a");
+
+        // A connected endpoint (an interface brief) with that device nested.
+        let endpoint: BriefObject = serde_json::from_value(json!({
+            "id": 2, "display": "1/1/c13/1",
+            "device": {"id": 1, "name": "dsr1-us-west-01a", "display": "dsr1-us-west-01a (m057545)"}
+        }))
+        .unwrap();
+        // "where it goes" names the far device (bare name) + port, no asset tag.
+        assert_eq!(endpoint.endpoint_label(), "dsr1-us-west-01a 1/1/c13/1");
+
+        // No device nested → just the port label.
+        let bare: BriefObject =
+            serde_json::from_value(json!({"id": 3, "display": "xe-0/0/0"})).unwrap();
+        assert_eq!(bare.endpoint_label(), "xe-0/0/0");
     }
 
     #[test]
