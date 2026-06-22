@@ -10,7 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::widgets::TableState;
 
 use crate::cache::{Cache, Freshness};
-use crate::config::{ApiConfig, BackendPreference, ProfileConfig};
+use crate::config::{ApiConfig, BackendPreference, ConfigToken, ProfileConfig, TokenStore};
 use crate::domain::detail::{DetailRow, DetailView, ObjectLink};
 use crate::netbox::auth::AuthScheme;
 use crate::netbox::client::NetBoxClient;
@@ -279,14 +279,15 @@ pub struct ConnectRequest {
     pub auth_scheme: AuthScheme,
     pub verify_tls: bool,
     /// The token to authenticate the probe with: the form's typed token, else the
-    /// resolved env token (token_env / `NBOX_TOKEN`). `None` here ⇒ try
-    /// [`keyring_account`](Self::keyring_account) in the spawned probe. If both are
-    /// absent the probe runs unauthenticated and likely 401s (surfaced as failure).
+    /// resolved env/config token (token_env / `NBOX_TOKEN` / profile `token`).
+    /// `None` here ⇒ try [`keyring_account`](Self::keyring_account) in the spawned
+    /// probe, but only for explicit keyring profiles. If both are absent the probe
+    /// runs unauthenticated and likely 401s (surfaced as failure).
     pub token: Option<String>,
     /// The OS-keyring account to read as the *last* token tier, resolved inside the
     /// spawned test-connect task — NOT on the render/event thread (M9). Only set
-    /// when editing an existing profile (a fresh add / onboarding has no keyring
-    /// entry yet). Ignored when `token` is already `Some`.
+    /// when editing an existing profile whose token_store is explicitly keyring.
+    /// Ignored when `token` is already `Some`.
     pub keyring_account: Option<String>,
 }
 
@@ -467,9 +468,8 @@ pub enum AppCommand {
         name: String,
         config: ProfileConfig,
         /// The active config file path, for keying the keyring token lookup during
-        /// reconnect (token resolution is `token_env` → `NBOX_TOKEN` → keyring).
-        /// `None` when the session has no backing file (token then comes from env
-        /// only).
+        /// reconnect when no config/env token exists. `None` when the session has
+        /// no backing file (token then comes from env/config only).
         config_path: Option<PathBuf>,
     },
     /// Test-connect a candidate profile from the Config modal: build a temporary
@@ -2102,6 +2102,8 @@ impl App {
                 exclude_config_context,
                 api_vrf,
                 api_route_target,
+                token_store: cfg.token_store,
+                config_token: cfg.token.as_ref().map(ConfigToken::expose),
             },
         ) {
             self.set_status(format!("save failed: {e:#}"), Severity::Error);
@@ -2122,8 +2124,8 @@ impl App {
     /// Build a [`ConnectRequest`] from the open form: the form's url/auth/tls plus
     /// the token to probe with. The probe token uses the SAME precedence as save /
     /// launch (M15) so the test reflects what a real connection would use:
-    ///   typed token → form `token_env` → `NBOX_TOKEN` → keyring (for the
-    ///   profile being edited).
+    ///   typed token → form `token_env` → `NBOX_TOKEN` → config token → keyring
+    ///   (only for explicit keyring profiles).
     /// Returns `None` if no form is open.
     fn form_connect_request(&self) -> Option<ConnectRequest> {
         let Some(Modal::Config(modal)) = &self.modal else {
@@ -2134,17 +2136,27 @@ impl App {
             .config_path
             .clone()
             .unwrap_or_else(|| PathBuf::from(""));
-        // The cheap (non-blocking) env tiers are resolved here: typed token wins,
-        // else the form's token_env, else NBOX_TOKEN. The keyring tier (potentially
-        // blocking) is deferred to the spawned probe via `keyring_account` (M9).
+        let editing_entry = form
+            .editing
+            .as_deref()
+            .and_then(|name| self.profiles.iter().find(|p| p.name == name));
+        // The cheap (non-blocking) tiers are resolved here: typed token wins, else
+        // the form's token_env, else NBOX_TOKEN, else the stored config token. The
+        // keyring tier (potentially blocking) is deferred to the spawned probe via
+        // `keyring_account` only when explicitly selected (M9).
         let token = form.token().or_else(|| {
             form.token_env()
                 .and_then(|name| std::env::var(&name).ok())
                 .filter(|t| !t.is_empty())
                 .or_else(|| std::env::var("NBOX_TOKEN").ok().filter(|t| !t.is_empty()))
+                .or_else(|| {
+                    editing_entry
+                        .and_then(|entry| entry.config.token.as_ref())
+                        .map(|token| token.expose().to_string())
+                })
         });
-        // Only an edit of an existing profile has a keyring entry to fall back to.
-        let keyring_account = if token.is_none() {
+        // Only an explicit keyring edit has a keyring entry to fall back to.
+        let keyring_account = if token.is_none() && form.token_store == TokenStore::Keyring {
             form.editing
                 .as_deref()
                 .map(|name| crate::secret::account_key(&path.display().to_string(), name))
@@ -2173,10 +2185,10 @@ impl App {
         }]
     }
 
-    /// Persist the open form's profile (config-file metadata + optional keyring
-    /// token), add/update it in the live `profiles`, and — when `use_it` — set it
-    /// active and ride the switch path to reconnect. Returns the switch command
-    /// when switching, else nothing.
+    /// Persist the open form's profile (metadata + optional config/keyring token),
+    /// add/update it in the live `profiles`, and — when `use_it` — set it active
+    /// and ride the switch path to reconnect. Returns the switch command when
+    /// switching, else nothing.
     fn modal_save(&mut self, use_it: bool) -> Vec<AppCommand> {
         // Snapshot the form fields (the borrow of `self.modal` must end before we
         // touch `self.profiles`/config).
@@ -2188,6 +2200,7 @@ impl App {
         };
         let name = form.name();
         let url = form.url();
+        let typed_token = form.token();
         let token_env = form.token_env();
         let auth_scheme = form.auth_scheme;
         let verify_tls = form.verify_tls;
@@ -2196,8 +2209,36 @@ impl App {
         let exclude_config_context = form.exclude_config_context;
         let api_vrf = form.api_vrf;
         let api_route_target = form.api_route_target;
-        let token_action = form.token_action();
+        let token_store = form.token_store;
+        let clear_token = form.clear_token;
         let original = form.editing.clone();
+        let existing_config_token = original.as_deref().and_then(|original| {
+            self.profiles
+                .iter()
+                .find(|p| p.name == original)
+                .and_then(|entry| entry.config.token.as_ref())
+                .map(|token| token.expose().to_string())
+        });
+        let config_token = if token_store == TokenStore::Config {
+            if clear_token {
+                None
+            } else {
+                typed_token.clone().or(existing_config_token.clone())
+            }
+        } else {
+            None
+        };
+        let token_action = if token_store == TokenStore::Keyring {
+            if clear_token {
+                crate::tui::config_modal::TokenAction::Clear
+            } else if let Some(token) = typed_token.clone().or(existing_config_token.clone()) {
+                crate::tui::config_modal::TokenAction::Set(token)
+            } else {
+                crate::tui::config_modal::TokenAction::Keep
+            }
+        } else {
+            crate::tui::config_modal::TokenAction::Keep
+        };
 
         // M7: a save with no backing config path can't persist anything; surface an
         // error rather than silently "succeeding" with an in-memory-only edit.
@@ -2229,8 +2270,8 @@ impl App {
                 }
             };
 
-        // Write the metadata to the config file (format-preserving). The token is
-        // NEVER written here. On a rename the old TOML section is removed (H1).
+        // Write the metadata + optional config token to the config file
+        // (format-preserving). On a rename the old TOML section is removed (H1).
         if let Err(e) = Self::persist_profile(
             &path,
             original.as_deref(),
@@ -2245,6 +2286,8 @@ impl App {
                 exclude_config_context,
                 api_vrf,
                 api_route_target,
+                token_store,
+                config_token: config_token.as_deref(),
             },
         ) {
             token_change.rollback();
@@ -2268,6 +2311,8 @@ impl App {
             page_size,
             exclude_config_context: Some(exclude_config_context),
             api,
+            token_store,
+            token: config_token.clone().map(ConfigToken::new),
             ..Default::default()
         };
         self.upsert_live_profile(original.as_deref(), &name, config);
@@ -2303,8 +2348,8 @@ impl App {
             }
             return commands;
         }
-        // H5: surface the token warning instead of an unconditional "saved", so a
-        // dropped token (keyring unavailable) is never masked by a success line.
+        // H5: surface a keyring warning instead of an unconditional "saved", so a
+        // failed keyring migration is never masked by a success line.
         match token_status {
             Some((msg, sev)) => self.set_status(msg, sev),
             None => self.set_status(format!("saved profile '{name}'"), Severity::Success),
@@ -2321,7 +2366,8 @@ impl App {
     }
 
     /// Persist a profile's editor metadata to the config file (format-preserving).
-    /// The token is never written here — it goes to the keyring separately.
+    /// A config-token is written here when selected; keyring tokens are prepared
+    /// separately before this write.
     ///
     /// `original` is the pre-edit name when editing (`None` on add). On a rename
     /// (`original` differs from `name`) the old `[profiles.<original>]` section is
@@ -2345,6 +2391,8 @@ impl App {
             exclude_config_context,
             api_vrf,
             api_route_target,
+            token_store,
+            config_token,
         } = *data;
         let mut doc = crate::config::load_doc_or_new(path)?;
         // Rename: drop the old section and repoint active_profile if it named it.
@@ -2382,6 +2430,8 @@ impl App {
             ApiSurface::RouteTarget,
             api_route_target,
         )?;
+        crate::config::set_profile_token_store(&mut doc, name, token_store)?;
+        crate::config::set_profile_token(&mut doc, name, config_token)?;
         // First profile in a fresh file becomes active.
         if doc.get("active_profile").is_none() {
             crate::config::set_active_profile(&mut doc, name);
@@ -2406,7 +2456,7 @@ impl App {
         use crate::tui::config_modal::TokenAction;
         match action {
             TokenAction::Set(_) if !crate::secret::keyring_available() => Some(
-                "this build can't store pasted tokens; clear token and use token_env or NBOX_TOKEN"
+                "this build can't store tokens in a keyring; switch token_store to config"
                     .to_string(),
             ),
             TokenAction::Clear if !crate::secret::keyring_available() => Some(
@@ -2466,6 +2516,8 @@ impl App {
         let api_route_target = entry
             .config
             .api_preference(crate::config::ApiSurface::RouteTarget);
+        let token_store = entry.config.token_store;
+        let config_token = entry.config.token.as_ref().map(ConfigToken::expose);
         if let Some(Modal::Config(modal)) = &mut self.modal {
             modal.open_edit_form(ProfileFormData {
                 name,
@@ -2478,6 +2530,8 @@ impl App {
                 exclude_config_context,
                 api_vrf,
                 api_route_target,
+                token_store,
+                config_token,
             });
         }
     }
@@ -3267,6 +3321,7 @@ impl App {
     /// guarantee it).
     fn switch_to_index(&mut self, idx: usize) -> Vec<AppCommand> {
         let entry = self.profiles[idx].clone();
+        let name = entry.name.clone();
         // Mint a fresh switch id and record it as both the awaited completion and
         // the high-water mark, so a slower, superseded switch — even one to this
         // same profile name — is dropped on arrival. `pending_profile` keeps the
@@ -3274,12 +3329,12 @@ impl App {
         self.switch_seq += 1;
         self.pending_switch = Some(self.switch_seq);
         self.switch_gen = self.switch_seq;
-        self.pending_profile = Some(entry.name.clone());
+        self.pending_profile = Some(name.clone());
         self.pending_switch_notice = None;
-        self.set_status(format!("switching to '{}'…", entry.name), Severity::Info);
+        self.set_status(format!("switching to '{name}'…"), Severity::Info);
         vec![AppCommand::SwitchProfile {
             id: self.switch_seq,
-            name: entry.name,
+            name: name.clone(),
             config: entry.config,
             config_path: self.config_path.clone(),
         }]
@@ -7437,7 +7492,7 @@ mod tests {
     }
 
     #[test]
-    fn add_profile_saves_metadata_to_config_and_live_list_without_token_in_toml() {
+    fn add_profile_saves_metadata_and_token_env_to_config() {
         let (mut a, _dir, path) = app_with_config(&["alpha"]);
         a.handle_event(press(KeyCode::Char('S'))); // open modal
         a.handle_event(press(KeyCode::Char('a'))); // add form
@@ -7451,14 +7506,14 @@ mod tests {
         assert!(cmds.is_empty(), "plain save does not switch");
         // The live list gained the profile.
         assert!(a.profiles.iter().any(|p| p.name == "lab"));
-        // The file has the metadata but NEVER the token.
+        // The file has the metadata and env-var name, not a token value.
         let text = std::fs::read_to_string(&path).unwrap();
         assert!(text.contains("[profiles.lab]"));
         assert!(text.contains("https://nb.lab"));
         assert!(text.contains("token_env = \"NETBOX_TOKEN\""));
         assert!(
             !text.contains("nbt_supersecret"),
-            "the token must never be written to TOML"
+            "an env-backed profile should not invent a config token"
         );
         // Back on the list, the saved profile is selected.
         if let Some(Modal::Config(m)) = &a.modal {
@@ -7467,10 +7522,7 @@ mod tests {
     }
 
     #[test]
-    fn add_profile_with_pasted_token_blocks_when_keyring_is_unavailable() {
-        if crate::secret::keyring_available() {
-            return;
-        }
+    fn add_profile_with_pasted_token_saves_config_token_by_default() {
         let (mut a, _dir, path) = app_with_config(&["alpha"]);
         a.handle_event(press(KeyCode::Char('S'))); // open modal
         a.handle_event(press(KeyCode::Char('a'))); // add form
@@ -7484,32 +7536,28 @@ mod tests {
         let cmds = a.handle_event(press(KeyCode::Enter));
 
         assert!(cmds.is_empty());
-        assert!(
-            a.profiles.iter().all(|p| p.name != "lab"),
-            "profile should not be added live when token storage is impossible"
+        let lab = a
+            .profiles
+            .iter()
+            .find(|p| p.name == "lab")
+            .expect("profile should be added live");
+        assert_eq!(
+            lab.config.token.as_ref().map(ConfigToken::expose),
+            Some("nbt_supersecret.value")
         );
+        assert_eq!(lab.config.token_store, TokenStore::Config);
         let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[profiles.lab]"));
+        assert!(text.contains("token = \"nbt_supersecret.value\""), "{text}");
         assert!(
-            !text.contains("[profiles.lab]"),
-            "metadata should not be written when a pasted token cannot be stored: {text}"
+            !text.contains("token_store"),
+            "config storage is the default and should not need a token_store key: {text}"
         );
-        assert_eq!(a.status_severity, Severity::Error);
-        assert!(
-            a.status.contains("can't store pasted tokens"),
-            "{}",
-            a.status
-        );
+        assert_eq!(a.status_severity, Severity::Success);
         if let Some(Modal::Config(m)) = &a.modal {
-            let f = m.form().expect("form stays open");
-            assert!(
-                f.message
-                    .as_deref()
-                    .is_some_and(|m| m.contains("can't store pasted tokens")),
-                "form message: {:?}",
-                f.message
-            );
+            assert!(matches!(m.profiles.mode, ProfilesMode::List { .. }));
         } else {
-            panic!("config modal should remain open");
+            panic!("config modal should remain open on the profile list");
         }
     }
 

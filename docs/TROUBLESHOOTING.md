@@ -26,14 +26,15 @@ The token is missing, wrong, or expired — NetBox rejected it. First check whic
 source nbox resolved (it prints the source, never the token):
 
 ```bash
-nbox config token status                          # token_env | NBOX_TOKEN | keyring | none
+nbox config token status                          # token_env | NBOX_TOKEN | config | keyring | none
 ```
 
 If it says `none`, no token was found. Set one and retry:
 
 ```bash
 export NBOX_TOKEN=...                             # or point token_env at a set variable
-nbox config token set                             # or store it in the OS keyring (input hidden)
+nbox                                             # paste a token in the TUI, or use keyring below
+nbox config token set                             # optional OS-keyring storage (input hidden)
 ```
 
 If a token *is* resolving but still 401s, it's the wrong token for this instance —
@@ -52,12 +53,13 @@ nbox resolves the token in a fixed order; the first hit wins:
 
 1. the env var named by the profile's `token_env` (if set & present)
 2. `NBOX_TOKEN`
-3. the OS keyring entry for the profile (`nbox config token set`)
-4. none — a clear "no token" error
+3. the profile's `token = "..."`
+4. the OS keyring entry for profiles with `token_store = "keyring"`
+5. none — a clear "no token" error
 
-Env always overrides the keyring. If a stale `NBOX_TOKEN` is exported it shadows a
-correct keyring entry — `unset NBOX_TOKEN` (or fix the value), then re-check with
-`nbox config token status`.
+Env always overrides config/keyring tokens. If a stale `NBOX_TOKEN` is exported
+it shadows a correct saved token — `unset NBOX_TOKEN` (or fix the value), then
+re-check with `nbox config token status`.
 
 ### Wrong Authorization scheme (v1 vs v2 token)
 
@@ -233,13 +235,14 @@ nbox serve --http 0.0.0.0:8080 \
 ### `keyring not available on this system` (Linux)
 
 The default static binary ships no D-Bus (Secret Service) backend, so
-`nbox config token` and the TUI pasted-token field cannot persist a token there.
-This is deliberate: without the backend, keyring v3 would fall back to an
-in-process mock store that disappears when nbox exits. Use an env var instead, or
-install a build with the Linux backend compiled in:
+`nbox config token` and TUI profiles with `token_store = "keyring"` cannot persist
+a token there. This is deliberate: without the backend, keyring v3 would fall
+back to an in-process mock store that disappears when nbox exits. Keep
+`token_store = "config"`, use an env var, or install a build with the Linux
+backend compiled in:
 
 ```bash
-export NBOX_TOKEN=...                              # or set the profile's token_env
+export NBOX_TOKEN=...                              # or set token/token_env in the profile
 cargo install nbox --features keyring-secret-service   # build with the Linux keyring backend
 ```
 

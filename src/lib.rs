@@ -760,8 +760,9 @@ async fn run_tui_onboarding(
         no_tui: ctx.no_tui,
     };
     let mut app = build_tui_app(&onboarded, path, &cfg).await?;
-    // When no token landed anywhere (no keyring entry, no token_env), steer the
-    // user toward an env var so the freshly-launched app's first requests succeed.
+    // When no token landed anywhere (no config token, keyring entry, or
+    // token_env), steer the user toward an env var so the freshly-launched app's
+    // first requests succeed.
     if outcome.needs_env_guidance {
         app.set_initial_status(
             "profile saved — set NBOX_TOKEN or a token_env to authenticate",

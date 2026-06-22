@@ -127,7 +127,7 @@ impl PreparedTokenChange {
                 },
             );
             anyhow::bail!(
-                "pasted token was NOT stored ({e:#}); clear it and use token_env/NBOX_TOKEN or enable keyring storage"
+                "pasted token was NOT stored ({e:#}); switch token_store to config or use token_env/NBOX_TOKEN"
             );
         }
         Ok(Self {

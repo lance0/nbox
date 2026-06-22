@@ -105,6 +105,10 @@ impl OnboardingWizard {
                 self.form.toggle_verify_tls();
                 WizardAction::None
             }
+            KeyCode::Char('k') if ctrl => {
+                self.form.toggle_token_store();
+                WizardAction::None
+            }
             // Ctrl+T tests the connection; Enter saves (and finishes).
             KeyCode::Char('t') if ctrl => match self.form.validate() {
                 Ok(()) => {
@@ -168,9 +172,12 @@ impl OnboardingWizard {
 /// has no persistent keyring backend to store it.
 fn validate_for_onboarding_save(form: &ProfileForm) -> Result<(), String> {
     form.validate()?;
-    if form.token().is_some() && !crate::secret::keyring_available() {
+    if form.token().is_some()
+        && form.token_store == crate::config::TokenStore::Keyring
+        && !crate::secret::keyring_available()
+    {
         return Err(
-            "this build can't store pasted tokens; clear token and use token_env or NBOX_TOKEN"
+            "this build can't store tokens in a keyring; switch token_store to config or use token_env"
                 .to_string(),
         );
     }
@@ -191,18 +198,17 @@ pub struct PersistOutcome {
     pub needs_env_guidance: bool,
 }
 
-/// Persist the wizard's profile: prepare a typed-token keyring write first, then
-/// write the metadata (format-preserving) via the same setters the editor uses.
-/// If the metadata write fails, the keyring change is rolled back. The
-/// interactive wizard validates the no-keyring case before calling this, and any
-/// runtime keyring write failure keeps the user in the wizard instead of creating
-/// a profile without the pasted token. Returns a [`PersistOutcome`] describing
-/// what happened so the driver can guide the user when no token source was given.
-/// The token is NEVER written to TOML.
-///
-/// Pure but for the file/keyring writes (mirroring the editor's profile save plus
-/// keyring set on the render thread). Metadata-only and `token_env`-backed
-/// profiles save without touching the keyring.
+/// Persist the wizard's profile. Pasted tokens are stored in config by default;
+/// if the user explicitly selected keyring, prepare that write first, then write
+/// metadata (format-preserving) via the same setters the editor uses. If the
+/// metadata write fails, the keyring change is rolled back. The interactive
+/// wizard validates the no-keyring case before calling this, and any runtime
+/// keyring write failure keeps the user in the wizard instead of creating a
+/// profile without the pasted token. Returns a [`PersistOutcome`] describing what
+/// happened so the driver can guide the user when no token source was given.
+/// Pure but for the file/keyring writes (mirroring the editor's profile save).
+/// Metadata-only, config-token, and `token_env`-backed profiles save without
+/// touching the keyring.
 pub fn persist(form: &ProfileForm, path: &Path) -> Result<PersistOutcome> {
     let name = form.name();
     let url = form.url();
@@ -210,6 +216,7 @@ pub fn persist(form: &ProfileForm, path: &Path) -> Result<PersistOutcome> {
     let auth_scheme = form.auth_scheme;
     let verify_tls = form.verify_tls;
     let token = form.token();
+    let token_store = form.token_store;
 
     // Write the metadata (format-preserving), the same way `ProfileCommand::Add`
     // and the editor do: upsert + the field setters + activate.
@@ -242,11 +249,21 @@ pub fn persist(form: &ProfileForm, path: &Path) -> Result<PersistOutcome> {
         crate::config::ApiSurface::RouteTarget,
         form.api_route_target,
     )?;
+    crate::config::set_profile_token_store(&mut doc, &name, token_store)?;
+    if token_store == crate::config::TokenStore::Config {
+        crate::config::set_profile_token(&mut doc, &name, token.as_deref())?;
+    } else {
+        crate::config::set_profile_token(&mut doc, &name, None)?;
+    }
     crate::config::set_active_profile(&mut doc, &name);
 
-    let token_action = token
-        .as_ref()
-        .map_or(TokenAction::Keep, |token| TokenAction::Set(token.clone()));
+    let token_action = if token_store == crate::config::TokenStore::Keyring {
+        token
+            .as_ref()
+            .map_or(TokenAction::Keep, |token| TokenAction::Set(token.clone()))
+    } else {
+        TokenAction::Keep
+    };
     let token_change = PreparedTokenChange::prepare(path, None, &name, &token_action)?;
     if let Err(e) = crate::config::write_doc(path, &doc) {
         token_change.rollback();
@@ -254,10 +271,11 @@ pub fn persist(form: &ProfileForm, path: &Path) -> Result<PersistOutcome> {
     }
     let stored_in_keyring = token_change.stored_token();
     let _ = token_change.commit();
+    let stored_in_config = token_store == crate::config::TokenStore::Config && token.is_some();
 
     // If nothing authenticatable landed — no keyring entry and no token_env — the
     // user must export NBOX_TOKEN or set a token_env to connect.
-    let needs_env_guidance = !stored_in_keyring && token_env.is_none();
+    let needs_env_guidance = !stored_in_keyring && !stored_in_config && token_env.is_none();
 
     Ok(PersistOutcome {
         name,
@@ -384,7 +402,7 @@ fn render(frame: &mut ratatui::Frame, area: Rect, wizard: &mut OnboardingWizard,
     }
     // A roomy centered panel; clamp to the available area.
     let popup_w = 64.min(area.width);
-    let popup_h = 16.min(area.height);
+    let popup_h = 17.min(area.height);
     let popup_x = area.x + area.width.saturating_sub(popup_w) / 2;
     let popup_y = area.y + area.height.saturating_sub(popup_h) / 2;
     let popup = Rect::new(popup_x, popup_y, popup_w, popup_h);
@@ -407,6 +425,7 @@ fn render(frame: &mut ratatui::Frame, area: Rect, wizard: &mut OnboardingWizard,
         Constraint::Length(4), // the FormInput rows
         Constraint::Length(1), // auth_scheme
         Constraint::Length(1), // verify_tls
+        Constraint::Length(1), // token_store
         Constraint::Length(1), // blank
         Constraint::Length(1), // test state
         Constraint::Length(1), // message
@@ -421,7 +440,7 @@ fn render(frame: &mut ratatui::Frame, area: Rect, wizard: &mut OnboardingWizard,
                 Style::default().fg(theme.header),
             )),
             Line::from(Span::styled(
-                "Paste a token to store it in the OS keyring, or name a token_env.",
+                "Paste a token to save it, name a token_env, or Ctrl+K for Keychain.",
                 Style::default().fg(theme.text_dim),
             )),
         ]),
@@ -456,6 +475,20 @@ fn render(frame: &mut ratatui::Frame, area: Rect, wizard: &mut OnboardingWizard,
         ])),
         rows[3],
     );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled("token_store ", Style::default().fg(theme.header)),
+            Span::styled(
+                match wizard.form.token_store {
+                    crate::config::TokenStore::Config => "config",
+                    crate::config::TokenStore::Keyring => "keyring",
+                },
+                Style::default().fg(theme.accent),
+            ),
+            Span::styled("  (Ctrl+K toggles)", Style::default().fg(theme.text_dim)),
+        ])),
+        rows[4],
+    );
 
     let (test_text, test_style) = match &wizard.form.test {
         TestState::Idle => (String::new(), Style::default().fg(theme.text_dim)),
@@ -469,21 +502,21 @@ fn render(frame: &mut ratatui::Frame, area: Rect, wizard: &mut OnboardingWizard,
         ),
         TestState::Failed(e) => (format!("✗ {e}"), Style::default().fg(theme.error)),
     };
-    frame.render_widget(Paragraph::new(Span::styled(test_text, test_style)), rows[5]);
+    frame.render_widget(Paragraph::new(Span::styled(test_text, test_style)), rows[6]);
 
     if let Some(msg) = &wizard.form.message {
         frame.render_widget(
             Paragraph::new(Span::styled(msg.clone(), Style::default().fg(theme.error))),
-            rows[6],
+            rows[7],
         );
     }
 
     frame.render_widget(
         Paragraph::new(Span::styled(
-            "Tab: field  Ctrl+T: test  Enter: save & continue  Esc: quit",
+            "Tab: field  Ctrl+T: test  Ctrl+K: token store  Enter: save & continue  Esc: quit",
             Style::default().fg(theme.text_dim),
         )),
-        rows[7],
+        rows[8],
     );
 }
 
@@ -534,12 +567,25 @@ mod tests {
     }
 
     #[test]
-    fn enter_blocks_pasted_token_when_keyring_is_unavailable() {
+    fn enter_saves_pasted_token_with_default_config_storage() {
+        let mut w = OnboardingWizard::new();
+        type_into(&mut w, "https://nb.example");
+        for _ in field::URL..field::TOKEN {
+            w.handle_key(key(KeyCode::Tab));
+        }
+        type_into(&mut w, "nbt_secret");
+
+        assert_eq!(w.handle_key(key(KeyCode::Enter)), WizardAction::Save);
+    }
+
+    #[test]
+    fn enter_blocks_keyring_token_when_keyring_is_unavailable() {
         if crate::secret::keyring_available() {
             return;
         }
         let mut w = OnboardingWizard::new();
         type_into(&mut w, "https://nb.example");
+        w.handle_key(ctrl('k')); // opt into keyring
         for _ in field::URL..field::TOKEN {
             w.handle_key(key(KeyCode::Tab));
         }
@@ -550,7 +596,7 @@ mod tests {
             w.form
                 .message
                 .as_deref()
-                .is_some_and(|m| m.contains("can't store pasted tokens")),
+                .is_some_and(|m| m.contains("can't store tokens in a keyring")),
             "message: {:?}",
             w.form.message
         );
@@ -613,10 +659,38 @@ mod tests {
         assert_eq!(cfg.active_profile.as_deref(), Some("default"));
         let prof = &cfg.profiles["default"];
         assert_eq!(prof.url, "https://nb.example");
-        // The token is NEVER in the file.
-        assert!(!text.contains("token ="), "raw token never written to TOML");
+        // No token was typed, so the file carries no token.
+        assert!(!text.contains("token ="), "no token should be invented");
         // A freshly written config is no longer first-run.
         assert!(!crate::config::needs_onboarding(&path, None));
+        let _ = std::fs::remove_dir_all(path.parent().unwrap());
+    }
+
+    #[test]
+    fn persist_writes_pasted_token_to_config_by_default() {
+        let path = temp_config("token");
+        let _ = std::fs::remove_file(&path);
+        let mut w = OnboardingWizard::new();
+        type_into(&mut w, "https://nb.example");
+        for _ in field::URL..field::TOKEN {
+            w.handle_key(key(KeyCode::Tab));
+        }
+        type_into(&mut w, "nbt_secret.value");
+
+        let outcome = persist(&w.form, &path).unwrap();
+
+        assert!(!outcome.stored_in_keyring);
+        assert!(!outcome.needs_env_guidance);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("token = \"nbt_secret.value\""), "{text}");
+        let cfg: Config = toml::from_str(&text).unwrap();
+        assert_eq!(
+            cfg.profiles["default"]
+                .token
+                .as_ref()
+                .map(crate::config::ConfigToken::expose),
+            Some("nbt_secret.value")
+        );
         let _ = std::fs::remove_dir_all(path.parent().unwrap());
     }
 

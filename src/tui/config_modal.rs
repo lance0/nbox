@@ -3,8 +3,9 @@
 //! A single modal with two sections (`Profiles` | `Settings`), `Tab` to switch.
 //! The Profiles section lists the configured profiles (active marked) with add /
 //! edit / select / delete actions, and an add/edit [`FormInput`] form whose token
-//! field is masked (never written to TOML; stored in the OS keyring on save). The
-//! form also carries the profile knobs that used to need hand-editing config.toml:
+//! field is masked (stored in config by default, or stored in the OS keyring only
+//! when `token_store = keyring`). The form also carries the profile knobs that
+//! used to need hand-editing config.toml:
 //! `timeout_secs` / `page_size` (numeric text fields), `exclude_config_context`
 //! (Ctrl+E), and the per-surface API backends `vrf` (Ctrl+B) / `route_target`
 //! (Ctrl+R), each rest ↔ graphql. The `search` backend and `confirm_writes` are
@@ -21,7 +22,7 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
-use crate::config::BackendPreference;
+use crate::config::{BackendPreference, TokenStore};
 use crate::netbox::auth::AuthScheme;
 use crate::tui::cheese::{FormInput, TextInput};
 use crate::tui::theme::Theme;
@@ -45,9 +46,10 @@ pub mod field {
     pub const PAGE_SIZE: usize = 5;
 }
 
-/// What the profile-save path should do with the OS-keyring token, derived from
-/// the edit form's token field + clear intent (see [`ProfileForm::token_action`]).
-/// The token value is never logged; only this intent crosses the pure/IO seam.
+/// What the profile-save path should do with the OS-keyring token when the
+/// profile explicitly opts into keyring storage, derived from the edit form's
+/// token field + clear intent (see [`ProfileForm::token_action`]). The token
+/// value is never logged; only this intent crosses the pure/IO seam.
 #[derive(Clone, PartialEq, Eq)]
 pub enum TokenAction {
     /// Store this freshly-typed token under the (possibly renamed) keyring key.
@@ -115,6 +117,9 @@ pub struct ProfileForm {
     pub api_vrf: BackendPreference,
     /// `[profiles.<name>.api].route_target` backend — cycled with `Ctrl+R`.
     pub api_route_target: BackendPreference,
+    /// Where pasted tokens are persisted. Defaults to config; keyring is an
+    /// explicit opt-in toggled with `Ctrl+K`.
+    pub token_store: TokenStore,
     /// `Some(original_name)` when editing an existing profile (so a rename can be
     /// detected and the old keyring entry migrated); `None` when adding.
     pub editing: Option<String>,
@@ -148,6 +153,8 @@ pub struct ProfileFormData<'a> {
     pub exclude_config_context: bool,
     pub api_vrf: BackendPreference,
     pub api_route_target: BackendPreference,
+    pub token_store: TokenStore,
+    pub config_token: Option<&'a str>,
 }
 
 impl ProfileForm {
@@ -165,7 +172,7 @@ impl ProfileForm {
             ),
             (
                 "token".to_string(),
-                TextInput::masked("paste a token to store in the keyring (optional)"),
+                TextInput::masked("paste token to save (optional)"),
             ),
             (
                 "timeout_secs".to_string(),
@@ -183,6 +190,7 @@ impl ProfileForm {
             exclude_config_context: true,
             api_vrf: BackendPreference::Rest,
             api_route_target: BackendPreference::Rest,
+            token_store: TokenStore::Config,
             editing: None,
             test: TestState::Idle,
             message: None,
@@ -192,7 +200,7 @@ impl ProfileForm {
 
     /// An edit form prefilled from an existing profile's metadata. The token
     /// field starts empty — the stored secret is never read back into the UI;
-    /// leaving it blank keeps the existing keyring entry untouched.
+    /// leaving it blank keeps the existing stored token untouched.
     pub fn edit(data: ProfileFormData<'_>) -> Self {
         let ProfileFormData {
             name,
@@ -205,6 +213,8 @@ impl ProfileForm {
             exclude_config_context,
             api_vrf,
             api_route_target,
+            token_store,
+            config_token: _,
         } = data;
         let mut form = Self::add();
         form.inputs.input_mut(field::NAME).unwrap().set_value(name);
@@ -232,6 +242,7 @@ impl ProfileForm {
         form.exclude_config_context = exclude_config_context;
         form.api_vrf = api_vrf;
         form.api_route_target = api_route_target;
+        form.token_store = token_store;
         form.editing = Some(name.to_string());
         form
     }
@@ -266,9 +277,9 @@ impl ProfileForm {
     }
 
     /// The token field's value, trimmed of surrounding whitespace, `None` when
-    /// empty. Used only to hand straight to the keyring; it is never rendered (the
-    /// field is masked) or logged. Trimming (L6) drops a trailing newline/space a
-    /// paste can leave behind, which would otherwise break auth.
+    /// empty. Used only to hand straight to persistence/client code; it is never
+    /// rendered (the field is masked) or logged. Trimming (L6) drops a trailing
+    /// newline/space a paste can leave behind, which would otherwise break auth.
     pub fn token(&self) -> Option<String> {
         let v = self
             .inputs
@@ -301,9 +312,9 @@ impl ProfileForm {
         t.parse::<usize>().ok().filter(|s| *s > 0)
     }
 
-    /// What the save path should do with the keyring token, from the form state:
-    /// a typed value ⇒ store it (overrides a pending clear); else the `Ctrl+X`
-    /// clear intent ⇒ delete the entry; else ⇒ keep whatever is stored. PURE.
+    /// What the save path should do with a typed token / clear intent. The app
+    /// save path only applies this to the OS keyring when the profile explicitly
+    /// uses `token_store = keyring`; config-token saves derive their own action.
     pub fn token_action(&self) -> TokenAction {
         match self.token() {
             Some(t) => TokenAction::Set(t),
@@ -368,6 +379,15 @@ impl ProfileForm {
     /// Advance the route-target API backend: rest → graphql → rest (`Ctrl+R`).
     pub fn cycle_api_route_target(&mut self) {
         self.api_route_target = cycle_backend(self.api_route_target);
+        self.invalidate_test();
+    }
+
+    /// Toggle token persistence between config and explicit keyring.
+    pub fn toggle_token_store(&mut self) {
+        self.token_store = match self.token_store {
+            TokenStore::Config => TokenStore::Keyring,
+            TokenStore::Keyring => TokenStore::Config,
+        };
         self.invalidate_test();
     }
 
@@ -1217,6 +1237,10 @@ impl ConfigModal {
                 form.cycle_api_route_target();
                 ModalOutcome::None
             }
+            KeyCode::Char('k') if ctrl => {
+                form.toggle_token_store();
+                ModalOutcome::None
+            }
             // Ctrl+T tests the connection; Enter saves; Ctrl+G saves + uses it.
             KeyCode::Char('t') if ctrl => match form.validate() {
                 Ok(()) => {
@@ -1245,8 +1269,8 @@ impl ConfigModal {
                     ModalOutcome::None
                 }
             },
-            // Ctrl+X toggles "clear the stored keyring token on save". Only
-            // meaningful while editing (a fresh add has no stored token to clear),
+            // Ctrl+X toggles "clear the stored token on save". Only meaningful
+            // while editing (a fresh add has no stored token to clear),
             // but harmless on add — token_action ignores Clear when a value is typed.
             KeyCode::Char('x') if ctrl => {
                 form.toggle_clear_token();
@@ -1362,6 +1386,8 @@ mod tests {
             exclude_config_context: true,
             api_vrf: BackendPreference::Rest,
             api_route_target: BackendPreference::Rest,
+            token_store: TokenStore::Config,
+            config_token: None,
         });
     }
 
@@ -1710,10 +1736,13 @@ mod tests {
             exclude_config_context: false,
             api_vrf: BackendPreference::Graphql,
             api_route_target: BackendPreference::Rest,
+            token_store: TokenStore::Keyring,
+            config_token: None,
         });
         let f = m.form().unwrap();
         assert_eq!(f.timeout_secs(), Some(30));
         assert_eq!(f.page_size(), Some(250));
+        assert_eq!(f.token_store, TokenStore::Keyring);
         assert!(!f.exclude_config_context, "prefilled from the config value");
         assert_eq!(f.api_vrf, BackendPreference::Graphql);
         assert_eq!(f.api_route_target, BackendPreference::Rest);
