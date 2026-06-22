@@ -54,6 +54,12 @@ pub enum ObjectKind {
     /// cross-navigation target the VRF view's targets tab jumps to. Carries no
     /// site scope. Kept last to preserve the existing variants' order.
     RouteTarget,
+    /// A device interface. Not part of the global search fan-out (it needs a
+    /// device for context) and not Nav-browsable — it exists as a *navigation
+    /// target*: a device's interfaces/cables tabs open the interface's detail
+    /// (its attributes + cable-path trace), addressed by numeric id. Kept last to
+    /// preserve the existing variants' order.
+    Interface,
 }
 
 impl ObjectKind {
@@ -77,6 +83,7 @@ impl ObjectKind {
             ObjectKind::Rack => "rack",
             ObjectKind::Vrf => "vrf",
             ObjectKind::RouteTarget => "route-target",
+            ObjectKind::Interface => "interface",
         }
     }
 
@@ -106,6 +113,9 @@ impl ObjectKind {
             ObjectKind::Provider => "ASN",
             ObjectKind::Vm => "CLUSTER",
             ObjectKind::Cluster => "TYPE",
+            // Not Nav-browsable (no global interface list) — opened only from a
+            // device's interfaces/cables tabs; labelled for completeness.
+            ObjectKind::Interface => "DEVICE",
         }
     }
 }
@@ -1216,6 +1226,7 @@ mod tests {
             ObjectKind::Rack,
             ObjectKind::Vrf,
             ObjectKind::RouteTarget,
+            ObjectKind::Interface,
         ] {
             let h = kind.subtitle_header();
             assert!(!h.is_empty(), "{kind:?} has an empty subtitle header");

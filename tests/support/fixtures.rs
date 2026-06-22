@@ -340,6 +340,7 @@ pub fn device_detail() -> DeviceDetailBuilder {
                 ]),
             },
             interfaces: vec![IfaceRow {
+                id: 5001,
                 name: "xe-0/0/0".to_string(),
                 enabled: Some(true),
                 type_: Some("SFP+".to_string()),
@@ -351,6 +352,7 @@ pub fn device_detail() -> DeviceDetailBuilder {
                 interface: Some("xe-0/0/0".to_string()),
             }],
             cables: vec![CableRow {
+                id: 5001,
                 interface: "xe-0/0/0".to_string(),
                 cable: Some("CABLE-1".to_string()),
                 connected_to: vec!["core01 xe-0/0/1".to_string()],
