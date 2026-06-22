@@ -1529,8 +1529,9 @@ pub(crate) async fn resolve_content_type_id(
 /// `nbox raw <method> <path>` — a raw read-only API GET (escape hatch).
 async fn run_raw(ctx: &Ctx, method: &str, path: &str) -> Result<()> {
     check_raw_method(method)?;
+    let path = normalize_raw_path(path)?;
     let client = connect(ctx)?;
-    let value: serde_json::Value = client.get(path, &[]).await?;
+    let value: serde_json::Value = client.get(&path, &[]).await?;
     emit(ctx, &value, || {
         println!(
             "{}",
@@ -1549,6 +1550,37 @@ fn check_raw_method(method: &str) -> Result<()> {
             "`nbox raw` only supports GET today; write verbs land with safe writes in a later release"
         )
     }
+}
+
+/// Normalize a `nbox raw` path so it always targets NetBox's REST API and stays
+/// scoped to the configured instance. The API path is accepted with or without
+/// the `/api/` prefix — `dcim/devices/?limit=1`, `api/dcim/...`, and
+/// `/api/dcim/...` all resolve to the same `/api/...`. Absolute URLs / schemes are
+/// rejected: the client joins relative to the profile's base URL, and
+/// [`reqwest::Url::join`] with an absolute input *replaces* the base, which would
+/// silently send the request to another host.
+///
+/// Without this, a bare `dcim/devices/` joined onto `https://host/` resolves to
+/// the web UI (`https://host/dcim/devices/`), which returns HTML and fails to
+/// decode as JSON — the root cause of the confusing "expected value at line N".
+fn normalize_raw_path(path: &str) -> Result<String> {
+    let path = path.trim();
+    // The first path segment must not look like a scheme (`https:`, or a malformed
+    // `http:/…`) — `raw` is path-only against the active profile, never an
+    // arbitrary URL.
+    if path.split('/').next().is_some_and(|seg| seg.contains(':')) {
+        anyhow::bail!(
+            "`nbox raw` takes a NetBox API path (e.g. `dcim/devices/?limit=1`), not an absolute URL"
+        );
+    }
+    let rel = path.trim_start_matches('/');
+    // Prefix `api/` unless the path is already API-rooted (first segment `api`),
+    // so both `dcim/...` and `api/dcim/...` hit `/api/...` without doubling it.
+    let normalized = match rel.split(['/', '?']).next() {
+        Some("api") => rel.to_string(),
+        _ => format!("api/{rel}"),
+    };
+    Ok(normalized)
 }
 
 /// The usage error `--no-tui` raises on an invocation that would otherwise launch
@@ -1592,12 +1624,64 @@ fn not_found(noun: &str, value: &str) -> anyhow::Error {
 mod tests {
     use super::{
         Cli, CommandFactory, check_raw_method, error, first_subnet_of_length, init_logging,
-        no_tui_refusal, not_found, parse_object_ref, resolve_logging, run_man, tui_startup_status,
-        wants_journal,
+        no_tui_refusal, normalize_raw_path, not_found, parse_object_ref, resolve_logging, run_man,
+        tui_startup_status, wants_journal,
     };
     use crate::domain::detail::resolve_unique;
     use crate::netbox::models::ipam::AvailablePrefix;
     use std::path::PathBuf;
+
+    // --- `nbox raw` path normalization -------------------------------------
+
+    #[test]
+    fn normalize_raw_path_targets_the_api_for_every_accepted_form() {
+        // All three accepted inputs resolve to the same API-rooted path.
+        for input in [
+            "dcim/devices/?limit=1",
+            "api/dcim/devices/?limit=1",
+            "/api/dcim/devices/?limit=1",
+        ] {
+            assert_eq!(
+                normalize_raw_path(input).unwrap(),
+                "api/dcim/devices/?limit=1",
+                "input: {input}"
+            );
+        }
+        // A leading slash without /api/ is still rooted at the API.
+        assert_eq!(
+            normalize_raw_path("/dcim/sites/").unwrap(),
+            "api/dcim/sites/"
+        );
+        // Already-API paths aren't doubled; surrounding whitespace is trimmed.
+        assert_eq!(
+            normalize_raw_path("  api/ipam/prefixes/  ").unwrap(),
+            "api/ipam/prefixes/"
+        );
+        // A segment that merely starts with "api" is not treated as API-rooted.
+        assert_eq!(
+            normalize_raw_path("apiserver/x/").unwrap(),
+            "api/apiserver/x/"
+        );
+        // A query value may contain a colon; only the first path segment is checked.
+        assert_eq!(
+            normalize_raw_path("dcim/devices/?name=a:b").unwrap(),
+            "api/dcim/devices/?name=a:b"
+        );
+    }
+
+    #[test]
+    fn normalize_raw_path_rejects_absolute_urls() {
+        for input in [
+            "https://evil.example/api/dcim/devices/",
+            "http://other-host/api/x",
+            "http:/malformed",
+        ] {
+            assert!(
+                normalize_raw_path(input).is_err(),
+                "absolute/scheme input must be rejected: {input}"
+            );
+        }
+    }
 
     // --- TUI startup status (connect probe → version + banner) -------------
 

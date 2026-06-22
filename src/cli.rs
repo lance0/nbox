@@ -391,7 +391,8 @@ pub enum Command {
         /// HTTP method. Only GET is supported until writes land (a later release).
         method: String,
 
-        /// API path, e.g. `/api/dcim/devices/?limit=1`.
+        /// API path, with or without the `/api/` prefix
+        /// (e.g. `dcim/devices/?limit=1` or `/api/dcim/devices/?limit=1`).
         path: String,
     },
 

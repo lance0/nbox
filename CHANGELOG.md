@@ -29,6 +29,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **`nbox raw GET` accepts an API path with or without the `/api/` prefix.** A bare
+  path like `dcim/devices/?limit=1` previously resolved against the base URL to the
+  *web UI* (`https://host/dcim/devices/`), which returns HTML and failed to decode
+  ("expected value at line N"). The path is now normalized to `/api/…` whether you
+  write `dcim/...`, `api/dcim/...`, or `/api/dcim/...`; absolute URLs are rejected so
+  `raw` stays scoped to the active profile.
 - **Nav-rail per-kind counts no longer clip on large instances.** The browse rail
   rendered the full count right-aligned in a too-narrow fixed-width pane, so a big
   number was cut to its first digit(s) (`● Devices 3` for 302142, `Prefixes` with no
