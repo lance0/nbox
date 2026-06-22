@@ -10,13 +10,15 @@ use thiserror::Error;
 /// An error condition with a stable, documented exit code.
 #[derive(Debug, Error)]
 pub enum NboxError {
-    /// HTTP 401 — missing, wrong, or expired token.
-    #[error("authentication failed (HTTP 401) — check the token for this profile")]
-    Authentication,
+    /// HTTP 401 — missing, wrong, or expired token. The `String` is the server's
+    /// reason as a ready-to-print suffix (`": Invalid token"`, or empty).
+    #[error("authentication failed (HTTP 401){0} — check the token for this profile")]
+    Authentication(String),
 
-    /// HTTP 403 — the token is valid but lacks permission.
-    #[error("permission denied (HTTP 403) — the token cannot access this resource")]
-    PermissionDenied,
+    /// HTTP 403 — the token is rejected or lacks permission. The `String` is the
+    /// server's reason as a ready-to-print suffix (`": Invalid v2 token"`, or empty).
+    #[error("permission denied (HTTP 403){0} — check the token for this profile")]
+    PermissionDenied(String),
 
     /// A lookup matched nothing. Carries a friendly, actionable message.
     #[error("{0}")]
@@ -48,7 +50,7 @@ impl NboxError {
     pub fn exit_code(&self) -> i32 {
         match self {
             NboxError::Usage(_) => 2,
-            NboxError::Authentication | NboxError::PermissionDenied => 3,
+            NboxError::Authentication(_) | NboxError::PermissionDenied(_) => 3,
             NboxError::NotFound(_) => 4,
             NboxError::Ambiguous { .. } => 5,
             NboxError::Api { .. } => 1,
@@ -86,8 +88,8 @@ mod tests {
     #[test]
     fn exit_codes_are_stable() {
         assert_eq!(NboxError::Usage("x".into()).exit_code(), 2);
-        assert_eq!(NboxError::Authentication.exit_code(), 3);
-        assert_eq!(NboxError::PermissionDenied.exit_code(), 3);
+        assert_eq!(NboxError::Authentication(String::new()).exit_code(), 3);
+        assert_eq!(NboxError::PermissionDenied(String::new()).exit_code(), 3);
         assert_eq!(NboxError::NotFound("x".into()).exit_code(), 4);
         assert_eq!(
             NboxError::Ambiguous {
@@ -122,8 +124,8 @@ mod tests {
         // is the real path `main` takes, since handlers wrap errors with context.
         let cases: [(NboxError, i32); 6] = [
             (NboxError::Usage("bad combo".into()), 2),
-            (NboxError::Authentication, 3),
-            (NboxError::PermissionDenied, 3),
+            (NboxError::Authentication(String::new()), 3),
+            (NboxError::PermissionDenied(String::new()), 3),
             (NboxError::NotFound("nope".into()), 4),
             (
                 NboxError::Ambiguous {
@@ -154,7 +156,7 @@ mod tests {
     #[test]
     fn exit_code_survives_multiple_context_layers() {
         // Several nested context layers — the deepest typed error still wins.
-        let err = anyhow::Error::from(NboxError::Authentication)
+        let err = anyhow::Error::from(NboxError::Authentication(String::new()))
             .context("authenticating to NetBox")
             .context("running `nbox device edge01`")
             .context("dispatching command");
@@ -166,7 +168,7 @@ mod tests {
         // A typed error buried beneath an untyped (string) context layer — the
         // realistic shape when a handler adds a `.with_context(|| "...")` note —
         // is still recovered by walking the chain.
-        let err = anyhow::Error::from(NboxError::PermissionDenied)
+        let err = anyhow::Error::from(NboxError::PermissionDenied(String::new()))
             .context("fetching /api/dcim/sites/")
             .context("running `nbox site iad1`");
         assert_eq!(NboxError::exit_code_for(&err), 3);

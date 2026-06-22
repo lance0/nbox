@@ -558,19 +558,53 @@ pub fn resolve_token(
         .as_ref()
         .and_then(|name| std::env::var(name).ok());
     let nbox = std::env::var("NBOX_TOKEN").ok();
-    if let Some(t) = select_env_token(token_env, nbox) {
-        return Some(t);
+    let raw = select_env_token(token_env, nbox)
+        .or_else(|| {
+            profile
+                .token
+                .as_ref()
+                .map(|t| t.expose().to_string())
+                .filter(|t| !t.is_empty())
+        })
+        .or_else(|| {
+            (profile.token_store == TokenStore::Keyring)
+                .then(|| {
+                    let account = crate::secret::account_key(
+                        &config_path.display().to_string(),
+                        profile_name,
+                    );
+                    crate::secret::keyring_get(&account)
+                })
+                .flatten()
+        })?;
+    // Normalize whatever the source gave us: a `Bearer `/`Token ` prefix or stray
+    // whitespace from a paste must not reach the wire. NetBox's "copy" button hands
+    // you the full `Authorization` header value, so this is the common case.
+    normalize_token(&raw)
+}
+
+/// Strip surrounding whitespace and an accidental `Bearer `/`Token ` scheme prefix
+/// from a token value. NetBox's UI copies the full `Authorization` header value
+/// (`Bearer nbt_…`), so pasting that verbatim — into the token field, a `token_env`
+/// var, or `NBOX_TOKEN` — still works: nbox adds the scheme itself from
+/// `auth_scheme`. Returns `None` when nothing usable remains.
+pub(crate) fn normalize_token(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    let mut value = trimmed;
+    for scheme in ["Bearer", "Token"] {
+        if let Some(rest) = trimmed
+            .get(..scheme.len())
+            .filter(|p| p.eq_ignore_ascii_case(scheme))
+            .map(|_| &trimmed[scheme.len()..])
+            && (rest.is_empty() || rest.starts_with(char::is_whitespace))
+        {
+            // A scheme *word* followed by whitespace (or nothing) — so a real token
+            // like "Tokenxyz" is never mistaken for a "Token " prefix.
+            value = rest.trim();
+            break;
+        }
     }
-    if let Some(token) = &profile.token
-        && !token.expose().is_empty()
-    {
-        return Some(token.expose().to_string());
-    }
-    if profile.token_store != TokenStore::Keyring {
-        return None;
-    }
-    let account = crate::secret::account_key(&config_path.display().to_string(), profile_name);
-    crate::secret::keyring_get(&account)
+    (!value.is_empty()).then(|| value.to_string())
 }
 
 /// Report the *source* of the resolved token for `profile` without exposing the
@@ -1763,6 +1797,52 @@ search = "graphql"
         let rendered = serde_json::to_string(&cfg).unwrap();
         assert!(rendered.contains("<redacted>"));
         assert!(!rendered.contains("nbt_supersecret"));
+    }
+
+    #[test]
+    fn normalize_token_strips_scheme_prefix_and_whitespace() {
+        // NetBox's copy button hands you "Bearer nbt_…"; pasting it verbatim must
+        // still yield a bare key. Case-insensitive; stray whitespace is trimmed.
+        assert_eq!(
+            normalize_token("  nbt_abc.def  ").as_deref(),
+            Some("nbt_abc.def")
+        );
+        assert_eq!(
+            normalize_token("Bearer nbt_abc.def").as_deref(),
+            Some("nbt_abc.def")
+        );
+        assert_eq!(
+            normalize_token("bearer  nbt_abc.def").as_deref(),
+            Some("nbt_abc.def")
+        );
+        assert_eq!(
+            normalize_token("Token 0123abcd").as_deref(),
+            Some("0123abcd")
+        );
+        assert_eq!(
+            normalize_token("Bearer nbt_abc.def\n").as_deref(),
+            Some("nbt_abc.def")
+        );
+        assert_eq!(normalize_token("   "), None);
+        assert_eq!(normalize_token("Bearer   "), None);
+    }
+
+    #[test]
+    fn resolve_token_strips_a_bearer_prefix_from_the_config_token() {
+        // The exact footgun: a "Bearer nbt_…" pasted into the config token field
+        // (NetBox's copy value) still resolves to the bare key on the wire.
+        let profile = ProfileConfig {
+            url: "https://nb.example".into(),
+            token: Some(ConfigToken::new("Bearer nbt_abc.def")),
+            ..Default::default()
+        };
+        if std::env::var("NBOX_TOKEN").is_err() {
+            let path = Path::new("/nbox/test/bearer-strip/config.toml");
+            assert_eq!(
+                resolve_token(&profile, path, "default").as_deref(),
+                Some("nbt_abc.def")
+            );
+        }
     }
 
     #[test]

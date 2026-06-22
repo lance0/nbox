@@ -190,7 +190,10 @@ async fn http_401_maps_to_authentication_error() {
         .chain()
         .find_map(|e| e.downcast_ref::<NboxError>())
         .expect("an NboxError should be in the chain");
-    assert!(matches!(typed, NboxError::Authentication), "got: {typed:?}");
+    assert!(
+        matches!(typed, NboxError::Authentication(_)),
+        "got: {typed:?}"
+    );
     assert_eq!(NboxError::exit_code_for(&err), 3);
 }
 
@@ -202,7 +205,7 @@ async fn http_403_maps_to_permission_denied_error() {
         .find_map(|e| e.downcast_ref::<NboxError>())
         .expect("an NboxError should be in the chain");
     assert!(
-        matches!(typed, NboxError::PermissionDenied),
+        matches!(typed, NboxError::PermissionDenied(_)),
         "got: {typed:?}"
     );
     assert_eq!(NboxError::exit_code_for(&err), 3);

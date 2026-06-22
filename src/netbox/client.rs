@@ -393,14 +393,36 @@ async fn retry_on_rate_limit(res: &reqwest::Response, attempt: u32, what: &str) 
     true
 }
 
+/// Extract a printable reason suffix from a NetBox auth-error body. NetBox returns
+/// `{"detail":"Invalid v2 token"}` on a rejected token (401/403), so surface that
+/// real cause instead of a generic "permission denied" — the difference between a
+/// 5-minute fix (regenerate the token) and an hour of chasing config. Returns
+/// `": <reason>"`, or empty when the body has no usable detail.
+fn auth_detail(body: &str) -> String {
+    let body = body.trim();
+    if body.is_empty() {
+        return String::new();
+    }
+    let detail = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| v.get("detail").and_then(|d| d.as_str()).map(str::to_string))
+        .unwrap_or_else(|| truncate(body, 200));
+    let detail = detail.trim();
+    if detail.is_empty() {
+        String::new()
+    } else {
+        format!(": {detail}")
+    }
+}
+
 /// Map a non-success HTTP status to a typed [`NboxError`] so exit codes are
 /// consistent no matter which path hit the error: 401→auth, 403→perms, 404→not
 /// found, everything else→generic API error. (Note: `get_optional` intercepts
 /// 404 earlier as `Ok(None)`; this covers raw 404s on `get`, e.g. `nbox raw`.)
 fn status_error(status: reqwest::StatusCode, body: &str) -> NboxError {
     match status {
-        reqwest::StatusCode::UNAUTHORIZED => NboxError::Authentication,
-        reqwest::StatusCode::FORBIDDEN => NboxError::PermissionDenied,
+        reqwest::StatusCode::UNAUTHORIZED => NboxError::Authentication(auth_detail(body)),
+        reqwest::StatusCode::FORBIDDEN => NboxError::PermissionDenied(auth_detail(body)),
         reqwest::StatusCode::NOT_FOUND => {
             let body = body.trim();
             if body.is_empty() {
@@ -539,6 +561,19 @@ mod tests {
     fn backoff_grows() {
         assert!(backoff(0) < backoff(1));
         assert!(backoff(1) < backoff(2));
+    }
+
+    #[test]
+    fn auth_detail_extracts_netbox_detail() {
+        // NetBox's `{"detail": "..."}` becomes a ": reason" suffix the auth error
+        // appends; non-JSON falls back to the body; empty stays empty.
+        assert_eq!(
+            auth_detail(r#"{"detail":"Invalid v2 token"}"#),
+            ": Invalid v2 token"
+        );
+        assert_eq!(auth_detail("Forbidden"), ": Forbidden");
+        assert_eq!(auth_detail("   "), "");
+        assert_eq!(auth_detail(""), "");
     }
 
     #[test]
