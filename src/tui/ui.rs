@@ -1822,20 +1822,49 @@ fn render_config_profiles(
     }
 }
 
+/// The active detail section as styled lines: the navigable rows (a selection
+/// gutter + highlight, dim for non-selectable rows) when the section is an
+/// interactive list, else the plain body text. Shared by both render layouts so
+/// every detail — header-bearing (VRF/route-target) or not (device/prefix/…) —
+/// renders its rows the same way.
+fn detail_section_lines<'a>(app: &'a App, theme: &Theme) -> Vec<Line<'a>> {
+    let rows = app.active_detail_rows();
+    if rows.is_empty() {
+        return body_lines(app.detail_body(), theme);
+    }
+    rows.iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let selectable = r.target.is_some();
+            let selected = selectable && i == app.detail_row;
+            let gutter = if selected { "▌" } else { " " };
+            let st = if selected {
+                Style::default().fg(theme.text).bg(theme.highlight_bg)
+            } else if selectable {
+                Style::default().fg(theme.text)
+            } else {
+                Style::default().fg(theme.text_dim)
+            };
+            Line::from(vec![
+                Span::styled(gutter, Style::default().fg(theme.accent)),
+                Span::styled(r.text.clone(), st),
+            ])
+        })
+        .collect()
+}
+
 fn render_detail(frame: &mut Frame, area: Rect, app: &mut App) {
     let inner_height = area.height.saturating_sub(2);
-    // A routing-context view (e.g. a VRF) carries a header card that stays fixed
-    // above the tab bar while the section scrolls; the band holds the card lines, a
-    // divider, the tab bar, and a spacer. Other details have no header and render
-    // exactly as before (the tab bar scrolls with the body).
+    // The tab bar (and any header card) stay pinned in a fixed band above the
+    // scrollable section, so the cursor scrolls within a long list while the tabs
+    // and header stay visible. A plain detail with neither header nor tabs has an
+    // empty band and scrolls as one block.
     let has_header = app.detail.as_ref().is_some_and(|d| !d.header.is_empty());
     let has_tabs = app.detail.as_ref().is_some_and(|d| !d.tabs.is_empty());
-    let band_h: u16 = if has_header {
-        let hlen = u16::try_from(app.detail.as_ref().map_or(0, |d| d.header.len())).unwrap_or(0);
-        hlen + 1 + if has_tabs { 2 } else { 0 }
-    } else {
-        0
-    };
+    let header_len = u16::try_from(app.detail.as_ref().map_or(0, |d| d.header.len())).unwrap_or(0);
+    let band_h: u16 = header_len
+        + u16::from(has_header) // a divider rule under the header card
+        + if has_tabs { 2 } else { 0 }; // the tab bar + a blank spacer
     // The scroll area is the inner height minus the fixed band; stash it so the
     // pure scroll/selection handlers clamp against the right viewport.
     let scroll_h = inner_height.saturating_sub(band_h);
@@ -1856,17 +1885,10 @@ fn render_detail(frame: &mut Frame, area: Rect, app: &mut App) {
         block = block.title(Line::from(hint).right_aligned().style(theme.text_dim));
     }
 
-    if !has_header {
-        let mut lines: Vec<Line> = Vec::new();
-        if let Some(d) = &app.detail
-            && !d.tabs.is_empty()
-        {
-            lines.push(tab_bar(app, d));
-            lines.push(Line::from(""));
-        }
-        lines.extend(body_lines(app.detail_body(), &theme));
+    // No header and no tabs: a plain key-value detail scrolls as one block.
+    if band_h == 0 {
         frame.render_widget(
-            Paragraph::new(lines)
+            Paragraph::new(detail_section_lines(app, &theme))
                 .block(block)
                 .style(Style::default().fg(theme.text))
                 .scroll((app.detail_scroll, 0)),
@@ -1875,7 +1897,7 @@ fn render_detail(frame: &mut Frame, area: Rect, app: &mut App) {
         return;
     }
 
-    // Header present: fixed band over a scrollable section.
+    // Fixed band (header card + tab bar) over a scrollable section.
     let inner = block.inner(area);
     frame.render_widget(block, area);
     let chunks = Layout::vertical([Constraint::Length(band_h), Constraint::Min(0)]).split(inner);
@@ -1891,12 +1913,14 @@ fn render_detail(frame: &mut Frame, area: Rect, app: &mut App) {
             };
             band.push(Line::from(Span::styled(h.clone(), st)));
         }
-        band.push(Line::from(Span::styled(
-            "─".repeat(band_area.width as usize),
-            Style::default()
-                .fg(theme.border)
-                .add_modifier(Modifier::DIM),
-        )));
+        if has_header {
+            band.push(Line::from(Span::styled(
+                "─".repeat(band_area.width as usize),
+                Style::default()
+                    .fg(theme.border)
+                    .add_modifier(Modifier::DIM),
+            )));
+        }
         if !d.tabs.is_empty() {
             band.push(tab_bar(app, d));
             band.push(Line::from(""));
@@ -1907,34 +1931,8 @@ fn render_detail(frame: &mut Frame, area: Rect, app: &mut App) {
         band_area,
     );
 
-    // The section body: navigable rows (with the selection gutter/highlight) when
-    // it's an interactive list, else plain scrollable text.
-    let rows = app.active_detail_rows();
-    let body: Vec<Line> = if rows.is_empty() {
-        body_lines(app.detail_body(), &theme)
-    } else {
-        rows.iter()
-            .enumerate()
-            .map(|(i, r)| {
-                let selectable = r.target.is_some();
-                let selected = selectable && i == app.detail_row;
-                let gutter = if selected { "▌" } else { " " };
-                let st = if selected {
-                    Style::default().fg(theme.text).bg(theme.highlight_bg)
-                } else if selectable {
-                    Style::default().fg(theme.text)
-                } else {
-                    Style::default().fg(theme.text_dim)
-                };
-                Line::from(vec![
-                    Span::styled(gutter, Style::default().fg(theme.accent)),
-                    Span::styled(r.text.clone(), st),
-                ])
-            })
-            .collect()
-    };
     frame.render_widget(
-        Paragraph::new(body)
+        Paragraph::new(detail_section_lines(app, &theme))
             .style(Style::default().fg(theme.text))
             .scroll((app.detail_scroll, 0)),
         body_area,
@@ -2778,6 +2776,51 @@ mod tests {
         let f = footer_nav(&a);
         assert!(f.contains("Enter open"), "nav rows ⇒ Enter: {f}");
         assert!(f.contains("j/k move"), "{f}");
+    }
+
+    #[test]
+    fn header_less_detail_tab_renders_navigable_rows_not_body_text() {
+        use crate::domain::detail::{DetailRow, DetailTab, DetailView};
+        use crate::netbox::search::ObjectKind;
+        // Regression: a device detail has no header card, so it once fell into the
+        // text-only render path and its interfaces/cables tabs showed as plain text
+        // with no cursor. The tab bar now sits in a fixed band and the section
+        // renders its navigable rows like the VRF view.
+        let mut a = app();
+        a.screen = Screen::Detail;
+        a.detail_tab = 1; // the first (interfaces) tab
+        a.detail_row = 0;
+        a.detail = Some(DetailView {
+            kind: ObjectKind::Device,
+            id: 1,
+            title: "device edge01".into(),
+            body: "name: edge01".into(),
+            tabs: vec![DetailTab {
+                key: 'i',
+                label: "Interfaces".into(),
+                body: "  eth0  1GbE".into(),
+                rows: vec![DetailRow::link(
+                    "eth0  1GbE".into(),
+                    ObjectKind::Interface,
+                    5,
+                )],
+            }],
+            links: Vec::new(),
+            header: Vec::new(),
+            summary_label: String::new(),
+            summary_rows: Vec::new(),
+        });
+        let theme = Theme::default_theme();
+        let lines = detail_section_lines(&a, &theme);
+        assert_eq!(lines.len(), 1);
+        let text = line_text(&lines[0]);
+        // The selected, selectable row gets the ▌ gutter — proving it renders as a
+        // navigable row, not the indented body text ("  eth0…").
+        assert!(
+            text.starts_with('▌'),
+            "expected cursor gutter, got: {text:?}"
+        );
+        assert!(text.contains("eth0  1GbE"), "got: {text:?}");
     }
 
     #[test]
