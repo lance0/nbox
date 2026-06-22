@@ -68,6 +68,15 @@ Polish the read experience. No writes here.
   (`c`/`a` tabs) · ☑ Device → IP addresses + VLANs (`p`/`v` tabs) · ☑ VLAN → prefixes (`p` tab) · ☑
   Site → devices + racks (`d`/`r` tabs) and Rack → devices (`d` tab). Enter opens the highlighted row,
   `b`/`Esc` walks back through the drill path.
+- ☐ **Selection window on every related-object detail tab.** The navigable-row pattern above is not yet
+  universal: the **device interfaces (`i`), cables (`c`), and services (`s`) tabs still render as static
+  text** — you can read the list but can't move a `j`/`k` cursor or `Enter` into an item, unlike the
+  IP/VLAN/rack/prefix/VRF tabs. Make them selectable lists (interfaces are openable — `nbox open
+  interface/<device>/<name>` already exists; cables/services have no dedicated detail view, so decide
+  whether they're selectable-but-inert or stay text). The TUI side is mostly done — `detail_list_active`,
+  the `j`/`k`/`Enter` keymap, and the row-highlight renderer already drive the working tabs; the gap is in
+  `src/domain/device_detail.rs` (add `id` to `IfaceRow`/`ServiceRow`) and `src/domain/detail.rs` (populate
+  the `DetailTab.rows` for `i`/`c`/`s` instead of leaving them body-only). ~3–5 focused edits.
 - ☐ **Demo recording** — an asciinema/VHS cast for the README.
 - ☑ **Deepen the in-app Config modal.** The profile editor now sets the knobs that used to need a
   hand-edited `config.toml`: per-surface API backends (`[profiles.<name>.api]` `vrf`/`route_target` =
@@ -125,6 +134,11 @@ Polish the read experience. No writes here.
   + every config write keep the token file `0600` across the whole write; TUI `Ctrl+T` test-connect shares the
   normalized resolution; README/CONFIG call out `token` vs `token_env`. Migration: re-enter any keyring-stored
   token as a config `token` or `token_env`. Shipped to crates.io / Homebrew tap / GHCR.
+- ☑ **Release `0.8.1`** — fix a site-browse timeout on large instances. NetBox's full site list serializer runs
+  per-site aggregate-count subqueries (device/prefix/rack/vlan/circuit); on a real 149-site instance the full
+  list took >120s (timeout) while the nav count and every other browse kind returned in <1s. The site browse now
+  requests NetBox's `brief` representation (name + slug, the only columns it shows) — ~400× faster, no column
+  loss; the detail view still fetches the full object. Shipped to crates.io / Homebrew tap / GHCR.
 
 ---
 
