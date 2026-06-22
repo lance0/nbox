@@ -30,9 +30,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **Nav-rail per-kind counts no longer clip on large instances.** The browse rail
-  rendered the full count right-aligned, so a big number got cut to its first
-  digit(s) (`● Devices 3` for 30142). Counts are now abbreviated — exact below
-  1000, then `k`/`M` (`30k`, `2.6M`) — so the column always fits.
+  rendered the full count right-aligned in a too-narrow fixed-width pane, so a big
+  number was cut to its first digit(s) (`● Devices 3` for 302142, `Prefixes` with no
+  count at all). Counts are now abbreviated — exact below 1000, then `k`/`M` (`30k`,
+  `2.1M`) — and the rail is widened to fit the longest label plus that count.
 - **Detail tabs that list related objects now show their selection cursor.** Device,
   prefix, VLAN, site, and rack details carried navigable tab rows but rendered them
   as plain text with no cursor — only the VRF/route-target views (which have a

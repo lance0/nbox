@@ -644,9 +644,12 @@ fn render_prefix_tree(frame: &mut Frame, area: Rect, app: &mut App) {
     );
 }
 
-/// Fixed width of the home Navigation rail (border + a comfortable label column,
-/// roomy enough for "●Prefixes 33").
-const NAV_WIDTH: u16 = 16;
+/// Fixed width of the home Navigation rail: borders + 1-col padding (4) over an
+/// inner column wide enough for the longest label (`● Prefixes`, 11 cols) plus a
+/// gap and a humanized count (up to `2.1M`/`302k`, 4 cols) — `1+2+8 + 1 + 4 = 16`
+/// inner, so 20 total. Large instances no longer clip the count (counts are
+/// abbreviated by [`humanize_count`]; this gives them somewhere to land).
+const NAV_WIDTH: u16 = 20;
 
 fn render_home(frame: &mut Frame, area: Rect, app: &mut App) {
     // Three panes: a fixed-width Nav rail, then the results / live-preview split.
