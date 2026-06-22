@@ -68,15 +68,13 @@ Polish the read experience. No writes here.
   (`c`/`a` tabs) · ☑ Device → IP addresses + VLANs (`p`/`v` tabs) · ☑ VLAN → prefixes (`p` tab) · ☑
   Site → devices + racks (`d`/`r` tabs) and Rack → devices (`d` tab). Enter opens the highlighted row,
   `b`/`Esc` walks back through the drill path.
-- ☐ **Selection window on every related-object detail tab.** The navigable-row pattern above is not yet
-  universal: the **device interfaces (`i`), cables (`c`), and services (`s`) tabs still render as static
-  text** — you can read the list but can't move a `j`/`k` cursor or `Enter` into an item, unlike the
-  IP/VLAN/rack/prefix/VRF tabs. Make them selectable lists (interfaces are openable — `nbox open
-  interface/<device>/<name>` already exists; cables/services have no dedicated detail view, so decide
-  whether they're selectable-but-inert or stay text). The TUI side is mostly done — `detail_list_active`,
-  the `j`/`k`/`Enter` keymap, and the row-highlight renderer already drive the working tabs; the gap is in
-  `src/domain/device_detail.rs` (add `id` to `IfaceRow`/`ServiceRow`) and `src/domain/detail.rs` (populate
-  the `DetailTab.rows` for `i`/`c`/`s` instead of leaving them body-only). ~3–5 focused edits.
+- ☑ **Selection window on every related-object detail tab** _(0.9.0)_. Device interfaces (`i`) and cables
+  (`c`) tabs are navigable lists (`j`/`k` + `Enter`) that open the interface's detail; interfaces are now a
+  first-class `ObjectKind` navigation target. The render fix landed under the hood: `render_detail` only drew
+  the selection cursor for header-bearing details (VRF/route-target), so every other detail rendered its rows
+  as plain text — the tab bar now pins in a fixed band for any tabbed detail and one shared builder renders
+  rows everywhere, so the device IP/VLAN, prefix children/addresses, and site/rack device tabs are navigable
+  too. Services (`s`) stay text (no detail to open).
 - ☐ **Demo recording** — an asciinema/VHS cast for the README.
 - ☐ **Interface journal.** Surface an interface's journal entries (operator notes) like the other
   kinds now that the interface is a first-class TUI detail. Needs an `interface` entry in the journal /
@@ -149,6 +147,14 @@ Polish the read experience. No writes here.
   list took >120s (timeout) while the nav count and every other browse kind returned in <1s. The site browse now
   requests NetBox's `brief` representation (name + slug, the only columns it shows) — ~400× faster, no column
   loss; the detail view still fetches the full object. Shipped to crates.io / Homebrew tap / GHCR.
+- ☑ **Release `0.9.0`** — **interfaces become first-class in the TUI.** A new `interface` `ObjectKind`
+  (navigation/detail target, not in global search); device interfaces/cables tabs are navigable and open the
+  interface detail. A **cable-path visualizer** draws the trace as a vertical A↔Z diagram (device emphasized,
+  patch panels as pass-through stops, unterminated sides explicit) — a TUI "cable path" tab and an inline
+  section in `nbox interface`; cable views name the **far device**. Fixes folded in: header-less detail tabs
+  now render their selection cursor (also un-breaking the device IP/VLAN, prefix children, site/rack tabs);
+  Nav-rail counts abbreviated + the rail widened so large instances don't clip; `nbox raw GET` accepts a path
+  with or without `/api/` and rejects absolute URLs. Shipped to crates.io / Homebrew tap / GHCR.
 
 ---
 
@@ -226,10 +232,11 @@ Consolidated future scope:
 
 ## Later / under consideration
 
-- ☐ **Cable-path visualizer (idea — exploring).** A TUI rendering of an interface's cable trace: the
-  A-side ↔ Z-side path (with any intermediate panels / junctions) drawn inline on the interface/cable
-  detail, from the trace data nbox already fetches. Scoped to a **single connection's path**, NOT full
-  network topology maps (those stay an explicit non-goal). Raised 2026-06-20.
+- ☑ **Cable-path visualizer** _(shipped 0.9.0)_. A TUI rendering of an interface's cable trace: the
+  A-side ↔ Z-side path (with any intermediate panels / junctions as pass-through stops) drawn from the trace
+  data nbox already fetches, as a "cable path" tab on the interface detail and an inline section in `nbox
+  interface`. Scoped to a **single connection's path**, NOT full network topology maps (those stay an
+  explicit non-goal). Raised 2026-06-20.
 - ☑ **Full rack integration** — racks are now a first-class **searchable** `ObjectKind`: they appear in
   the global search fan-out (REST + GraphQL), `/` + `nbox search`, MCP `nbox_search`, and a `rack`
   palette lookup, honoring the site/region/site-group/location scope (like devices, via `*_id`). They

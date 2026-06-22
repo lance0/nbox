@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-22
+
 ### Added
 
 - **Interfaces are first-class in the TUI.** A device detail's interfaces (`i`) and
