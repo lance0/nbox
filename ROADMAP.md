@@ -101,6 +101,12 @@ Polish the read experience. No writes here.
   reconnect), concurrent prefix-detail and scope+VRF fetches, deepened CSV/MCP contract tests, the
   persist_profile/429-retry refactors, and dependency maintenance (sha2 0.11, rust-toolchain pinned to MSRV).
   Shipped to crates.io / Homebrew tap / GHCR.
+- ☑ **Release `0.7.1`** — onboarding/token-handoff fixes: cancel the wizard's leaked terminal-event reader
+  (the post-onboarding "first keypress eaten / had to close out" freeze); block a pasted token when no
+  persistent OS keyring exists (default Linux/musl) instead of silently losing it; make profile token saves
+  transactional (keyring change prepared before the TOML write, rolled back on failure); and keep a profile
+  rename working when the keyring is unavailable (metadata renames, best-effort token-migration warning).
+  Shipped to crates.io / Homebrew tap / GHCR.
 
 ---
 
