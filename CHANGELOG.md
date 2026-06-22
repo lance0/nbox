@@ -59,6 +59,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   MCP `nbox_get` now carry `"<device> <port>"` there — a content change to those
   string labels, not a shape change.
 
+### Security
+
+- Updated the transitive `quinn-proto` dependency to `0.11.15` to clear
+  RUSTSEC-2026-0185. It's a lockfile-only dependency (pulled via `reqwest`); nbox
+  builds without QUIC/HTTP3, so it isn't compiled into the binary — but the release
+  audit gate scans the whole `Cargo.lock`.
+
 ## [0.8.1] - 2026-06-22
 
 ### Fixed
