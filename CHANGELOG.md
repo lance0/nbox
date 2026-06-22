@@ -14,7 +14,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   opens the interface's detail (its attributes plus the cable path). A new
   `interface` object kind backs this purely as a navigation/detail target: it's
   reached from a device, not the global search fan-out, so `nbox search` / MCP
-  `nbox_get` are unchanged, as is the `nbox device` JSON/CSV/MCP output.
+  `nbox_get` keep their existing surface, and the new navigation row `id`s are
+  non-serialized — the `nbox device` JSON/CSV *shape* is unchanged (the cable
+  endpoint *labels* gain the far device; see the Changed note below).
 - **Cable-path visualizer.** An interface's cable trace renders as a vertical A↔Z
   diagram — the near end on top (`A`), the far end on the bottom (`Z`), the device
   emphasized over its port, and each cable segment labelled (`#id · type · length ·
@@ -37,9 +39,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Cable endpoint rows use `→` and include the far device.** The Cables tab and
-  `nbox interface` render cable endpoints as `local-port → far-device far-port`
-  (previously `local-port -> far-port`, remote device omitted).
+- **Cable endpoints now name the far device, in every surface.** The Cables tab and
+  `nbox interface` render endpoints as `local-port → far-device far-port` (was
+  `local-port -> far-port`, remote device omitted). The far device also flows into
+  the serialized `connected_to` labels, so `nbox interface` / `nbox device` JSON and
+  MCP `nbox_get` now carry `"<device> <port>"` there — a content change to those
+  string labels, not a shape change.
 
 ## [0.8.1] - 2026-06-22
 
