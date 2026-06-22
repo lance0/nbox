@@ -12,9 +12,8 @@ rather than hanging on a TTY that isn't there.
 
 For scripts and agents, prefer resolving the token from the environment: export
 `NBOX_TOKEN` (or point a profile's `token_env` at a set variable). Desktop users
-may also store `token = "..."` in the profile, and keyring is opt-in with
-`token_store = "keyring"`. The full order is `token_env` → `NBOX_TOKEN` →
-config `token` → opt-in keyring → none; env always wins. Requires NetBox 4.2+.
+may also store `token = "..."` in the profile. The full order is `token_env` →
+`NBOX_TOKEN` → config `token` → none; env always wins. Requires NetBox 4.2+.
 
 ## Output formats
 

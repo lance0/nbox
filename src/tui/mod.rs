@@ -17,7 +17,6 @@ pub mod filter_modal;
 pub mod fuzzy;
 pub mod onboarding;
 pub mod palette;
-pub mod profile_token;
 pub mod state;
 pub mod term;
 pub mod theme;

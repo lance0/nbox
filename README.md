@@ -22,8 +22,8 @@ server for AI agents.
 
 First run? Just launch the TUI — with no config it opens a first-run wizard that
 captures a profile, test-connects it, and drops you into the app. Paste a token
-and nbox saves it in your user-only `config.toml`; use `Ctrl+K` in the wizard, or
-`nbox config token set`, only if you want OS-keyring storage instead.
+and nbox saves it in your user-only `config.toml` (`0600` on Unix, redacted in
+`config show`); or point a profile at an env var instead with `token_env`.
 
 ```bash
 nbox                              # first run: guided onboarding, then the TUI
@@ -34,7 +34,7 @@ Prefer the shell? Configure a profile by hand:
 ```bash
 nbox profile add work https://netbox.example.com --token-env NETBOX_TOKEN
 nbox profile use work
-export NETBOX_TOKEN=...           # env vars override config/keyring tokens
+export NETBOX_TOKEN=...           # env vars override the saved config token
 
 # Look things up from the shell
 nbox search edge01
@@ -197,23 +197,17 @@ cd nbox && cargo install --path .
 ### Build Features
 
 `cargo install nbox` builds the **canonical single binary** — clipboard, the MCP
-server (stdio + HTTP transport), OS-keyring token storage, and update checks are
-all on by default. There are no feature-variant builds to choose between.
+server (stdio + HTTP transport), and update checks are all on by default. There
+are no feature-variant builds to choose between.
 
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `clipboard` | Yes | Copy values with `y` in the TUI (via `arboard`) |
 | `http` | Yes | `nbox serve --http` loopback MCP transport (+ OIDC) |
-| `keyring` | Yes | OS-keyring token storage (`nbox config token`) |
 | `updates` | Yes | GitHub update notifications |
-| `keyring-secret-service` | No | Linux D-Bus (Secret Service) keyring backend — for desktop packagers |
 
-`keyring` means macOS Keychain / Windows Credential Manager support is compiled
-in. Default Linux and musl builds intentionally do **not** link the D-Bus Secret
-Service backend; on those builds `token_store = "keyring"` is unavailable, while
-normal config-token and env-var storage still work. Build with
-`--features keyring-secret-service` only when you want a Linux desktop keyring
-build.
+The API token lives in `config.toml` (`token = "..."`, user-only `0600` on Unix)
+or an env var — there is no OS-keyring storage.
 
 ```bash
 # Lean stdio-only build (drops all of the above):
@@ -279,7 +273,7 @@ nbox open <kind>/<ref>            # device, ip, prefix, vlan, site, rack, circui
                                   # e.g. xe-0/0/1)
 nbox raw GET <api-path>           # raw read-only API request (escape hatch)
 nbox serve [--http <addr>]        # read-only MCP server for AI agents (stdio, or loopback/OIDC HTTP)
-nbox config <init|path|show|token>    # token: keyring set/clear/status (never echoed)
+nbox config <init|path|show|token>    # token: status reports the resolved source (never echoed)
 nbox profile <add|use|list|show>
 nbox completions <bash|zsh|fish|powershell|elvish>
 nbox man [DIR]                    # man pages: `nbox man > nbox.1` (top-level),
@@ -361,10 +355,9 @@ for that).
 `S` (or `config` in the palette) opens the Config modal to manage profiles
 in-app: list them (active marked), and add / edit / select / delete without
 hand-editing `config.toml`. The add/edit form covers `name`, `url`, `token_env`,
-`auth_scheme`, `verify_tls`, and `token_store`, plus an optional masked token
-field. A typed token is saved to `config.toml` by default (redacted by display
-commands; config files are written user-only on Unix). `Ctrl+K` switches
-`token_store` to `keyring` for explicit OS-keyring storage instead. `Ctrl+T`
+`auth_scheme`, and `verify_tls`, plus an optional masked token field. A typed
+token is saved to `config.toml` (redacted by display commands; config files are
+written user-only on Unix); on an edit, `Ctrl+X` clears the stored token. `Ctrl+T`
 test-connects before you commit; `Enter` saves, `Ctrl+G` saves and switches to
 it. Unlike the quick `P` cycle, selecting or adding-and-using a profile here
 **persists** `active_profile` to your config. Deleting the active or last profile
@@ -432,7 +425,6 @@ ttl_secs = 30              # reuse window in seconds (clamped to 5–300)
 url = "https://netbox.example.com"
 # token = "nbt_..."              # default TUI paste path; redacted by config show
 token_env = "NETBOX_TOKEN"
-# token_store = "keyring"        # optional: opt into OS keyring instead of token
 auth_scheme = "auto"          # auto | bearer | token
 verify_tls = true
 timeout_secs = 15
@@ -448,23 +440,22 @@ route_target = "graphql"      # rest | graphql
 
 Tokens can be stored directly in the profile as `token = "..."` for the normal
 single-user desktop flow. Display commands redact it, and config files are
-written user-only on Unix. If you prefer external secret handling, store only the
-*name* of an env var (`token_env`) or opt into the OS keyring.
+written user-only (`0600`) on Unix. If you prefer external secret handling, store
+only the *name* of an env var (`token_env`).
 
 Token sources are resolved in this order:
 
 1. the env var named by the profile's `token_env` (if set & present)
 2. `NBOX_TOKEN`
 3. the profile's `token = "..."`
-4. the OS keyring entry for profiles with `token_store = "keyring"`
-5. none
+4. none
 
-Use env vars for CI, SSH, Docker, and anything headless. Use the OS keyring only
-when you explicitly want desktop secret-store integration: macOS Keychain,
-Windows Credential Manager, or a Linux build with `keyring-secret-service`.
-Default Linux/musl release binaries have no D-Bus keyring backend. `nbox config
-token status` shows the active source (never the token). See
-[docs/CONFIG.md](docs/CONFIG.md) for the full reference.
+Each source is normalized before it competes — a pasted `Bearer `/`Token ` prefix
+or stray whitespace is stripped (NetBox's "copy token" button hands you the full
+`Authorization` header), and nbox adds the scheme itself from `auth_scheme`. Use
+env vars for CI, SSH, Docker, and anything headless. `nbox config token status`
+shows the active source (never the token). See [docs/CONFIG.md](docs/CONFIG.md)
+for the full reference.
 
 ## MCP Server
 
@@ -554,7 +545,6 @@ raw escape-hatch tool come later.
 | TLS / certificate error | For a lab with a self-signed cert, set `verify_tls = false` on that profile (never in production). |
 | `operation timed out` on one search endpoint | Transient; nbox already disables stale keep-alive reuse. Retry, or raise `timeout_secs`. |
 | `ambiguous` (exit 5) | The reference matched several objects — disambiguate (`--vrf` for an IP/prefix, `--site`/`--group` for a VLAN). |
-| `keyring not available` (Linux) | The default static binary has no D-Bus backend. Keep `token_store = "config"`, use `token_env`/`NBOX_TOKEN`, or install a build with `keyring-secret-service`. |
 | NetBox version error | nbox requires NetBox **4.2+**. Check `nbox status`. |
 
 Full list with copy-paste fixes: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.md).

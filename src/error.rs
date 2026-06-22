@@ -17,7 +17,7 @@ pub enum NboxError {
 
     /// HTTP 403 — the token is rejected or lacks permission. The `String` is the
     /// server's reason as a ready-to-print suffix (`": Invalid v2 token"`, or empty).
-    #[error("permission denied (HTTP 403){0} — check the token for this profile")]
+    #[error("permission denied (HTTP 403){0} — check the token or permissions for this profile")]
     PermissionDenied(String),
 
     /// A lookup matched nothing. Carries a friendly, actionable message.

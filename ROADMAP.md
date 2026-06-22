@@ -40,8 +40,9 @@ The read surface is broad and stable today (full history in `CHANGELOG.md`):
   fuzzy filter, recents, auto-refresh, device tabs, open-in-browser/copy, profile switcher
   (`P`/`Ctrl+P`), and an in-app **Config modal** (`S`) — profile editor (add/edit/select/delete),
   settings, and **first-run onboarding**.
-- **Secrets:** OS keyring token storage with env fallback (`token_env` → `NBOX_TOKEN` → keyring);
-  the token is never written to `config.toml` or logs.
+- **Secrets:** the API token lives in `config.toml` (`token = "..."`, `0600` on Unix, redacted in
+  display) or an env var — precedence `token_env` → `NBOX_TOKEN` → config token → none, each source
+  scheme-prefix/whitespace-normalized. No OS keyring.
 - **Distribution & quality:** release matrix (musl + darwin + windows), Homebrew tap, GHCR image,
   shell completions + the full man-page set, crates.io; real-NetBox integration CI; whole-project
   `clippy::pedantic` gate. The detailed v0.1 / v0.1.1 records are kept below.
@@ -114,6 +115,14 @@ Polish the read experience. No writes here.
   TOML token). Precedence: `token_env` → `NBOX_TOKEN` → config token → opt-in keyring → none. Deferred minors:
   `config init` 0644, the 0600 write-then-chmod race, Windows perms, a cosmetic keyring-migrate message.
   Shipped to crates.io / Homebrew tap / GHCR.
+- ☐ **Release `0.8.0`** — **remove the OS keyring entirely.** It was net-negative surface: a frictional prompt
+  on some platforms, an "unavailable" dead-end on default Linux/musl, and a whole transactional machinery to
+  keep two stores in sync. The token now lives only in `config.toml` (`token = "..."`, `0600`, redacted) or an
+  env var; precedence collapses to `token_env` → `NBOX_TOKEN` → config token → none, with each source
+  scheme-prefix/whitespace-normalized before it competes (so `NBOX_TOKEN="Bearer "` can't mask a valid config
+  token). Drops the `keyring`/`keyring-secret-service` Cargo features, `nbox config token set`/`clear`, the
+  TUI `Ctrl+K` toggle, and the `token_store` key (now ignored). `config token status` stays. Migration: re-enter
+  any keyring-stored token as a config `token` or `token_env`.
 
 ---
 
@@ -157,7 +166,7 @@ reviewable PRs that lock contracts and reduce future change cost.
   ☐ Remaining: explicit old/future `config_version` shape fixtures (forward-compat warn is covered; a
   versioned-migration matrix is not yet needed).
 - ☐ **Dependency and feature matrix** — CI or scripted local checks for default, `--no-default-features`,
-  `http`, `keyring`, `keyring-secret-service`, and release-musl-relevant feature combinations.
+  `http`, and release-musl-relevant feature combinations.
 - ☐ **Performance baseline, narrow** — bench or measured smoke for search fan-out and JSON rendering
   on representative fixture sizes. Do not add a cache unless measurements justify it.
 
@@ -324,11 +333,12 @@ Consolidated future scope:
   MCP reads + clear; CLI intentionally none). Optional follow-up: ☐ MCP `cached_at`/age annotation
   (short TTL + the clear tool already cover most of it).
 - ☑ **Single binary.** One canonical full-featured binary per platform: the default feature set
-  carries every cross-platform user feature (`http`, native `keyring`, `clipboard`, `updates`), no
-  feature-variant artifacts. `--no-default-features` stays a dev-only lean build;
-  `keyring-secret-service` (D-Bus) stays off so the musl static build links clean. Release builds derive
-  the feature set from `default` (no redundant `--features` flags). MSRV dropped 1.95 → 1.88 (the 1.95
-  floor was a leftover of the removed on-disk cache; stale `cache`-feature docs cleaned up).
+  carries every cross-platform user feature (`http`, `clipboard`, `updates`), no feature-variant
+  artifacts. `--no-default-features` stays a dev-only lean build. Release builds derive the feature set
+  from `default` (no redundant `--features` flags). (The OS keyring and its `keyring-secret-service`
+  D-Bus backend were removed in 0.8.0 — the token lives in `config.toml` or an env var.) MSRV dropped
+  1.95 → 1.88 (the 1.95 floor was a leftover of the removed on-disk cache; stale `cache`-feature docs
+  cleaned up).
 - ☐ Batch queries from a file (audits).
 - ☐ Configurable client concurrency for very large instances — `search` is a bounded fan-out and
   `list_all` is `max`-capped today; expose tuning only if a real instance needs it.

@@ -442,7 +442,7 @@ impl FormInput {
     }
 
     /// The current value of the field at `idx`, if any. The raw value — callers
-    /// reading the token for the keyring use this; it is never rendered.
+    /// reading the token to write to config use this; it is never rendered.
     pub fn value(&self, idx: usize) -> Option<&str> {
         self.fields.get(idx).map(|(_, i)| i.value())
     }
@@ -786,7 +786,7 @@ mod tests {
     fn masked_field_never_exposes_its_value_in_the_rendered_string() {
         let mut token = TextInput::masked("token");
         type_str(&mut token, "nbt_secret123");
-        // The editing value is intact (the keyring read uses it)…
+        // The editing value is intact (the config save reads it)…
         assert_eq!(token.value(), "nbt_secret123");
         // …but the rendered string is all bullets, exposing no real character.
         let shown = token.rendered_text();
