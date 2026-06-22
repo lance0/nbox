@@ -73,7 +73,7 @@ fn run_nbox_with_page_size(page_size: usize, args: &[&str]) -> Output {
         .arg("--config")
         .arg(config.path())
         .args(args)
-        // Token precedence is token_env → NBOX_TOKEN → keyring. The profile's
+        // Token precedence is token_env → NBOX_TOKEN → config token. The profile's
         // `token_env` (`NETBOX_TOKEN_UNUSED`) is deliberately never exported, so
         // resolution falls through to the `NBOX_TOKEN` we set here.
         .env("NBOX_TOKEN", netbox_token())

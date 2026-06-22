@@ -134,19 +134,17 @@ impl OnboardingWizard {
     }
 
     /// Build a [`ConnectRequest`] from the current form for a test-connect probe.
-    /// The probe token uses the same precedence as the eventual launch (M15): the
-    /// typed (masked) token wins, else the form's `token_env` (resolved from the
-    /// environment), else `NBOX_TOKEN`. The token is passed straight to the temp
-    /// client, never logged.
+    /// The probe token uses the same normalized precedence as the eventual launch
+    /// (M15) via the shared helper: the typed (masked) token wins, else the form's
+    /// `token_env` (resolved from the environment), else `NBOX_TOKEN`. There's no
+    /// saved profile yet, so there's no config token. The token is passed straight
+    /// to the temp client, never logged.
     #[must_use]
     pub fn connect_request(&self) -> ConnectRequest {
-        let token = self.form.token().or_else(|| {
-            self.form
-                .token_env()
-                .and_then(|name| std::env::var(&name).ok())
-                .filter(|t| !t.is_empty())
-                .or_else(|| std::env::var("NBOX_TOKEN").ok().filter(|t| !t.is_empty()))
-        });
+        let typed = self.form.token();
+        let token_env = self.form.token_env();
+        let token =
+            crate::config::resolve_probe_token(typed.as_deref(), token_env.as_deref(), None);
         ConnectRequest {
             url: self.form.url(),
             auth_scheme: self.form.auth_scheme,

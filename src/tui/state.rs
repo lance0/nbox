@@ -2106,19 +2106,20 @@ impl App {
             .editing
             .as_deref()
             .and_then(|name| self.profiles.iter().find(|p| p.name == name));
-        // Resolve the probe token: typed token wins, else the form's token_env, else
-        // NBOX_TOKEN, else the stored config token.
-        let token = form.token().or_else(|| {
-            form.token_env()
-                .and_then(|name| std::env::var(&name).ok())
-                .filter(|t| !t.is_empty())
-                .or_else(|| std::env::var("NBOX_TOKEN").ok().filter(|t| !t.is_empty()))
-                .or_else(|| {
-                    editing_entry
-                        .and_then(|entry| entry.config.token.as_ref())
-                        .map(|token| token.expose().to_string())
-                })
-        });
+        // Resolve the probe token through the shared helper so a test-connect uses
+        // the SAME normalized precedence as a real launch/reconnect (M15): typed →
+        // form `token_env` → `NBOX_TOKEN` → the stored config token, each with a
+        // pasted `Bearer `/`Token ` prefix stripped.
+        let typed = form.token();
+        let token_env = form.token_env();
+        let config_token = editing_entry
+            .and_then(|entry| entry.config.token.as_ref())
+            .map(|token| token.expose().to_string());
+        let token = crate::config::resolve_probe_token(
+            typed.as_deref(),
+            token_env.as_deref(),
+            config_token.as_deref(),
+        );
         Some(ConnectRequest {
             url: form.url(),
             auth_scheme: form.auth_scheme,

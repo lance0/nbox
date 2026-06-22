@@ -601,6 +601,34 @@ fn select_env_token(token_env: Option<String>, nbox_token: Option<String>) -> Op
         .or_else(|| nbox_token.and_then(|t| normalize_token(&t)))
 }
 
+/// Resolve the token a Config-modal / onboarding **test-connect** probe should
+/// use, so a `Ctrl+T` test sees exactly what a real launch/reconnect would send.
+/// Mirrors [`resolve_token`]'s per-candidate normalization but adds the form's
+/// freshly-typed token at the top (it's what the user just entered and wants to
+/// test). Order: typed → the `token_env` variable's value → `NBOX_TOKEN` → the
+/// profile's config token. Each candidate is normalized (a pasted `Bearer `/`Token `
+/// prefix or whitespace stripped) before it competes, so one that's set but blank
+/// can't mask a valid lower-precedence source.
+pub(crate) fn resolve_probe_token(
+    typed: Option<&str>,
+    token_env: Option<&str>,
+    config_token: Option<&str>,
+) -> Option<String> {
+    typed
+        .and_then(normalize_token)
+        .or_else(|| {
+            token_env
+                .and_then(|name| std::env::var(name).ok())
+                .and_then(|t| normalize_token(&t))
+        })
+        .or_else(|| {
+            std::env::var("NBOX_TOKEN")
+                .ok()
+                .and_then(|t| normalize_token(&t))
+        })
+        .or_else(|| config_token.and_then(normalize_token))
+}
+
 /// Insert or update `profiles.<name>` in a format-preserving document.
 pub fn upsert_profile(
     doc: &mut DocumentMut,
@@ -1052,17 +1080,29 @@ pub fn load_doc_or_new(path: &Path) -> Result<DocumentMut> {
     }
 }
 
+/// Restrict a freshly-written config file to owner-only (`0600`) on Unix; a no-op
+/// elsewhere. The config can hold a `token = "..."`, so it must never be group/
+/// world-readable.
+fn restrict_to_owner(path: &Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+    }
+    Ok(())
+}
+
 /// Write a document to `path`, creating parent directories as needed.
 pub fn write_doc(path: &Path, doc: &DocumentMut) -> Result<()> {
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
     fs::write(path, doc.to_string())?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
-    }
+    restrict_to_owner(path)?;
     Ok(())
 }
 
@@ -1087,6 +1127,9 @@ pub fn run_config(
                     fs::create_dir_all(parent)?;
                 }
                 fs::write(&path, INIT_TEMPLATE)?;
+                // The token now lives in this file by default, so lock it down to
+                // owner-only up front — before a user uncomments/adds `token = …`.
+                restrict_to_owner(&path)?;
                 eprintln!("created config at {}", path.display());
             }
             Ok(())
@@ -1593,6 +1636,53 @@ search = "graphql"
         let rendered = serde_json::to_string(&cfg).unwrap();
         assert!(rendered.contains("<redacted>"));
         assert!(!rendered.contains("nbt_supersecret"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn config_init_creates_an_owner_only_file() {
+        // 0.8.0 makes `token = "..."` the primary path and docs show hand-editing
+        // the file, so `config init` must create it `0600` up front — before a user
+        // adds a token to it.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        run_config(
+            crate::cli::ConfigCommand::Init,
+            Some(&path),
+            None,
+            crate::output::Format::Plain,
+            &crate::output::json::JsonOptions::default(),
+        )
+        .unwrap();
+        let mode = std::fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(
+            mode & 0o777,
+            0o600,
+            "config init must create an owner-only file"
+        );
+    }
+
+    #[test]
+    fn resolve_probe_token_normalizes_each_tier() {
+        // A test-connect must see the same normalized token a real connection would.
+        // A typed token with a pasted `Bearer ` prefix is stripped and wins.
+        assert_eq!(
+            resolve_probe_token(Some("Bearer nbt_typed.tok"), None, None).as_deref(),
+            Some("nbt_typed.tok")
+        );
+        // A typed token that normalizes to nothing falls through to the config token,
+        // which is itself normalized.
+        if std::env::var("NBOX_TOKEN").is_err() {
+            assert_eq!(
+                resolve_probe_token(Some("Bearer "), None, Some("Token nbt_cfg.tok")).as_deref(),
+                Some("nbt_cfg.tok")
+            );
+        }
+        // Nothing anywhere ⇒ None.
+        if std::env::var("NBOX_TOKEN").is_err() {
+            assert_eq!(resolve_probe_token(None, None, None), None);
+        }
     }
 
     #[test]

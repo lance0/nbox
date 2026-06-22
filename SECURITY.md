@@ -20,7 +20,7 @@ Security issues of interest include:
 
 ## Security Posture
 
-- **Tokens are never written to config.** nbox resolves the API token in order: the env var named by the profile's `token_env`, then `NBOX_TOKEN`, then the OS keyring entry for the profile (`nbox config token set`, entered without echo). It is never persisted to `config.toml` and never logged — request logging shows only the auth-scheme marker, and the config's `Debug` output redacts secrets.
+- **Token storage.** nbox resolves the API token in order: the env var named by the profile's `token_env`, then `NBOX_TOKEN`, then the profile's `token` value in `config.toml`. There is no OS keyring. If you prefer to keep the token out of the config file, use `token_env`/`NBOX_TOKEN` and store only the env-var *name* in the file. When a token is saved to `config.toml`, the file is written owner-only (`0600` on Unix) and the value is redacted from `config show` / `--json` / `Debug`. The token is never logged — request logging shows only the auth-scheme marker. Inspect the active source with `nbox config token status` (never prints the value).
 - **Read-only.** Every command and MCP tool only reads; nbox issues no writes (`raw` is `GET`-only). Use a read-scoped NetBox token for defense in depth.
 - **TLS verified by default.** `verify_tls = false` is supported for labs with self-signed certs but must not be used against production.
 - **Clean stdout.** Data goes to stdout; logs and errors go to stderr — safe for piping and for the `nbox serve` JSON-RPC stream.
