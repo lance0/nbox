@@ -38,9 +38,5 @@ See [docs/MCP.md](docs/MCP.md) for the full security model.
 
 ## Supported Versions
 
-Only the latest release receives security updates.
-
-| Version | Supported |
-|---------|-----------|
-| 0.3.x   | ✓         |
-| < 0.3   | ✗         |
+Only the latest release receives security updates. Upgrade to the most recent
+version before reporting a vulnerability.

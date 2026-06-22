@@ -1080,7 +1080,7 @@ pub fn load_doc_or_new(path: &Path) -> Result<DocumentMut> {
     }
 }
 
-/// Restrict a freshly-written config file to owner-only (`0600`) on Unix; a no-op
+/// Restrict an existing config file to owner-only (`0600`) on Unix; a no-op
 /// elsewhere. The config can hold a `token = "..."`, so it must never be group/
 /// world-readable.
 fn restrict_to_owner(path: &Path) -> Result<()> {
@@ -1096,14 +1096,42 @@ fn restrict_to_owner(path: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Write a document to `path`, creating parent directories as needed.
-pub fn write_doc(path: &Path, doc: &DocumentMut) -> Result<()> {
+/// Write `contents` to a config file, keeping it owner-only (`0600` on Unix) for
+/// the *entire* write — the file can hold a `token = "..."`, so it must never be
+/// group/world-readable, even transiently. An existing file is restricted *before*
+/// it's truncated and rewritten; a *new* file is created at `0600` before any bytes
+/// land (so the secret never touches disk under the default umask); and the mode is
+/// reasserted afterward.
+fn write_config_file(path: &Path, contents: &[u8]) -> Result<()> {
+    use std::io::Write;
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
-    fs::write(path, doc.to_string())?;
+    // Lock down an existing file (e.g. one left 0644 by an older nbox or hand
+    // creation) before truncate+rewrite, so the secret is never exposed mid-write.
+    if path.exists() {
+        restrict_to_owner(path)?;
+    }
+    let mut opts = fs::OpenOptions::new();
+    opts.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Creation mode for a *new* file: 0600 applied before the first write.
+        opts.mode(0o600);
+    }
+    let mut file = opts.open(path)?;
+    file.write_all(contents)?;
+    // Reassert 0600 (open() leaves an existing file's mode untouched; belt-and-
+    // suspenders against a permissive umask on the create path).
     restrict_to_owner(path)?;
     Ok(())
+}
+
+/// Write a document to `path`, creating parent directories as needed. The file is
+/// kept owner-only throughout (see [`write_config_file`]).
+pub fn write_doc(path: &Path, doc: &DocumentMut) -> Result<()> {
+    write_config_file(path, doc.to_string().as_bytes())
 }
 
 /// Handle the `nbox config` subcommands.
@@ -1123,13 +1151,9 @@ pub fn run_config(
             if path.exists() {
                 eprintln!("config already exists at {}", path.display());
             } else {
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                fs::write(&path, INIT_TEMPLATE)?;
-                // The token now lives in this file by default, so lock it down to
+                // The token now lives in this file by default, so it's created
                 // owner-only up front — before a user uncomments/adds `token = …`.
-                restrict_to_owner(&path)?;
+                write_config_file(&path, INIT_TEMPLATE.as_bytes())?;
                 eprintln!("created config at {}", path.display());
             }
             Ok(())
@@ -1660,6 +1684,36 @@ search = "graphql"
             mode & 0o777,
             0o600,
             "config init must create an owner-only file"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_doc_keeps_a_token_file_owner_only() {
+        // Every profile/settings save goes through write_doc, and the document can
+        // carry a `token = "..."`. A brand-new file must be created 0600, and an
+        // existing world-readable file must be tightened to 0600, never left broad.
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let mut doc = load_doc_or_new(&path).unwrap();
+        set_profile_token(&mut doc, "work", Some("nbt_secret.value")).unwrap();
+
+        // New file: created owner-only.
+        write_doc(&path, &doc).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "a new token-bearing config must be created 0600"
+        );
+
+        // Pre-existing 0644 file: tightened back to 0600 on the next write.
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o644)).unwrap();
+        write_doc(&path, &doc).unwrap();
+        assert_eq!(
+            std::fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600,
+            "rewriting an over-permissive token file must restore 0600"
         );
     }
 
