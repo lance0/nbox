@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-06-22
+
+### Fixed
+
+- **First-run onboarding no longer freezes after you add a profile.** The wizard
+  left a terminal-event reader running after it handed off to the app, so the
+  first keypress in the freshly-launched TUI was swallowed (it felt stuck, and you
+  had to force it closed). The reader is now cancelled at the handoff.
+- **Pasted tokens are no longer silently lost when there is no OS keyring.** On a
+  build without a persistent keystore (the default Linux/musl build, or any machine
+  with no Secret Service backend), a pasted token went into a throwaway in-process
+  store and vanished — so the app launched unauthenticated. Onboarding and the
+  profile editor now block that save with clear guidance to use `token_env` /
+  `NBOX_TOKEN` instead. macOS/Windows and Secret-Service Linux builds store pasted
+  tokens as before.
+- **Profile token saves are now transactional.** The keyring change is prepared
+  before `config.toml` is written and rolled back if the write fails, so a save can
+  never leave a profile without its token or a token orphaned under a profile that
+  never landed.
+- **Renaming a profile no longer fails when the keyring is unavailable.** The
+  metadata rename always proceeds; if a stored token could not be migrated to the
+  new name, you get a best-effort warning to re-enter it rather than a hard error.
+
 ## [0.7.0] - 2026-06-21
 
 ### Added
