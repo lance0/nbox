@@ -23,6 +23,11 @@ pub struct BriefObject {
     /// Route distinguisher — present on VRF briefs (`None` otherwise).
     #[serde(default)]
     pub rd: Option<String>,
+    /// The owning device — present on interface briefs (e.g. an interface's
+    /// `connected_endpoints`/`link_peers`), `None` otherwise. Boxed to keep
+    /// `BriefObject` a fixed size despite the self-reference.
+    #[serde(default)]
+    pub device: Option<Box<BriefObject>>,
 }
 
 impl BriefObject {
@@ -33,6 +38,17 @@ impl BriefObject {
             .or_else(|| self.name.clone())
             .or_else(|| self.slug.clone())
             .unwrap_or_else(|| format!("#{}", self.id))
+    }
+
+    /// A cable endpoint's label as `device port` — the nested device's label plus
+    /// this object's own (its interface name), so "where the cable goes" names the
+    /// far *device*, not just its port. Falls back to the bare label when there's
+    /// no device (a non-interface termination).
+    pub fn endpoint_label(&self) -> String {
+        match &self.device {
+            Some(dev) => format!("{} {}", dev.label(), self.label()),
+            None => self.label(),
+        }
     }
 
     /// Whether this object matches a user-supplied scope reference, case-insensitively.

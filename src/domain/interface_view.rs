@@ -73,7 +73,7 @@ impl InterfaceView {
                 .connected_endpoints
                 .unwrap_or_default()
                 .into_iter()
-                .map(|b| b.label())
+                .map(|b| b.endpoint_label())
                 .collect(),
             description: i.description.and_then(non_empty),
             ip_addresses: ips.into_iter().map(|ip| ip.address).collect(),
@@ -192,41 +192,118 @@ fn cable_label(v: &Value) -> Option<String> {
         .map(std::string::ToString::to_string)
 }
 
-/// Draw the cable path as a vertical A↔Z diagram: each termination on its own
-/// line, joined by a `┿`-marked cable segment carrying the cable's descriptor.
-/// A through-panel hop whose near end repeats the previous far end isn't doubled.
-/// Tolerates the polymorphic trace JSON (a malformed hop is skipped).
+/// One termination of a cable path: its owning device (when it's an interface)
+/// and the port label. `None` device → a non-interface termination (e.g. a
+/// circuit). `None` overall → an empty/unterminated side. Reads the first
+/// termination of a side (a breakout/LAG collapses to its first port).
+fn term_one(v: Option<&Value>) -> Option<(Option<String>, String)> {
+    let first = match v {
+        Some(Value::Array(items)) => items.first()?,
+        Some(other) => other,
+        None => return None,
+    };
+    let port = first
+        .get("display")
+        .or_else(|| first.get("name"))
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    let device = first.get("device").and_then(|d| {
+        d.get("display")
+            .or_else(|| d.get("name"))
+            .and_then(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(std::string::ToString::to_string)
+    });
+    Some((device, port))
+}
+
+/// Draw the cable path as a vertical A↔Z diagram: the near interface on top (`A`),
+/// the far interface on the bottom (`Z`), each `┿`-marked cable segment between
+/// them carrying its descriptor. A patch panel in the path (its two faces share a
+/// device) collapses to one pass-through stop (`front → rear`); an unterminated
+/// side is shown explicitly rather than dropped. Tolerates the polymorphic JSON.
 ///
 /// ```text
-/// edge01 xe-0/0/0
-///   │
-///   ┿ #3 · CAT6 · 5m · Connected
-///   │
-/// core01 xe-1/0/0
+///  A  edge01
+///     swp1
+///     │
+///     ┿ #4120 · connected
+///     │
+///  Z  core01
+///     1/1/c13/1
 /// ```
 fn format_trace_diagram(hops: &[Value]) -> Vec<String> {
-    let mut lines: Vec<String> = Vec::new();
-    let mut prev_far: Option<String> = None;
-    for hop in hops {
+    struct Stop {
+        device: Option<String>,
+        ports: Vec<String>,
+    }
+    let stop_from = |t: Option<(Option<String>, String)>| match t {
+        Some((device, port)) => Stop {
+            device,
+            ports: vec![port],
+        },
+        None => Stop {
+            device: None,
+            ports: Vec::new(),
+        },
+    };
+
+    // Build the ordered chain of stops and the cable between each adjacent pair.
+    let mut stops: Vec<Stop> = Vec::new();
+    let mut cables: Vec<String> = Vec::new();
+    for (idx, hop) in hops.iter().enumerate() {
         let Some(arr) = hop.as_array() else { continue };
-        let near = termination_labels(arr.first());
-        let far = termination_labels(arr.get(2));
-        if near.is_empty() && far.is_empty() {
-            continue;
+        let near = term_one(arr.first());
+        let far = term_one(arr.get(2));
+        if idx == 0 {
+            stops.push(stop_from(near));
+        } else if let Some((device, port)) = near {
+            // A later hop's near end is the other face of the previous stop's
+            // device (a panel pass-through) — merge it in; otherwise it's a
+            // distinct mid stop.
+            match stops.last_mut() {
+                Some(last) if last.device.is_some() && last.device == device => {
+                    if last.ports.last().map(String::as_str) != Some(port.as_str()) {
+                        last.ports.push(port);
+                    }
+                }
+                _ => stops.push(Stop {
+                    device,
+                    ports: vec![port],
+                }),
+            }
         }
-        // Skip the near node when it repeats the previous hop's far end (a panel
-        // through-connection chains the same termination across two hops).
-        if !near.is_empty() && prev_far.as_deref() != Some(near.as_str()) {
-            lines.push(near);
-        }
-        lines.push("  │".to_string());
-        lines.push(format!("  ┿ {}", cable_descr(arr.get(1))));
-        lines.push("  │".to_string());
-        if far.is_empty() {
-            prev_far = None;
+        cables.push(cable_descr(arr.get(1)));
+        stops.push(stop_from(far));
+    }
+    if stops.is_empty() {
+        return Vec::new();
+    }
+
+    // Render: A on top, Z on bottom, mids unlabeled; a cable segment between stops.
+    let mut lines = Vec::new();
+    let last = stops.len() - 1;
+    for (i, stop) in stops.iter().enumerate() {
+        let role = if i == 0 {
+            "A"
+        } else if i == last {
+            "Z"
         } else {
-            lines.push(far.clone());
-            prev_far = Some(far);
+            " "
+        };
+        let device = stop.device.as_deref().unwrap_or("(unterminated)");
+        lines.push(format!(" {role}  {device}"));
+        if !stop.ports.is_empty() {
+            lines.push(format!("    {}", stop.ports.join(" → ")));
+        }
+        if i < last {
+            lines.push("    │".to_string());
+            lines.push(format!(
+                "    ┿ {}",
+                cables.get(i).cloned().unwrap_or_default()
+            ));
+            lines.push("    │".to_string());
         }
     }
     lines
@@ -362,15 +439,18 @@ mod tests {
             view.trace,
             vec!["edge01 xe-0/0/0 --[Cable #3]-- core01 xe-1/0/0"]
         );
-        // The diagram draws the same hop as a vertical A↔Z chain.
+        // The diagram draws the hop as a vertical A↔Z chain: device emphasized,
+        // port below, A on top and Z on the bottom.
         assert_eq!(
             view.diagram,
             vec![
-                "edge01 xe-0/0/0",
-                "  │",
-                "  ┿ Cable #3",
-                "  │",
-                "core01 xe-1/0/0",
+                " A  edge01",
+                "    xe-0/0/0",
+                "    │",
+                "    ┿ Cable #3",
+                "    │",
+                " Z  core01",
+                "    xe-1/0/0",
             ]
         );
         // Plain output renders the diagram under the Cable Path heading.
@@ -400,7 +480,7 @@ mod tests {
         assert!(
             view.diagram
                 .iter()
-                .any(|l| l == "  ┿ #3 · CAT6 · 5m · Connected"),
+                .any(|l| l == "    ┿ #3 · CAT6 · 5m · Connected"),
             "got: {:?}",
             view.diagram
         );
@@ -420,17 +500,29 @@ mod tests {
         ])];
         let view = InterfaceView::build(iface, vec![], trace);
         assert!(
-            view.diagram.iter().any(|l| l == "  ┿ #4120 · connected"),
+            view.diagram.iter().any(|l| l == "    ┿ #4120 · connected"),
             "got: {:?}",
+            view.diagram
+        );
+        // The far device is named (A/Z), not just the port.
+        assert!(
+            view.diagram.iter().any(|l| l == " Z  core01"),
+            "{:?}",
+            view.diagram
+        );
+        assert!(
+            view.diagram.iter().any(|l| l == "    1/1/c13/1"),
+            "{:?}",
             view.diagram
         );
     }
 
     #[test]
-    fn cable_diagram_chains_through_a_panel_without_doubling() {
+    fn cable_diagram_collapses_a_patch_panel_to_one_pass_through() {
         let iface: Interface =
             serde_json::from_value(json!({"id": 1, "url": "u", "name": "xe-0/0/0"})).unwrap();
-        // Two hops through a patch panel: hop 2's near end repeats hop 1's far end.
+        // Two hops through a patch panel: hop 1 lands on the panel front, hop 2
+        // leaves from its rear — the two faces share the panel device.
         let trace = vec![
             json!([
                 [{"display": "xe-0/0/0", "device": {"display": "edge01"}}],
@@ -438,20 +530,30 @@ mod tests {
                 [{"display": "front1", "device": {"display": "panel-a"}}]
             ]),
             json!([
-                [{"display": "front1", "device": {"display": "panel-a"}}],
+                [{"display": "rear1", "device": {"display": "panel-a"}}],
                 {"display": "#4"},
                 [{"display": "xe-1/0/0", "device": {"display": "core01"}}]
             ]),
         ];
         let view = InterfaceView::build(iface, vec![], trace);
-        // The shared panel termination appears exactly once, not doubled.
-        let panel_lines = view
-            .diagram
-            .iter()
-            .filter(|l| l.as_str() == "panel-a front1")
-            .count();
-        assert_eq!(panel_lines, 1, "panel doubled: {:?}", view.diagram);
-        // Both cables in the path are drawn.
+        // The panel is one mid stop: its device named once, both faces on one line.
+        assert_eq!(
+            view.diagram
+                .iter()
+                .filter(|l| l.as_str() == "    panel-a")
+                .count(),
+            1,
+            "panel not collapsed: {:?}",
+            view.diagram
+        );
+        assert!(
+            view.diagram.iter().any(|l| l == "    front1 → rear1"),
+            "pass-through not shown: {:?}",
+            view.diagram
+        );
+        // Endpoints are the A (near) and Z (far) devices; both cables are drawn.
+        assert_eq!(view.diagram.first().map(String::as_str), Some(" A  edge01"));
+        assert!(view.diagram.iter().any(|l| l == " Z  core01"));
         assert!(view.diagram.iter().any(|l| l.contains("┿ #3")));
         assert!(view.diagram.iter().any(|l| l.contains("┿ #4")));
     }

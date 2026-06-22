@@ -119,7 +119,7 @@ impl DeviceDetail {
                         .clone()
                         .unwrap_or_default()
                         .into_iter()
-                        .map(|b| b.label())
+                        .map(|b| b.endpoint_label())
                         .collect(),
                 });
             }
@@ -234,7 +234,7 @@ impl DeviceDetail {
                 if c.connected_to.is_empty() {
                     format!("  {}  {}", c.interface, c.cable.as_deref().unwrap_or(""))
                 } else {
-                    format!("  {} -> {}", c.interface, c.connected_to.join(", "))
+                    format!("  {} → {}", c.interface, c.connected_to.join(", "))
                 }
             })
             .collect()
@@ -340,7 +340,7 @@ mod tests {
         assert!(plain.starts_with("name: edge01"));
         assert!(plain.contains("Interfaces\n  xe-0/0/0  SFP+\n  xe-0/0/1  (disabled)"));
         assert!(plain.contains("IP Addresses\n  10.0.0.1/31  xe-0/0/0"));
-        assert!(plain.contains("Cables\n  xe-0/0/0 -> core01 xe-1/0/0"));
+        assert!(plain.contains("Cables\n  xe-0/0/0 → core01 xe-1/0/0"));
         assert!(plain.contains("VLANs\n  10 (mgmt)\n  20 (prod)"));
         assert!(plain.contains("Services\n  ssh  tcp/22"));
     }

@@ -686,7 +686,7 @@ fn device_cable_rows(cables: &[CableRow]) -> Vec<DetailRow> {
             let text = if c.connected_to.is_empty() {
                 format!("{}  {}", c.interface, c.cable.as_deref().unwrap_or(""))
             } else {
-                format!("{} -> {}", c.interface, c.connected_to.join(", "))
+                format!("{} → {}", c.interface, c.connected_to.join(", "))
             };
             DetailRow::link(text, ObjectKind::Interface, c.id)
         })
@@ -1823,6 +1823,7 @@ mod tests {
                 name: Some(name.to_string()),
                 slug: None,
                 rd: None,
+                device: None,
             }),
             tenant: None,
             assigned_object_type: None,
