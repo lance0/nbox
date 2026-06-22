@@ -98,9 +98,12 @@ dependency.)
 The TUI onboarding wizard and Config modal follow the same rule. If a pasted
 token cannot be stored in a persistent keyring, the save is blocked and the form
 stays open with guidance to use `token_env`/`NBOX_TOKEN`; nbox does not create a
-profile that pretends a token was saved. If a runtime keyring operation fails
-(for example a locked keychain), profile metadata and keyring changes are rolled
-back together as far as the platform allows.
+profile that pretends a newly pasted token was saved. Explicit token set/clear
+actions fail closed if the runtime keyring operation fails (for example a locked
+keychain), with profile metadata and keyring changes rolled back together as far
+as the platform allows. A profile rename with "keep stored token" is best-effort:
+if the old token cannot be read or copied, the rename still saves and nbox warns
+you to re-enter the token or set `token_env`.
 
 `auth_scheme = "auto"` detects NetBox 4.5+ v2 tokens (`nbt_…` → `Authorization:
 Bearer`) versus legacy v1 tokens (`Authorization: Token`). Force one with

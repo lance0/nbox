@@ -2391,8 +2391,12 @@ impl App {
     }
 
     fn token_notice_status(notice: Option<TokenNotice>) -> Option<(String, Severity)> {
-        notice.map(|TokenNotice::Cleared| {
-            ("saved — stored token cleared".to_string(), Severity::Info)
+        notice.map(|notice| match notice {
+            TokenNotice::Cleared => ("saved — stored token cleared".to_string(), Severity::Info),
+            TokenNotice::MigrationSkipped => (
+                "saved — could not migrate the stored token to the new name; re-enter it or set a token_env".to_string(),
+                Severity::Warning,
+            ),
         })
     }
 

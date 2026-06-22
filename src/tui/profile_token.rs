@@ -38,6 +38,7 @@ impl SecretOps for RealSecretOps {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TokenNotice {
     Cleared,
+    MigrationSkipped,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,6 +50,7 @@ struct SecretSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum PreparedKind {
     None,
+    Notice(TokenNotice),
     Set {
         new_key: String,
         old_key: Option<String>,
@@ -103,7 +105,7 @@ impl PreparedTokenChange {
         match action {
             TokenAction::Set(token) => Self::prepare_set(ops, new_key, old_key, token),
             TokenAction::Clear => Self::prepare_clear(ops, new_key, old_key),
-            TokenAction::Keep => Self::prepare_keep(ops, new_key, old_key),
+            TokenAction::Keep => Ok(Self::prepare_keep(ops, new_key, old_key)),
         }
     }
 
@@ -171,27 +173,35 @@ impl PreparedTokenChange {
         })
     }
 
-    fn prepare_keep<O: SecretOps>(
-        ops: &O,
-        new_key: String,
-        old_key: Option<String>,
-    ) -> Result<Self> {
+    fn prepare_keep<O: SecretOps>(ops: &O, new_key: String, old_key: Option<String>) -> Self {
         let Some(old_key) = old_key else {
-            return Ok(Self {
+            return Self {
                 kind: PreparedKind::None,
-            });
+            };
         };
-        let Some(existing) = ops
-            .get(&old_key)
-            .map_err(|e| anyhow::anyhow!("could not read stored token before rename ({e:#})"))?
-        else {
-            return Ok(Self {
-                kind: PreparedKind::None,
-            });
+        let existing = match ops.get(&old_key) {
+            Ok(Some(existing)) => existing,
+            Ok(None) => {
+                return Self {
+                    kind: PreparedKind::None,
+                };
+            }
+            Err(e) => {
+                tracing::debug!("could not read stored token before rename: {e:#}");
+                return Self {
+                    kind: PreparedKind::Notice(TokenNotice::MigrationSkipped),
+                };
+            }
         };
-        let previous_new = ops.get(&new_key).map_err(|e| {
-            anyhow::anyhow!("could not read destination stored token before rename ({e:#})")
-        })?;
+        let previous_new = match ops.get(&new_key) {
+            Ok(value) => value,
+            Err(e) => {
+                tracing::debug!("could not read destination stored token before rename: {e:#}");
+                return Self {
+                    kind: PreparedKind::Notice(TokenNotice::MigrationSkipped),
+                };
+            }
+        };
         if let Err(e) = ops.set(&new_key, &existing) {
             restore_snapshot(
                 ops,
@@ -200,17 +210,18 @@ impl PreparedTokenChange {
                     value: previous_new.clone(),
                 },
             );
-            anyhow::bail!(
-                "stored token was NOT migrated to the new name ({e:#}); re-enter it or set a token_env"
-            );
+            tracing::debug!("stored token was not migrated to the new profile name: {e:#}");
+            return Self {
+                kind: PreparedKind::Notice(TokenNotice::MigrationSkipped),
+            };
         }
-        Ok(Self {
+        Self {
             kind: PreparedKind::RenameKeep {
                 new_key,
                 old_key,
                 previous_new,
             },
-        })
+        }
     }
 
     pub(crate) fn stored_token(&self) -> bool {
@@ -224,6 +235,7 @@ impl PreparedTokenChange {
     fn commit_with_ops<O: SecretOps>(self, ops: &O) -> Option<TokenNotice> {
         match self.kind {
             PreparedKind::None => None,
+            PreparedKind::Notice(notice) => Some(notice),
             PreparedKind::Set { old_key, .. } => {
                 if let Some(old_key) = old_key
                     && let Err(e) = ops.delete(&old_key)
@@ -248,7 +260,7 @@ impl PreparedTokenChange {
 
     fn rollback_with_ops<O: SecretOps>(&self, ops: &O) {
         match &self.kind {
-            PreparedKind::None => {}
+            PreparedKind::None | PreparedKind::Notice(_) => {}
             PreparedKind::Set {
                 new_key,
                 previous_new,
@@ -298,6 +310,7 @@ mod tests {
     #[derive(Default)]
     struct FakeSecretOps {
         entries: RefCell<HashMap<String, String>>,
+        fail_get: RefCell<HashSet<String>>,
         fail_set: RefCell<HashSet<String>>,
         fail_delete: RefCell<HashSet<String>>,
     }
@@ -320,6 +333,9 @@ mod tests {
 
     impl SecretOps for FakeSecretOps {
         fn get(&self, account: &str) -> Result<Option<String>> {
+            if self.fail_get.borrow().contains(account) {
+                anyhow::bail!("injected get failure");
+            }
             Ok(self.entries.borrow().get(account).cloned())
         }
 
@@ -446,6 +462,30 @@ mod tests {
             ops.get_entry(path, "new").as_deref(),
             Some("existing-new-token")
         );
+    }
+
+    #[test]
+    fn rename_keep_get_failure_is_best_effort_warning() {
+        let ops = FakeSecretOps::default();
+        let path = "/tmp/nbox/config.toml";
+        ops.fail_get
+            .borrow_mut()
+            .insert(FakeSecretOps::key(path, "old"));
+
+        let prepared = PreparedTokenChange::prepare_with_ops(
+            &ops,
+            path,
+            Some("old"),
+            "new",
+            &TokenAction::Keep,
+        )
+        .unwrap();
+
+        assert_eq!(
+            prepared.commit_with_ops(&ops),
+            Some(TokenNotice::MigrationSkipped)
+        );
+        assert_eq!(ops.get_entry(path, "new"), None);
     }
 
     #[test]
