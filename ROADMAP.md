@@ -107,6 +107,13 @@ Polish the read experience. No writes here.
   transactional (keyring change prepared before the TOML write, rolled back on failure); and keep a profile
   rename working when the keyring is unavailable (metadata renames, best-effort token-migration warning).
   Shipped to crates.io / Homebrew tap / GHCR.
+- ☑ **Release `0.7.2`** — keyring storage is now **opt-in**: a token pasted in onboarding or the Settings
+  profile builder saves to `config.toml` by default (redacted from display; file `0600` on Unix) and just
+  connects — no keychain prompt. Reverses 0.7.1's block-pasted-token friction. Opt into the OS keyring with
+  `Ctrl+K` / `nbox config token set` (`token_store = "keyring"`, moves the token to the keychain, clears the
+  TOML token). Precedence: `token_env` → `NBOX_TOKEN` → config token → opt-in keyring → none. Deferred minors:
+  `config init` 0644, the 0600 write-then-chmod race, Windows perms, a cosmetic keyring-migrate message.
+  Shipped to crates.io / Homebrew tap / GHCR.
 
 ---
 
