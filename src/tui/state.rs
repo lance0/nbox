@@ -23,6 +23,7 @@ use crate::tui::config_modal::{
 };
 use crate::tui::filter_modal::{FilterModal, FilterOutcome};
 use crate::tui::palette::{self, PaletteCommand};
+use crate::tui::profile_token::{PreparedTokenChange, TokenNotice};
 use crate::tui::theme::{Severity, Theme};
 
 /// A floating overlay drawn on top of the live screen. Both are modal: while one
@@ -2215,6 +2216,19 @@ impl App {
             return Vec::new();
         }
 
+        // Prepare the keyring mutation before writing TOML. If the config write
+        // fails, roll this back so neither side is left in a half-saved state.
+        let token_change =
+            match PreparedTokenChange::prepare(&path, original.as_deref(), &name, &token_action) {
+                Ok(change) => change,
+                Err(e) => {
+                    let message = format!("token save failed: {e:#}");
+                    self.set_form_error(message.clone());
+                    self.set_status(message, Severity::Error);
+                    return Vec::new();
+                }
+            };
+
         // Write the metadata to the config file (format-preserving). The token is
         // NEVER written here. On a rename the old TOML section is removed (H1).
         if let Err(e) = Self::persist_profile(
@@ -2233,24 +2247,12 @@ impl App {
                 api_route_target,
             },
         ) {
+            token_change.rollback();
             self.set_status(format!("save failed: {e:#}"), Severity::Error);
             return Vec::new();
         }
 
-        // Reconcile the OS-keyring token (H2/H3/H5): store a new value, clear on the
-        // explicit clear intent, or migrate the existing entry across a rename. The
-        // token is never written to TOML; a failed explicit set/clear keeps the user
-        // in the form so the UI can't imply a token landed when it did not.
-        let token_status =
-            match Self::apply_token_change(&path, original.as_deref(), &name, &token_action) {
-                Ok(status) => status,
-                Err(e) => {
-                    let message = format!("token save failed: {e:#}");
-                    self.set_form_error(message.clone());
-                    self.set_status(message, Severity::Error);
-                    return Vec::new();
-                }
-            };
+        let token_status = Self::token_notice_status(token_change.commit());
 
         // Build the live profile entry from the form + reflect it into `profiles`.
         // The form now owns timeout/page_size/exclude/api too, so these come
@@ -2388,85 +2390,10 @@ impl App {
         Ok(())
     }
 
-    /// Reconcile the OS-keyring token for a profile save (H2/H3/H5). Returns an
-    /// optional `(message, severity)` to surface when something noteworthy happened
-    /// (a clear or best-effort migration warning) — `None` on the quiet happy path.
-    ///
-    /// The token value never appears in the returned message or any log.
-    ///
-    /// - [`TokenAction::Set`]: store the new token under the (new) key. If storage
-    ///   fails, return an error; on a rename, delete the old key only after the new
-    ///   token is safely stored.
-    /// - [`TokenAction::Clear`]: delete the entry under the current (and, on rename,
-    ///   the old) key.
-    /// - [`TokenAction::Keep`]: leave the value; on a rename, migrate the existing
-    ///   entry from the old key to the new one so a renamed profile keeps its auth.
-    fn apply_token_change(
-        path: &std::path::Path,
-        original: Option<&str>,
-        name: &str,
-        action: &crate::tui::config_modal::TokenAction,
-    ) -> anyhow::Result<Option<(String, Severity)>> {
-        use crate::tui::config_modal::TokenAction;
-        let path_str = path.display().to_string();
-        let new_key = crate::secret::account_key(&path_str, name);
-        // The old key when this is a rename (renamed away from `original`).
-        let old_key = original
-            .filter(|orig| *orig != name)
-            .map(|orig| crate::secret::account_key(&path_str, orig));
-
-        match action {
-            TokenAction::Set(token) => {
-                crate::secret::keyring_set(&new_key, token).map_err(|e| {
-                    anyhow::anyhow!(
-                        "pasted token was NOT stored ({e}); clear it and use token_env/NBOX_TOKEN or enable keyring storage"
-                    )
-                })?;
-                // If this was a rename, remove the old-key entry only after the new
-                // token is safely stored, so a write failure can't strand the profile
-                // without its previous secret.
-                if let Some(old) = &old_key
-                    && let Err(e) = crate::secret::keyring_delete(old)
-                {
-                    tracing::debug!("failed to delete old keyring entry after token set: {e:#}");
-                }
-                Ok(None)
-            }
-            TokenAction::Clear => {
-                crate::secret::keyring_delete(&new_key).map_err(|e| {
-                    anyhow::anyhow!(
-                        "stored token was NOT cleared ({e}); try again or clear it outside nbox"
-                    )
-                })?;
-                if let Some(old) = &old_key {
-                    crate::secret::keyring_delete(old).map_err(|e| {
-                        anyhow::anyhow!(
-                            "old stored token was NOT cleared after rename ({e}); try again or clear it outside nbox"
-                        )
-                    })?;
-                }
-                Ok(Some((
-                    "saved — stored token cleared".to_string(),
-                    Severity::Info,
-                )))
-            }
-            TokenAction::Keep => {
-                // Migrate the existing entry across a rename so auth follows the name.
-                if let Some(old) = &old_key
-                    && let Some(existing) = crate::secret::keyring_get(old)
-                {
-                    let migrated = crate::secret::keyring_set(&new_key, &existing).is_ok();
-                    let _ = crate::secret::keyring_delete(old);
-                    if !migrated {
-                        return Ok(Some((
-                            "saved — could not migrate the stored token to the new name; re-enter it or set a token_env".to_string(),
-                            Severity::Warning,
-                        )));
-                    }
-                }
-                Ok(None)
-            }
-        }
+    fn token_notice_status(notice: Option<TokenNotice>) -> Option<(String, Severity)> {
+        notice.map(|TokenNotice::Cleared| {
+            ("saved — stored token cleared".to_string(), Severity::Info)
+        })
     }
 
     fn token_action_preflight_error(

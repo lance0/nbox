@@ -35,8 +35,9 @@ use tokio::sync::mpsc;
 
 use crate::netbox::auth::AuthScheme;
 use crate::netbox::client::NetBoxClient;
-use crate::tui::config_modal::{ProfileForm, TestState, field};
+use crate::tui::config_modal::{ProfileForm, TestState, TokenAction, field};
 use crate::tui::events::{AbortOnDrop, spawn_terminal_events};
+use crate::tui::profile_token::PreparedTokenChange;
 use crate::tui::state::{AppEvent, ConnectRequest};
 use crate::tui::theme::Theme;
 
@@ -190,18 +191,18 @@ pub struct PersistOutcome {
     pub needs_env_guidance: bool,
 }
 
-/// Persist the wizard's profile: write the metadata (format-preserving) via the
-/// same setters the editor uses, then store a typed token in the OS keyring when
-/// one was given and the keyring is available. The interactive wizard validates
-/// that case before calling this, so a pasted token is not silently accepted on
-/// builds with no persistent keyring. Returns a [`PersistOutcome`]
-/// describing what happened so the driver can guide the user when no token landed
-/// anywhere. The token is NEVER written to TOML.
+/// Persist the wizard's profile: prepare a typed-token keyring write first, then
+/// write the metadata (format-preserving) via the same setters the editor uses.
+/// If the metadata write fails, the keyring change is rolled back. The
+/// interactive wizard validates the no-keyring case before calling this, and any
+/// runtime keyring write failure keeps the user in the wizard instead of creating
+/// a profile without the pasted token. Returns a [`PersistOutcome`] describing
+/// what happened so the driver can guide the user when no token source was given.
+/// The token is NEVER written to TOML.
 ///
 /// Pure but for the file/keyring writes (mirroring the editor's profile save plus
-/// keyring set on the render thread). The keyring being unavailable is **not** an
-/// error at this layer — the metadata still saves and `token_env` is persisted
-/// when given. The UI guard decides whether to keep the user in the wizard.
+/// keyring set on the render thread). Metadata-only and `token_env`-backed
+/// profiles save without touching the keyring.
 pub fn persist(form: &ProfileForm, path: &Path) -> Result<PersistOutcome> {
     let name = form.name();
     let url = form.url();
@@ -242,18 +243,17 @@ pub fn persist(form: &ProfileForm, path: &Path) -> Result<PersistOutcome> {
         form.api_route_target,
     )?;
     crate::config::set_active_profile(&mut doc, &name);
-    crate::config::write_doc(path, &doc)?;
 
-    // A typed token goes to the OS keyring (never TOML). Keyring-unavailable is
-    // not fatal at this low-level writer — the interactive wizard blocks this
-    // path before saving, while direct tests/uses report env guidance below.
-    let mut stored_in_keyring = false;
-    if let Some(token) = &token {
-        let account = crate::secret::account_key(&path.display().to_string(), &name);
-        if crate::secret::keyring_set(&account, token).is_ok() {
-            stored_in_keyring = true;
-        }
+    let token_action = token
+        .as_ref()
+        .map_or(TokenAction::Keep, |token| TokenAction::Set(token.clone()));
+    let token_change = PreparedTokenChange::prepare(path, None, &name, &token_action)?;
+    if let Err(e) = crate::config::write_doc(path, &doc) {
+        token_change.rollback();
+        return Err(e);
     }
+    let stored_in_keyring = token_change.stored_token();
+    let _ = token_change.commit();
 
     // If nothing authenticatable landed — no keyring entry and no token_env — the
     // user must export NBOX_TOKEN or set a token_env to connect.
