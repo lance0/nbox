@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-06-22
+
+### Fixed
+
+- **Pasting a token with a `Bearer `/`Token ` prefix now works.** NetBox's UI
+  "copy" button hands you the full `Authorization` header value (`Bearer nbt_…`);
+  nbox now strips a leading scheme word (and stray whitespace) from any token
+  source — the config token, `token_env`, or `NBOX_TOKEN` — and adds the scheme
+  itself from `auth_scheme`. Already-saved configs with a prefixed token start
+  working on the next run.
+- **Auth errors now show NetBox's reason.** A 401/403 surfaces the server's
+  `detail` (e.g. *"authentication failed (HTTP 403): Invalid v2 token"*) instead of
+  a generic "permission denied," so a bad or expired token is obvious at a glance.
+
 ## [0.7.2] - 2026-06-22
 
 ### Changed
