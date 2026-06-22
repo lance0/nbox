@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Interfaces are first-class in the TUI.** A device detail's interfaces (`i`) and
+  cables (`c`) tabs are now selectable lists — `j`/`k` move a cursor and `Enter`
+  opens the interface's detail (its attributes plus the cable path). A new
+  `interface` object kind backs this purely as a navigation/detail target: it's
+  reached from a device, not the global search fan-out, so `nbox search` / MCP
+  `nbox_get` are unchanged, as is the `nbox device` JSON/CSV/MCP output.
+- **Cable-path visualizer.** An interface's cable trace renders as a vertical A↔Z
+  diagram — the near end on top (`A`), the far end on the bottom (`Z`), the device
+  emphasized over its port, and each cable segment labelled (`#id · type · length ·
+  status`). A patch panel in the path collapses to a single pass-through stop
+  (`front → rear`); an unterminated side is shown explicitly. It's a dedicated
+  "cable path" tab in the TUI and an inline section in `nbox interface` output.
+- **Cable views name the far device.** The Cables tab and an interface's "Connected
+  To" now show the remote *device* and port (e.g. `swp25 → dsr1-us-west-01a
+  1/1/c13/1`), not just the remote port — so you can tell where a cable goes.
+
+### Fixed
+
+- **Detail tabs that list related objects now show their selection cursor.** Device,
+  prefix, VLAN, site, and rack details carried navigable tab rows but rendered them
+  as plain text with no cursor — only the VRF/route-target views (which have a
+  header card) drew the cursor. The tab bar now pins in a fixed band for any tabbed
+  detail and every section renders its rows the same way, so the device
+  IP/VLAN/interfaces/cables, prefix children/addresses, and site/rack device tabs
+  are all actually navigable now.
+
+### Changed
+
+- **Cable endpoint rows use `→` and include the far device.** The Cables tab and
+  `nbox interface` render cable endpoints as `local-port → far-device far-port`
+  (previously `local-port -> far-port`, remote device omitted).
+
 ## [0.8.1] - 2026-06-22
 
 ### Fixed
