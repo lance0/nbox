@@ -8,7 +8,7 @@ nbox is a read-only NetBox client — a CLI and a TUI over the same core.
 | ------- | ---- |
 | `nbox search <q>` | Parallel search across devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers/VMs/clusters/VRFs/route-targets. Filters: `--status/--site/--region/--site-group/--location/--tenant/--role/--tag/--vrf`, `--limit`, `--cols`, `--partial`. |
 | `nbox device <name\|slug\|id> [--journal]` | Device + interfaces, IPs, cables, VLANs, services. |
-| `nbox interface <device> <iface>` | One interface: type, MTU, MAC, mode, VLANs, cable, **cable path** (trace), addresses. |
+| `nbox interface <device> <iface>` | One interface: type, MTU, MAC, mode, VLANs, cable, **cable path** (an A↔Z trace diagram naming the device at each end), addresses. |
 | `nbox ip <addr> [--vrf] [--journal]` | IP + most-specific parent prefix (VRF-scoped) and its VLAN plus the prefix's `scope`/`scope_type` (site, location, region, …). |
 | `nbox prefix <cidr> [--vrf] [--journal]` | Prefix with utilization, children, and contained IPs. |
 | `nbox next-ip <cidr> [--count] [--vrf]` | Next available address(es). |
@@ -92,7 +92,9 @@ browsable kinds → results → a live detail preview):
   between panes (or cycle detail tabs), `j`/`k` move (live-browse the kind while on
   the nav rail), `g`/`G` top/bottom, `Enter` open.
 - `o` open in browser, `y` copy, `R` related objects (jump between connected
-  objects), device tabs `i`/`p`/`c`/`v`/`s`, `e` rack elevation.
+  objects), navigable device tabs `i`/`p`/`c`/`v`/`s` (`j`/`k` + `Enter` opens a
+  row — interfaces/cables open the interface detail, which has a cable-path A↔Z
+  diagram), `e` rack elevation.
 - `D` overview dashboard, `T` prefix tree (`Space`/`←`/`→` collapse/expand), `t`
   cycle theme, `r` refresh, recents on the home screen, optional auto-refresh
   (`[ui].refresh_secs`).

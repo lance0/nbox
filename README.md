@@ -50,7 +50,7 @@ See [Installation](#installation) below for setup instructions.
 - **Fast shell lookups** — `device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `circuit`, `provider`, `aggregate`, `asn`, `ip-range`, `tenant`, `contact`, `vm`, `cluster`, `vrf`, `route-target`, and `interface`, each as a one-liner.
 - **Normalized search** — one `search` query runs in parallel across devices, sites, racks, IPs, prefixes, VLANs, circuits, providers, aggregates, ASNs, IP ranges, tenants, contacts, VMs, clusters, VRFs, and route targets, returning ranked, deduped hits. Scope it with `--site`/`--region`/`--site-group`/`--location` (one at a time, exact scope), or narrow by `--status`/`--tenant`/`--role`/`--tag`/`--vrf`.
 - **IPAM-aware** — IP → most-specific parent prefix → VLAN → scope resolution, prefix utilization and children, a navigable prefix tree, and `next-ip` / `next-prefix` for free addresses and blocks (computed locally with `ipnet`).
-- **A k9s-style TUI** — a three-pane home (navigation rail → results → live preview), an overview dashboard, a hierarchical prefix tree, cross-object navigation between related objects, fuzzy filters, recents, and an in-app profile + settings editor. Twelve themes; `NO_COLOR` honored.
+- **A k9s-style TUI** — a three-pane home (navigation rail → results → live preview), an overview dashboard, a hierarchical prefix tree, cross-object navigation between related objects (every detail's related-object tabs are navigable — open an interface from a device and see its cable path drawn as an A↔Z diagram), fuzzy filters, recents, and an in-app profile + settings editor. Twelve themes; `NO_COLOR` honored.
 - **Agent-ready** — `nbox serve` is a read-only MCP server: the same lookups exposed as nine tools (plus every object as an `nbox://{kind}/{ref}` resource), returning the exact JSON view models the CLI does, so AI agents (Claude Code, Claude Desktop, …) query NetBox safely. Stdio for a local subprocess, or a loopback HTTP transport with OIDC resource-server auth for a network-reachable, read-only deployment. See [docs/MCP.md](docs/MCP.md).
 - **Scriptable** — `-o plain|json|csv`, `--fields`, `--raw`, versioned `--envelope`, and stable exit codes; stdout stays clean for piping, logs go to stderr. See [docs/SCRIPTING.md](docs/SCRIPTING.md).
 - **Fast on repeat** — a small in-memory read cache (per profile, ~30s) keeps TUI back-navigation and chatty agents from re-hitting NetBox; the detail footer shows "cached Ns ago" and `nbox_cache_clear` busts it.
@@ -332,7 +332,7 @@ auth/permission (401/403), `4` not found, `5` ambiguous reference. See
 | `P` / `Ctrl+P` | switch profile (cycle forward / backward) |
 | `S` | open the Config modal (profiles + settings) |
 | `b` / `Esc` | back / clear search |
-| `i p c v s` | device tabs (interfaces / IPs / cables / VLANs / services) |
+| `i p c v s` | device tabs (interfaces / IPs / cables / VLANs / services); `j`/`k` + `Enter` opens a row — interfaces/cables open the interface detail (with its cable-path tab) |
 | `e` | rack elevation |
 | `u` | dismiss update notice |
 | `?` / `F1` | help |
