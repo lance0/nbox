@@ -281,13 +281,10 @@ impl ProfileForm {
     /// rendered (the field is masked) or logged. Trimming (L6) drops a trailing
     /// newline/space a paste can leave behind, which would otherwise break auth.
     pub fn token(&self) -> Option<String> {
-        let v = self
-            .inputs
-            .value(field::TOKEN)
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        if v.is_empty() { None } else { Some(v) }
+        // Normalize on read so a pasted `Bearer …`/`Token …` header value (NetBox's
+        // copy button) or stray whitespace is cleaned before it's saved or used for
+        // test-connect — the stored token stays a bare key.
+        crate::config::normalize_token(self.inputs.value(field::TOKEN).unwrap_or(""))
     }
 
     /// The trimmed `timeout_secs` field parsed to an optional interval: empty ⇒
