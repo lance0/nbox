@@ -240,7 +240,14 @@ fn cable_descr(v: Option<&Value>) -> String {
         return "cable".to_string();
     };
     let mut parts: Vec<String> = Vec::new();
-    if let Some(label) = cable_label(v) {
+    // The cable's name: its display/label when set, else NetBox's canonical
+    // `#<id>` — the trace serializer omits `display` (it sends `display_url`) and
+    // often leaves `label` empty, so without this the cable id is lost.
+    if let Some(label) = cable_label(v).or_else(|| {
+        v.get("id")
+            .and_then(Value::as_u64)
+            .map(|id| format!("#{id}"))
+    }) {
         parts.push(label);
     }
     if let Some(t) = choice_label(v.get("type")) {
@@ -394,6 +401,26 @@ mod tests {
             view.diagram
                 .iter()
                 .any(|l| l == "  ┿ #3 · CAT6 · 5m · Connected"),
+            "got: {:?}",
+            view.diagram
+        );
+    }
+
+    #[test]
+    fn cable_diagram_falls_back_to_cable_id_when_label_absent() {
+        // The trace serializer sends `display_url` (not `display`) and an empty
+        // `label`, with status as a plain string — the real NetBox shape. The cable
+        // name must fall back to `#<id>` rather than vanishing.
+        let iface: Interface =
+            serde_json::from_value(json!({"id": 1, "url": "u", "name": "swp25"})).unwrap();
+        let trace = vec![json!([
+            [{"display": "swp25", "device": {"display": "edge01"}}],
+            {"id": 4120, "display_url": "u", "label": "", "type": null, "status": "connected"},
+            [{"display": "1/1/c13/1", "device": {"display": "core01"}}]
+        ])];
+        let view = InterfaceView::build(iface, vec![], trace);
+        assert!(
+            view.diagram.iter().any(|l| l == "  ┿ #4120 · connected"),
             "got: {:?}",
             view.diagram
         );
