@@ -78,6 +78,16 @@ Polish the read experience. No writes here.
   `src/domain/device_detail.rs` (add `id` to `IfaceRow`/`ServiceRow`) and `src/domain/detail.rs` (populate
   the `DetailTab.rows` for `i`/`c`/`s` instead of leaving them body-only). ~3–5 focused edits.
 - ☐ **Demo recording** — an asciinema/VHS cast for the README.
+- ☐ **Interface journal.** Surface an interface's journal entries (operator notes) like the other
+  kinds now that the interface is a first-class TUI detail. Needs an `interface` entry in the journal /
+  MCP `GetKind` kind set **and** by-id resolution — interfaces have no single-string reference (they're
+  addressed by device + name, or a numeric id), so the journal path's `resolve_content_type_id` (keyed
+  by one `*_by_ref` string) can't take them through its existing arms as-is. Raised in PR #64 review.
+- ☐ **Filtered cable browse (only filtered).** Cables aren't a browsable kind today (no `ObjectKind::Cable`,
+  no cable detail view); they surface via a device's Cables tab and the interface cable-path. A *flat* "browse
+  all cables" is a trap at scale (millions of rows), but a **filtered** view — cables by site / rack / device /
+  status — could be useful. Would need `ObjectKind::Cable` + a cable detail view + scoped filters; never a
+  flat list. Raised in PR #64 review.
 - ☑ **Deepen the in-app Config modal.** The profile editor now sets the knobs that used to need a
   hand-edited `config.toml`: per-surface API backends (`[profiles.<name>.api]` `vrf`/`route_target` =
   `rest`|`graphql`, cycled with `Ctrl+B`/`Ctrl+R`), `timeout_secs` + `page_size` (numeric fields), and

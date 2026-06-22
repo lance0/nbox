@@ -13,6 +13,10 @@ use crate::netbox::models::ipam::{IpAddress, Service};
 /// One interface row in the device's Interfaces section.
 #[derive(Debug, Clone, Serialize)]
 pub struct IfaceRow {
+    /// The interface's own id, for TUI navigation (Enter → open the interface).
+    /// Not serialized, so the `nbox device` JSON contract is unchanged.
+    #[serde(skip_serializing)]
+    pub id: u64,
     pub name: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub enabled: Option<bool>,
@@ -37,6 +41,11 @@ pub struct IpRow {
 /// One cabled interface in the device's Cables section.
 #[derive(Debug, Clone, Serialize)]
 pub struct CableRow {
+    /// The local interface's id, for TUI navigation (Enter → open that interface,
+    /// where the full cable-path trace lives). Not serialized, so the `nbox device`
+    /// JSON contract is unchanged.
+    #[serde(skip_serializing)]
+    pub id: u64,
     pub interface: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cable: Option<String>,
@@ -102,6 +111,7 @@ impl DeviceDetail {
             }
             if let Some(cable) = &i.cable {
                 cables.push(CableRow {
+                    id: i.id,
                     interface: i.name.clone(),
                     cable: Some(cable.label()),
                     connected_to: i
@@ -109,7 +119,7 @@ impl DeviceDetail {
                         .clone()
                         .unwrap_or_default()
                         .into_iter()
-                        .map(|b| b.label())
+                        .map(|b| b.endpoint_label())
                         .collect(),
                 });
             }
@@ -118,6 +128,7 @@ impl DeviceDetail {
         let iface_rows = interfaces
             .into_iter()
             .map(|i| IfaceRow {
+                id: i.id,
                 name: i.name,
                 enabled: i.enabled,
                 type_: i.type_.map(|c| c.label),
@@ -223,7 +234,7 @@ impl DeviceDetail {
                 if c.connected_to.is_empty() {
                     format!("  {}  {}", c.interface, c.cable.as_deref().unwrap_or(""))
                 } else {
-                    format!("  {} -> {}", c.interface, c.connected_to.join(", "))
+                    format!("  {} → {}", c.interface, c.connected_to.join(", "))
                 }
             })
             .collect()
@@ -312,7 +323,11 @@ mod tests {
 
         let detail = DeviceDetail::build(device(), interfaces, ips, services);
         assert_eq!(detail.interfaces.len(), 2);
+        // The interface id is captured for TUI navigation (Enter → open it).
+        assert_eq!(detail.interfaces[0].id, 1);
         assert_eq!(detail.cables.len(), 1);
+        // A cable row carries its local interface's id (xe-0/0/0 = id 1).
+        assert_eq!(detail.cables[0].id, 1);
         // VLAN 20 appears on both interfaces but is deduped.
         assert_eq!(detail.vlans.len(), 2);
         assert_eq!(detail.services.len(), 1);
@@ -325,7 +340,7 @@ mod tests {
         assert!(plain.starts_with("name: edge01"));
         assert!(plain.contains("Interfaces\n  xe-0/0/0  SFP+\n  xe-0/0/1  (disabled)"));
         assert!(plain.contains("IP Addresses\n  10.0.0.1/31  xe-0/0/0"));
-        assert!(plain.contains("Cables\n  xe-0/0/0 -> core01 xe-1/0/0"));
+        assert!(plain.contains("Cables\n  xe-0/0/0 → core01 xe-1/0/0"));
         assert!(plain.contains("VLANs\n  10 (mgmt)\n  20 (prod)"));
         assert!(plain.contains("Services\n  ssh  tcp/22"));
     }

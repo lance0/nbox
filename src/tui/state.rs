@@ -3473,27 +3473,17 @@ impl App {
         }
     }
 
-    /// Total number of rendered content lines for the active detail view: the
-    /// body's lines, plus the two-row tab bar (the bar + a blank spacer) when a
-    /// device view has tabs. Mirrors what `render_detail` paints.
+    /// Number of scrollable content lines for the active detail view. The tab bar
+    /// and any header card sit in a fixed band (see `render_detail`), so the scroll
+    /// area is just the active section: its navigable rows, or its body lines for a
+    /// plain-text section. Mirrors what `render_detail` paints.
     pub fn detail_content_lines(&self) -> usize {
-        // A header card lifts the header + tab bar into a fixed band (see
-        // `render_detail`), so the scroll area is just the active section's content
-        // — its navigable rows, or its body lines for a plain text section.
-        if matches!(&self.detail, Some(d) if !d.header.is_empty()) {
-            let rows = self.active_detail_rows();
-            return if rows.is_empty() {
-                self.detail_body().lines().count()
-            } else {
-                rows.len()
-            };
+        let rows = self.active_detail_rows();
+        if rows.is_empty() {
+            self.detail_body().lines().count()
+        } else {
+            rows.len()
         }
-        let body_lines = self.detail_body().lines().count();
-        let tab_rows = match &self.detail {
-            Some(d) if !d.tabs.is_empty() => 2,
-            _ => 0,
-        };
-        body_lines + tab_rows
     }
 
     /// The largest valid scroll offset: enough that the last content line sits at
@@ -3854,6 +3844,7 @@ fn object_web_url(base_url: &str, kind: ObjectKind, id: u64) -> String {
         ObjectKind::Rack => format!("dcim/racks/{id}/"),
         ObjectKind::Vrf => format!("ipam/vrfs/{id}/"),
         ObjectKind::RouteTarget => format!("ipam/route-targets/{id}/"),
+        ObjectKind::Interface => format!("dcim/interfaces/{id}/"),
     };
 
     let mut base = base_url.to_string();

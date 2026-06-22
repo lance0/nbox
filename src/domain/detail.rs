@@ -20,7 +20,7 @@ use crate::domain::asn_view::AsnView;
 use crate::domain::circuit_view::CircuitView;
 use crate::domain::cluster_view::ClusterView;
 use crate::domain::contact_view::ContactView;
-use crate::domain::device_detail::{DeviceDetail, IpRow, VlanRow};
+use crate::domain::device_detail::{CableRow, DeviceDetail, IfaceRow, IpRow, VlanRow};
 use crate::domain::interface_view::InterfaceView;
 use crate::domain::ip_range_view::IpRangeView;
 use crate::domain::ip_view::{IpView, assigned_label, most_specific};
@@ -39,7 +39,7 @@ use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
 use crate::netbox::models::circuits::{Circuit, Provider};
 use crate::netbox::models::common::BriefObject;
-use crate::netbox::models::dcim::{Device, Rack, Site};
+use crate::netbox::models::dcim::{Device, Interface, Rack, Site};
 use crate::netbox::models::ipam::{
     Aggregate, Asn, IpAddress, IpRange, Prefix, RouteTarget, Vlan, VlanGroup, Vrf,
 };
@@ -655,6 +655,44 @@ fn device_vlan_rows(vlans: &[VlanRow]) -> Vec<DetailRow> {
         .collect()
 }
 
+/// Navigable rows for a device's interfaces — each opens that interface's detail
+/// (its attributes + cable-path trace) on Enter. Text mirrors the `iface_lines`
+/// body (name, type, a `(disabled)` marker) minus the leading indent the list
+/// renderer supplies.
+fn device_interface_rows(ifaces: &[IfaceRow]) -> Vec<DetailRow> {
+    use std::fmt::Write as _;
+    ifaces
+        .iter()
+        .map(|i| {
+            let mut text = i.name.clone();
+            if let Some(t) = &i.type_ {
+                let _ = write!(text, "  {t}");
+            }
+            if i.enabled == Some(false) {
+                text.push_str("  (disabled)");
+            }
+            DetailRow::link(text, ObjectKind::Interface, i.id)
+        })
+        .collect()
+}
+
+/// Navigable rows for a device's cabled interfaces — each opens the *local*
+/// interface's detail (where the full cable-path trace lives) on Enter. Text
+/// mirrors the `cable_lines` body minus the leading indent.
+fn device_cable_rows(cables: &[CableRow]) -> Vec<DetailRow> {
+    cables
+        .iter()
+        .map(|c| {
+            let text = if c.connected_to.is_empty() {
+                format!("{}  {}", c.interface, c.cable.as_deref().unwrap_or(""))
+            } else {
+                format!("{} → {}", c.interface, c.connected_to.join(", "))
+            };
+            DetailRow::link(text, ObjectKind::Interface, c.id)
+        })
+        .collect()
+}
+
 /// Navigable rows for a list of devices — each opens that device on Enter. Used by
 /// the site and rack `devices` tabs.
 fn device_link_rows(devices: &[Device]) -> Vec<DetailRow> {
@@ -739,11 +777,12 @@ async fn site_racks_tab(client: &NetBoxClient, site_id: u64) -> DetailTab {
     }
 }
 
-/// Build a device detail (summary body + i/p/c/v tabs) from its sub-resources.
+/// Build a device detail (summary body + i/p/c/v/s tabs) from its sub-resources.
 /// Reuses the same fan-out + compose path as the CLI/MCP device lookup, then
-/// derives the TUI's title, summary body, and per-section tabs from it. The IP
-/// (`p`) and VLAN (`v`) tabs get navigable rows so Enter drills into that IP/VLAN;
-/// the others (interfaces, cables, services) stay plain text (not object kinds).
+/// derives the TUI's title, summary body, and per-section tabs from it. The
+/// interfaces (`i`), IP (`p`), cables (`c`), and VLAN (`v`) tabs get navigable
+/// rows so Enter drills in — interfaces/cables open the interface detail, IPs the
+/// IP, VLANs the VLAN. Services (`s`) stay plain text (no detail to open).
 async fn load_device_detail(
     client: &NetBoxClient,
     device: Device,
@@ -755,7 +794,9 @@ async fn load_device_detail(
         .into_iter()
         .map(|(key, label, body)| {
             let rows = match key {
+                'i' => device_interface_rows(&detail.interfaces),
                 'p' => device_ip_rows(&detail.ip_addresses),
+                'c' => device_cable_rows(&detail.cables),
                 'v' => device_vlan_rows(&detail.vlans),
                 _ => Vec::new(),
             };
@@ -1263,6 +1304,51 @@ async fn load_vrf_detail_view(client: &NetBoxClient, vrf: Vrf) -> Result<DetailV
     Ok(vrf_detail_view(links, detail))
 }
 
+/// Build an interface's [`DetailView`] (TUI), addressed by numeric id: its
+/// attributes + cable-path trace (the same [`InterfaceView`] the CLI renders) as
+/// the body, with a navigable link back to its device. This is the target the
+/// device interfaces/cables tabs open; interfaces aren't part of the global search
+/// fan-out (they need a device for context), so there's no by-ref resolution.
+async fn load_interface_detail_view(client: &NetBoxClient, id: u64) -> Result<DetailView> {
+    let iface: Interface = client
+        .get(&format!("/api/dcim/interfaces/{id}/"), &[])
+        .await?;
+    let mut links = Vec::new();
+    push_link(
+        &mut links,
+        "device",
+        ObjectKind::Device,
+        iface.device.as_ref(),
+    );
+    let device_label = iface.device.as_ref().map(BriefObject::name_label);
+    let title = match &device_label {
+        Some(d) => format!("interface {d} {}", iface.name),
+        None => format!("interface {}", iface.name),
+    };
+    // Assigned IPs and the cable trace are independent fetches — run concurrently.
+    let (ips, trace) = tokio::try_join!(
+        client.interface_ips(iface.id, DEVICE_CAP),
+        client.interface_trace(iface.id),
+    )?;
+    let view = InterfaceView::build(iface, ips, trace);
+    // The cable path is a dedicated, scrollable Path tab (the diagram); the body
+    // is the interface's attributes + VLAN/connection/IP sections without it.
+    let mut tabs = Vec::new();
+    if !view.diagram.is_empty() {
+        tabs.push(DetailTab {
+            key: 'c',
+            label: "cable path".to_string(),
+            body: view.diagram.join("\n"),
+            rows: Vec::new(),
+        });
+    }
+    Ok(
+        DetailView::new(ObjectKind::Interface, id, title, view.to_summary_plain())
+            .with_tabs(tabs)
+            .with_links(links),
+    )
+}
+
 pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Result<DetailView> {
     let mut tabs = Vec::new();
     let mut links = Vec::new();
@@ -1437,6 +1523,11 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
                 .await?;
             // Like the VRF view, the route target builds its own header + rows.
             return load_route_target_detail_view(client, rt).await;
+        }
+        ObjectKind::Interface => {
+            // The interface view builds its own DetailView (title + body + device
+            // link); it's reached only by id, from a device's interfaces/cables tab.
+            return load_interface_detail_view(client, id).await;
         }
     };
     Ok(DetailView::new(kind, id, title, body)
@@ -1696,6 +1787,16 @@ pub async fn load_detail_by_ref(
                 .with_context(|| format!("no route target matched \"{value}\""))?;
             return load_route_target_detail_view(client, rt).await;
         }
+        ObjectKind::Interface => {
+            // Interfaces have no single-string reference (they need a device for
+            // context), so the palette can't name one. A numeric id still resolves
+            // (e.g. a future `nbox://interface/<id>`); anything else is not found.
+            let id: u64 = value
+                .trim()
+                .parse()
+                .map_err(|_| tui_not_found("interface", value))?;
+            return load_interface_detail_view(client, id).await;
+        }
     };
     Ok(DetailView::new(kind, id, title, body)
         .with_tabs(tabs)
@@ -1722,6 +1823,7 @@ mod tests {
                 name: Some(name.to_string()),
                 slug: None,
                 rd: None,
+                device: None,
             }),
             tenant: None,
             assigned_object_type: None,
@@ -1919,6 +2021,60 @@ mod tests {
         let vlan_rows = device_vlan_rows(&vlans);
         assert_eq!(vlan_rows[0].target, Some((ObjectKind::Vlan, 20)));
         assert!(vlan_rows[0].text.contains("20 (prod)"));
+    }
+
+    #[test]
+    fn device_interface_rows_open_the_interface() {
+        let ifaces = vec![
+            IfaceRow {
+                id: 101,
+                name: "xe-0/0/0".to_string(),
+                enabled: Some(true),
+                type_: Some("SFP+".to_string()),
+                description: None,
+            },
+            IfaceRow {
+                id: 102,
+                name: "xe-0/0/1".to_string(),
+                enabled: Some(false),
+                type_: None,
+                description: None,
+            },
+        ];
+        let rows = device_interface_rows(&ifaces);
+        // Each interface opens its own detail on Enter.
+        assert_eq!(rows[0].target, Some((ObjectKind::Interface, 101)));
+        assert!(rows[0].text.contains("xe-0/0/0"));
+        assert!(rows[0].text.contains("SFP+"));
+        // A disabled interface is marked, and still navigable.
+        assert_eq!(rows[1].target, Some((ObjectKind::Interface, 102)));
+        assert!(rows[1].text.contains("(disabled)"));
+    }
+
+    #[test]
+    fn device_cable_rows_open_the_local_interface() {
+        let cables = vec![
+            CableRow {
+                id: 101,
+                interface: "xe-0/0/0".to_string(),
+                cable: Some("#3".to_string()),
+                connected_to: vec!["core01 xe-1/0/0".to_string()],
+            },
+            CableRow {
+                id: 103,
+                interface: "xe-0/0/2".to_string(),
+                cable: Some("#5".to_string()),
+                connected_to: Vec::new(),
+            },
+        ];
+        let rows = device_cable_rows(&cables);
+        // A cable row opens the LOCAL interface's detail (where the trace lives).
+        assert_eq!(rows[0].target, Some((ObjectKind::Interface, 101)));
+        assert!(rows[0].text.contains("xe-0/0/0"));
+        assert!(rows[0].text.contains("core01 xe-1/0/0"));
+        // No far end → the cable label trails instead of a "->" connection.
+        assert_eq!(rows[1].target, Some((ObjectKind::Interface, 103)));
+        assert!(rows[1].text.contains("#5"));
     }
 
     #[test]
