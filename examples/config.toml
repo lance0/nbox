@@ -27,8 +27,8 @@ ttl_secs = 30              # reuse window in seconds (clamped to 5–300)
 
 [profiles.work]
 url = "https://netbox.example.com"
-# token = "nbt_..."              # default TUI paste path; redacted by config show
-token_env = "NETBOX_TOKEN"   # nbox reads the token from this env var
+# token = "nbt_..."              # the actual token value (TUI paste path; redacted by config show)
+token_env = "NETBOX_TOKEN"   # NAME of the env var holding the token (not the token itself)
 auth_scheme = "auto"         # auto | bearer | token (auto-detects v2 nbt_ tokens)
 verify_tls = true
 timeout_secs = 15

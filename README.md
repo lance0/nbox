@@ -438,10 +438,14 @@ vrf = "graphql"               # rest | graphql
 route_target = "graphql"      # rest | graphql
 ```
 
-Tokens can be stored directly in the profile as `token = "..."` for the normal
-single-user desktop flow. Display commands redact it, and config files are
-written user-only (`0600`) on Unix. If you prefer external secret handling, store
-only the *name* of an env var (`token_env`).
+**`token` vs `token_env` — the one thing to get right:**
+
+- `token = "nbt_…"` holds the **actual API token**, stored in `config.toml`. This
+  is what the TUI writes when you paste a token; display commands redact it and the
+  file is written user-only (`0600`) on Unix.
+- `token_env = "NETBOX_TOKEN"` holds the **name of an environment variable** that
+  holds the token — the secret stays in your shell / CI / systemd unit, never in
+  the file. **Put the variable name here, not the token itself.**
 
 Token sources are resolved in this order:
 

@@ -49,10 +49,15 @@ mishandle a newer schema.
 
 ## Tokens
 
-Tokens can be stored directly in the profile as `token = "..."` for the normal
-single-user desktop flow. `nbox config show`, JSON output, and `Debug` output
-redact that value, and config files are written user-only (`0600`) on Unix. If you
-prefer external secret handling, store only the *name* of an env var (`token_env`).
+**`token` vs `token_env`.** These are easy to confuse, and the difference matters:
+
+- `token = "nbt_…"` is the **actual API token**, stored in `config.toml`. This is
+  what the TUI writes when you paste a token; `nbox config show`, JSON, and `Debug`
+  output redact it, and the file is written user-only (`0600`) on Unix.
+- `token_env = "NETBOX_TOKEN"` is the **name of an environment variable** that holds
+  the token — the secret stays in your shell / CI / systemd unit, never in the file.
+  Put the *variable name* here, not the token value.
+
 There is no OS-keyring storage — the token lives in `config.toml` or an env var.
 
 Resolution order:
