@@ -58,7 +58,7 @@ nbox search <query> [--limit N] [--status S] [--site <name|slug|id>] [--region <
 nbox tags
 nbox journal <kind> <ref>
 nbox open <kind>/<ref>
-nbox raw GET <api-path>
+nbox raw GET <api-path>          # path with or without /api/, e.g. dcim/devices/?limit=1
 nbox status
 nbox completions <bash|zsh|fish|powershell|elvish>
 ```
