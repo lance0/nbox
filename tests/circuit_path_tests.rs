@@ -19,6 +19,15 @@ fn client(server: &MockServer) -> NetBoxClient {
     NetBoxClient::new(&profile, None).unwrap()
 }
 
+fn client_paged(server: &MockServer, page_size: usize) -> NetBoxClient {
+    let profile = ProfileConfig {
+        url: server.uri(),
+        page_size: Some(page_size),
+        ..Default::default()
+    };
+    NetBoxClient::new(&profile, None).unwrap()
+}
+
 fn not_found(noun: &str, value: &str) -> anyhow::Error {
     anyhow::anyhow!("no {noun} matched \"{value}\"")
 }
@@ -242,6 +251,76 @@ async fn circuit_path_handles_the_rear_ports_array_mapping() {
         a.path
     );
     // Device-first: the resolved router interface leads.
+    assert_eq!(a.path[0].to, "edge-1 xe-0/0/0");
+    assert!(a.path[0].endpoint);
+}
+
+#[tokio::test]
+async fn circuit_path_pages_through_front_ports_for_the_mapping() {
+    // A big panel can exceed one page of front-ports; the mapping must still be
+    // found past the first page (page_size=1 here forces a second request).
+    let server = MockServer::start().await;
+    mount_circuit(&server, 14, "ACME-4").await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/circuits/circuit-terminations/"))
+        .and(query_param("circuit_id", "14"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![json!({
+            "id": 20, "term_side": "A",
+            "termination": {"id": 1, "display": "DC1", "name": "DC1"},
+            "termination_type": "dcim.site",
+            "cable": {"id": 100, "display": "#100"},
+            "link_peers_type": "dcim.rearport",
+            "link_peers": [
+                {"id": 50, "url": "http://nb/api/dcim/rear-ports/50/", "name": "R1",
+                 "device": {"id": 9, "name": "panel-1"}}
+            ]
+        })])))
+        .mount(&server)
+        .await;
+
+    // Page 1 (offset 0): a front-port mapped to a *different* rear-port.
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/front-ports/"))
+        .and(query_param("device_id", "9"))
+        .and(query_param("offset", "0"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [{"id": 98, "name": "Fx", "device": {"id": 9, "name": "panel-1"},
+                         "rear_ports": [{"rear_port": 999}]}]
+        })))
+        .mount(&server)
+        .await;
+    // Page 2 (offset 1): the front-port mapped to rear 50, cabled to the router.
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/front-ports/"))
+        .and(query_param("device_id", "9"))
+        .and(query_param("offset", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [{"id": 60, "url": "http://nb/api/dcim/front-ports/60/", "name": "F1",
+                         "device": {"id": 9, "name": "panel-1"},
+                         "rear_ports": [{"rear_port": 50}],
+                         "cable": {"id": 200, "display": "#200"},
+                         "link_peers_type": "dcim.interface",
+                         "link_peers": [{"id": 70, "url": "http://nb/api/dcim/interfaces/70/",
+                                         "name": "xe-0/0/0", "device": {"id": 8, "name": "edge-1"}}]}]
+        })))
+        .mount(&server)
+        .await;
+
+    let view = detail::circuit_view_by_ref(&client_paged(&server, 1), "ACME-4", &not_found)
+        .await
+        .unwrap();
+
+    // The mapping on page 2 is found, so the path resolves to the router.
+    let a = &view.terminations[0];
+    assert_eq!(
+        a.path.len(),
+        2,
+        "match beyond page 1 should resolve: {:?}",
+        a.path
+    );
     assert_eq!(a.path[0].to, "edge-1 xe-0/0/0");
     assert!(a.path[0].endpoint);
 }

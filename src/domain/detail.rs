@@ -466,21 +466,28 @@ fn front_rear_ids(fp: &serde_json::Value) -> Vec<u64> {
     ids
 }
 
+/// How many of a panel device's front-ports to page through looking for the
+/// rear↔front mapping. A high-density panel can have hundreds; cap it so a
+/// mis-modeled device can't make the walk unbounded.
+const PANEL_FRONT_PORT_CAP: usize = 1000;
+
 /// Rear → front: find the panel's front-port mapped to this rear-port, then the
-/// stop across that front-port's cable.
+/// stop across that front-port's cable. Pages through the device's front-ports
+/// (a big panel exceeds one page) so the mapping isn't missed past the first page.
 async fn front_for_rear(client: &NetBoxClient, device_id: u64, rear_id: u64) -> Option<NextHop> {
-    let page: serde_json::Value = client
-        .get(
-            "/api/dcim/front-ports/",
-            &[
-                ("device_id", device_id.to_string()),
-                ("limit", "200".to_string()),
-            ],
+    let fronts: Vec<serde_json::Value> = client
+        .list_all(
+            Endpoint::FrontPorts,
+            vec![("device_id", device_id.to_string())],
+            PANEL_FRONT_PORT_CAP,
         )
         .await
         .ok()?;
-    let fronts = page.get("results")?.as_array()?;
-    for fp in fronts {
+    // Takes the first front-port that maps to this rear-port. Correct for the
+    // common single-position panel; a multi-position rear (an MPO trunk) is
+    // referenced by several front-ports at different positions, so a position-aware
+    // match would be a refinement (see ROADMAP).
+    for fp in &fronts {
         if !front_rear_ids(fp).contains(&rear_id) {
             continue;
         }

@@ -5,6 +5,7 @@
 pub enum Endpoint {
     Devices,
     Interfaces,
+    FrontPorts,
     Sites,
     Regions,
     SiteGroups,
@@ -37,6 +38,7 @@ impl Endpoint {
         match self {
             Endpoint::Devices => "/api/dcim/devices/",
             Endpoint::Interfaces => "/api/dcim/interfaces/",
+            Endpoint::FrontPorts => "/api/dcim/front-ports/",
             Endpoint::Sites => "/api/dcim/sites/",
             Endpoint::Regions => "/api/dcim/regions/",
             Endpoint::SiteGroups => "/api/dcim/site-groups/",

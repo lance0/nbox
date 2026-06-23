@@ -131,12 +131,13 @@ impl CircuitView {
         let status = c.status.map(|c| c.value);
         let commit_rate_kbps = c.commit_rate;
 
-        // Order A before Z (the API doesn't guarantee order); unknown sides last.
+        // Order A, then Z, then any unknown side last (the API doesn't guarantee
+        // order). An explicit rank — a lexicographic sort would put `?` before `A`.
         let mut terms: Vec<CircuitTerminationView> = terminations
             .into_iter()
             .map(CircuitTerminationView::from_resolved)
             .collect();
-        terms.sort_by(|a, b| a.side.cmp(&b.side));
+        terms.sort_by_key(|t| side_rank(&t.side));
 
         let diagram = format_circuit_diagram(
             &circuit_segment(type_.as_deref(), commit_rate_kbps, status.as_deref()),
@@ -286,6 +287,15 @@ fn format_circuit_diagram(segment: &str, terms: &[CircuitTerminationView]) -> Ve
         }
     }
     lines
+}
+
+/// Sort rank for a termination side: A first, Z next, anything else last.
+fn side_rank(side: &str) -> u8 {
+    match side {
+        "A" => 0,
+        "Z" => 1,
+        _ => 2,
+    }
 }
 
 /// Map a termination's content type to a short kind label.
@@ -471,6 +481,28 @@ mod tests {
         let plain = view.to_plain();
         assert!(plain.contains("Circuit Path"));
         assert!(plain.contains("↳ edge-1 xe-0/0/0  ·  #200"));
+    }
+
+    #[test]
+    fn unknown_side_sorts_after_a_and_z() {
+        let c = circuit(json!({"id": 1, "url": "u", "cid": "ACME-1"}));
+        let term = |side: Option<&str>| {
+            let mut v = json!({
+                "id": 1, "termination": {"id": 1, "display": "x"},
+                "termination_type": "dcim.site"
+            });
+            if let Some(s) = side {
+                v["term_side"] = json!(s);
+            }
+            ResolvedTermination {
+                termination: termination(v),
+                path: Vec::new(),
+            }
+        };
+        // Given out of order — Z, an unknown (missing) side, then A.
+        let view = CircuitView::build(c, vec![term(Some("Z")), term(None), term(Some("A"))]);
+        let sides: Vec<&str> = view.terminations.iter().map(|t| t.side.as_str()).collect();
+        assert_eq!(sides, vec!["A", "Z", "?"], "unknown side must sort last");
     }
 
     #[test]
