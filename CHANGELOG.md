@@ -16,8 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   case-insensitive name lookup (`name__ic` for devices/racks/sites/VLANs/VRFs/
   route-targets, `cid__ic` for circuits). The pane title shows the active filter and
   count (`Devices · name contains "bfr" · 52`), `500+` signals the result cap (refine
-  to narrow). `Esc` on the list clears the active filter (while editing, it cancels
-  the edit and keeps the filter); `Ctrl+X` or an empty Enter also clear it.
+  to narrow). `Esc` on the list clears the active filter; while editing, `Esc`
+  instead cancels the edit (keeping the filter), and `Ctrl+X` or an empty Enter
+  clear it.
   This makes large instances usable — finding one of hundreds of thousands of
   devices by name instead of scrolling a capped list. Prefix and IP-address lists
   keep `/` as global search: their key field is a CIDR/inet column with no NetBox

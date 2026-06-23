@@ -2237,9 +2237,20 @@ fn footer_nav(app: &App) -> &'static str {
             " / search · j/k scroll · g/G top/bottom · Tab results · Enter open · o/y open/copy · r refresh · ? help · q quit "
         }
         // The Nav rail: j/k live-browse the highlighted kind into the results pane
-        // (focus stays here), Enter commits and jumps into the list.
+        // (focus stays here), Enter commits and jumps into the list. `/` acts on the
+        // settled browse_kind (what the list shows), not nav_selected — so the hint
+        // matches the action even mid-scroll: `/ filter` for a name-bearing kind,
+        // `/ search` otherwise (prefix/IP, or Recent with no kind). Mirrors the
+        // router and the List-pane arm below.
         Screen::Home if app.focus == Focus::Nav => {
-            " j/k browse · Enter results · / search · D dash · T tree · S settings · t theme · ? help · q quit "
+            if app
+                .browse_kind
+                .is_some_and(|k| crate::netbox::browse::browse_filter_field(k).is_some())
+            {
+                " j/k browse · Enter results · / filter · D dash · T tree · S settings · t theme · ? help · q quit "
+            } else {
+                " j/k browse · Enter results · / search · D dash · T tree · S settings · t theme · ? help · q quit "
+            }
         }
         // A browse list (a kind picked from the Nav rail). Filterable kinds bind `/`
         // to a name filter (Esc clears it); kinds with no substring filter
@@ -2916,6 +2927,28 @@ mod tests {
         assert!(
             !plain.contains("/ filter"),
             "prefix browse must not advertise a filter: {plain}"
+        );
+
+        // The Nav rail is the app's landing posture, and `/` acts there too — so its
+        // hint must be kind-aware as well (keyed off the settled browse_kind, like
+        // the router), keeping the rail's `j/k browse · Enter results` prefix.
+        a.focus = Focus::Nav;
+        a.browse_kind = Some(ObjectKind::Device);
+        let rail_filterable = footer_nav(&a);
+        assert!(
+            rail_filterable.contains("/ filter"),
+            "rail filterable: {rail_filterable}"
+        );
+        assert!(
+            rail_filterable.contains("j/k browse"),
+            "rail keeps its browse prefix: {rail_filterable}"
+        );
+        a.browse_kind = Some(ObjectKind::Prefix);
+        let rail_plain = footer_nav(&a);
+        assert!(rail_plain.contains("/ search"), "rail prefix: {rail_plain}");
+        assert!(
+            !rail_plain.contains("/ filter"),
+            "rail prefix must not advertise a filter: {rail_plain}"
         );
     }
 
