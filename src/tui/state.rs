@@ -2563,22 +2563,31 @@ impl App {
         Vec::new()
     }
 
+    /// The `Browse` command for the current `browse_kind` + active `browse_filter`,
+    /// with no status side effect — the shared re-fetch path (filter apply/clear,
+    /// and `r` refresh).
+    fn browse_current_cmd(&self) -> Vec<AppCommand> {
+        match self.browse_kind {
+            Some(kind) => vec![AppCommand::Browse {
+                kind,
+                req: 0,
+                filter: self.browse_filter.clone(),
+            }],
+            None => Vec::new(),
+        }
+    }
+
     /// Re-browse the current `browse_kind` with the active `browse_filter` applied
-    /// (the one path the browse filter re-fetches through).
+    /// (the path the browse filter re-fetches through), with a status note.
     fn rebrowse_current(&mut self) -> Vec<AppCommand> {
-        let Some(kind) = self.browse_kind else {
+        if self.browse_kind.is_none() {
             return Vec::new();
-        };
-        let filter = self.browse_filter.clone();
-        match filter.as_deref() {
+        }
+        match self.browse_filter.as_deref() {
             Some(f) => self.set_status(format!("filtering by \"{f}\"…"), Severity::Info),
             None => self.set_status("clearing filter…", Severity::Info),
         }
-        vec![AppCommand::Browse {
-            kind,
-            req: 0,
-            filter,
-        }]
+        self.browse_current_cmd()
     }
 
     fn handle_command_key(&mut self, key: KeyEvent) -> Vec<AppCommand> {
@@ -3181,6 +3190,12 @@ impl App {
                     self.pending_reselect = self.selected_result().map(|r| (r.kind, r.id));
                     self.set_status(format!("refreshing {query}…"), Severity::Info);
                     vec![self.search_cmd(query)]
+                }
+                None if self.browse_kind.is_some() => {
+                    // A browsed list (filtered or not) re-fetches that kind.
+                    self.pending_reselect = self.selected_result().map(|r| (r.kind, r.id));
+                    self.set_status("refreshing…", Severity::Info);
+                    self.browse_current_cmd()
                 }
                 None => {
                     self.set_status("nothing to refresh", Severity::Warning);
@@ -6240,6 +6255,30 @@ mod tests {
             matches!(cmds.as_slice(), [AppCommand::Browse { filter: None, .. }]),
             "got: {cmds:?}"
         );
+    }
+
+    #[test]
+    fn r_refreshes_a_browsed_list_with_its_filter() {
+        let mut a = app();
+        a.focus = Focus::Nav;
+        a.nav_selected = 0; // Devices
+        let _ = a.handle_event(press(KeyCode::Enter));
+        a.handle_event(press(KeyCode::Char('/')));
+        for c in "bfr".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        let _ = a.handle_event(press(KeyCode::Enter));
+
+        // `r` re-browses the kind with its active filter (not "nothing to refresh").
+        let cmds = a.handle_event(press(KeyCode::Char('r')));
+        assert!(
+            matches!(
+                cmds.as_slice(),
+                [AppCommand::Browse { kind: ObjectKind::Device, filter: Some(f), .. }] if f == "bfr"
+            ),
+            "got: {cmds:?}"
+        );
+        assert!(a.status.contains("refreshing"));
     }
 
     #[test]

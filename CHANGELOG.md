@@ -20,6 +20,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   This makes large instances usable — finding one of hundreds of thousands of
   devices by name instead of scrolling a capped list.
 
+## [0.10.0] - 2026-06-23
+
 ### Added
 
 - **Circuit terminations + A↔Z path.** `nbox circuit <cid>` now resolves the

@@ -837,9 +837,12 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
     // the active list length; absent for an empty list.
     let position = list_position(app.selected, app.home_len());
 
-    // With search/browse results, show them; the title names a browsed kind.
+    // With search/browse results, show them; the title names a browsed kind. An
+    // active browse stays on this path even with zero rows (a filter that matched
+    // nothing keeps its context + an empty-state note, not the recents fallback).
     // Otherwise fall back to recents, then a hint.
-    if !app.view.is_empty() {
+    let active_browse = app.browse_kind.is_some() && app.last_query.is_none();
+    if !app.view.is_empty() || active_browse {
         let title = match app.browse_kind {
             Some(kind) => {
                 // `500+` when the list hit the browse cap — a built-in "refine the
@@ -872,6 +875,20 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
             .padding(Padding::horizontal(1));
         if let Some(pos) = position {
             block = block.title(Line::from(pos).right_aligned().style(theme.text_dim));
+        }
+        // An active browse that matched nothing: keep the titled context (e.g.
+        // `Devices · name contains "zzz" · 0`) and show an empty-state note rather
+        // than dropping to the recents fallback, which would hide what was asked.
+        if app.view.is_empty() {
+            let note = match app.browse_kind {
+                Some(kind) => format!("No matching {}.", browse_label(kind).to_lowercase()),
+                None => "No results.".to_string(),
+            };
+            let body = Paragraph::new(note)
+                .style(Style::default().fg(theme.text_dim))
+                .block(block);
+            frame.render_widget(body, area);
+            return;
         }
         // A homogeneous browse (the Nav rail picked one kind) drops the redundant
         // per-row KIND tag — the pane title already names the kind — and labels the
@@ -2278,6 +2295,39 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect::<String>()
+    }
+
+    #[test]
+    fn empty_filtered_browse_keeps_context_not_recents() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut a = app();
+        // An active browse filter that matched nothing.
+        a.browse_kind = Some(ObjectKind::Device);
+        a.browse_filter = Some("zzz".to_string());
+        a.last_query = None;
+        a.results.clear();
+        a.view.clear();
+
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| render_home_list(f, f.area(), &mut a))
+            .unwrap();
+        let text: String = term
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        // Keeps the browse context + an empty-state note, not the recents fallback.
+        assert!(
+            text.contains("name contains"),
+            "title keeps the filter: {text:?}"
+        );
+        assert!(
+            text.contains("No matching"),
+            "empty-state note shown: {text:?}"
+        );
     }
 
     /// Pull the foreground color the line's last span renders in.
