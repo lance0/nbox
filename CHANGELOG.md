@@ -9,17 +9,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Browse filter (grep-style).** When browsing a kind from the Nav rail, `/` now
-  filters that list **server-side** by name instead of opening the global search:
-  type a substring, Enter, and the list re-fetches matching rows. Explicit (not
-  live), so it doesn't hammer NetBox while you type. Uses the kind's natural field
-  (`name__ic` for devices/racks/sites/VLANs/VRFs/route-targets, `prefix__ic` for
-  prefixes, `address__ic` for IPs). The pane title shows the active filter and count
-  (`Devices · name contains "bfr" · 52`), `500+` signals the result cap (refine to
-  narrow). `Esc` on the list clears the active filter (while editing, it cancels the
-  edit and keeps the filter); `Ctrl+X` or an empty Enter also clear it.
+- **Browse filter (grep-style).** When browsing a name-bearing kind from the Nav
+  rail, `/` now filters that list **server-side** by name instead of opening the
+  global search: type a substring, Enter, and the list re-fetches matching rows.
+  Explicit (not live), so it doesn't hammer NetBox while you type. Uses the kind's
+  case-insensitive name lookup (`name__ic` for devices/racks/sites/VLANs/VRFs/
+  route-targets, `cid__ic` for circuits). The pane title shows the active filter and
+  count (`Devices · name contains "bfr" · 52`), `500+` signals the result cap (refine
+  to narrow). `Esc` on the list clears the active filter (while editing, it cancels
+  the edit and keeps the filter); `Ctrl+X` or an empty Enter also clear it.
   This makes large instances usable — finding one of hundreds of thousands of
-  devices by name instead of scrolling a capped list.
+  devices by name instead of scrolling a capped list. Prefix and IP-address lists
+  keep `/` as global search: their key field is a CIDR/inet column with no NetBox
+  substring lookup, so a name-style filter there would silently match nothing it
+  claimed to (CIDR-containment filtering for those kinds is planned separately).
 
 ## [0.10.0] - 2026-06-23
 

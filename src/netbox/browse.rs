@@ -22,10 +22,16 @@ use crate::util::format::api_to_web_url;
 pub const BROWSE_CAP: usize = 500;
 
 /// The query field a browse `filter` maps to for `kind` — a case-insensitive
-/// `contains` lookup on the kind's natural name field (`name__ic` for most,
-/// `prefix__ic`/`address__ic`/`cid__ic` for the address-keyed kinds). `None` for
-/// kinds with no natural substring filter (ASN, IP range) — there the filter is a
-/// no-op. Exposed so the TUI can tell whether the active browse kind is filterable.
+/// `contains` (`__ic`) lookup on the kind's name field (`name__ic` for the
+/// name-bearing kinds, `cid__ic` for circuits). `None` means the kind has no usable
+/// substring filter, so the TUI routes `/` to global search instead.
+///
+/// Prefix, aggregate, and IP-address are deliberately `None`: their key field is a
+/// CIDR/inet column, not a CharField, so NetBox exposes no `__ic` lookup on it — and
+/// an unknown filter param is silently ignored (returns the whole table), so a
+/// `prefix__ic`/`address__ic` filter would look applied while matching nothing it
+/// claims to. Containment filters (`within_include`/`parent`) are the correct future
+/// filter for those kinds. (Checked against NetBox 4.2–4.6 ipam filtersets.)
 ///
 /// Maps more kinds than [`browse`] currently lists (VM/cluster/provider/tenant/…):
 /// forward-looking, so the field is ready if those become browsable. Today
@@ -44,10 +50,15 @@ pub fn browse_filter_field(kind: ObjectKind) -> Option<&'static str> {
         | ObjectKind::Provider
         | ObjectKind::Tenant
         | ObjectKind::Contact => Some("name__ic"),
-        ObjectKind::Prefix | ObjectKind::Aggregate => Some("prefix__ic"),
-        ObjectKind::IpAddress => Some("address__ic"),
         ObjectKind::Circuit => Some("cid__ic"),
-        ObjectKind::Asn | ObjectKind::IpRange | ObjectKind::Interface => None,
+        // Prefix/Aggregate/IpAddress key on a CIDR/inet field with no NetBox
+        // substring lookup (see above) — `None`, so `/` falls back to search.
+        ObjectKind::Prefix
+        | ObjectKind::Aggregate
+        | ObjectKind::IpAddress
+        | ObjectKind::Asn
+        | ObjectKind::IpRange
+        | ObjectKind::Interface => None,
     }
 }
 
@@ -286,12 +297,12 @@ mod tests {
     fn filter_field_maps_each_kind() {
         assert_eq!(browse_filter_field(ObjectKind::Device), Some("name__ic"));
         assert_eq!(browse_filter_field(ObjectKind::Rack), Some("name__ic"));
-        assert_eq!(browse_filter_field(ObjectKind::Prefix), Some("prefix__ic"));
-        assert_eq!(
-            browse_filter_field(ObjectKind::IpAddress),
-            Some("address__ic")
-        );
         assert_eq!(browse_filter_field(ObjectKind::Circuit), Some("cid__ic"));
+        // CIDR/inet-keyed kinds have no NetBox substring lookup → `None` (so `/`
+        // routes to search, not a filter that would silently match the whole table).
+        assert_eq!(browse_filter_field(ObjectKind::Prefix), None);
+        assert_eq!(browse_filter_field(ObjectKind::Aggregate), None);
+        assert_eq!(browse_filter_field(ObjectKind::IpAddress), None);
         assert_eq!(browse_filter_field(ObjectKind::Asn), None);
     }
 

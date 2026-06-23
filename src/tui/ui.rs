@@ -2241,10 +2241,18 @@ fn footer_nav(app: &App) -> &'static str {
         Screen::Home if app.focus == Focus::Nav => {
             " j/k browse · Enter results · / search · D dash · T tree · S settings · t theme · ? help · q quit "
         }
-        // A browse list (a kind picked from the Nav rail) filters by name with `/`;
-        // a search-result list keeps the global `/` search.
+        // A browse list (a kind picked from the Nav rail). Filterable kinds bind `/`
+        // to a name filter (Esc clears it); kinds with no substring filter
+        // (prefix/IP — CIDR/inet, see `browse_filter_field`) route `/` to search.
         Screen::Home if app.browse_kind.is_some() && app.last_query.is_none() => {
-            " / filter · j/k move · Enter open · Esc clear · r refresh · D dash · T tree · ? help · q quit "
+            if app
+                .browse_kind
+                .is_some_and(|k| crate::netbox::browse::browse_filter_field(k).is_some())
+            {
+                " / filter · j/k move · Enter open · Esc clear · r refresh · D dash · T tree · ? help · q quit "
+            } else {
+                " / search · j/k move · Enter open · r refresh · D dash · T tree · ? help · q quit "
+            }
         }
         Screen::Home => {
             " / search · j/k move · Enter open · D dash · T tree · S settings · Tab preview · o/y open/copy · r refresh · t theme · ? help · q quit "
