@@ -837,11 +837,35 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
     // the active list length; absent for an empty list.
     let position = list_position(app.selected, app.home_len());
 
-    // With search/browse results, show them; the title names a browsed kind.
+    // With search/browse results, show them; the title names a browsed kind. An
+    // active browse stays on this path even with zero rows (a filter that matched
+    // nothing keeps its context + an empty-state note, not the recents fallback).
     // Otherwise fall back to recents, then a hint.
-    if !app.view.is_empty() {
+    let active_browse = app.browse_kind.is_some() && app.last_query.is_none();
+    if !app.view.is_empty() || active_browse {
         let title = match app.browse_kind {
-            Some(kind) => format!(" {} ", browse_label(kind)),
+            Some(kind) => {
+                // `500+` when the list hit the browse cap — a built-in "refine the
+                // filter" cue; an exact count otherwise.
+                let n = app.view.len();
+                let count = if n >= crate::netbox::browse::BROWSE_CAP {
+                    format!("{}+", crate::netbox::browse::BROWSE_CAP)
+                } else {
+                    n.to_string()
+                };
+                match &app.browse_filter {
+                    Some(f) => {
+                        // "name contains" / "prefix contains" / "address contains" / …
+                        let field = crate::netbox::browse::browse_filter_field(kind)
+                            .map_or("name", |q| q.trim_end_matches("__ic"));
+                        format!(
+                            " {} · {field} contains \"{f}\" · {count} ",
+                            browse_label(kind)
+                        )
+                    }
+                    None => format!(" {} · {count} ", browse_label(kind)),
+                }
+            }
             None => " Results ".to_string(),
         };
         let mut block = Block::default()
@@ -851,6 +875,30 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
             .padding(Padding::horizontal(1));
         if let Some(pos) = position {
             block = block.title(Line::from(pos).right_aligned().style(theme.text_dim));
+        }
+        // An active browse that matched nothing: keep the titled context (e.g.
+        // `Devices · name contains "zzz" · 0`) and show an empty-state note rather
+        // than dropping to the recents fallback, which would hide what was asked.
+        if app.view.is_empty() {
+            // Reached only on an active browse (the outer guard requires it when the
+            // view is empty), so `browse_kind` is always `Some` here. "No matching X"
+            // when a filter is in play; plain "No X" for an empty unfiltered kind.
+            let note = app.browse_kind.map_or_else(
+                || "No results.".to_string(),
+                |kind| {
+                    let label = browse_label(kind).to_lowercase();
+                    if app.browse_filter.is_some() {
+                        format!("No matching {label}.")
+                    } else {
+                        format!("No {label}.")
+                    }
+                },
+            );
+            let body = Paragraph::new(note)
+                .style(Style::default().fg(theme.text_dim))
+                .block(block);
+            frame.render_widget(body, area);
+            return;
         }
         // A homogeneous browse (the Nav rail picked one kind) drops the redundant
         // per-row KIND tag — the pane title already names the kind — and labels the
@@ -1156,7 +1204,7 @@ pub fn help_bindings() -> Vec<Vec<(&'static str, &'static str)>> {
     vec![
         // Navigation / search.
         vec![
-            ("/", "search"),
+            ("/", "search / filter list"),
             (":", "command palette"),
             ("f / F", "filter / clear"),
             ("Tab / S-Tab", "switch pane / detail tabs"),
@@ -2045,6 +2093,14 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &mut App) {
             frame.set_cursor_position(pos);
             return;
         }
+        Mode::BrowseFilter => {
+            let theme = app.theme.clone();
+            let pos = app
+                .filter_input
+                .render(frame, footer_input_area(area), '/', &theme);
+            frame.set_cursor_position(pos);
+            return;
+        }
         Mode::Normal => {}
     }
 
@@ -2181,9 +2237,33 @@ fn footer_nav(app: &App) -> &'static str {
             " / search · j/k scroll · g/G top/bottom · Tab results · Enter open · o/y open/copy · r refresh · ? help · q quit "
         }
         // The Nav rail: j/k live-browse the highlighted kind into the results pane
-        // (focus stays here), Enter commits and jumps into the list.
+        // (focus stays here), Enter commits and jumps into the list. `/` acts on the
+        // settled browse_kind (what the list shows), not nav_selected — so the hint
+        // matches the action even mid-scroll: `/ filter` for a name-bearing kind,
+        // `/ search` otherwise (prefix/IP, or Recent with no kind). Mirrors the
+        // router and the List-pane arm below.
         Screen::Home if app.focus == Focus::Nav => {
-            " j/k browse · Enter results · / search · D dash · T tree · S settings · t theme · ? help · q quit "
+            if app
+                .browse_kind
+                .is_some_and(|k| crate::netbox::browse::browse_filter_field(k).is_some())
+            {
+                " j/k browse · Enter results · / filter · D dash · T tree · S settings · t theme · ? help · q quit "
+            } else {
+                " j/k browse · Enter results · / search · D dash · T tree · S settings · t theme · ? help · q quit "
+            }
+        }
+        // A browse list (a kind picked from the Nav rail). Filterable kinds bind `/`
+        // to a name filter (Esc clears it); kinds with no substring filter
+        // (prefix/IP — CIDR/inet, see `browse_filter_field`) route `/` to search.
+        Screen::Home if app.browse_kind.is_some() && app.last_query.is_none() => {
+            if app
+                .browse_kind
+                .is_some_and(|k| crate::netbox::browse::browse_filter_field(k).is_some())
+            {
+                " / filter · j/k move · Enter open · Esc clear · r refresh · D dash · T tree · ? help · q quit "
+            } else {
+                " / search · j/k move · Enter open · r refresh · D dash · T tree · ? help · q quit "
+            }
         }
         Screen::Home => {
             " / search · j/k move · Enter open · D dash · T tree · S settings · Tab preview · o/y open/copy · r refresh · t theme · ? help · q quit "
@@ -2212,6 +2292,7 @@ fn mode_label(mode: Mode) -> &'static str {
         Mode::Normal => "normal",
         Mode::Search => "search",
         Mode::Command => "command",
+        Mode::BrowseFilter => "filter",
     }
 }
 
@@ -2243,6 +2324,39 @@ mod tests {
             .iter()
             .map(|s| s.content.as_ref())
             .collect::<String>()
+    }
+
+    #[test]
+    fn empty_filtered_browse_keeps_context_not_recents() {
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut a = app();
+        // An active browse filter that matched nothing.
+        a.browse_kind = Some(ObjectKind::Device);
+        a.browse_filter = Some("zzz".to_string());
+        a.last_query = None;
+        a.results.clear();
+        a.view.clear();
+
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| render_home_list(f, f.area(), &mut a))
+            .unwrap();
+        let text: String = term
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        // Keeps the browse context + an empty-state note, not the recents fallback.
+        assert!(
+            text.contains("name contains"),
+            "title keeps the filter: {text:?}"
+        );
+        assert!(
+            text.contains("No matching"),
+            "empty-state note shown: {text:?}"
+        );
     }
 
     /// Pull the foreground color the line's last span renders in.
@@ -2790,6 +2904,52 @@ mod tests {
         // Enter-to-drill action is guarded by whether the active tab has navigable
         // rows — see detail_footer_guards_enter_open_by_navigable_rows.
         assert!(detail.contains("Tab tabs"), "detail footer: {detail}");
+    }
+
+    #[test]
+    fn footer_nav_browse_hint_is_kind_aware() {
+        // The browse-list footer advertises `/` by the kind's filterability: a
+        // name-bearing kind filters in place (`/ filter`, Esc clears it); a kind
+        // with no NetBox substring lookup (prefix/IP) routes `/` to global search
+        // (`/ search`). Guards the hint against drifting from the `/` router.
+        let mut a = app();
+        a.screen = Screen::Home;
+        a.focus = Focus::List;
+        a.last_query = None;
+
+        a.browse_kind = Some(ObjectKind::Device);
+        let filterable = footer_nav(&a);
+        assert!(filterable.contains("/ filter"), "filterable: {filterable}");
+
+        a.browse_kind = Some(ObjectKind::Prefix);
+        let plain = footer_nav(&a);
+        assert!(plain.contains("/ search"), "prefix: {plain}");
+        assert!(
+            !plain.contains("/ filter"),
+            "prefix browse must not advertise a filter: {plain}"
+        );
+
+        // The Nav rail is the app's landing posture, and `/` acts there too — so its
+        // hint must be kind-aware as well (keyed off the settled browse_kind, like
+        // the router), keeping the rail's `j/k browse · Enter results` prefix.
+        a.focus = Focus::Nav;
+        a.browse_kind = Some(ObjectKind::Device);
+        let rail_filterable = footer_nav(&a);
+        assert!(
+            rail_filterable.contains("/ filter"),
+            "rail filterable: {rail_filterable}"
+        );
+        assert!(
+            rail_filterable.contains("j/k browse"),
+            "rail keeps its browse prefix: {rail_filterable}"
+        );
+        a.browse_kind = Some(ObjectKind::Prefix);
+        let rail_plain = footer_nav(&a);
+        assert!(rail_plain.contains("/ search"), "rail prefix: {rail_plain}");
+        assert!(
+            !rail_plain.contains("/ filter"),
+            "rail prefix must not advertise a filter: {rail_plain}"
+        );
     }
 
     #[test]

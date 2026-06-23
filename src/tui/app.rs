@@ -97,7 +97,11 @@ async fn event_loop(
     // 0 is current since `browse_gen` starts at 0; any user navigation supersedes it.
     if let Some(kind) = app.startup_browse() {
         dispatch(
-            AppCommand::Browse { kind, req: 0 },
+            AppCommand::Browse {
+                kind,
+                req: 0,
+                filter: None,
+            },
             app.client.clone(),
             app.cache.clone(),
             tx.clone(),
@@ -156,11 +160,15 @@ fn dispatch(command: AppCommand, client: NetBoxClient, cache: Cache, tx: mpsc::S
                 let _ = tx.send(AppEvent::SearchComplete { req, result }).await;
             });
         }
-        AppCommand::Browse { kind, req } => {
+        AppCommand::Browse { kind, req, filter } => {
             tokio::spawn(async move {
-                let result =
-                    crate::netbox::browse::browse(&client, kind, crate::netbox::browse::BROWSE_CAP)
-                        .await;
+                let result = crate::netbox::browse::browse(
+                    &client,
+                    kind,
+                    crate::netbox::browse::BROWSE_CAP,
+                    filter.as_deref(),
+                )
+                .await;
                 let _ = tx
                     .send(AppEvent::BrowseComplete { req, kind, result })
                     .await;
