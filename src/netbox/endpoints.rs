@@ -5,6 +5,7 @@
 pub enum Endpoint {
     Devices,
     Interfaces,
+    FrontPorts,
     Sites,
     Regions,
     SiteGroups,
@@ -21,6 +22,7 @@ pub enum Endpoint {
     VirtualMachines,
     Clusters,
     Circuits,
+    CircuitTerminations,
     Providers,
     Aggregates,
     Asns,
@@ -36,6 +38,7 @@ impl Endpoint {
         match self {
             Endpoint::Devices => "/api/dcim/devices/",
             Endpoint::Interfaces => "/api/dcim/interfaces/",
+            Endpoint::FrontPorts => "/api/dcim/front-ports/",
             Endpoint::Sites => "/api/dcim/sites/",
             Endpoint::Regions => "/api/dcim/regions/",
             Endpoint::SiteGroups => "/api/dcim/site-groups/",
@@ -52,6 +55,7 @@ impl Endpoint {
             Endpoint::VirtualMachines => "/api/virtualization/virtual-machines/",
             Endpoint::Clusters => "/api/virtualization/clusters/",
             Endpoint::Circuits => "/api/circuits/circuits/",
+            Endpoint::CircuitTerminations => "/api/circuits/circuit-terminations/",
             Endpoint::Providers => "/api/circuits/providers/",
             Endpoint::Aggregates => "/api/ipam/aggregates/",
             Endpoint::Asns => "/api/ipam/asns/",

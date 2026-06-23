@@ -293,6 +293,12 @@ Consolidated future scope:
 
 ## Later / under consideration
 
+- ☐ **Position-aware circuit panel walk.** The circuit cable-path walker (resolving a termination through
+  patch panels to the device) takes the *first* front-port mapped to the circuit's rear-port. That's correct
+  for a single-position panel (the common case); a multi-position rear (an MPO trunk) is referenced by several
+  front-ports at different positions, so the walk could pick the wrong front and show a confidently-wrong
+  onward device. Refinement: match the circuit cable's termination position against `rear_port_position`.
+  Raised 2026-06-23.
 - ☑ **Cable-path visualizer** _(shipped 0.9.0)_. A TUI rendering of an interface's cable trace: the
   A-side ↔ Z-side path (with any intermediate panels / junctions as pass-through stops) drawn from the trace
   data nbox already fetches, as a "cable path" tab on the interface detail and an inline section in `nbox
