@@ -1207,6 +1207,7 @@ pub fn help_bindings() -> Vec<Vec<(&'static str, &'static str)>> {
             ("/", "search / filter list"),
             (":", "command palette"),
             ("f / F", "filter / clear"),
+            ("C-X", "clear browse filter"),
             ("Tab / S-Tab", "switch pane / detail tabs"),
             ("j / k", "move / scroll"),
             ("g / G", "top / bottom"),
@@ -2721,6 +2722,9 @@ mod tests {
         // Search / palette modes.
         assert!(has("/"), "/ search");
         assert!(has(":"), ": command palette");
+        // The browse filter's clear-while-editing key (bound in
+        // handle_browse_filter_key) — undiscoverable without this row.
+        assert!(has("C-X"), "C-X clear browse filter");
         // Focus + movement (incl. the recently-added Tab/Shift-Tab + paging).
         assert!(has("Tab / S-Tab"), "Tab/Shift+Tab pane focus");
         assert!(has("j / k"), "j/k move/scroll");
