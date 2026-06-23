@@ -49,7 +49,7 @@ See [Installation](#installation) below for setup instructions.
 
 - **Fast shell lookups** — `device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `circuit`, `provider`, `aggregate`, `asn`, `ip-range`, `tenant`, `contact`, `vm`, `cluster`, `vrf`, `route-target`, and `interface`, each as a one-liner.
 - **Normalized search** — one `search` query runs in parallel across devices, sites, racks, IPs, prefixes, VLANs, circuits, providers, aggregates, ASNs, IP ranges, tenants, contacts, VMs, clusters, VRFs, and route targets, returning ranked, deduped hits. Scope it with `--site`/`--region`/`--site-group`/`--location` (one at a time, exact scope), or narrow by `--status`/`--tenant`/`--role`/`--tag`/`--vrf`.
-- **IPAM-aware** — IP → most-specific parent prefix → VLAN → scope resolution, prefix utilization and children, a navigable prefix tree, and `next-ip` / `next-prefix` for free addresses and blocks (computed locally with `ipnet`).
+- **IPAM-aware** — IP → most-specific parent prefix → VLAN → scope resolution, prefix utilization and children, a navigable prefix tree, and `next-ip` / `next-prefix` for free addresses and blocks (read-only — nothing is reserved).
 - **A k9s-style TUI** — a three-pane home (navigation rail → results → live preview), an overview dashboard, a hierarchical prefix tree, cross-object navigation between related objects (every detail's related-object tabs are navigable — open an interface from a device and see its cable path drawn as an A↔Z diagram), fuzzy filters, recents, and an in-app profile + settings editor. Twelve themes; `NO_COLOR` honored.
 - **Agent-ready** — `nbox serve` is a read-only MCP server: the same lookups exposed as nine tools (plus every object as an `nbox://{kind}/{ref}` resource), returning the exact JSON view models the CLI does, so AI agents (Claude Code, Claude Desktop, …) query NetBox safely. Stdio for a local subprocess, or a loopback HTTP transport with OIDC resource-server auth for a network-reachable, read-only deployment. See [docs/MCP.md](docs/MCP.md); [SKILL.md](SKILL.md) is an installable Agent Skill that drives the CLI on matching requests.
 - **Scriptable** — `-o plain|json|csv`, `--fields`, `--raw`, versioned `--envelope`, and stable exit codes; stdout stays clean for piping, logs go to stderr. See [docs/SCRIPTING.md](docs/SCRIPTING.md).
@@ -109,8 +109,8 @@ Read-only — nothing is reserved. Both take `--vrf` to scope the prefix.
 ### Pull data into a script
 
 ```bash
-nbox device edge01 --json | jq '.primary_ip4.address'
-nbox search edge01 -o csv --cols name,site,status > devices.csv
+nbox device edge01 --json | jq '.primary_ip4'
+nbox search edge01 -o csv --cols kind,display,url > devices.csv
 nbox prefix 10.44.208.0/24 --json --envelope --raw   # versioned, single-line
 ```
 
@@ -274,7 +274,7 @@ nbox open <kind>/<ref>            # device, ip, prefix, vlan, site, rack, circui
 nbox raw GET <api-path>           # raw read-only API request (escape hatch)
 nbox serve [--http <addr>]        # read-only MCP server for AI agents (stdio, or loopback/OIDC HTTP)
 nbox config <init|path|show|token>    # token: status reports the resolved source (never echoed)
-nbox profile <add|use|list|show>
+nbox profile <add|use|remove|list|show>
 nbox completions <bash|zsh|fish|powershell|elvish>
 nbox man [DIR]                    # man pages: `nbox man > nbox.1` (top-level),
                                   # or `nbox man man/` for the full per-subcommand set

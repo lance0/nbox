@@ -35,7 +35,7 @@ nbox device edge01 --json                            # pretty JSON
 nbox device edge01 --json --raw                      # one compact line
 nbox device edge01 --json --envelope                 # { schema_version, data }
 nbox device edge01 --json --fields name,status,site  # trim to three fields
-nbox search edge -o csv --cols name,site,status      # CSV table of hits
+nbox search edge -o csv --cols kind,display,url      # CSV table of hits
 ```
 
 `-o csv` is for tabular/list results (e.g. `search`) — arrays render as a table.
@@ -86,8 +86,8 @@ otherwise documented are illustrative — confirm them against your own
 `nbox <cmd> --json` output before relying on them in a pipeline.
 
 ```bash
-nbox device edge01 --json | jq -r '.primary_ip4.address'         # device primary IPv4 (confirmed path)
-nbox search edge -o csv --cols name,site,status                  # CSV of search hits, three columns
+nbox device edge01 --json | jq -r '.primary_ip4'                 # device primary IPv4 (a string like 10.44.208.55/32)
+nbox search edge -o csv --cols kind,display,url                  # CSV of search hits, three columns
 nbox next-ip 10.44.208.0/24 --count 4 --json | jq -r '.available[]'    # next 4 free addresses, one per line
 nbox next-prefix 10.0.0.0/8 --length 26 --json | jq -r '.available[0]' # first free /26
 nbox tags --json | jq -r '.tags[] | "\(.name)\t\(.slug)"'             # tags as name<TAB>slug
