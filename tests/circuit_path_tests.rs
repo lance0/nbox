@@ -184,3 +184,62 @@ async fn circuit_path_dead_ends_gracefully_at_an_unwired_panel() {
     assert_eq!(a.path[0].to, "panel-1 R1");
     assert!(!a.path[0].endpoint);
 }
+
+#[tokio::test]
+async fn circuit_path_handles_the_rear_ports_array_mapping() {
+    // Some instances serialize a front-port's rear pairing as a `rear_ports` array
+    // (`[{rear_port: <id>, position, rear_port_position}]`) with the singular
+    // `rear_port` left null — the walk must follow that form too.
+    let server = MockServer::start().await;
+    mount_circuit(&server, 9, "ACME-3").await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/circuits/circuit-terminations/"))
+        .and(query_param("circuit_id", "9"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![json!({
+            "id": 13, "term_side": "A",
+            "termination": {"id": 1, "display": "DC1", "name": "DC1"},
+            "termination_type": "dcim.site",
+            "cable": {"id": 100, "display": "#100"},
+            "link_peers_type": "dcim.rearport",
+            "link_peers": [
+                {"id": 50, "url": "http://nb/api/dcim/rear-ports/50/", "name": "R1",
+                 "device": {"id": 9, "name": "panel-1"}}
+            ]
+        })])))
+        .mount(&server)
+        .await;
+
+    // Front-port maps to rear 50 via `rear_ports` (singular `rear_port` is null).
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/front-ports/"))
+        .and(query_param("device_id", "9"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![json!({
+            "id": 60, "url": "http://nb/api/dcim/front-ports/60/", "name": "F1",
+            "device": {"id": 9, "name": "panel-1"},
+            "rear_port": null,
+            "rear_ports": [{"position": 1, "rear_port": 50, "rear_port_position": 1}],
+            "cable": {"id": 200, "display": "#200"},
+            "link_peers_type": "dcim.interface",
+            "link_peers": [
+                {"id": 70, "url": "http://nb/api/dcim/interfaces/70/", "name": "et-0/0/3:0",
+                 "device": {"id": 8, "name": "edge-1"}}
+            ]
+        })])))
+        .mount(&server)
+        .await;
+
+    let view = detail::circuit_view_by_ref(&client(&server), "ACME-3", &not_found)
+        .await
+        .unwrap();
+
+    let a = &view.terminations[0];
+    assert_eq!(
+        a.path.len(),
+        2,
+        "rear_ports mapping should resolve: {:?}",
+        a.path
+    );
+    assert_eq!(a.path[1].to, "edge-1 et-0/0/3:0");
+    assert!(a.path[1].endpoint);
+}

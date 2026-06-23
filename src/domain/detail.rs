@@ -433,6 +433,35 @@ async fn panel_onward(client: &NetBoxClient, cur: &NextHop) -> Option<NextHop> {
     }
 }
 
+/// The rear-port ids a front-port maps to. Tolerates both the standard singular
+/// `rear_port` field and the `rear_ports` array form some instances serialize
+/// (`[{rear_port: <id>, rear_port_position, position}]`), where `rear_port` is a
+/// bare id (or, defensively, a nested `{id}`).
+fn front_rear_ids(fp: &serde_json::Value) -> Vec<u64> {
+    let mut ids = Vec::new();
+    if let Some(id) = fp
+        .get("rear_port")
+        .and_then(|r| r.get("id"))
+        .and_then(serde_json::Value::as_u64)
+    {
+        ids.push(id);
+    }
+    if let Some(arr) = fp.get("rear_ports").and_then(serde_json::Value::as_array) {
+        for e in arr {
+            let rp = e.get("rear_port");
+            if let Some(id) = rp.and_then(serde_json::Value::as_u64) {
+                ids.push(id);
+            } else if let Some(id) = rp
+                .and_then(|r| r.get("id"))
+                .and_then(serde_json::Value::as_u64)
+            {
+                ids.push(id);
+            }
+        }
+    }
+    ids
+}
+
 /// Rear → front: find the panel's front-port mapped to this rear-port, then the
 /// stop across that front-port's cable.
 async fn front_for_rear(client: &NetBoxClient, device_id: u64, rear_id: u64) -> Option<NextHop> {
@@ -448,11 +477,7 @@ async fn front_for_rear(client: &NetBoxClient, device_id: u64, rear_id: u64) -> 
         .ok()?;
     let fronts = page.get("results")?.as_array()?;
     for fp in fronts {
-        let rid = fp
-            .get("rear_port")
-            .and_then(|r| r.get("id"))
-            .and_then(serde_json::Value::as_u64);
-        if rid != Some(rear_id) {
+        if !front_rear_ids(fp).contains(&rear_id) {
             continue;
         }
         let cable = fp.get("cable").and_then(cable_label_value);
@@ -474,10 +499,7 @@ async fn rear_for_front(client: &NetBoxClient, front_id: u64) -> Option<NextHop>
         .get(&format!("/api/dcim/front-ports/{front_id}/"), &[])
         .await
         .ok()?;
-    let rear_id = fp
-        .get("rear_port")
-        .and_then(|r| r.get("id"))
-        .and_then(serde_json::Value::as_u64)?;
+    let rear_id = front_rear_ids(&fp).into_iter().next()?;
     let rp: serde_json::Value = client
         .get(&format!("/api/dcim/rear-ports/{rear_id}/"), &[])
         .await
