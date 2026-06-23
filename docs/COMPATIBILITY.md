@@ -1,6 +1,6 @@
 # NetBox Compatibility
 
-nbox targets **NetBox 4.2+** over the REST API and is verified through **4.6** (the
+nbox targets **NetBox 4.2+** over the REST API and is verified through **4.6.2** (the
 current stable). Each release in the 4.2–4.6 range moved an API contract nbox
 depends on; nbox handles the differences at runtime (version probe + schema probe)
 rather than pinning a single version. The table below is the matrix; the behavior is

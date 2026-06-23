@@ -18,7 +18,7 @@ which.
 | IP → prefix → VLAN → scope in one step | ✓ (one command) | ◐ (clicks across pages) | ◐ (several requests, manual joins) | ◐ (several calls, manual joins) |
 | Cross-object-type search in one query | ✓ (ranked, deduped) | ✗ (per-type search pages) | ◐ (one request per endpoint) | ◐ (one call per endpoint) |
 | Prefix utilization + navigable prefix tree | ✓ | ✓ (visual) | ◐ (compute from children) | ◐ (compute from children) |
-| Next free IP / next free prefix | ✓ (`next-ip` / `next-prefix`, computed locally) | ◐ (available-IPs view) | ◐ (available endpoints) | ◐ (available methods) |
+| Next free IP / next free prefix | ✓ (`next-ip` / `next-prefix`, nothing reserved) | ◐ (available-IPs view) | ◐ (available endpoints) | ◐ (available methods) |
 | Works over SSH with no runtime | ✓ (single static binary) | ✗ (needs a browser) | ◐ (only if curl present) | ✗ (needs Python + the package) |
 | Machine output (JSON/CSV) + stable exit codes | ✓ (built in) | ✗ | ◐ (you build it) | ◐ (you build it) |
 | Built-in AI-agent access (MCP) | ✓ (`nbox serve`) | ✗ | ✗ | ✗ |
@@ -30,9 +30,9 @@ Notes:
 
 - nbox is **read-only** today — writes are deferred. For anything that mutates
   NetBox, use the web UI or pynetbox.
-- "Computed locally" for `next-ip` / `next-prefix` means nbox derives free
-  addresses and blocks with the `ipnet` crate from the prefix it reads; nothing
-  is reserved in NetBox.
+- `next-ip` / `next-prefix` query NetBox's available-IPs / available-prefixes
+  endpoints (read-only; nothing is reserved in NetBox); `next-prefix --length L`
+  picks the first fitting block locally with `ipnet`.
 - nbox targets NetBox **4.2+**. REST is canonical; GraphQL is an opt-in
   accelerator for the VRF and route-target views.
 
@@ -87,7 +87,7 @@ Notes:
 nb.dcim.devices.get(name="edge01").primary_ip4.address
 
 # nbox
-nbox device edge01 --json | jq -r '.primary_ip4.address'   # one call, JSON to jq
+nbox device edge01 --json | jq -r '.primary_ip4'   # one call, JSON to jq
 ```
 
 ### What is this IP (address → prefix → VLAN → scope)
@@ -112,7 +112,7 @@ curl -s -H "Authorization: Token $TOKEN" "$NB/api/dcim/devices/?q=edge01"   # re
 
 # nbox: one ranked, deduped query across every searchable type
 nbox search edge01                                         # devices, IPs, prefixes, VLANs, …
-nbox search edge01 -o csv --cols name,site,status          # tabular, for a spreadsheet
+nbox search edge01 -o csv --cols kind,display,url          # tabular, for a spreadsheet
 ```
 
 ### Next free /26 in a prefix
@@ -121,7 +121,7 @@ nbox search edge01 -o csv --cols name,site,status          # tabular, for a spre
 # pynetbox: query the available-prefixes endpoint, then pick a /26
 nb.ipam.prefixes.get(prefix="10.0.0.0/8").available_prefixes.list()   # then filter for a /26
 
-# nbox: computed locally, nothing reserved
+# nbox: read-only, nothing reserved
 nbox next-prefix 10.0.0.0/8 --length 26                    # first free /26 (add --vrf to scope)
 nbox next-ip 10.44.208.0/24 --count 4                      # or the next free addresses
 ```

@@ -23,9 +23,9 @@ Legend: ☐ planned · ◐ in progress · ☑ done
 
 The read surface is broad and stable today (full history in `CHANGELOG.md`):
 
-- **CLI lookups — 19 object types:** `device`, `interface`, `ip`, `prefix`, `vlan`, `site`, `rack`,
-  `circuit`, `provider`, `aggregate`, `asn`, `ip-range`, `tenant`, `contact`, `vm`, `cluster`, plus
-  `search`, `journal`, `tags`, `status`, `open`, `raw GET`. NetBox 4.2+ polymorphic scope + VRF
+- **CLI lookups — 18 object types:** `device`, `interface`, `ip`, `prefix`, `vlan`, `site`, `rack`,
+  `circuit`, `provider`, `aggregate`, `asn`, `ip-range`, `tenant`, `contact`, `vm`, `cluster`, `vrf`,
+  `route-target`, plus `search`, `journal`, `tags`, `status`, `open`, `raw GET`. NetBox 4.2+ polymorphic scope + VRF
   correctness; ambiguous refs exit `5` with the candidate list.
 - **Search:** parallel multi-endpoint fan-out with `--status` / `--site` / `--region` /
   `--site-group` / `--location` / `--tenant` / `--role` / `--tag` / `--vrf` filters (per-endpoint
@@ -36,7 +36,7 @@ The read surface is broad and stable today (full history in `CHANGELOG.md`):
 - **MCP server (`nbox serve`):** stdio **and** HTTP (Streamable HTTP), OAuth 2.1 OIDC resource-server
   mode (RFC 9728 metadata, audit log, per-caller rate limit), 9 read tools + a `nbox://{kind}/{ref}`
   resource template (DESIGN §24; read-only Pattern 3).
-- **TUI:** list/preview split with focus, scrolling + position cues, 11 themes, command palette,
+- **TUI:** list/preview split with focus, scrolling + position cues, 12 themes, command palette,
   fuzzy filter, recents, auto-refresh, device tabs, open-in-browser/copy, profile switcher
   (`P`/`Ctrl+P`), and an in-app **Config modal** (`S`) — profile editor (add/edit/select/delete),
   settings, and **first-run onboarding**.
@@ -75,6 +75,17 @@ Polish the read experience. No writes here.
   as plain text — the tab bar now pins in a fixed band for any tabbed detail and one shared builder renders
   rows everywhere, so the device IP/VLAN, prefix children/addresses, and site/rack device tabs are navigable
   too. Services (`s`) stay text (no detail to open).
+- ☑ **Server-side browse filter (Nav rail).** From the Nav rail, `/` on a name-bearing kind
+  (devices/racks/sites/VLANs/VRFs/route-targets) filters that list **server-side** by name (`name__ic`)
+  instead of opening global search — explicit (Enter to apply, not live typeahead), so it doesn't hammer
+  NetBox while typing. The pane title shows the active filter + count (`Devices · name contains "bfr" · 52`),
+  `500+` signals the browse cap; `Esc` clears (Normal) / cancels the edit (BrowseFilter), `Ctrl+X`/empty-
+  Enter clear while editing. Prefix, aggregate, and IP-address keep `/` as global search — their key field
+  is a CIDR/inet column with no NetBox `__ic` lookup (an unknown filter param is silently ignored, so a name
+  filter there would match the whole table while looking applied).
+  - ☐ **CIDR-containment filter for prefix/IP browse.** The planned follow-up for the CIDR/inet-keyed
+    kinds: filter those browses by `within_include`/`parent` (network containment) so `/` narrows a prefix/IP
+    list by network instead of falling back to global search.
 - ☐ **Demo recording** — an asciinema/VHS cast for the README.
 - ☐ **Interface journal.** Surface an interface's journal entries (operator notes) like the other
   kinds now that the interface is a first-class TUI detail. Needs an `interface` entry in the journal /
@@ -155,6 +166,15 @@ Polish the read experience. No writes here.
   now render their selection cursor (also un-breaking the device IP/VLAN, prefix children, site/rack tabs);
   Nav-rail counts abbreviated + the rail widened so large instances don't clip; `nbox raw GET` accepts a path
   with or without `/api/` and rejects absolute URLs. Shipped to crates.io / Homebrew tap / GHCR.
+- ☑ **Release `0.10.0`** — **circuit terminations + A↔Z path.** `nbox circuit <cid>` resolves the
+  circuit's A/Z terminations and renders the path (walking through patch panels to the far device, since
+  NetBox exposes no `/trace/` for circuit terminations) as a vertical A↔Z diagram; the TUI circuit detail
+  gains a `p` path tab + navigable links to the provider/sites/devices along the path; `-o json` / MCP
+  `nbox_get` / `nbox://circuit/{ref}` carry a structured `terminations` array (each hop's `path` includes a
+  `device` ref + the rendered `diagram` lines). Also `nbox profile remove <name>` (refuses the active/only
+  profile), a first-run onboarding redesign (URL-led three-field screen, profile name derived from the URL
+  host), and a `--no-tui` setup-hint fix (the URL is a positional, not `--url`). Shipped to crates.io /
+  Homebrew tap / GHCR.
 
 ---
 

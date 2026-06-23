@@ -177,11 +177,11 @@ a ≤120 s clock-skew leeway). The 9 read-only tools require the `nbox:read` sco
 JWKS is cached by `kid` (an unknown `kid` triggers a single rate-limited refresh,
 then rejects; a transient JWKS outage keeps serving from the cache).
 
-Failures use the standard challenges: a missing/invalid/expired token → `401`
-with `WWW-Authenticate: Bearer resource_metadata="…", error="invalid_token"`; an
-authenticated request lacking the scope → `403` with
-`WWW-Authenticate: Bearer error="insufficient_scope", scope="nbox:read"`. The
-token is never logged or echoed in an error.
+Failures use the standard challenges: a missing token → `401` with a bare
+`WWW-Authenticate: Bearer resource_metadata="…"`; an invalid/expired token →
+`401` with `… error="invalid_token"`; an authenticated request lacking the
+scope → `403` with `WWW-Authenticate: Bearer error="insufficient_scope",
+scope="nbox:read"`. The token is never logged or echoed in an error.
 
 ```toml
 [serve]
@@ -324,7 +324,7 @@ All tools are annotated read-only.
 | Tool | Purpose |
 | ---- | ------- |
 | `nbox_status` | Connection target, per-surface `api` routing (configured vs effective backend), capabilities, and NetBox/Django/Python versions. Call first to confirm reachability and inspect the `api`/`capabilities` objects. |
-| `nbox_search` | Free-text search across devices, sites, IPs, prefixes, VLANs, circuits, aggregates, ASNs, IP ranges, tenants, contacts, providers, virtual machines, clusters, VRFs, and route targets. Optional `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, and `vrf` filters (`vrf` filters IP/prefix results only; only one scope filter at a time). Use it to find an object's exact reference. |
+| `nbox_search` | Free-text search across devices, sites, racks, IPs, prefixes, VLANs, circuits, aggregates, ASNs, IP ranges, tenants, contacts, providers, virtual machines, clusters, VRFs, and route targets. Optional `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, and `vrf` filters (`vrf` filters IP/prefix results only; only one scope filter at a time). Use it to find an object's exact reference. |
 | `nbox_get` | Fetch one object by `kind` + `ref`. An ambiguous `ref` returns a candidate list; pass `vrf` (ip/prefix) or `site`/`group` (vlan) to disambiguate. |
 | `nbox_get_interface` | One interface on a device: its config, assigned addresses, and cable-path trace. |
 | `nbox_next_ip` | Next available address(es) within a prefix. `count`, `vrf`. Nothing is reserved. |

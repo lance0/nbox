@@ -124,7 +124,7 @@ MCP prompts are later. See `docs/MCP.md`.
   prints the token).
   Select a profile with `--profile <name>` or set the active one.
 - Backends: REST is canonical. GraphQL is an opt-in per-surface accelerator set
-  under `[profiles.<name>.api]` (`vrf` = `rest`|`graphql`; missing = REST). nbox
+  under `[profiles.<name>.api]` (`vrf`/`route_target` = `rest`|`graphql`; missing = REST). nbox
   probes `/graphql/`, adapts to NetBox 4.2/4.3/4.5+ filter/pagination shapes, and
   falls back to REST (with the reason in `nbox status`) when a surface isn't
   supported. The output shape is identical either way. **Search is always REST** —

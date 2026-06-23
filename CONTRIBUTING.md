@@ -95,7 +95,7 @@ split: the wire layer (`netbox/`) stays separate from the view models
 - `src/output/` — plain / JSON / CSV rendering
 - `src/tui/` — ratatui app (pure `handle_event`, spawned network commands)
 - `src/config.rs`, `src/error.rs`, `src/cli.rs`, `src/lib.rs`
-- `src/cache.rs` — the in-memory read cache; `src/mcp/` — the MCP server
+- `src/cache/` — the in-memory read cache; `src/mcp/` — the MCP server
 
 ### Adding a new object lookup
 

@@ -6,7 +6,7 @@ nbox is a read-only NetBox client — a CLI and a TUI over the same core.
 
 | Command | What |
 | ------- | ---- |
-| `nbox search <q>` | Parallel search across devices/sites/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers/VMs/clusters/VRFs/route-targets. Filters: `--status/--site/--region/--site-group/--location/--tenant/--role/--tag/--vrf`, `--limit`, `--cols`, `--partial`. |
+| `nbox search <q>` | Parallel search across devices/sites/racks/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers/VMs/clusters/VRFs/route-targets. Filters: `--status/--site/--region/--site-group/--location/--tenant/--role/--tag/--vrf`, `--limit`, `--cols`, `--partial`. |
 | `nbox device <name\|slug\|id> [--journal]` | Device + interfaces, IPs, cables, VLANs, services. |
 | `nbox interface <device> <iface>` | One interface: type, MTU, MAC, mode, VLANs, cable, **cable path** (an A↔Z trace diagram naming the device at each end), addresses. |
 | `nbox ip <addr> [--vrf] [--journal]` | IP + most-specific parent prefix (VRF-scoped) and its VLAN plus the prefix's `scope`/`scope_type` (site, location, region, …). |
@@ -23,7 +23,7 @@ nbox is a read-only NetBox client — a CLI and a TUI over the same core.
 | `nbox vrf <name\|rd\|id>` | VRF as a routing context: summary (RD, tenant, enforce-unique, import/export route targets, counts) plus its prefix tree and scoped addresses. |
 | `nbox route-target <name\|id>` | Route target (e.g. 65000:100): tenant/description plus the VRFs that import and export it (navigable). |
 | `nbox tags` | List tags. |
-| `nbox journal <kind> <ref>` | Recent journal entries for an object. Kinds: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, route-target. `--journal` on a detail lookup folds the most recent entries inline (default 5); `--journal-limit <N>` overrides the cap and implies `--journal`. (`tenant`/`contact`/`provider`/`vm`/`cluster`/`vrf` have no inline `--journal` flag — use `nbox journal`.) |
+| `nbox journal <kind> <ref>` | Recent journal entries for an object. Kinds: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, route-target. `--journal` on a detail lookup folds the most recent entries inline (default 5); `--journal-limit <N>` overrides the cap and implies `--journal`. (`tenant`/`contact`/`provider`/`vm`/`cluster`/`vrf`/`route-target` have no inline `--journal` flag — use `nbox journal`.) |
 | `nbox status` | Connection + per-surface `api` routing (configured/effective) + capabilities + NetBox/Django/Python versions. |
 | `nbox open <kind>/<ref>` | Open an object in the browser. Kinds: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, route-target, and `interface/<device>/<name>` (the interface name may contain slashes, e.g. `xe-0/0/1`). |
 | `nbox raw GET <path>` | Raw read-only API request (escape hatch). |
@@ -88,9 +88,13 @@ See [AGENTS.md](../AGENTS.md) for the machine-readable surface and exit codes.
 `nbox` (no subcommand) launches the TUI — a three-pane home (a navigation rail of
 browsable kinds → results → a live detail preview):
 
-- `/` search, `:` command palette, `f`/`F` filter / clear, `Tab`/`Shift+Tab` move
-  between panes (or cycle detail tabs), `j`/`k` move (live-browse the kind while on
-  the nav rail), `g`/`G` top/bottom, `Enter` open.
+- `/` search — or, on a name-bearing browse kind (devices, sites, racks, VLANs,
+  VRFs, route-targets), a server-side substring filter (`name__ic`) on
+  that list; prefix/IP browse route `/` to search (NetBox has no CIDR/inet
+  substring lookup — containment filtering is planned), `:` command palette,
+  `f`/`F` filter / clear, `Tab`/`Shift+Tab` move between panes (or cycle detail
+  tabs), `j`/`k` move (live-browse the kind while on the nav rail), `g`/`G`
+  top/bottom, `Enter` open.
 - `o` open in browser, `y` copy, `R` related objects (jump between connected
   objects), navigable device tabs `i`/`p`/`c`/`v`/`s` (`j`/`k` + `Enter` opens a
   row — interfaces/cables open the interface detail, which has a cable-path A↔Z

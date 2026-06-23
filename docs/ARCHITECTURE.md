@@ -40,7 +40,7 @@ TUI, so output is consistent across both.
 - **`error.rs`** — `NboxError` with stable exit codes (see below).
 - **`config.rs`** — typed config, profiles, token resolution, format-preserving
   writes (`toml_edit`).
-- **`cache.rs`** — a small, bounded, in-memory per-profile read cache (one short
+- **`cache/`** — a small, bounded, in-memory per-profile read cache (one short
   TTL, clamped 5–300s) so a burst of identical reads (TUI back-navigation, a
   chatty agent) doesn't re-hit NetBox; re-keyed/cleared on profile switch.
 - **`mcp/`** — the read-only MCP server (`nbox serve`): stdio plus a loopback
