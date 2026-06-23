@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::ApiSurface;
 use crate::domain::aggregate_view::AggregateView;
 use crate::domain::asn_view::AsnView;
-use crate::domain::circuit_view::{CircuitView, PathHop, ResolvedTermination};
+use crate::domain::circuit_view::{CircuitView, DeviceRef, PathHop, ResolvedTermination};
 use crate::domain::cluster_view::ClusterView;
 use crate::domain::contact_view::ContactView;
 use crate::domain::device_detail::{CableRow, DeviceDetail, IfaceRow, IpRow, VlanRow};
@@ -371,7 +371,7 @@ fn port_kind(url: Option<&str>) -> PortKind {
 struct NextHop {
     url: Option<String>,
     to: String,
-    device: Option<BriefObject>,
+    device: Option<DeviceRef>,
     id: u64,
     kind: PortKind,
     cable: Option<String>,
@@ -391,7 +391,7 @@ async fn resolve_termination_path(client: &NetBoxClient, t: &CircuitTermination)
     let mut cur = NextHop {
         url: peer.url.clone(),
         to: peer.endpoint_label(),
-        device: peer.device.as_deref().cloned(),
+        device: peer.device.as_deref().map(DeviceRef::from_brief),
         id: peer.id,
         kind: port_kind(peer.url.as_deref()),
         // The first cable crossed is the termination's own.
@@ -533,11 +533,9 @@ fn next_hop_from_peer(peer: &serde_json::Value, cable: Option<String>) -> Option
         .and_then(|v| v.as_str())
         .unwrap_or("")
         .to_string();
-    let device = peer
-        .get("device")
-        .and_then(|d| serde_json::from_value::<BriefObject>(d.clone()).ok());
+    let device = peer.get("device").and_then(device_ref_from_value);
     let to = match &device {
-        Some(d) => format!("{} {port}", d.name_label()),
+        Some(d) => format!("{} {port}", d.name),
         None => port,
     };
     Some(NextHop {
@@ -548,6 +546,18 @@ fn next_hop_from_peer(peer: &serde_json::Value, cable: Option<String>) -> Option
         id,
         cable,
     })
+}
+
+/// A [`DeviceRef`] from a port's nested `device` JSON object (id + bare name).
+fn device_ref_from_value(d: &serde_json::Value) -> Option<DeviceRef> {
+    let id = d.get("id").and_then(serde_json::Value::as_u64)?;
+    let name = d
+        .get("name")
+        .or_else(|| d.get("display"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    Some(DeviceRef { id, name })
 }
 
 /// A cable's label from a JSON object: its display/label, else NetBox's `#<id>`.
@@ -598,7 +608,7 @@ fn circuit_links(c: &Circuit, terminations: &[ResolvedTermination]) -> Vec<Objec
                     kind: ObjectKind::Device,
                     id: dev.id,
                     relation: format!("{side}-side device"),
-                    label: dev.name_label(),
+                    label: dev.name.clone(),
                 });
             }
         }
@@ -2283,8 +2293,6 @@ mod tests {
             "termination_type": "circuits.providernetwork"
         }))
         .unwrap();
-        let panel: BriefObject =
-            serde_json::from_value(json!({"id": 9, "name": "panel-1"})).unwrap();
         let resolved = vec![
             ResolvedTermination {
                 termination: term_a,
@@ -2292,7 +2300,10 @@ mod tests {
                     to: "panel-1 7".to_string(),
                     cable: Some("#100".to_string()),
                     endpoint: false,
-                    device: Some(panel),
+                    device: Some(DeviceRef {
+                        id: 9,
+                        name: "panel-1".to_string(),
+                    }),
                 }],
             },
             ResolvedTermination {

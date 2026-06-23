@@ -13,6 +13,24 @@ use crate::netbox::models::circuits::{Circuit, CircuitTermination};
 use crate::netbox::models::common::BriefObject;
 use crate::output::plain::KeyValues;
 
+/// A minimal device reference, so a consumer (agent) can navigate to the device
+/// along a path — `nbox_get kind=device ref=<id|name>`.
+#[derive(Debug, Clone, Serialize)]
+pub struct DeviceRef {
+    pub id: u64,
+    pub name: String,
+}
+
+impl DeviceRef {
+    /// Build from a related-object brief, preferring the stable `name`.
+    pub fn from_brief(b: &BriefObject) -> Self {
+        Self {
+            id: b.id,
+            name: b.name_label(),
+        }
+    }
+}
+
 /// One cabled hop along a termination's path: what it reaches and over which
 /// cable. A patch panel shows up as a non-endpoint hop; the final device
 /// interface (when the chain resolves to one) is the endpoint.
@@ -25,9 +43,10 @@ pub struct PathHop {
     pub cable: Option<String>,
     /// True when this hop is a device interface — the resolved far endpoint.
     pub endpoint: bool,
-    /// The device at this hop, for building a navigable link (not serialized).
-    #[serde(skip)]
-    pub device: Option<BriefObject>,
+    /// The device at this hop — `{id, name}` — so a consumer can jump straight to
+    /// it (`nbox_get kind=device`). Also drives the TUI's related-object links.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub device: Option<DeviceRef>,
 }
 
 /// A circuit termination plus its resolved cable path (built by the walker in
@@ -106,10 +125,11 @@ pub struct CircuitView {
     /// The A/Z terminations (A first), each with its endpoint + resolved path.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub terminations: Vec<CircuitTerminationView>,
-    /// The circuit path as a multi-line ASCII A↔Z diagram. Not serialized — it's a
-    /// rendering for the plain/TUI surfaces, while the structured `terminations`
-    /// (each with its `path`) remain the machine-readable form.
-    #[serde(skip)]
+    /// The circuit path as a multi-line ASCII A↔Z diagram. Serialized too (skip
+    /// when empty) so an agent or script can render the path verbatim for a user;
+    /// the structured `terminations` (each with its `path`) remain the
+    /// machine-readable form for navigation.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub diagram: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
@@ -481,6 +501,53 @@ mod tests {
         let plain = view.to_plain();
         assert!(plain.contains("Circuit Path"));
         assert!(plain.contains("↳ edge-1 xe-0/0/0  ·  #200"));
+    }
+
+    #[test]
+    fn serializes_device_refs_and_the_diagram() {
+        let c = circuit(json!({
+            "id": 1, "url": "u", "cid": "ACME-1",
+            "type": {"id": 2, "display": "Wave"},
+            "status": {"value": "active", "label": "Active"},
+            "commit_rate": 10_000_000
+        }));
+        let term_a = termination(json!({
+            "id": 1, "term_side": "A",
+            "termination": {"id": 1, "display": "DC1", "name": "DC1"},
+            "termination_type": "dcim.site"
+        }));
+        let term_z = termination(json!({
+            "id": 2, "term_side": "Z",
+            "termination": {"id": 2, "display": "ACME Cloud"},
+            "termination_type": "circuits.providernetwork"
+        }));
+        let resolved = vec![
+            ResolvedTermination {
+                termination: term_a,
+                path: vec![PathHop {
+                    to: "edge-1 xe-0/0/0".to_string(),
+                    cable: Some("#200".to_string()),
+                    endpoint: true,
+                    device: Some(DeviceRef {
+                        id: 8,
+                        name: "edge-1".to_string(),
+                    }),
+                }],
+            },
+            ResolvedTermination {
+                termination: term_z,
+                path: Vec::new(),
+            },
+        ];
+        let v = serde_json::to_value(CircuitView::build(c, resolved)).unwrap();
+        // The device ref is serialized so an agent can navigate to it.
+        assert_eq!(v["terminations"][0]["path"][0]["device"]["id"], 8);
+        assert_eq!(v["terminations"][0]["path"][0]["device"]["name"], "edge-1");
+        // The rendered diagram is serialized too (a non-empty array of lines).
+        assert!(
+            v["diagram"].as_array().is_some_and(|a| !a.is_empty()),
+            "diagram should serialize: {v}"
+        );
     }
 
     #[test]

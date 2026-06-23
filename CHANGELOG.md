@@ -17,10 +17,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   interface cable-path view); the A and Z sides are walked concurrently, and a hop
   that can't continue (e.g. an unwired panel) stops cleanly rather than guessing.
   The TUI circuit detail gains a **`p` path tab** and navigable links to the
-  provider, the sites, and every device along the path; `-o json` carries a
-  structured `terminations` array (each with its `path`). Previously a circuit
-  showed only flat attributes (provider/type/status/rate) with no indication of
-  where it landed. Commit/port rates are humanized (e.g. `400 Gbps`).
+  provider, the sites, and every device along the path. `-o json` (and the MCP
+  `nbox_get` / `nbox://circuit/{ref}` resource) carries a structured `terminations`
+  array — each hop in its `path` includes a `device` ref (`{id, name}`) so an agent
+  can jump straight to the device — plus the rendered `diagram` lines so an agent
+  or script can show the A↔Z art verbatim. Previously a circuit showed only flat
+  attributes (provider/type/status/rate) with no indication of where it landed.
+  Commit/port rates are humanized (e.g. `400 Gbps`).
 - **`nbox profile remove <name>`** deletes a profile from the config
   (format-preserving). It refuses to remove the active profile (switch with `nbox
   profile use <other>` first) or the only profile, mirroring the TUI's delete

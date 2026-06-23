@@ -123,6 +123,9 @@ async fn circuit_path_walks_through_a_wired_panel_to_the_device() {
         a.path[0].endpoint,
         "the router interface is the resolved endpoint"
     );
+    // The hop carries a navigable device ref ({id, name}).
+    let dev = a.path[0].device.as_ref().expect("device ref");
+    assert_eq!((dev.id, dev.name.as_str()), (8, "edge-1"));
     assert_eq!(a.path[1].to, "panel-1 R1");
     assert_eq!(a.path[1].cable.as_deref(), Some("#100"));
     assert!(!a.path[1].endpoint);
