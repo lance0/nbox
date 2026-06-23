@@ -1426,6 +1426,9 @@ impl App {
             KeyCode::Esc => {
                 if self.browse_filter.is_some() {
                     // Peel the active browse filter first (back to the full list).
+                    if self.fence_during_switch() {
+                        return Vec::new();
+                    }
                     self.browse_filter = None;
                     self.filter_input.reset();
                     return self.rebrowse_current();
@@ -2542,6 +2545,9 @@ impl App {
             KeyCode::Esc => self.mode = Mode::Normal,
             KeyCode::Char('x') if ctrl => {
                 self.mode = Mode::Normal;
+                if self.fence_during_switch() {
+                    return Vec::new();
+                }
                 self.browse_filter = None;
                 self.filter_input.reset();
                 return self.rebrowse_current();
@@ -2880,6 +2886,8 @@ impl App {
         self.request_seq += 1;
         self.search_gen = self.request_seq;
         self.browse_kind = None;
+        self.browse_filter = None;
+        self.filter_input.reset();
         self.results.clear();
         self.view.clear();
         self.selected = 0;
@@ -3359,12 +3367,17 @@ impl App {
         self.request_seq += 1;
         self.search_gen = self.request_seq;
         self.detail_gen = self.request_seq;
+        // Browse too, or a `BrowseComplete` from the old instance could repopulate
+        // results with stale data after the switch.
+        self.browse_gen = self.request_seq;
 
         self.results.clear();
         self.view.clear();
         self.recent.clear();
         self.selected = 0;
         self.browse_kind = None;
+        self.browse_filter = None;
+        self.filter_input.reset();
         // Land on a clean results pane: cancel any pending auto-browse and re-anchor
         // the nav tick so the switch can't trip a spurious browse on the new instance.
         self.browse_dirty = false;

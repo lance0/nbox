@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`name__ic` for devices/racks/sites/VLANs/VRFs/route-targets, `prefix__ic` for
   prefixes, `address__ic` for IPs). The pane title shows the active filter and count
   (`Devices · name contains "bfr" · 52`), `500+` signals the result cap (refine to
-  narrow), `Esc` clears the filter, and `Ctrl+X` / an empty Enter also clear it.
+  narrow). `Esc` on the list clears the active filter (while editing, it cancels the
+  edit and keeps the filter); `Ctrl+X` or an empty Enter also clear it.
   This makes large instances usable — finding one of hundreds of thousands of
   devices by name instead of scrolling a capped list.
 

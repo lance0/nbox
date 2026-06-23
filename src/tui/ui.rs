@@ -880,10 +880,20 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
         // `Devices · name contains "zzz" · 0`) and show an empty-state note rather
         // than dropping to the recents fallback, which would hide what was asked.
         if app.view.is_empty() {
-            let note = match app.browse_kind {
-                Some(kind) => format!("No matching {}.", browse_label(kind).to_lowercase()),
-                None => "No results.".to_string(),
-            };
+            // Reached only on an active browse (the outer guard requires it when the
+            // view is empty), so `browse_kind` is always `Some` here. "No matching X"
+            // when a filter is in play; plain "No X" for an empty unfiltered kind.
+            let note = app.browse_kind.map_or_else(
+                || "No results.".to_string(),
+                |kind| {
+                    let label = browse_label(kind).to_lowercase();
+                    if app.browse_filter.is_some() {
+                        format!("No matching {label}.")
+                    } else {
+                        format!("No {label}.")
+                    }
+                },
+            );
             let body = Paragraph::new(note)
                 .style(Style::default().fg(theme.text_dim))
                 .block(block);
@@ -1194,7 +1204,7 @@ pub fn help_bindings() -> Vec<Vec<(&'static str, &'static str)>> {
     vec![
         // Navigation / search.
         vec![
-            ("/", "search"),
+            ("/", "search / filter list"),
             (":", "command palette"),
             ("f / F", "filter / clear"),
             ("Tab / S-Tab", "switch pane / detail tabs"),

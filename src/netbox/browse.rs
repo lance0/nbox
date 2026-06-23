@@ -26,6 +26,10 @@ pub const BROWSE_CAP: usize = 500;
 /// `prefix__ic`/`address__ic`/`cid__ic` for the address-keyed kinds). `None` for
 /// kinds with no natural substring filter (ASN, IP range) — there the filter is a
 /// no-op. Exposed so the TUI can tell whether the active browse kind is filterable.
+///
+/// Maps more kinds than [`browse`] currently lists (VM/cluster/provider/tenant/…):
+/// forward-looking, so the field is ready if those become browsable. Today
+/// `browse_kind` is always one of the Nav-rail kinds, so those arms are inert.
 #[must_use]
 pub fn browse_filter_field(kind: ObjectKind) -> Option<&'static str> {
     match kind {
