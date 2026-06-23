@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-06-23
+
 ### Added
 
 - **Browse filter (grep-style).** When browsing a name-bearing kind from the Nav

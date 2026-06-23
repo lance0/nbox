@@ -175,6 +175,12 @@ Polish the read experience. No writes here.
   profile), a first-run onboarding redesign (URL-led three-field screen, profile name derived from the URL
   host), and a `--no-tui` setup-hint fix (the URL is a positional, not `--url`). Shipped to crates.io /
   Homebrew tap / GHCR.
+- ☑ **Release `0.11.0`** — **server-side browse filter.** From the Nav rail, `/` on a name-bearing kind
+  (devices/racks/sites/VLANs/VRFs/route-targets, circuits by `cid`) filters that list server-side by name
+  (`name__ic`/`cid__ic`) instead of opening global search — explicit (Enter to apply), with a filter+count
+  pane title; prefix/IP keep `/` as global search (CIDR/inet columns have no `__ic` lookup, so a name filter
+  there would silently match the whole table). The Nav-rail browse cap was raised 500 → 1000 (still one
+  round trip — NetBox's per-request ceiling). Shipped to crates.io / Homebrew tap / GHCR.
 
 ---
 
