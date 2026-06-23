@@ -195,6 +195,7 @@ nbox profile add work https://netbox.example.com --token-env NETBOX_TOKEN
 nbox profile use work
 nbox profile list
 nbox profile show [name]
+nbox profile remove <name>   # can't remove the active or only profile
 ```
 
 Pick a profile per-invocation with `--profile <name>`, or point at an alternate

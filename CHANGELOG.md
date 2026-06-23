@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`nbox profile remove <name>`** deletes a profile from the config
+  (format-preserving). It refuses to remove the active profile (switch with `nbox
+  profile use <other>` first) or the only profile, mirroring the TUI's delete
+  guards — so you can drop a stray profile (e.g. one left by the onboarding
+  wizard) without hand-editing the file.
+
+### Fixed
+
+- The `--no-tui` first-run setup hint printed the wrong `profile add` syntax
+  (`--url <url>`); the URL is a positional argument. The hint now matches the CLI
+  and the docs: `nbox profile add <name> <url> [--token-env <VAR>]`.
+
 ## [0.9.0] - 2026-06-22
 
 ### Added

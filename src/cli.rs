@@ -533,6 +533,11 @@ pub enum ProfileCommand {
         /// Profile name.
         name: String,
     },
+    /// Remove a profile.
+    Remove {
+        /// Profile name.
+        name: String,
+    },
     /// List configured profiles.
     List,
     /// Show a profile (defaults to the active one).
