@@ -19,7 +19,10 @@ use crate::util::format::api_to_web_url;
 
 /// Upper bound on rows pulled for a single browse (keeps a large instance from
 /// dragging the whole table into memory; search is the tool for finding a needle).
-pub const BROWSE_CAP: usize = 500;
+/// Sized to NetBox's per-request `MAX_PAGE_SIZE` ceiling (1000) so a cap-full
+/// browse lands in a single round trip — go higher and `list_all` pages a second
+/// request for the remainder.
+pub const BROWSE_CAP: usize = 1000;
 
 /// The query field a browse `filter` maps to for `kind` — a case-insensitive
 /// `contains` (`__ic`) lookup on the kind's name field (`name__ic` for the
@@ -333,5 +336,47 @@ mod tests {
         .expect("filtered browse");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].display, "bfr-core-01");
+    }
+
+    #[tokio::test]
+    async fn cap_sized_browse_is_one_round_trip() {
+        // Locks the cap + perf invariant together: a browse at the cap is a single
+        // request sized to the cap, not `ceil(cap / page_size)` sequential small
+        // pages. The `limit` matcher is the regression catcher — if `list_all` ever
+        // stops growing the page to `max`, the request falls back to `limit=100`
+        // (the default page size) and this mock won't match. Assumes `BROWSE_CAP`
+        // stays ≤ NetBox's `MAX_PAGE_SIZE` (1000), so a cap-full browse fits one
+        // page — see the `BROWSE_CAP` doc comment.
+        let server = MockServer::start().await;
+        let n = BROWSE_CAP;
+        let rows: Vec<serde_json::Value> = (0..n)
+            .map(|i| {
+                json!({
+                    "id": i,
+                    "url": format!("http://nb/api/dcim/sites/{}/", i),
+                    "name": format!("site{i}"),
+                    "slug": format!("site{i}"),
+                })
+            })
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/sites/"))
+            .and(query_param("limit", n.to_string()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": n, "next": null, "previous": null, "results": rows
+            })))
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let results = browse(&client_for(&server), ObjectKind::Site, n, None)
+            .await
+            .expect("cap-sized browse");
+        assert_eq!(results.len(), n);
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            1,
+            "a cap-full browse is a single round trip"
+        );
     }
 }

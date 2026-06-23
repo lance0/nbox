@@ -79,7 +79,7 @@ Polish the read experience. No writes here.
   (devices/racks/sites/VLANs/VRFs/route-targets) filters that list **server-side** by name (`name__ic`)
   instead of opening global search — explicit (Enter to apply, not live typeahead), so it doesn't hammer
   NetBox while typing. The pane title shows the active filter + count (`Devices · name contains "bfr" · 52`),
-  `500+` signals the browse cap; `Esc` clears (Normal) / cancels the edit (BrowseFilter), `Ctrl+X`/empty-
+  `1000+` signals the browse cap; `Esc` clears (Normal) / cancels the edit (BrowseFilter), `Ctrl+X`/empty-
   Enter clear while editing. Prefix, aggregate, and IP-address keep `/` as global search — their key field
   is a CIDR/inet column with no NetBox `__ic` lookup (an unknown filter param is silently ignored, so a name
   filter there would match the whole table while looking applied).
@@ -596,7 +596,7 @@ A batch of proposed perf wins, each verified against the code. Net: one quick wi
   filters need the resolved ids (`site_id`/`vrf_id`/scope content-type), so it can't start blind; a
   cancellation token doesn't help when the input is the missing value.
 - ☐ **TUI render dirty-flag (idle-CPU win, medium).** The event loop `terminal.draw`s on every event, and
-  the 180ms `PreviewTick` always arrives → a full widget rebuild ≥5.5 Hz even when idle (500-row `Vec<Row>`
+  the 180ms `PreviewTick` always arrives → a full widget rebuild ≥5.5 Hz even when idle (1000-row `Vec<Row>`
   clones + `format!`). ratatui diffs the *buffer* (I/O minimal) but not the Rust-side rebuild. A render-dirty
   flag would skip the redraw when nothing changed — a battery/SSH win, not latency. CARE: the tick also
   advances the spinner, status-TTL expiry, and the browse/preview debounce flush, so the flag must key on

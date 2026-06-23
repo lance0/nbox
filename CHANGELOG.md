@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Explicit (not live), so it doesn't hammer NetBox while you type. Uses the kind's
   case-insensitive name lookup (`name__ic` for devices/racks/sites/VLANs/VRFs/
   route-targets, `cid__ic` for circuits). The pane title shows the active filter and
-  count (`Devices · name contains "bfr" · 52`), `500+` signals the result cap (refine
+  count (`Devices · name contains "bfr" · 52`), `1000+` signals the result cap (refine
   to narrow). `Esc` on the list clears the active filter; while editing, `Esc`
   instead cancels the edit (keeping the filter), and `Ctrl+X` or an empty Enter
   clear it.
@@ -24,6 +24,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   keep `/` as global search: their key field is a CIDR/inet column with no NetBox
   substring lookup, so a name-style filter there would silently match nothing it
   claimed to (CIDR-containment filtering for those kinds is planned separately).
+
+### Changed
+
+- **Browse cap raised 500 → 1000.** A Nav-rail browse now pulls up to 1000 rows
+  (was 500). A cap-full list stays a single round trip — 1000 is NetBox's
+  per-request ceiling, so `list_all` sizes one page to it; the filter narrows
+  past the cap. The list-count badge reads `1000+` when capped.
 
 ## [0.10.0] - 2026-06-23
 

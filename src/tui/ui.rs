@@ -845,7 +845,7 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
     if !app.view.is_empty() || active_browse {
         let title = match app.browse_kind {
             Some(kind) => {
-                // `500+` when the list hit the browse cap — a built-in "refine the
+                // `<cap>+` when the list hit the browse cap — a built-in "refine the
                 // filter" cue; an exact count otherwise.
                 let n = app.view.len();
                 let count = if n >= crate::netbox::browse::BROWSE_CAP {
