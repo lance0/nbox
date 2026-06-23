@@ -15,6 +15,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   guards — so you can drop a stray profile (e.g. one left by the onboarding
   wizard) without hand-editing the file.
 
+### Changed
+
+- **First-run onboarding wizard redesign.** The wizard now leads with the URL and
+  shows a simple three-field screen (url / name / token); the niche knobs
+  (`token_env`, `auth_scheme`, `verify_tls`) tuck behind a `Ctrl+A` "advanced"
+  toggle. The profile **name is no longer hardcoded to `default`** — it's derived
+  from the URL host (`https://netbox.acme.com` → `acme`, falling back to `prod`
+  for an IP/empty host), shown live as a placeholder and committed on save unless
+  you type your own. This stops the wizard from planting a stray `default` profile
+  that duplicates one you add later.
+
 ### Fixed
 
 - The `--no-tui` first-run setup hint printed the wrong `profile add` syntax

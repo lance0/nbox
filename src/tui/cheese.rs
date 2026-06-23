@@ -238,6 +238,13 @@ impl TextInput {
         self.state.end();
     }
 
+    /// Replace the placeholder shown when the field is empty. Used by the
+    /// onboarding wizard to surface a live, URL-derived name suggestion that
+    /// updates as the user types the URL. PURE: no I/O.
+    pub fn set_placeholder(&mut self, placeholder: impl Into<String>) {
+        self.placeholder = placeholder.into();
+    }
+
     /// The cursor position (in chars from the start), for placing the terminal
     /// cursor on a focused field.
     pub fn cursor_pos(&self) -> usize {
@@ -337,6 +344,40 @@ impl TextInput {
         self.cursor_position(area, &sigil)
     }
 
+    /// Render just the field's value (no sigil/prompt) into `area`, returning the
+    /// terminal cursor cell when `focused`. The label-less counterpart to
+    /// [`render_with_focus`](Self::render_with_focus): a caller laying fields out
+    /// individually (the onboarding wizard, which reorders/hides fields) draws the
+    /// label itself, then this paints the value cell after it. Mirrors the per-row
+    /// widget setup in [`FormInput::render`] (empty prompt, placeholder, masking)
+    /// so a field renders identically whichever path draws it.
+    pub fn render_value(
+        &mut self,
+        frame: &mut Frame,
+        area: Rect,
+        theme: &Theme,
+        focused: bool,
+    ) -> Option<Position> {
+        self.state.set_focused(focused);
+        let palette = cheese_palette(theme);
+        let widget = Input::new("")
+            .prompt("")
+            .placeholder(&self.placeholder)
+            .password_mode(self.masked)
+            .password_char(MASK_CHAR)
+            .palette(&palette);
+        frame.render_stateful_widget(widget, area, &mut self.state);
+        if focused {
+            let x = area
+                .x
+                .saturating_add(self.cursor_display_col())
+                .min(area.right().saturating_sub(1));
+            Some(Position::new(x, area.y))
+        } else {
+            None
+        }
+    }
+
     /// Compute the terminal cursor cell, mirroring cheese's render math: the
     /// prompt (`sigil` + a trailing space) sits at `area.x`, the text starts
     /// after it, and the cursor sits `cursor_pos` display columns into the text.
@@ -417,6 +458,16 @@ impl FormInput {
         if !self.fields.is_empty() {
             let len = self.fields.len();
             self.focus = (self.focus + len - 1) % len;
+        }
+    }
+
+    /// Focus the field at `idx` directly (clamped to range). The onboarding wizard
+    /// uses this to traverse a *subset* of fields in a custom order — Tab there
+    /// walks the visible fields (which omit the hidden/advanced ones), not the raw
+    /// `0..len` sequence [`focus_next`](Self::focus_next) follows.
+    pub fn set_focus(&mut self, idx: usize) {
+        if !self.fields.is_empty() {
+            self.focus = idx.min(self.fields.len() - 1);
         }
     }
 
