@@ -117,7 +117,7 @@ async fn list_all_pages_over_the_server_window() {
 }
 
 #[tokio::test]
-async fn list_all_advances_offset_by_page_size_on_a_mid_stream_short_page() {
+async fn list_all_advances_offset_by_page_size_on_a_short_first_page() {
     // B1 regression: the FIRST page comes back short (999 rows for a 1000 window —
     // a server `limit` cap or a serializer dropping a row post-count). The offset
     // must still advance by the page size (1000), not by the rows returned. On the
@@ -229,8 +229,10 @@ async fn page_size_is_clamped_to_server_window() {
         ..Default::default()
     };
     let client = NetBoxClient::new(&huge, None).unwrap();
+    // The clamp itself is what's proven here: a 5000 page size lands at the 1000 window.
     assert_eq!(client.page_size(), 1000);
-    // The outgoing `limit` is the clamped value (matched by the mock above).
+    // On the wire the floor then dominates for a small max: limit = max(1000, 100) = 1000
+    // (matched by the mock above) — incidental to the clamp, not the clamp itself.
     let _: Vec<Item> = client.list_all(Endpoint::Sites, vec![], 100).await.unwrap();
 
     // `page_size = 0` means "all" to NetBox; we fall back to the default 100.
