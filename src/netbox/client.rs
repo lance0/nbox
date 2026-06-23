@@ -316,12 +316,23 @@ impl NetBoxClient {
     where
         T: DeserializeOwned,
     {
+        // Size each page to the larger of the configured `page_size` and `max`
+        // (the latter capped at the server's MAX_PAGE_SIZE). A large fetch — a
+        // 500-row browse, a 1000-port panel, a 200-row VRF section — then lands in
+        // one round trip instead of `ceil(max / page_size)` sequential ones. The
+        // configured `page_size` (kept in 1..=MAX_PAGE_SIZE at construction) is a
+        // throughput knob, so it's a floor here: a small `max` keeps today's
+        // single-page behavior; a large `max` grows the page to match, never past
+        // MAX_PAGE_SIZE. No call pulls more rows per request than it did before
+        // unless `max` itself is larger (and those extra rows are kept, capped at
+        // `max` — not wasted).
+        let page_size = self.page_size.max(max.min(MAX_PAGE_SIZE));
         let mut out: Vec<T> = Vec::new();
         let mut offset = 0usize;
 
         loop {
             let mut params = base_params.clone();
-            params.push(("limit", self.page_size.to_string()));
+            params.push(("limit", page_size.to_string()));
             params.push(("offset", offset.to_string()));
             if self.exclude_config_context && endpoint.has_config_context() {
                 params.push(("exclude", "config_context".to_string()));
@@ -339,7 +350,7 @@ impl NetBoxClient {
             // rows actually returned — a page can come back short (the server caps
             // `limit` at MAX_PAGE_SIZE, or a serializer drops rows post-count), and
             // `offset += got` would then land mid-window and skip rows.
-            offset += self.page_size;
+            offset += page_size;
         }
 
         out.truncate(max);
@@ -592,6 +603,105 @@ mod tests {
         assert_eq!(
             status_error(StatusCode::INTERNAL_SERVER_ERROR, "boom").exit_code(),
             1
+        );
+    }
+
+    #[tokio::test]
+    async fn list_all_grows_the_page_to_max_so_a_large_fetch_is_one_round_trip() {
+        // With the default page_size (100) and a 500-row `max`, list_all must grow
+        // the page to 500 (capped at MAX_PAGE_SIZE) and fetch all rows in ONE
+        // request — not page 100-at-a-time over five sequential round trips. The
+        // mock matches ONLY `limit=500`, so an un-grown request (limit=100) gets
+        // no reply and the call fails; it returns the full 500-row set, so a
+        // single-page client breaks after one request (received_requests == 1).
+        use serde_json::json;
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let rows: Vec<_> = (0..500)
+            .map(|i| json!({ "id": i, "name": format!("d{i}") }))
+            .collect();
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/devices/"))
+            .and(query_param("limit", "500"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 500, "next": null, "previous": null, "results": rows
+            })))
+            .mount(&server)
+            .await;
+
+        let client = NetBoxClient::new(
+            &ProfileConfig {
+                url: server.uri(),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        let rows: Vec<serde_json::Value> = client
+            .list_all(Endpoint::Devices, vec![], 500)
+            .await
+            .expect("list_all");
+        assert_eq!(rows.len(), 500);
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            1,
+            "a 500-row fetch at max=500 is one round trip"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_all_advances_offset_by_the_grown_page_size() {
+        // When `max` exceeds MAX_PAGE_SIZE the page caps at 1000, so a 2500-row
+        // fetch pages 1000/1000/500. The offset MUST advance by the grown page
+        // size (1000), not the configured page_size (100) — advancing by 100
+        // would land mid-window (offset=100, limit=1000) and re-fetch overlapping
+        // rows. Each mock matches its page's `offset` and `limit=1000` exactly,
+        // so a misaligned window gets no reply and the call fails.
+        use serde_json::json;
+        use wiremock::matchers::{method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        let page = |offset: usize, n: usize| {
+            let rows: Vec<_> = (0..n)
+                .map(|i| json!({ "id": offset + i, "name": format!("d{}", offset + i) }))
+                .collect();
+            Mock::given(method("GET"))
+                .and(path("/api/dcim/devices/"))
+                .and(query_param("limit", "1000"))
+                .and(query_param("offset", offset.to_string()))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "count": 2500, "next": null, "previous": null, "results": rows
+                })))
+                .mount(&server)
+        };
+        page(0, 1000).await;
+        page(1000, 1000).await;
+        page(2000, 500).await; // last page: 500 rows → out hits the 2500 count.
+
+        let client = NetBoxClient::new(
+            &ProfileConfig {
+                url: server.uri(),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        let rows: Vec<serde_json::Value> = client
+            .list_all(Endpoint::Devices, vec![], 2500)
+            .await
+            .expect("list_all");
+        assert_eq!(rows.len(), 2500);
+        // Three aligned round trips — proves offset advanced by 1000 each time,
+        // not by the configured page_size (100).
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            3,
+            "offset advances by the grown page size (1000), not page_size (100)"
         );
     }
 }
