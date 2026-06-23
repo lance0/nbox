@@ -1289,6 +1289,39 @@ pub fn run_profile(
             eprintln!("active profile set to '{name}'");
             Ok(())
         }
+        ProfileCommand::Remove { name } => {
+            let mut doc = load_doc_or_new(&path)?;
+            // Mirror the TUI's delete guards: don't strand the config by removing
+            // the only profile, and don't remove the active one out from under the
+            // user (they'd be left with a dangling `active_profile`).
+            let (exists, only) = {
+                let profiles = doc.get("profiles").and_then(|p| p.as_table());
+                (
+                    profiles.is_some_and(|t| t.contains_key(&name)),
+                    profiles.is_some_and(toml_edit::Table::is_empty)
+                        || profiles.is_some_and(|t| t.len() == 1),
+                )
+            };
+            if !exists {
+                bail!("no profile named '{name}'");
+            }
+            if only {
+                bail!("can't remove the only profile '{name}'");
+            }
+            let active_is_target = doc
+                .get("active_profile")
+                .and_then(|v| v.as_str())
+                .is_some_and(|a| a == name);
+            if active_is_target {
+                bail!(
+                    "can't remove the active profile '{name}' — switch with `nbox profile use <other>` first"
+                );
+            }
+            remove_profile(&mut doc, &name)?;
+            write_doc(&path, &doc)?;
+            eprintln!("removed profile '{name}'");
+            Ok(())
+        }
         ProfileCommand::List => {
             let cfg = load(&path)?;
             let names: Vec<&String> = cfg.profiles.keys().collect();
@@ -1660,6 +1693,88 @@ search = "graphql"
         let rendered = serde_json::to_string(&cfg).unwrap();
         assert!(rendered.contains("<redacted>"));
         assert!(!rendered.contains("nbt_supersecret"));
+    }
+
+    #[test]
+    fn profile_remove_drops_a_non_active_profile() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let jopts = crate::output::json::JsonOptions::default();
+        // The first add becomes active; the second is just a peer.
+        run_profile(
+            ProfileCommand::Add {
+                name: "work".into(),
+                url: "https://netbox.example.com".into(),
+                token_env: None,
+            },
+            Some(&path),
+            crate::output::Format::Plain,
+            &jopts,
+        )
+        .unwrap();
+        run_profile(
+            ProfileCommand::Add {
+                name: "lab".into(),
+                url: "https://lab.example.com".into(),
+                token_env: None,
+            },
+            Some(&path),
+            crate::output::Format::Plain,
+            &jopts,
+        )
+        .unwrap();
+        run_profile(
+            ProfileCommand::Remove { name: "lab".into() },
+            Some(&path),
+            crate::output::Format::Plain,
+            &jopts,
+        )
+        .unwrap();
+        let cfg = load(&path).unwrap();
+        assert!(cfg.profiles.contains_key("work"));
+        assert!(!cfg.profiles.contains_key("lab"));
+        assert_eq!(cfg.active_profile.as_deref(), Some("work"));
+    }
+
+    #[test]
+    fn profile_remove_refuses_missing_active_and_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        let jopts = crate::output::json::JsonOptions::default();
+        let add = |name: &str, url: &str| {
+            run_profile(
+                ProfileCommand::Add {
+                    name: name.to_string(),
+                    url: url.to_string(),
+                    token_env: None,
+                },
+                Some(&path),
+                crate::output::Format::Plain,
+                &jopts,
+            )
+        };
+        let remove = |name: &str| {
+            run_profile(
+                ProfileCommand::Remove {
+                    name: name.to_string(),
+                },
+                Some(&path),
+                crate::output::Format::Plain,
+                &jopts,
+            )
+        };
+        add("work", "https://netbox.example.com").unwrap();
+        // Unknown profile name.
+        assert!(remove("nope").is_err());
+        // Removing the only profile would strand the config.
+        assert!(remove("work").is_err());
+        // With a peer present, the active profile is still protected.
+        add("lab", "https://lab.example.com").unwrap();
+        let err = remove("work").unwrap_err();
+        assert!(err.to_string().contains("active profile"));
+        // Nothing was removed by the refused calls.
+        let cfg = load(&path).unwrap();
+        assert_eq!(cfg.profiles.len(), 2);
     }
 
     #[cfg(unix)]

@@ -1604,7 +1604,7 @@ fn no_tui_onboarding_refusal() -> anyhow::Error {
         "no usable config and --no-tui set: the interactive onboarding wizard is suppressed.\n\n\
          Set up a profile non-interactively first:\n  \
          nbox config init\n  \
-         nbox profile add <name> --url <url> [--token-env <VAR>]\n\
+         nbox profile add <name> <url> [--token-env <VAR>]\n\
          then export NBOX_TOKEN or set the profile's token_env."
             .to_string(),
     )
