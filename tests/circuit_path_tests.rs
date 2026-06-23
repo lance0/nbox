@@ -223,7 +223,7 @@ async fn circuit_path_handles_the_rear_ports_array_mapping() {
             "cable": {"id": 200, "display": "#200"},
             "link_peers_type": "dcim.interface",
             "link_peers": [
-                {"id": 70, "url": "http://nb/api/dcim/interfaces/70/", "name": "et-0/0/3:0",
+                {"id": 70, "url": "http://nb/api/dcim/interfaces/70/", "name": "xe-0/0/0",
                  "device": {"id": 8, "name": "edge-1"}}
             ]
         })])))
@@ -242,6 +242,6 @@ async fn circuit_path_handles_the_rear_ports_array_mapping() {
         a.path
     );
     // Device-first: the resolved router interface leads.
-    assert_eq!(a.path[0].to, "edge-1 et-0/0/3:0");
+    assert_eq!(a.path[0].to, "edge-1 xe-0/0/0");
     assert!(a.path[0].endpoint);
 }

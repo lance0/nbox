@@ -2259,31 +2259,31 @@ mod tests {
     fn circuit_links_cover_provider_site_and_patched_device_not_provider_network() {
         use serde_json::json;
         let c: Circuit = serde_json::from_value(json!({
-            "id": 1636, "url": "u", "cid": "FC-208420188",
-            "provider": {"id": 1, "display": "314BCE"},
+            "id": 3, "url": "u", "cid": "ACME-1001",
+            "provider": {"id": 1, "display": "ACME"},
             "tenant": {"id": 9, "name": "acme", "display": "acme"},
         }))
         .unwrap();
         let term_a: CircuitTermination = serde_json::from_value(json!({
-            "id": 2390, "term_side": "A",
-            "termination": {"id": 433, "display": "US-CHI02", "name": "US-CHI02"},
+            "id": 10, "term_side": "A",
+            "termination": {"id": 1, "display": "DC1", "name": "DC1"},
             "termination_type": "dcim.site"
         }))
         .unwrap();
         let term_z: CircuitTermination = serde_json::from_value(json!({
-            "id": 2391, "term_side": "Z",
-            "termination": {"id": 317, "display": "314BCE DX"},
+            "id": 11, "term_side": "Z",
+            "termination": {"id": 2, "display": "ACME Cloud"},
             "termination_type": "circuits.providernetwork"
         }))
         .unwrap();
         let panel: BriefObject =
-            serde_json::from_value(json!({"id": 307_818, "name": "355.M03.01.02.PNL.01"})).unwrap();
+            serde_json::from_value(json!({"id": 9, "name": "panel-1"})).unwrap();
         let resolved = vec![
             ResolvedTermination {
                 termination: term_a,
                 path: vec![PathHop {
-                    to: "355.M03.01.02.PNL.01 13".to_string(),
-                    cable: Some("#2378128".to_string()),
+                    to: "panel-1 7".to_string(),
+                    cable: Some("#100".to_string()),
                     endpoint: false,
                     device: Some(panel),
                 }],

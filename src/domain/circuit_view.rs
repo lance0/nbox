@@ -20,7 +20,7 @@ use crate::output::plain::KeyValues;
 pub struct PathHop {
     /// `device port` (or just the port when there's no device) reached at this hop.
     pub to: String,
-    /// The cable crossed to reach it (e.g. `#2378128`), when known.
+    /// The cable crossed to reach it (e.g. `#100`), when known.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cable: Option<String>,
     /// True when this hop is a device interface — the resolved far endpoint.
@@ -229,13 +229,13 @@ fn circuit_segment(
 /// panels to the device it lands on.
 ///
 /// ```text
-///  A  US-CHI02  (site)
-///     ↳ bfr4-us-chi02 et-0/0/0:0  ·  #2378170
-///     ↳ 355.M03.01.02.PNL.01 13  ·  #2378128
+///  A  DC1  (site)
+///     ↳ edge-1 xe-0/0/0  ·  #200
+///     ↳ panel-1 7  ·  #100
 ///     │
-///     ┿ Direct Connect · 400 Gbps · Active
+///     ┿ Wave · 10 Gbps · Active
 ///     │
-///  Z  314BCE DX  (provider network)
+///  Z  ACME Cloud  (provider network)
 /// ```
 fn format_circuit_diagram(segment: &str, terms: &[CircuitTerminationView]) -> Vec<String> {
     if terms.is_empty() {
@@ -390,22 +390,22 @@ mod tests {
     #[test]
     fn builds_az_diagram_with_a_multi_hop_path() {
         let c = circuit(json!({
-            "id": 1636, "url": "u", "cid": "FC-208420188",
-            "provider": {"id": 1, "display": "314BCE"},
-            "type": {"id": 2, "display": "Direct Connect"},
+            "id": 3, "url": "u", "cid": "ACME-1001",
+            "provider": {"id": 1, "display": "ACME"},
+            "type": {"id": 2, "display": "Wave"},
             "status": {"value": "active", "label": "Active"},
-            "commit_rate": 400_000_000,
+            "commit_rate": 10_000_000,
             "custom_fields": {}
         }));
         let term_a = termination(json!({
-            "id": 2390, "term_side": "A",
-            "termination": {"id": 433, "display": "US-CHI02", "name": "US-CHI02"},
+            "id": 10, "term_side": "A",
+            "termination": {"id": 1, "display": "DC1", "name": "DC1"},
             "termination_type": "dcim.site",
             "link_peers": []
         }));
         let term_z = termination(json!({
-            "id": 2391, "term_side": "Z",
-            "termination": {"id": 317, "display": "314BCE DX"},
+            "id": 11, "term_side": "Z",
+            "termination": {"id": 2, "display": "ACME Cloud"},
             "termination_type": "circuits.providernetwork",
             "link_peers": []
         }));
@@ -419,8 +419,8 @@ mod tests {
             ResolvedTermination {
                 termination: term_a,
                 path: vec![
-                    hop("bfr4-us-chi02 et-0/0/0:0", Some("#2378170"), true),
-                    hop("355.M03.01.02.PNL.01 13", Some("#2378128"), false),
+                    hop("edge-1 xe-0/0/0", Some("#200"), true),
+                    hop("panel-1 7", Some("#100"), false),
                 ],
             },
         ];
@@ -428,7 +428,7 @@ mod tests {
         let view = CircuitView::build(c, resolved);
         // A is ordered before Z.
         assert_eq!(view.terminations[0].side, "A");
-        assert_eq!(view.terminations[0].endpoint, "US-CHI02");
+        assert_eq!(view.terminations[0].endpoint, "DC1");
         assert_eq!(view.terminations[0].endpoint_kind, "site");
         assert_eq!(view.terminations[0].path.len(), 2);
         // Device-first: the resolved endpoint leads.
@@ -439,15 +439,15 @@ mod tests {
 
         // A is above the segment, so it reads device → panel → circuit: the router
         // line comes before the panel line.
-        assert_eq!(view.diagram[0], " A  US-CHI02  (site)");
+        assert_eq!(view.diagram[0], " A  DC1  (site)");
         let router_at = view
             .diagram
             .iter()
-            .position(|l| l == "    ↳ bfr4-us-chi02 et-0/0/0:0  ·  #2378170");
+            .position(|l| l == "    ↳ edge-1 xe-0/0/0  ·  #200");
         let panel_at = view
             .diagram
             .iter()
-            .position(|l| l == "    ↳ 355.M03.01.02.PNL.01 13  ·  #2378128");
+            .position(|l| l == "    ↳ panel-1 7  ·  #100");
         assert!(
             router_at < panel_at && router_at.is_some(),
             "router should come before the panel: {:?}",
@@ -456,21 +456,21 @@ mod tests {
         assert!(
             view.diagram
                 .iter()
-                .any(|l| l == "    ┿ Direct Connect · 400 Gbps · Active"),
+                .any(|l| l == "    ┿ Wave · 10 Gbps · Active"),
             "{:?}",
             view.diagram
         );
         assert!(
             view.diagram
                 .iter()
-                .any(|l| l == " Z  314BCE DX  (provider network)"),
+                .any(|l| l == " Z  ACME Cloud  (provider network)"),
             "{:?}",
             view.diagram
         );
 
         let plain = view.to_plain();
         assert!(plain.contains("Circuit Path"));
-        assert!(plain.contains("↳ bfr4-us-chi02 et-0/0/0:0  ·  #2378170"));
+        assert!(plain.contains("↳ edge-1 xe-0/0/0  ·  #200"));
     }
 
     #[test]
