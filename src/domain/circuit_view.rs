@@ -1,5 +1,6 @@
 //! Flattened circuit view for `nbox circuit` (plain + JSON), with its A/Z
-//! terminations and an A↔Z path diagram.
+//! terminations and an A↔Z path diagram (each side's cable chain through any
+//! patch panels to the device it lands on).
 
 use std::collections::BTreeMap;
 
@@ -12,6 +13,32 @@ use crate::netbox::models::circuits::{Circuit, CircuitTermination};
 use crate::netbox::models::common::BriefObject;
 use crate::output::plain::KeyValues;
 
+/// One cabled hop along a termination's path: what it reaches and over which
+/// cable. A patch panel shows up as a non-endpoint hop; the final device
+/// interface (when the chain resolves to one) is the endpoint.
+#[derive(Debug, Clone, Serialize)]
+pub struct PathHop {
+    /// `device port` (or just the port when there's no device) reached at this hop.
+    pub to: String,
+    /// The cable crossed to reach it (e.g. `#2378128`), when known.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cable: Option<String>,
+    /// True when this hop is a device interface — the resolved far endpoint.
+    pub endpoint: bool,
+    /// The device at this hop, for building a navigable link (not serialized).
+    #[serde(skip)]
+    pub device: Option<BriefObject>,
+}
+
+/// A circuit termination plus its resolved cable path (built by the walker in
+/// `detail.rs`, which needs the client). Passed to [`CircuitView::build`] so the
+/// view itself stays pure.
+#[derive(Debug, Clone)]
+pub struct ResolvedTermination {
+    pub termination: CircuitTermination,
+    pub path: Vec<PathHop>,
+}
+
 /// One end (A or Z) of a circuit, normalized for display.
 #[derive(Debug, Clone, Serialize)]
 pub struct CircuitTerminationView {
@@ -22,12 +49,10 @@ pub struct CircuitTerminationView {
     /// `"site"` / `"provider network"` — the endpoint's kind.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub endpoint_kind: String,
-    /// The device port it's patched into (`device port`), when cabled.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub connected_to: Option<String>,
-    /// The connecting cable's label (e.g. `#2378128`), when present.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub cable: Option<String>,
+    /// The cable chain from the endpoint to the device it lands on (through any
+    /// patch panels). Empty for an uncabled side (e.g. a provider network).
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub path: Vec<PathHop>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub xconnect_id: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -38,18 +63,20 @@ pub struct CircuitTerminationView {
 }
 
 impl CircuitTerminationView {
-    fn from_model(t: CircuitTermination) -> Self {
+    fn from_resolved(rt: ResolvedTermination) -> Self {
+        let ResolvedTermination {
+            termination: t,
+            path,
+        } = rt;
         let endpoint = t
             .termination
             .as_ref()
             .map_or_else(|| "(unterminated)".to_string(), BriefObject::label);
-        let connected_to = t.link_peers.first().map(BriefObject::endpoint_label);
         Self {
             side: t.term_side.unwrap_or_else(|| "?".to_string()),
             endpoint,
             endpoint_kind: endpoint_kind(t.termination_type.as_deref()),
-            connected_to,
-            cable: t.cable.as_ref().map(BriefObject::label),
+            path,
             xconnect_id: t.xconnect_id.and_then(non_empty),
             pp_info: t.pp_info.and_then(non_empty),
             port_speed: t.port_speed.map(humanize_kbps),
@@ -76,12 +103,12 @@ pub struct CircuitView {
     pub commit_rate_kbps: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
-    /// The A/Z terminations (A first), each with its endpoint + physical patch.
+    /// The A/Z terminations (A first), each with its endpoint + resolved path.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub terminations: Vec<CircuitTerminationView>,
-    /// The circuit path as a multi-line ASCII A↔Z diagram, derived from the
-    /// terminations. Not serialized — it's a rendering for the plain/TUI surfaces,
-    /// while the structured `terminations` remain the machine-readable form.
+    /// The circuit path as a multi-line ASCII A↔Z diagram. Not serialized — it's a
+    /// rendering for the plain/TUI surfaces, while the structured `terminations`
+    /// (each with its `path`) remain the machine-readable form.
     #[serde(skip)]
     pub diagram: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -96,10 +123,10 @@ impl CircuitView {
         Self::build(c, Vec::new())
     }
 
-    /// Normalize a [`Circuit`] plus its A/Z [`CircuitTermination`]s, building the
+    /// Normalize a [`Circuit`] plus its resolved A/Z terminations, building the
     /// flat attributes, the structured terminations (A before Z), and the A↔Z
     /// path diagram.
-    pub fn build(c: Circuit, terminations: Vec<CircuitTermination>) -> Self {
+    pub fn build(c: Circuit, terminations: Vec<ResolvedTermination>) -> Self {
         let type_ = c.type_.map(|b| b.label());
         let status = c.status.map(|c| c.value);
         let commit_rate_kbps = c.commit_rate;
@@ -107,7 +134,7 @@ impl CircuitView {
         // Order A before Z (the API doesn't guarantee order); unknown sides last.
         let mut terms: Vec<CircuitTerminationView> = terminations
             .into_iter()
-            .map(CircuitTerminationView::from_model)
+            .map(CircuitTerminationView::from_resolved)
             .collect();
         terms.sort_by(|a, b| a.side.cmp(&b.side));
 
@@ -197,13 +224,14 @@ fn circuit_segment(
 }
 
 /// Draw the circuit as a vertical A↔Z diagram: the A termination on top, the Z on
-/// the bottom, the circuit segment (`type · rate · status`) between them. Each
-/// termination shows its endpoint (site / provider network) and, when cabled, the
-/// device port it's patched into.
+/// the bottom, the circuit segment (`type · rate · status`) between them. Under
+/// each termination, its cable chain (`↳`) from the endpoint through any patch
+/// panels to the device it lands on.
 ///
 /// ```text
 ///  A  US-CHI02  (site)
 ///     ↳ 355.M03.01.02.PNL.01 13  ·  #2378128
+///     ↳ bfr4-us-chi02 et-0/0/0:0  ·  #2378170
 ///     │
 ///     ┿ Direct Connect · 400 Gbps · Active
 ///     │
@@ -222,13 +250,13 @@ fn format_circuit_diagram(segment: &str, terms: &[CircuitTerminationView]) -> Ve
             format!("  ({})", t.endpoint_kind)
         };
         lines.push(format!(" {}  {}{kind}", t.side, t.endpoint));
-        if let Some(conn) = &t.connected_to {
-            let cable = t
+        for hop in &t.path {
+            let cable = hop
                 .cable
                 .as_deref()
                 .map(|c| format!("  ·  {c}"))
                 .unwrap_or_default();
-            lines.push(format!("    ↳ {conn}{cable}"));
+            lines.push(format!("    ↳ {}{cable}", hop.to));
         }
         // Cross-connect / patch-panel detail, when present.
         let mut xparts: Vec<String> = Vec::new();
@@ -298,6 +326,19 @@ mod tests {
         serde_json::from_value(value).unwrap()
     }
 
+    fn termination(value: Value) -> CircuitTermination {
+        serde_json::from_value(value).unwrap()
+    }
+
+    fn hop(to: &str, cable: Option<&str>, endpoint: bool) -> PathHop {
+        PathHop {
+            to: to.to_string(),
+            cable: cable.map(str::to_string),
+            endpoint,
+            device: None,
+        }
+    }
+
     #[test]
     fn flattens_circuit() {
         let c = circuit(json!({
@@ -321,10 +362,8 @@ mod tests {
         let plain = view.to_plain();
         assert!(plain.starts_with("cid: ACME-1234"));
         assert!(plain.contains("provider: ACME"));
-        // commit_rate is humanized for display.
         assert!(plain.contains("commit_rate: 1 Gbps"));
         assert!(plain.contains("tags: transit"));
-        // No terminations ⇒ no path section.
         assert!(!plain.contains("Circuit Path"));
     }
 
@@ -339,7 +378,7 @@ mod tests {
     }
 
     #[test]
-    fn builds_az_diagram_with_terminations() {
+    fn builds_az_diagram_with_a_multi_hop_path() {
         let c = circuit(json!({
             "id": 1636, "url": "u", "cid": "FC-208420188",
             "provider": {"id": 1, "display": "314BCE"},
@@ -348,44 +387,57 @@ mod tests {
             "commit_rate": 400_000_000,
             "custom_fields": {}
         }));
-        let terms: Vec<CircuitTermination> = serde_json::from_value(json!([
-            {
-                "id": 2391, "term_side": "Z",
-                "termination": {"id": 317, "display": "314BCE DX"},
-                "termination_type": "circuits.providernetwork",
-                "link_peers": []
+        let term_a = termination(json!({
+            "id": 2390, "term_side": "A",
+            "termination": {"id": 433, "display": "US-CHI02", "name": "US-CHI02"},
+            "termination_type": "dcim.site",
+            "link_peers": []
+        }));
+        let term_z = termination(json!({
+            "id": 2391, "term_side": "Z",
+            "termination": {"id": 317, "display": "314BCE DX"},
+            "termination_type": "circuits.providernetwork",
+            "link_peers": []
+        }));
+        // A-side path: through the panel, then on to the router (two segments).
+        let resolved = vec![
+            ResolvedTermination {
+                termination: term_z,
+                path: Vec::new(),
             },
-            {
-                "id": 2390, "term_side": "A",
-                "termination": {"id": 433, "display": "US-CHI02", "name": "US-CHI02"},
-                "termination_type": "dcim.site",
-                "cable": {"id": 2_378_128, "display": "#2378128"},
-                "link_peers": [
-                    {"id": 35_640, "name": "13", "device": {"id": 307_818, "name": "355.M03.01.02.PNL.01"}}
-                ]
-            }
-        ]))
-        .unwrap();
+            ResolvedTermination {
+                termination: term_a,
+                path: vec![
+                    hop("355.M03.01.02.PNL.01 13", Some("#2378128"), false),
+                    hop("bfr4-us-chi02 et-0/0/0:0", Some("#2378170"), true),
+                ],
+            },
+        ];
 
-        let view = CircuitView::build(c, terms);
+        let view = CircuitView::build(c, resolved);
         // A is ordered before Z.
         assert_eq!(view.terminations[0].side, "A");
         assert_eq!(view.terminations[0].endpoint, "US-CHI02");
         assert_eq!(view.terminations[0].endpoint_kind, "site");
-        assert_eq!(
-            view.terminations[0].connected_to.as_deref(),
-            Some("355.M03.01.02.PNL.01 13")
-        );
-        assert_eq!(view.terminations[0].cable.as_deref(), Some("#2378128"));
+        assert_eq!(view.terminations[0].path.len(), 2);
+        assert!(view.terminations[0].path[1].endpoint);
         assert_eq!(view.terminations[1].side, "Z");
         assert_eq!(view.terminations[1].endpoint_kind, "provider network");
+        assert!(view.terminations[1].path.is_empty());
 
-        // The diagram is a vertical A↔Z with the circuit segment between.
+        // The diagram shows BOTH cable segments under the A termination.
         assert_eq!(view.diagram[0], " A  US-CHI02  (site)");
         assert!(
             view.diagram
                 .iter()
                 .any(|l| l == "    ↳ 355.M03.01.02.PNL.01 13  ·  #2378128"),
+            "{:?}",
+            view.diagram
+        );
+        assert!(
+            view.diagram
+                .iter()
+                .any(|l| l == "    ↳ bfr4-us-chi02 et-0/0/0:0  ·  #2378170"),
             "{:?}",
             view.diagram
         );
@@ -404,10 +456,9 @@ mod tests {
             view.diagram
         );
 
-        // Plain output renders the path under the Circuit Path heading.
         let plain = view.to_plain();
         assert!(plain.contains("Circuit Path"));
-        assert!(plain.contains("┿ Direct Connect · 400 Gbps · Active"));
+        assert!(plain.contains("↳ bfr4-us-chi02 et-0/0/0:0  ·  #2378170"));
     }
 
     #[test]

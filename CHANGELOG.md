@@ -11,13 +11,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Circuit terminations + A↔Z path.** `nbox circuit <cid>` now resolves the
   circuit's A/Z terminations and renders the path: each side's endpoint (a site or
-  a provider network), the device port it's patched into, and the cable — drawn as
-  a vertical A↔Z diagram (mirroring the interface cable-path view). The TUI circuit
-  detail gains a **`p` path tab** and navigable links to the provider, the sites,
-  and the patched devices; `-o json` carries a structured `terminations` array.
-  Previously a circuit showed only flat attributes (provider/type/status/rate) with
-  no indication of where it landed. Commit/port rates are humanized (e.g.
-  `400 Gbps`).
+  a provider network) and the cable chain to the device it lands on — **walking
+  through patch panels** (rear↔front) to the far interface, since NetBox exposes no
+  `/trace/` for circuit terminations. Drawn as a vertical A↔Z diagram (mirroring the
+  interface cable-path view); the A and Z sides are walked concurrently, and a hop
+  that can't continue (e.g. an unwired panel) stops cleanly rather than guessing.
+  The TUI circuit detail gains a **`p` path tab** and navigable links to the
+  provider, the sites, and every device along the path; `-o json` carries a
+  structured `terminations` array (each with its `path`). Previously a circuit
+  showed only flat attributes (provider/type/status/rate) with no indication of
+  where it landed. Commit/port rates are humanized (e.g. `400 Gbps`).
 - **`nbox profile remove <name>`** deletes a profile from the config
   (format-preserving). It refuses to remove the active profile (switch with `nbox
   profile use <other>` first) or the only profile, mirroring the TUI's delete

@@ -17,7 +17,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::ApiSurface;
 use crate::domain::aggregate_view::AggregateView;
 use crate::domain::asn_view::AsnView;
-use crate::domain::circuit_view::CircuitView;
+use crate::domain::circuit_view::{CircuitView, PathHop, ResolvedTermination};
 use crate::domain::cluster_view::ClusterView;
 use crate::domain::contact_view::ContactView;
 use crate::domain::device_detail::{CableRow, DeviceDetail, IfaceRow, IpRow, VlanRow};
@@ -324,13 +324,217 @@ pub async fn circuit_view_by_ref(
         .await?
         .ok_or_else(|| not_found("circuit", value))?;
     let terminations = client.circuit_terminations(circuit.id).await?;
-    Ok(CircuitView::build(circuit, terminations))
+    let resolved = resolve_terminations(client, terminations).await;
+    Ok(CircuitView::build(circuit, resolved))
 }
 
-/// Navigable links for a circuit + its terminations: the provider/tenant, and per
-/// side the site endpoint and the device it's patched into (provider networks have
-/// no detail kind, so they're skipped).
-fn circuit_links(c: &Circuit, terminations: &[CircuitTermination]) -> Vec<ObjectLink> {
+/// Resolve every termination's cable path, walking the A and Z sides concurrently
+/// (each side's hops are sequential — a hop depends on the previous — but the two
+/// sides are independent).
+async fn resolve_terminations(
+    client: &NetBoxClient,
+    terminations: Vec<CircuitTermination>,
+) -> Vec<ResolvedTermination> {
+    let walks = terminations.into_iter().map(|t| async move {
+        let path = resolve_termination_path(client, &t).await;
+        ResolvedTermination {
+            termination: t,
+            path,
+        }
+    });
+    futures::future::join_all(walks).await
+}
+
+/// How far to walk a termination's cable chain before giving up (guards against a
+/// mis-modeled loop; real circuit→panel→device paths are 1–2 hops).
+const CIRCUIT_PATH_CAP: usize = 5;
+
+/// The kind of a cabled object, inferred from its API URL.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum PortKind {
+    Interface,
+    FrontPort,
+    RearPort,
+    Other,
+}
+
+fn port_kind(url: Option<&str>) -> PortKind {
+    match url {
+        Some(u) if u.contains("/interfaces/") => PortKind::Interface,
+        Some(u) if u.contains("/front-ports/") => PortKind::FrontPort,
+        Some(u) if u.contains("/rear-ports/") => PortKind::RearPort,
+        _ => PortKind::Other,
+    }
+}
+
+/// The next stop reached by crossing a cable: where it lands and over which cable.
+struct NextHop {
+    url: Option<String>,
+    to: String,
+    device: Option<BriefObject>,
+    id: u64,
+    kind: PortKind,
+    cable: Option<String>,
+}
+
+/// Walk a circuit termination's cable chain: from its immediate link peer, through
+/// any patch panels (rear↔front), to the device interface it lands on. Returns the
+/// ordered hops (first = the immediate neighbor). Stops at an interface (the
+/// resolved endpoint), a dead-end (e.g. an unwired panel — common), the hop cap, or
+/// a cycle. Best-effort and tolerant of the polymorphic JSON: a fetch error simply
+/// ends the chain where it is.
+async fn resolve_termination_path(client: &NetBoxClient, t: &CircuitTermination) -> Vec<PathHop> {
+    let mut hops = Vec::new();
+    let Some(peer) = t.link_peers.first() else {
+        return hops;
+    };
+    let mut cur = NextHop {
+        url: peer.url.clone(),
+        to: peer.endpoint_label(),
+        device: peer.device.as_deref().cloned(),
+        id: peer.id,
+        kind: port_kind(peer.url.as_deref()),
+        // The first cable crossed is the termination's own.
+        cable: t.cable.as_ref().map(BriefObject::label),
+    };
+    let mut seen = std::collections::HashSet::new();
+    for _ in 0..CIRCUIT_PATH_CAP {
+        let endpoint = cur.kind == PortKind::Interface;
+        hops.push(PathHop {
+            to: cur.to.clone(),
+            cable: cur.cable.clone(),
+            endpoint,
+            device: cur.device.clone(),
+        });
+        if endpoint {
+            break;
+        }
+        if let Some(u) = &cur.url
+            && !seen.insert(u.clone())
+        {
+            break; // cycle guard
+        }
+        match panel_onward(client, &cur).await {
+            Some(next) => cur = next,
+            None => break, // dead-end (unwired panel) or unsupported object
+        }
+    }
+    hops
+}
+
+/// From a panel face, cross to its opposite face and follow that face's cable to
+/// the next stop. `None` when the panel isn't internally wired (no rear↔front
+/// mapping) or the opposite face isn't cabled onward.
+async fn panel_onward(client: &NetBoxClient, cur: &NextHop) -> Option<NextHop> {
+    match cur.kind {
+        PortKind::RearPort => front_for_rear(client, cur.device.as_ref()?.id, cur.id).await,
+        PortKind::FrontPort => rear_for_front(client, cur.id).await,
+        _ => None,
+    }
+}
+
+/// Rear → front: find the panel's front-port mapped to this rear-port, then the
+/// stop across that front-port's cable.
+async fn front_for_rear(client: &NetBoxClient, device_id: u64, rear_id: u64) -> Option<NextHop> {
+    let page: serde_json::Value = client
+        .get(
+            "/api/dcim/front-ports/",
+            &[
+                ("device_id", device_id.to_string()),
+                ("limit", "200".to_string()),
+            ],
+        )
+        .await
+        .ok()?;
+    let fronts = page.get("results")?.as_array()?;
+    for fp in fronts {
+        let rid = fp
+            .get("rear_port")
+            .and_then(|r| r.get("id"))
+            .and_then(serde_json::Value::as_u64);
+        if rid != Some(rear_id) {
+            continue;
+        }
+        let cable = fp.get("cable").and_then(cable_label_value);
+        if let Some(peer) = fp
+            .get("link_peers")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|a| a.first())
+        {
+            return next_hop_from_peer(peer, cable);
+        }
+    }
+    None
+}
+
+/// Front → rear: read the front-port's paired rear-port, then the stop across the
+/// rear-port's cable.
+async fn rear_for_front(client: &NetBoxClient, front_id: u64) -> Option<NextHop> {
+    let fp: serde_json::Value = client
+        .get(&format!("/api/dcim/front-ports/{front_id}/"), &[])
+        .await
+        .ok()?;
+    let rear_id = fp
+        .get("rear_port")
+        .and_then(|r| r.get("id"))
+        .and_then(serde_json::Value::as_u64)?;
+    let rp: serde_json::Value = client
+        .get(&format!("/api/dcim/rear-ports/{rear_id}/"), &[])
+        .await
+        .ok()?;
+    let cable = rp.get("cable").and_then(cable_label_value);
+    let peer = rp
+        .get("link_peers")
+        .and_then(serde_json::Value::as_array)
+        .and_then(|a| a.first())?;
+    next_hop_from_peer(peer, cable)
+}
+
+/// Build a [`NextHop`] from a link-peer JSON object (a port) and the cable crossed.
+fn next_hop_from_peer(peer: &serde_json::Value, cable: Option<String>) -> Option<NextHop> {
+    let id = peer.get("id").and_then(serde_json::Value::as_u64)?;
+    let url = peer.get("url").and_then(|v| v.as_str()).map(str::to_string);
+    let port = peer
+        .get("display")
+        .or_else(|| peer.get("name"))
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let device = peer
+        .get("device")
+        .and_then(|d| serde_json::from_value::<BriefObject>(d.clone()).ok());
+    let to = match &device {
+        Some(d) => format!("{} {port}", d.name_label()),
+        None => port,
+    };
+    Some(NextHop {
+        kind: port_kind(url.as_deref()),
+        url,
+        to,
+        device,
+        id,
+        cable,
+    })
+}
+
+/// A cable's label from a JSON object: its display/label, else NetBox's `#<id>`.
+fn cable_label_value(v: &serde_json::Value) -> Option<String> {
+    v.get("display")
+        .or_else(|| v.get("label"))
+        .and_then(|x| x.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            v.get("id")
+                .and_then(serde_json::Value::as_u64)
+                .map(|id| format!("#{id}"))
+        })
+}
+
+/// Navigable links for a circuit + its resolved terminations: the provider/tenant,
+/// each side's site endpoint, and the devices its path traverses (panel + the
+/// device it lands on). Provider networks have no detail kind, so they're skipped.
+fn circuit_links(c: &Circuit, terminations: &[ResolvedTermination]) -> Vec<ObjectLink> {
     let mut l = Vec::new();
     push_link(
         &mut l,
@@ -339,10 +543,10 @@ fn circuit_links(c: &Circuit, terminations: &[CircuitTermination]) -> Vec<Object
         c.provider.as_ref(),
     );
     push_link(&mut l, "tenant", ObjectKind::Tenant, c.tenant.as_ref());
-    for t in terminations {
-        let side = t.term_side.as_deref().unwrap_or("?");
-        if t.termination_type.as_deref() == Some("dcim.site")
-            && let Some(site) = &t.termination
+    for rt in terminations {
+        let side = rt.termination.term_side.as_deref().unwrap_or("?");
+        if rt.termination.termination_type.as_deref() == Some("dcim.site")
+            && let Some(site) = &rt.termination.termination
         {
             l.push(ObjectLink {
                 kind: ObjectKind::Site,
@@ -351,15 +555,19 @@ fn circuit_links(c: &Circuit, terminations: &[CircuitTermination]) -> Vec<Object
                 label: site.label(),
             });
         }
-        if let Some(peer) = t.link_peers.first()
-            && let Some(dev) = &peer.device
-        {
-            l.push(ObjectLink {
-                kind: ObjectKind::Device,
-                id: dev.id,
-                relation: format!("{side}-side device"),
-                label: dev.name_label(),
-            });
+        for hop in &rt.path {
+            if let Some(dev) = &hop.device
+                && !l
+                    .iter()
+                    .any(|x| x.kind == ObjectKind::Device && x.id == dev.id)
+            {
+                l.push(ObjectLink {
+                    kind: ObjectKind::Device,
+                    id: dev.id,
+                    relation: format!("{side}-side device"),
+                    label: dev.name_label(),
+                });
+            }
         }
     }
     l
@@ -371,8 +579,9 @@ fn circuit_links(c: &Circuit, terminations: &[CircuitTermination]) -> Vec<Object
 async fn load_circuit_detail_view(client: &NetBoxClient, circuit: Circuit) -> Result<DetailView> {
     let id = circuit.id;
     let terminations = client.circuit_terminations(id).await?;
-    let links = circuit_links(&circuit, &terminations);
-    let view = CircuitView::build(circuit, terminations);
+    let resolved = resolve_terminations(client, terminations).await;
+    let links = circuit_links(&circuit, &resolved);
+    let view = CircuitView::build(circuit, resolved);
     let title = format!("circuit {}", view.cid);
     let mut tabs = Vec::new();
     if !view.diagram.is_empty() {
@@ -2029,31 +2238,43 @@ mod tests {
             "tenant": {"id": 9, "name": "acme", "display": "acme"},
         }))
         .unwrap();
-        let terms: Vec<CircuitTermination> = serde_json::from_value(json!([
-            {
-                "id": 2390, "term_side": "A",
-                "termination": {"id": 433, "display": "US-CHI02", "name": "US-CHI02"},
-                "termination_type": "dcim.site",
-                "link_peers": [
-                    {"id": 1, "name": "13", "device": {"id": 307_818, "name": "355.M03.01.02.PNL.01"}}
-                ]
-            },
-            {
-                "id": 2391, "term_side": "Z",
-                "termination": {"id": 317, "display": "314BCE DX"},
-                "termination_type": "circuits.providernetwork",
-                "link_peers": []
-            }
-        ]))
+        let term_a: CircuitTermination = serde_json::from_value(json!({
+            "id": 2390, "term_side": "A",
+            "termination": {"id": 433, "display": "US-CHI02", "name": "US-CHI02"},
+            "termination_type": "dcim.site"
+        }))
         .unwrap();
-        let links = circuit_links(&c, &terms);
+        let term_z: CircuitTermination = serde_json::from_value(json!({
+            "id": 2391, "term_side": "Z",
+            "termination": {"id": 317, "display": "314BCE DX"},
+            "termination_type": "circuits.providernetwork"
+        }))
+        .unwrap();
+        let panel: BriefObject =
+            serde_json::from_value(json!({"id": 307_818, "name": "355.M03.01.02.PNL.01"})).unwrap();
+        let resolved = vec![
+            ResolvedTermination {
+                termination: term_a,
+                path: vec![PathHop {
+                    to: "355.M03.01.02.PNL.01 13".to_string(),
+                    cable: Some("#2378128".to_string()),
+                    endpoint: false,
+                    device: Some(panel),
+                }],
+            },
+            ResolvedTermination {
+                termination: term_z,
+                path: Vec::new(),
+            },
+        ];
+        let links = circuit_links(&c, &resolved);
         let got: Vec<(ObjectKind, &str)> = links
             .iter()
             .map(|l| (l.kind, l.relation.as_str()))
             .collect();
         assert!(got.contains(&(ObjectKind::Provider, "provider")));
         assert!(got.contains(&(ObjectKind::Tenant, "tenant")));
-        // The A-side site and the device it's patched into are navigable.
+        // The A-side site and the device along its path are navigable.
         assert!(got.contains(&(ObjectKind::Site, "A-side site")));
         assert!(got.contains(&(ObjectKind::Device, "A-side device")));
         // A provider network has no detail kind, so the Z-side emits no site link.
