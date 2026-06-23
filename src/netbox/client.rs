@@ -318,7 +318,7 @@ impl NetBoxClient {
     {
         // Size each page to the larger of the configured `page_size` and `max`
         // (the latter capped at the server's MAX_PAGE_SIZE). A large fetch — a
-        // 500-row browse, a 1000-port panel, a 200-row VRF section — then lands in
+        // 1000-row browse, a 1000-port panel, a 200-row VRF section — then lands in
         // one round trip instead of `ceil(max / page_size)` sequential ones. The
         // configured `page_size` (kept in 1..=MAX_PAGE_SIZE at construction) is a
         // throughput knob, so it's a floor here: a small `max` keeps today's
