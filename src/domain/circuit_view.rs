@@ -230,8 +230,8 @@ fn circuit_segment(
 ///
 /// ```text
 ///  A  US-CHI02  (site)
-///     ↳ 355.M03.01.02.PNL.01 13  ·  #2378128
 ///     ↳ bfr4-us-chi02 et-0/0/0:0  ·  #2378170
+///     ↳ 355.M03.01.02.PNL.01 13  ·  #2378128
 ///     │
 ///     ┿ Direct Connect · 400 Gbps · Active
 ///     │
@@ -250,7 +250,17 @@ fn format_circuit_diagram(segment: &str, terms: &[CircuitTerminationView]) -> Ve
             format!("  ({})", t.endpoint_kind)
         };
         lines.push(format!(" {}  {}{kind}", t.side, t.endpoint));
-        for hop in &t.path {
+        // `path` is device-first. The side above the circuit segment reads down to
+        // it as-is (device on top, circuit-adjacent panel last); a side *below* the
+        // segment reads away from it, so reverse it (panel adjacent to the circuit
+        // on top, device at the bottom) — keeping the whole diagram one continuous
+        // physical line.
+        let hops: Vec<&PathHop> = if i > 0 {
+            t.path.iter().rev().collect()
+        } else {
+            t.path.iter().collect()
+        };
+        for hop in hops {
             let cable = hop
                 .cable
                 .as_deref()
@@ -399,7 +409,8 @@ mod tests {
             "termination_type": "circuits.providernetwork",
             "link_peers": []
         }));
-        // A-side path: through the panel, then on to the router (two segments).
+        // A-side path: device-first (the router leads; the circuit-adjacent panel
+        // is last) — as the walker presents it.
         let resolved = vec![
             ResolvedTermination {
                 termination: term_z,
@@ -408,8 +419,8 @@ mod tests {
             ResolvedTermination {
                 termination: term_a,
                 path: vec![
-                    hop("355.M03.01.02.PNL.01 13", Some("#2378128"), false),
                     hop("bfr4-us-chi02 et-0/0/0:0", Some("#2378170"), true),
+                    hop("355.M03.01.02.PNL.01 13", Some("#2378128"), false),
                 ],
             },
         ];
@@ -420,25 +431,26 @@ mod tests {
         assert_eq!(view.terminations[0].endpoint, "US-CHI02");
         assert_eq!(view.terminations[0].endpoint_kind, "site");
         assert_eq!(view.terminations[0].path.len(), 2);
-        assert!(view.terminations[0].path[1].endpoint);
+        // Device-first: the resolved endpoint leads.
+        assert!(view.terminations[0].path[0].endpoint);
         assert_eq!(view.terminations[1].side, "Z");
         assert_eq!(view.terminations[1].endpoint_kind, "provider network");
         assert!(view.terminations[1].path.is_empty());
 
-        // The diagram shows BOTH cable segments under the A termination.
+        // A is above the segment, so it reads device → panel → circuit: the router
+        // line comes before the panel line.
         assert_eq!(view.diagram[0], " A  US-CHI02  (site)");
+        let router_at = view
+            .diagram
+            .iter()
+            .position(|l| l == "    ↳ bfr4-us-chi02 et-0/0/0:0  ·  #2378170");
+        let panel_at = view
+            .diagram
+            .iter()
+            .position(|l| l == "    ↳ 355.M03.01.02.PNL.01 13  ·  #2378128");
         assert!(
-            view.diagram
-                .iter()
-                .any(|l| l == "    ↳ 355.M03.01.02.PNL.01 13  ·  #2378128"),
-            "{:?}",
-            view.diagram
-        );
-        assert!(
-            view.diagram
-                .iter()
-                .any(|l| l == "    ↳ bfr4-us-chi02 et-0/0/0:0  ·  #2378170"),
-            "{:?}",
+            router_at < panel_at && router_at.is_some(),
+            "router should come before the panel: {:?}",
             view.diagram
         );
         assert!(

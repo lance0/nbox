@@ -98,7 +98,8 @@ async fn circuit_path_walks_through_a_wired_panel_to_the_device() {
         .await
         .unwrap();
 
-    // A-side path has two segments: panel (rear R1) then the router interface.
+    // A-side path has two segments, device-first: the router interface (the
+    // resolved endpoint) leads, then the circuit-adjacent panel.
     let a = &view.terminations[0];
     assert_eq!(a.side, "A");
     assert_eq!(
@@ -107,15 +108,15 @@ async fn circuit_path_walks_through_a_wired_panel_to_the_device() {
         "expected two cable segments, got {:?}",
         a.path
     );
-    assert_eq!(a.path[0].to, "panel-1 R1");
-    assert_eq!(a.path[0].cable.as_deref(), Some("#100"));
-    assert!(!a.path[0].endpoint);
-    assert_eq!(a.path[1].to, "edge-1 et-0/0/1");
-    assert_eq!(a.path[1].cable.as_deref(), Some("#200"));
+    assert_eq!(a.path[0].to, "edge-1 et-0/0/1");
+    assert_eq!(a.path[0].cable.as_deref(), Some("#200"));
     assert!(
-        a.path[1].endpoint,
+        a.path[0].endpoint,
         "the router interface is the resolved endpoint"
     );
+    assert_eq!(a.path[1].to, "panel-1 R1");
+    assert_eq!(a.path[1].cable.as_deref(), Some("#100"));
+    assert!(!a.path[1].endpoint);
 
     // Z-side (provider network) has no cabled path.
     assert_eq!(view.terminations[1].side, "Z");
@@ -240,6 +241,7 @@ async fn circuit_path_handles_the_rear_ports_array_mapping() {
         "rear_ports mapping should resolve: {:?}",
         a.path
     );
-    assert_eq!(a.path[1].to, "edge-1 et-0/0/3:0");
-    assert!(a.path[1].endpoint);
+    // Device-first: the resolved router interface leads.
+    assert_eq!(a.path[0].to, "edge-1 et-0/0/3:0");
+    assert!(a.path[0].endpoint);
 }

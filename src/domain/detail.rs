@@ -379,10 +379,10 @@ struct NextHop {
 
 /// Walk a circuit termination's cable chain: from its immediate link peer, through
 /// any patch panels (rear↔front), to the device interface it lands on. Returns the
-/// ordered hops (first = the immediate neighbor). Stops at an interface (the
-/// resolved endpoint), a dead-end (e.g. an unwired panel — common), the hop cap, or
-/// a cycle. Best-effort and tolerant of the polymorphic JSON: a fetch error simply
-/// ends the chain where it is.
+/// hops **device-first** (the resolved endpoint leads; the circuit-adjacent panel
+/// is last). Stops at an interface (the resolved endpoint), a dead-end (e.g. an
+/// unwired panel — common), the hop cap, or a cycle. Best-effort and tolerant of
+/// the polymorphic JSON: a fetch error simply ends the chain where it is.
 async fn resolve_termination_path(client: &NetBoxClient, t: &CircuitTermination) -> Vec<PathHop> {
     let mut hops = Vec::new();
     let Some(peer) = t.link_peers.first() else {
@@ -419,6 +419,10 @@ async fn resolve_termination_path(client: &NetBoxClient, t: &CircuitTermination)
             None => break, // dead-end (unwired panel) or unsupported object
         }
     }
+    // Built from the circuit outward; present device-first (the resolved endpoint
+    // leads, the circuit-adjacent panel comes last) so the path reads from the
+    // equipment toward the circuit.
+    hops.reverse();
     hops
 }
 
