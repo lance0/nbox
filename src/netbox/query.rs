@@ -606,6 +606,20 @@ impl NetBoxClient {
         .await
     }
 
+    /// The A/Z terminations of a circuit (`?circuit_id=`). Returns both sides with
+    /// their endpoint, cable, and link peers in one call; the caller orders them.
+    pub async fn circuit_terminations(
+        &self,
+        circuit_id: u64,
+    ) -> Result<Vec<crate::netbox::models::circuits::CircuitTermination>> {
+        self.list_all(
+            Endpoint::CircuitTerminations,
+            vec![("circuit_id", circuit_id.to_string())],
+            8,
+        )
+        .await
+    }
+
     /// Resolve a circuit by numeric ID, then exact CID, then a CID-contains
     /// fallback (ambiguous → exit 5).
     pub async fn circuit_by_ref(&self, value: &str) -> Result<Option<Circuit>> {

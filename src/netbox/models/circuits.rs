@@ -37,6 +37,43 @@ pub struct Circuit {
     pub custom_fields: serde_json::Value,
 }
 
+/// One end (A or Z) of a circuit (`/api/circuits/circuit-terminations/`). The
+/// endpoint it lands on is the polymorphic `termination` (a site or a provider
+/// network, distinguished by `termination_type`); the physical hand-off is the
+/// `cable` and its `link_peers` (the device port it's patched into, if any).
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CircuitTermination {
+    pub id: u64,
+    /// `"A"` or `"Z"`.
+    #[serde(default)]
+    pub term_side: Option<String>,
+    /// The endpoint: a `dcim.site` or a `circuits.providernetwork` brief.
+    #[serde(default)]
+    pub termination: Option<BriefObject>,
+    /// The endpoint's content type, e.g. `"dcim.site"` / `"circuits.providernetwork"`.
+    #[serde(default)]
+    pub termination_type: Option<String>,
+    /// Port speed in kbps (`None` when unset).
+    #[serde(default)]
+    pub port_speed: Option<u64>,
+    /// Upstream speed in kbps (`None` when unset).
+    #[serde(default)]
+    pub upstream_speed: Option<u64>,
+    #[serde(default)]
+    pub xconnect_id: Option<String>,
+    /// Patch-panel / port info.
+    #[serde(default)]
+    pub pp_info: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// The cable from this termination (carries its id for the diagram).
+    #[serde(default)]
+    pub cable: Option<BriefObject>,
+    /// What the cable connects to — a device port brief (`device` + port name).
+    #[serde(default)]
+    pub link_peers: Vec<BriefObject>,
+}
+
 /// A nested ASN as it appears in a provider's `asns` array. The serializer
 /// returns the full ASN object; we keep only the AS number for the brief list.
 #[derive(Debug, Clone, Deserialize, Serialize)]

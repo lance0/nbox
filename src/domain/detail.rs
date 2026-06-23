@@ -37,7 +37,7 @@ use crate::domain::vrf_view::{VrfAddressRow, VrfDetail, VrfPrefixRow, VrfView};
 use crate::error::NboxError;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
-use crate::netbox::models::circuits::{Circuit, Provider};
+use crate::netbox::models::circuits::{Circuit, CircuitTermination, Provider};
 use crate::netbox::models::common::BriefObject;
 use crate::netbox::models::dcim::{Device, Interface, Rack, Site};
 use crate::netbox::models::ipam::{
@@ -323,7 +323,74 @@ pub async fn circuit_view_by_ref(
         .circuit_by_ref(value)
         .await?
         .ok_or_else(|| not_found("circuit", value))?;
-    Ok(CircuitView::from_model(circuit))
+    let terminations = client.circuit_terminations(circuit.id).await?;
+    Ok(CircuitView::build(circuit, terminations))
+}
+
+/// Navigable links for a circuit + its terminations: the provider/tenant, and per
+/// side the site endpoint and the device it's patched into (provider networks have
+/// no detail kind, so they're skipped).
+fn circuit_links(c: &Circuit, terminations: &[CircuitTermination]) -> Vec<ObjectLink> {
+    let mut l = Vec::new();
+    push_link(
+        &mut l,
+        "provider",
+        ObjectKind::Provider,
+        c.provider.as_ref(),
+    );
+    push_link(&mut l, "tenant", ObjectKind::Tenant, c.tenant.as_ref());
+    for t in terminations {
+        let side = t.term_side.as_deref().unwrap_or("?");
+        if t.termination_type.as_deref() == Some("dcim.site")
+            && let Some(site) = &t.termination
+        {
+            l.push(ObjectLink {
+                kind: ObjectKind::Site,
+                id: site.id,
+                relation: format!("{side}-side site"),
+                label: site.label(),
+            });
+        }
+        if let Some(peer) = t.link_peers.first()
+            && let Some(dev) = &peer.device
+        {
+            l.push(ObjectLink {
+                kind: ObjectKind::Device,
+                id: dev.id,
+                relation: format!("{side}-side device"),
+                label: dev.name_label(),
+            });
+        }
+    }
+    l
+}
+
+/// Build a circuit's [`DetailView`] (TUI): its attributes as the body, the A↔Z
+/// path as a dedicated scrollable tab, and navigable links to the provider, sites,
+/// and patched devices. Shared by `load_detail` (by id) and `load_detail_by_ref`.
+async fn load_circuit_detail_view(client: &NetBoxClient, circuit: Circuit) -> Result<DetailView> {
+    let id = circuit.id;
+    let terminations = client.circuit_terminations(id).await?;
+    let links = circuit_links(&circuit, &terminations);
+    let view = CircuitView::build(circuit, terminations);
+    let title = format!("circuit {}", view.cid);
+    let mut tabs = Vec::new();
+    if !view.diagram.is_empty() {
+        tabs.push(DetailTab {
+            key: 'p',
+            label: "path".to_string(),
+            body: view.diagram.join("\n"),
+            rows: Vec::new(),
+        });
+    }
+    Ok(DetailView::new(
+        ObjectKind::Circuit,
+        id,
+        title,
+        view.to_key_values().render(),
+    )
+    .with_tabs(tabs)
+    .with_links(links))
 }
 
 /// `aggregate <cidr|id>`: resolve an aggregate and build its view. Shared by CLI/MCP.
@@ -1445,8 +1512,9 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             let c: Circuit = client
                 .get(&format!("/api/circuits/circuits/{id}/"), &[])
                 .await?;
-            let v = CircuitView::from_model(c);
-            (format!("circuit {}", v.cid), v.to_key_values().render())
+            // The circuit view builds its own DetailView (attributes body + A↔Z
+            // path tab + provider/site/device links).
+            return load_circuit_detail_view(client, c).await;
         }
         ObjectKind::Aggregate => {
             let a: Aggregate = client
@@ -1671,9 +1739,8 @@ pub async fn load_detail_by_ref(
                 .circuit_by_ref(value)
                 .await?
                 .with_context(|| format!("no circuit matched \"{value}\""))?;
-            let id = c.id;
-            let v = CircuitView::from_model(c);
-            (id, format!("circuit {}", v.cid), v.to_key_values().render())
+            // The circuit view builds its own DetailView (path tab + links).
+            return load_circuit_detail_view(client, c).await;
         }
         ObjectKind::Aggregate => {
             let a = client
@@ -1951,6 +2018,46 @@ mod tests {
         assert!(got.contains(&(ObjectKind::Tenant, "tenant")));
         // A VRF has no detail kind, so it is never emitted as a link.
         assert!(!got.iter().any(|(_, r)| *r == "vrf"));
+    }
+
+    #[test]
+    fn circuit_links_cover_provider_site_and_patched_device_not_provider_network() {
+        use serde_json::json;
+        let c: Circuit = serde_json::from_value(json!({
+            "id": 1636, "url": "u", "cid": "FC-208420188",
+            "provider": {"id": 1, "display": "314BCE"},
+            "tenant": {"id": 9, "name": "acme", "display": "acme"},
+        }))
+        .unwrap();
+        let terms: Vec<CircuitTermination> = serde_json::from_value(json!([
+            {
+                "id": 2390, "term_side": "A",
+                "termination": {"id": 433, "display": "US-CHI02", "name": "US-CHI02"},
+                "termination_type": "dcim.site",
+                "link_peers": [
+                    {"id": 1, "name": "13", "device": {"id": 307_818, "name": "355.M03.01.02.PNL.01"}}
+                ]
+            },
+            {
+                "id": 2391, "term_side": "Z",
+                "termination": {"id": 317, "display": "314BCE DX"},
+                "termination_type": "circuits.providernetwork",
+                "link_peers": []
+            }
+        ]))
+        .unwrap();
+        let links = circuit_links(&c, &terms);
+        let got: Vec<(ObjectKind, &str)> = links
+            .iter()
+            .map(|l| (l.kind, l.relation.as_str()))
+            .collect();
+        assert!(got.contains(&(ObjectKind::Provider, "provider")));
+        assert!(got.contains(&(ObjectKind::Tenant, "tenant")));
+        // The A-side site and the device it's patched into are navigable.
+        assert!(got.contains(&(ObjectKind::Site, "A-side site")));
+        assert!(got.contains(&(ObjectKind::Device, "A-side device")));
+        // A provider network has no detail kind, so the Z-side emits no site link.
+        assert!(!got.iter().any(|(_, r)| *r == "Z-side site"));
     }
 
     #[test]

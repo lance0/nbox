@@ -43,7 +43,7 @@ nbox vlan <vid|name> [--site <name|slug>] [--group <name|slug>]
 nbox interface <device> <interface>
 nbox site <name|slug>
 nbox rack <name|id>
-nbox circuit <cid|id>
+nbox circuit <cid|id>                 # JSON adds a `terminations` array (A/Z endpoints + patch)
 nbox provider <slug|name|id>
 nbox aggregate <cidr|id>
 nbox asn <number>

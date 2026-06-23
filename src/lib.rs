@@ -1164,10 +1164,10 @@ async fn run_circuit(
     let view = detail::circuit_view_by_ref(&client, value, &not_found).await?;
     if wants_journal(journal, journal_limit) {
         let entries = inline_journal(&client, "circuit", value, journal_limit).await?;
-        let plain = view.to_key_values().render();
+        let plain = view.to_plain();
         emit_with_journal(ctx, view, entries, plain)
     } else {
-        emit(ctx, &view, || view.to_key_values().print())
+        emit(ctx, &view, || println!("{}", view.to_plain()))
     }
 }
 

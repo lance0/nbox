@@ -253,7 +253,7 @@ nbox next-prefix <cidr> [--length L] [--vrf <name>]   # available free block(s)
 nbox vlan <vid-or-name> [--site <s>] [--group <g>] [--journal]
 nbox site <name-or-slug> [--journal]
 nbox rack <name-or-id> [--journal]
-nbox circuit <cid-or-id> [--journal]
+nbox circuit <cid-or-id> [--journal]              # incl. its A↔Z terminations + path
 nbox provider <slug-or-name-or-id>
 nbox aggregate <cidr-or-id> [--journal]
 nbox asn <number> [--journal]

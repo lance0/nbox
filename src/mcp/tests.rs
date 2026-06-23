@@ -675,6 +675,29 @@ async fn get_circuit_returns_circuit_view() {
         })))
         .mount(&mock)
         .await;
+    // The circuit view also resolves its A/Z terminations.
+    Mock::given(method("GET"))
+        .and(path("/api/circuits/circuit-terminations/"))
+        .and(query_param("circuit_id", "3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [
+                {
+                    "id": 10, "term_side": "A",
+                    "termination": {"id": 1, "display": "DC1", "name": "DC1"},
+                    "termination_type": "dcim.site",
+                    "link_peers": []
+                },
+                {
+                    "id": 11, "term_side": "Z",
+                    "termination": {"id": 2, "display": "ACME Cloud"},
+                    "termination_type": "circuits.providernetwork",
+                    "link_peers": []
+                }
+            ]
+        })))
+        .mount(&mock)
+        .await;
 
     let Json(value) = server_for(&mock)
         .nbox_get(Parameters(get_args(GetKind::Circuit, "ACME-1234")))
@@ -685,6 +708,15 @@ async fn get_circuit_returns_circuit_view() {
     assert_eq!(value["provider"], "ACME");
     assert_eq!(value["status"], "active");
     assert_eq!(value["commit_rate_kbps"], 1_000_000);
+    // The A/Z terminations are surfaced, A first.
+    assert_eq!(value["terminations"][0]["side"], "A");
+    assert_eq!(value["terminations"][0]["endpoint"], "DC1");
+    assert_eq!(value["terminations"][0]["endpoint_kind"], "site");
+    assert_eq!(value["terminations"][1]["side"], "Z");
+    assert_eq!(
+        value["terminations"][1]["endpoint_kind"],
+        "provider network"
+    );
 }
 
 #[tokio::test]
