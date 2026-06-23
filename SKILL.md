@@ -19,24 +19,13 @@ Reach for `nbox` when the user wants to:
 - find a **free IP or prefix**, check **prefix utilization**, or **trace a cable path**;
 - pull NetBox data as **JSON/CSV** for a script, audit, or report.
 
-## Setup (once)
+## Prerequisites
 
-1. Install the binary:
-   ```bash
-   brew install lance0/tap/nbox      # macOS / Linux (Homebrew tap)
-   # or
-   cargo install nbox                # from crates.io
-   ```
-2. Point it at your NetBox with a token (a read-only token is enough):
-   ```bash
-   nbox config init                  # create the config (see `nbox config path`)
-   nbox profile add prod --url https://netbox.example.com --token-env NBOX_TOKEN
-   export NBOX_TOKEN=...             # or set `token = "..."` in the config file
-   nbox status                       # verify connectivity + NetBox version
-   ```
-   The config lives at `~/.config/nbox/config.toml` by default (`nbox config path`
-   prints the resolved location). The token can come from the config (`token = "…"`,
-   stored `0600`, redacted in output) or an env var.
+Assumes `nbox` is installed and pointed at a NetBox instance. Verify with `nbox
+status` (reports connectivity + the NetBox version). If it fails with exit code `3`
+(auth) or a missing-config error, the user still needs to install nbox and
+configure a profile + token — see the
+[README](https://github.com/lance0/nbox#readme).
 
 ## Core usage
 
@@ -63,43 +52,4 @@ Output flags:
 
 stdout carries only the requested data; logs/diagnostics/errors go to stderr. Exit
 codes are stable: `3` auth, `4` not-found, `5` ambiguous. Full command + flag
-reference: [AGENTS.md](AGENTS.md).
-
-## Use with Claude
-
-Two ways to wire nbox into Claude — they're complementary:
-
-### As an MCP server (recommended)
-
-`nbox serve` exposes the same read-only lookups as MCP tools (`nbox_status`,
-`nbox_search`, `nbox_get`, `nbox_get_interface`, `nbox_journal`, …) plus every
-object as an `nbox://{kind}/{ref}` resource.
-
-- **Claude Code:**
-  ```bash
-  claude mcp add nbox -- nbox serve
-  ```
-- **Claude Desktop** — add to your MCP config:
-  ```json
-  {
-    "mcpServers": {
-      "nbox": { "command": "nbox", "args": ["serve"] }
-    }
-  }
-  ```
-
-`nbox serve` reads the same `config.toml` / `NBOX_TOKEN` as the CLI. For a
-network-reachable deployment (HTTP transport + OIDC resource-server auth), see
-[docs/MCP.md](docs/MCP.md).
-
-### As an Agent Skill
-
-Install this skill so Claude Code loads it on matching requests and drives the CLI:
-
-```bash
-mkdir -p ~/.claude/skills/nbox && cp SKILL.md ~/.claude/skills/nbox/
-```
-
-Use `.claude/skills/nbox/SKILL.md` instead to scope it to a single project. Claude
-loads it when a request matches the `description` above, then runs the `nbox`
-subcommands directly (with `--no-tui` and `-o json`).
+reference: [AGENTS.md](https://github.com/lance0/nbox/blob/master/AGENTS.md).
