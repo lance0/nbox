@@ -841,7 +841,28 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
     // Otherwise fall back to recents, then a hint.
     if !app.view.is_empty() {
         let title = match app.browse_kind {
-            Some(kind) => format!(" {} ", browse_label(kind)),
+            Some(kind) => {
+                // `500+` when the list hit the browse cap — a built-in "refine the
+                // filter" cue; an exact count otherwise.
+                let n = app.view.len();
+                let count = if n >= crate::netbox::browse::BROWSE_CAP {
+                    format!("{}+", crate::netbox::browse::BROWSE_CAP)
+                } else {
+                    n.to_string()
+                };
+                match &app.browse_filter {
+                    Some(f) => {
+                        // "name contains" / "prefix contains" / "address contains" / …
+                        let field = crate::netbox::browse::browse_filter_field(kind)
+                            .map_or("name", |q| q.trim_end_matches("__ic"));
+                        format!(
+                            " {} · {field} contains \"{f}\" · {count} ",
+                            browse_label(kind)
+                        )
+                    }
+                    None => format!(" {} · {count} ", browse_label(kind)),
+                }
+            }
             None => " Results ".to_string(),
         };
         let mut block = Block::default()
@@ -2045,6 +2066,14 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &mut App) {
             frame.set_cursor_position(pos);
             return;
         }
+        Mode::BrowseFilter => {
+            let theme = app.theme.clone();
+            let pos = app
+                .filter_input
+                .render(frame, footer_input_area(area), '/', &theme);
+            frame.set_cursor_position(pos);
+            return;
+        }
         Mode::Normal => {}
     }
 
@@ -2185,6 +2214,11 @@ fn footer_nav(app: &App) -> &'static str {
         Screen::Home if app.focus == Focus::Nav => {
             " j/k browse · Enter results · / search · D dash · T tree · S settings · t theme · ? help · q quit "
         }
+        // A browse list (a kind picked from the Nav rail) filters by name with `/`;
+        // a search-result list keeps the global `/` search.
+        Screen::Home if app.browse_kind.is_some() && app.last_query.is_none() => {
+            " / filter · j/k move · Enter open · Esc clear · r refresh · D dash · T tree · ? help · q quit "
+        }
         Screen::Home => {
             " / search · j/k move · Enter open · D dash · T tree · S settings · Tab preview · o/y open/copy · r refresh · t theme · ? help · q quit "
         }
@@ -2212,6 +2246,7 @@ fn mode_label(mode: Mode) -> &'static str {
         Mode::Normal => "normal",
         Mode::Search => "search",
         Mode::Command => "command",
+        Mode::BrowseFilter => "filter",
     }
 }
 

@@ -95,6 +95,10 @@ pub enum Mode {
     Normal,
     Search,
     Command,
+    /// Editing the browse filter (a server-side substring name filter applied to
+    /// the current browse kind on Enter). Distinct from `Search`, which fans a
+    /// `q=` query across all kinds.
+    BrowseFilter,
 }
 
 /// Which pane of the three-pane home screen has focus. Movement keys route to it:
@@ -389,6 +393,9 @@ pub enum AppCommand {
     Browse {
         kind: ObjectKind,
         req: RequestId,
+        /// Optional server-side name filter (substring, case-insensitive) — see
+        /// [`crate::netbox::browse::browse`]. `None` lists the whole kind (capped).
+        filter: Option<String>,
     },
     LoadDetail {
         kind: ObjectKind,
@@ -615,6 +622,13 @@ pub struct App {
     pub search_input: TextInput,
     /// The `:` command-palette line editor — same cheese-backed wrapper.
     pub command_input: TextInput,
+    /// The browse-filter line editor (the `/` filter when browsing a kind). Its
+    /// text is applied server-side on Enter, distinct from the global search.
+    pub filter_input: TextInput,
+    /// The browse filter currently applied to `browse_kind` (substring, case-
+    /// insensitive). `None` = unfiltered. Drives the pane title and is re-sent with
+    /// each browse of that kind; cleared when the browse kind changes.
+    pub browse_filter: Option<String>,
     pub last_query: Option<String>,
     /// Active search filters (status / scope / tenant / role / tag / vrf), applied
     /// to every search. Set via the palette `filter k=v` verb (and, later, the
@@ -813,6 +827,8 @@ impl App {
             status_severity: Severity::Info,
             status_ttl: None,
             search_input: TextInput::new("search NetBox…"),
+            filter_input: TextInput::new("filter by name…"),
+            browse_filter: None,
             command_input: TextInput::new("command (e.g. device edge01)"),
             last_query: None,
             filters: SearchFilters::default(),
@@ -1337,6 +1353,7 @@ impl App {
             Mode::Normal => self.handle_normal_key(key),
             Mode::Search => self.handle_search_key(key),
             Mode::Command => self.handle_command_key(key),
+            Mode::BrowseFilter => self.handle_browse_filter_key(key),
         }
     }
 
@@ -1407,6 +1424,12 @@ impl App {
             // navigates back. `b` is always plain back/navigation (kept distinct so
             // it never clears the search out from under an in-flight detail load).
             KeyCode::Esc => {
+                if self.browse_filter.is_some() {
+                    // Peel the active browse filter first (back to the full list).
+                    self.browse_filter = None;
+                    self.filter_input.reset();
+                    return self.rebrowse_current();
+                }
                 if self.screen == Screen::Home && self.search_active() {
                     self.clear_search();
                 } else {
@@ -1415,9 +1438,24 @@ impl App {
             }
             KeyCode::Char('b') => return self.go_back(),
             KeyCode::Char('/') => {
-                self.mode = Mode::Search;
-                self.search_input.reset();
-                self.refilter();
+                // While browsing a filterable kind, `/` filters *that* list
+                // server-side (grep by name); otherwise it's the global search.
+                match self
+                    .browse_kind
+                    .filter(|k| crate::netbox::browse::browse_filter_field(*k).is_some())
+                {
+                    Some(_) => {
+                        self.mode = Mode::BrowseFilter;
+                        // Prefill with the active filter so it can be edited/extended.
+                        self.filter_input
+                            .set_value(self.browse_filter.clone().unwrap_or_default());
+                    }
+                    None => {
+                        self.mode = Mode::Search;
+                        self.search_input.reset();
+                        self.refilter();
+                    }
+                }
             }
             KeyCode::Char(':') => {
                 self.mode = Mode::Command;
@@ -2495,6 +2533,54 @@ impl App {
         Vec::new()
     }
 
+    /// Edit the browse filter. Explicit (not live): typing only edits; Enter
+    /// applies it server-side, an empty Enter or `Ctrl+X` clears it, Esc cancels
+    /// the edit (leaving the active filter untouched).
+    fn handle_browse_filter_key(&mut self, key: KeyEvent) -> Vec<AppCommand> {
+        let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
+        match key.code {
+            KeyCode::Esc => self.mode = Mode::Normal,
+            KeyCode::Char('x') if ctrl => {
+                self.mode = Mode::Normal;
+                self.browse_filter = None;
+                self.filter_input.reset();
+                return self.rebrowse_current();
+            }
+            KeyCode::Enter => {
+                self.mode = Mode::Normal;
+                if self.fence_during_switch() {
+                    return Vec::new();
+                }
+                let value = self.filter_input.value().trim().to_string();
+                self.browse_filter = (!value.is_empty()).then_some(value);
+                self.focus = Focus::List;
+                return self.rebrowse_current();
+            }
+            _ => {
+                self.filter_input.handle_key(key);
+            }
+        }
+        Vec::new()
+    }
+
+    /// Re-browse the current `browse_kind` with the active `browse_filter` applied
+    /// (the one path the browse filter re-fetches through).
+    fn rebrowse_current(&mut self) -> Vec<AppCommand> {
+        let Some(kind) = self.browse_kind else {
+            return Vec::new();
+        };
+        let filter = self.browse_filter.clone();
+        match filter.as_deref() {
+            Some(f) => self.set_status(format!("filtering by \"{f}\"…"), Severity::Info),
+            None => self.set_status("clearing filter…", Severity::Info),
+        }
+        vec![AppCommand::Browse {
+            kind,
+            req: 0,
+            filter,
+        }]
+    }
+
     fn handle_command_key(&mut self, key: KeyEvent) -> Vec<AppCommand> {
         match key.code {
             // Esc cancels the palette; Enter executes it. Everything else is text
@@ -2897,11 +2983,18 @@ impl App {
                     return Vec::new();
                 }
                 self.browse_kind = Some(kind);
+                // A freshly picked kind starts unfiltered.
+                self.browse_filter = None;
+                self.filter_input.reset();
                 // Remember it for the exit-time persist → restored next launch.
                 self.last_browsed = Some(kind);
                 self.focus = Focus::List;
                 self.set_status(format!("browsing {}…", section.label()), Severity::Info);
-                vec![AppCommand::Browse { kind, req: 0 }]
+                vec![AppCommand::Browse {
+                    kind,
+                    req: 0,
+                    filter: None,
+                }]
             }
             None => {
                 // Recent: drop browse/search results so the recents fallback shows.
@@ -3010,9 +3103,16 @@ impl App {
                 }
                 self.browse_kind = Some(kind);
                 self.last_query = None;
+                // Moving to a different kind starts unfiltered.
+                self.browse_filter = None;
+                self.filter_input.reset();
                 // Hovering is browsing: remember it for the exit-time persist too.
                 self.last_browsed = Some(kind);
-                vec![AppCommand::Browse { kind, req: 0 }]
+                vec![AppCommand::Browse {
+                    kind,
+                    req: 0,
+                    filter: None,
+                }]
             }
             None => {
                 // Recent: drop browse/search results so the recents fallback shows.
@@ -6090,6 +6190,56 @@ mod tests {
         assert_eq!(a.focus, Focus::List);
         // Browsing a kind records it for the exit-time persist.
         assert_eq!(a.last_browsed, Some(ObjectKind::Device));
+    }
+
+    #[test]
+    fn slash_browse_filter_applies_name_filter_on_enter() {
+        let mut a = app();
+        a.focus = Focus::Nav;
+        a.nav_selected = 0; // Devices
+        let _ = a.handle_event(press(KeyCode::Enter));
+        assert_eq!(a.browse_kind, Some(ObjectKind::Device));
+
+        // `/` while browsing a filterable kind opens the browse filter, not search.
+        a.handle_event(press(KeyCode::Char('/')));
+        assert_eq!(a.mode, Mode::BrowseFilter);
+
+        for c in "bfr".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert_eq!(a.mode, Mode::Normal);
+        assert_eq!(a.browse_filter.as_deref(), Some("bfr"));
+        assert!(
+            matches!(
+                cmds.as_slice(),
+                [AppCommand::Browse { kind: ObjectKind::Device, filter: Some(f), .. }] if f == "bfr"
+            ),
+            "got: {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn esc_peels_an_active_browse_filter_before_the_list() {
+        let mut a = app();
+        a.focus = Focus::Nav;
+        a.nav_selected = 0; // Devices
+        let _ = a.handle_event(press(KeyCode::Enter));
+        a.handle_event(press(KeyCode::Char('/')));
+        for c in "bfr".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        let _ = a.handle_event(press(KeyCode::Enter));
+        assert_eq!(a.browse_filter.as_deref(), Some("bfr"));
+
+        // Esc clears the filter (re-browse the kind unfiltered), keeping the kind.
+        let cmds = a.handle_event(press(KeyCode::Esc));
+        assert_eq!(a.browse_filter, None);
+        assert_eq!(a.browse_kind, Some(ObjectKind::Device));
+        assert!(
+            matches!(cmds.as_slice(), [AppCommand::Browse { filter: None, .. }]),
+            "got: {cmds:?}"
+        );
     }
 
     #[test]

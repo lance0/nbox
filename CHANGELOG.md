@@ -7,7 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [0.10.0] - 2026-06-23
+### Added
+
+- **Browse filter (grep-style).** When browsing a kind from the Nav rail, `/` now
+  filters that list **server-side** by name instead of opening the global search:
+  type a substring, Enter, and the list re-fetches matching rows. Explicit (not
+  live), so it doesn't hammer NetBox while you type. Uses the kind's natural field
+  (`name__ic` for devices/racks/sites/VLANs/VRFs/route-targets, `prefix__ic` for
+  prefixes, `address__ic` for IPs). The pane title shows the active filter and count
+  (`Devices · name contains "bfr" · 52`), `500+` signals the result cap (refine to
+  narrow), `Esc` clears the filter, and `Ctrl+X` / an empty Enter also clear it.
+  This makes large instances usable — finding one of hundreds of thousands of
+  devices by name instead of scrolling a capped list.
 
 ### Added
 
