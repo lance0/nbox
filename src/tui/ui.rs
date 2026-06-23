@@ -2896,6 +2896,30 @@ mod tests {
     }
 
     #[test]
+    fn footer_nav_browse_hint_is_kind_aware() {
+        // The browse-list footer advertises `/` by the kind's filterability: a
+        // name-bearing kind filters in place (`/ filter`, Esc clears it); a kind
+        // with no NetBox substring lookup (prefix/IP) routes `/` to global search
+        // (`/ search`). Guards the hint against drifting from the `/` router.
+        let mut a = app();
+        a.screen = Screen::Home;
+        a.focus = Focus::List;
+        a.last_query = None;
+
+        a.browse_kind = Some(ObjectKind::Device);
+        let filterable = footer_nav(&a);
+        assert!(filterable.contains("/ filter"), "filterable: {filterable}");
+
+        a.browse_kind = Some(ObjectKind::Prefix);
+        let plain = footer_nav(&a);
+        assert!(plain.contains("/ search"), "prefix: {plain}");
+        assert!(
+            !plain.contains("/ filter"),
+            "prefix browse must not advertise a filter: {plain}"
+        );
+    }
+
+    #[test]
     fn detail_footer_guards_enter_open_by_navigable_rows() {
         use crate::domain::detail::{DetailRow, DetailView};
         use crate::netbox::search::ObjectKind;

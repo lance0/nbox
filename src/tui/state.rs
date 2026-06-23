@@ -6248,6 +6248,29 @@ mod tests {
     }
 
     #[test]
+    fn slash_on_a_non_filterable_browse_opens_search_not_the_filter() {
+        // Prefix/IP key on a CIDR/inet field that NetBox has no `__ic` substring
+        // lookup for, so `browse_filter_field` is None — `/` must fall back to global
+        // search, never a filter that would silently match the whole table. This
+        // pins the router's behavioral flip (not just the field mapping): a router
+        // rewrite that ignored `browse_filter_field` would fail here.
+        let mut a = app();
+        a.focus = Focus::Nav;
+        a.nav_selected = 1; // Prefixes
+        let _ = a.handle_event(press(KeyCode::Enter));
+        assert_eq!(a.browse_kind, Some(ObjectKind::Prefix));
+
+        a.handle_event(press(KeyCode::Char('/')));
+        assert_eq!(
+            a.mode,
+            Mode::Search,
+            "prefix `/` routes to search, not filter"
+        );
+        // The browse context survives — search layers on top of it.
+        assert_eq!(a.browse_kind, Some(ObjectKind::Prefix));
+    }
+
+    #[test]
     fn esc_peels_an_active_browse_filter_before_the_list() {
         let mut a = app();
         a.focus = Focus::Nav;
