@@ -212,6 +212,15 @@ Polish the read experience. No writes here.
   pane title; prefix/IP keep `/` as global search (CIDR/inet columns have no `__ic` lookup, so a name filter
   there would silently match the whole table). The Nav-rail browse cap was raised 500 → 1000 (still one
   round trip — NetBox's per-request ceiling). Shipped to crates.io / Homebrew tap / GHCR.
+- ☑ **Release `0.12.0`** — **NetBox 4.2–4.6 kind & field coverage + agent hardening.** New first-class
+  kinds: `virtual-circuit` (4.2), `mac` reverse-lookup, `rack-group` + `vm-type` (4.6); the cross-cutting
+  `owner` field + `--owner`/`--owner-group` search filters (4.5); NAT inside/outside on `nbox ip` and a
+  cross-kind reverse-tag lookup (`nbox tagged`); interface as a first-class journal/`nbox_get` kind; a
+  credential preflight in `nbox status` (4.5). Robustness: `list_all` now follows the server's `next`
+  cursor (fixes a row-skip when a server caps `MAX_PAGE_SIZE` below the request), concurrent prefix detail,
+  and a search 404-swallow on version-gated endpoints. Agent surface: every `nbox_get` kind view pinned by
+  a response-contract test, a schema-drift canary against a pinned OpenAPI snapshot, and `nbox serve
+  --print-config` install recipes. Shipped to crates.io / Homebrew tap / GHCR.
 
 ---
 
