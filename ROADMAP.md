@@ -110,9 +110,10 @@ Polish the read experience. No writes here.
 - _Tracked vs by-design (`KNOWN_ISSUES.md` cross-reference, so the two docs stop drifting): the
   browse/sub-resource caps are covered by load-more above; the `offset += page_size` skip is **fixed**
   (0.12.0, `list_all` now follows `next`); hierarchical scope by the item above; read-only by **Writes
-  — deferred** and CSV shape by **CSV/output-mode contracts**. The remaining two — parent-prefix
-  enrichment as a best-effort longest match, and name lookups resolving exact-then-contains — are **by
-  design** (surfacing ambiguity over guessing), acknowledged here, not tracked for a fix._
+  — deferred** and CSV shape by **CSV/output-mode contracts**; device-by-name-vs-display is documented
+  (a `device_by_ref` suffix-strip fallback is a candidate fix), not yet scheduled. The remaining two —
+  parent-prefix enrichment as a best-effort longest match, and name lookups resolving exact-then-contains
+  — are **by design** (surfacing ambiguity over guessing), acknowledged here, not tracked for a fix._
 - ☐ **Demo recording** — an asciinema/VHS cast for the README.
 - ☑ **Interface journal + `nbox_get interface`.** Interfaces are now a
   first-class `GetKind::Interface` in both `nbox_get` (MCP + resource) and the

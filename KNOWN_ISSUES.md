@@ -57,6 +57,24 @@ ambiguous (exit 5) rather than guessed.
 
 ---
 
+### Device-by-name misses when the display carries an asset tag
+
+**Issue:** Device references resolve against NetBox's `name` (plus slug / numeric
+id), not the API `display`. Some instances decorate `display` with a suffix the
+`name` doesn't carry — e.g. an asset tag, so a device named `edge01` shows as
+`edge01 (m0001)`. A reference copied from that decorated display string won't
+match. This affects `nbox device <ref>` and anywhere a device ref is a component
+(the interface `<device>/<name>` ref, MAC/interface resolution).
+
+**Impact:** Pasting a device's *displayed* string (with the suffix) returns
+not-found (exit 4) even though the device exists; the bare name resolves fine.
+
+**Mitigation:** Use the device's bare `name` (the part before the decoration) or
+its numeric id — `nbox search` and `nbox device` show the canonical name. A
+`device_by_ref` fallback that strips a trailing ` (…)` suffix is a candidate fix.
+
+---
+
 ### Sub-resource lists are capped
 
 **Issue:** Device interfaces/IPs/services and prefix children/IPs are capped
