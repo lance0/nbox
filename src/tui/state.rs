@@ -1442,7 +1442,8 @@ impl App {
             KeyCode::Char('b') => return self.go_back(),
             KeyCode::Char('/') => {
                 // While browsing a filterable kind, `/` filters *that* list
-                // server-side (grep by name); otherwise it's the global search.
+                // server-side — a name substring for name-bearing kinds, a
+                // CIDR-containment filter for prefix/IP; otherwise it's global search.
                 match self
                     .browse_kind
                     .filter(|k| crate::netbox::browse::browse_filter_field(*k).is_some())
@@ -2538,7 +2539,9 @@ impl App {
 
     /// Edit the browse filter. Explicit (not live): typing only edits; Enter
     /// applies it server-side, an empty Enter or `Ctrl+X` clears it, Esc cancels
-    /// the edit (leaving the active filter untouched).
+    /// the edit (leaving the active filter untouched). For CIDR-containment filters
+    /// (prefix/IP browse) Enter validates the input as a CIDR first — an invalid
+    /// value stays in the edit with a status error rather than round-tripping a 400.
     fn handle_browse_filter_key(&mut self, key: KeyEvent) -> Vec<AppCommand> {
         let ctrl = key.modifiers.contains(KeyModifiers::CONTROL);
         match key.code {
@@ -2553,11 +2556,26 @@ impl App {
                 return self.rebrowse_current();
             }
             KeyCode::Enter => {
+                let value = self.filter_input.value().trim().to_string();
+                // Containment filters (prefix/IP browse) take a CIDR — validate it
+                // locally before sending, so a typo is an instant error, not a
+                // NetBox 400 round-trip. Stay in BrowseFilter mode (keep the typed
+                // text) so it can be fixed; the status line carries the reason.
+                let needs_cidr = self.browse_kind.is_some_and(|k| {
+                    crate::netbox::browse::browse_filter_field(k)
+                        .is_some_and(crate::netbox::browse::BrowseFilter::is_containment)
+                });
+                if !value.is_empty() && needs_cidr && value.parse::<ipnet::IpNet>().is_err() {
+                    self.set_transient_status(
+                        format!("invalid CIDR: \"{value}\" — e.g. 10.0.0.0/24"),
+                        Severity::Warning,
+                    );
+                    return Vec::new();
+                }
                 self.mode = Mode::Normal;
                 if self.fence_during_switch() {
                     return Vec::new();
                 }
-                let value = self.filter_input.value().trim().to_string();
                 self.browse_filter = (!value.is_empty()).then_some(value);
                 self.focus = Focus::List;
                 return self.rebrowse_current();
@@ -6248,12 +6266,11 @@ mod tests {
     }
 
     #[test]
-    fn slash_on_a_non_filterable_browse_opens_search_not_the_filter() {
-        // Prefix/IP key on a CIDR/inet field that NetBox has no `__ic` substring
-        // lookup for, so `browse_filter_field` is None — `/` must fall back to global
-        // search, never a filter that would silently match the whole table. This
-        // pins the router's behavioral flip (not just the field mapping): a router
-        // rewrite that ignored `browse_filter_field` would fail here.
+    fn slash_on_prefix_browse_opens_containment_filter() {
+        // Prefix browse now filters *server-side* by network containment
+        // (`within_include`), so `/` opens the browse filter, not global search.
+        // Pins the router's behavioral flip: prefix went None→Containment, so a
+        // router keyed off the old field mapping would route to search here.
         let mut a = app();
         a.focus = Focus::Nav;
         a.nav_selected = 1; // Prefixes
@@ -6263,11 +6280,98 @@ mod tests {
         a.handle_event(press(KeyCode::Char('/')));
         assert_eq!(
             a.mode,
-            Mode::Search,
-            "prefix `/` routes to search, not filter"
+            Mode::BrowseFilter,
+            "prefix `/` routes to the containment filter, not search"
         );
+
+        for c in "10.0.0.0/24".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert_eq!(a.mode, Mode::Normal);
+        assert_eq!(a.browse_filter.as_deref(), Some("10.0.0.0/24"));
+        assert!(
+            matches!(
+                cmds.as_slice(),
+                [AppCommand::Browse { kind: ObjectKind::Prefix, filter: Some(f), .. }] if f == "10.0.0.0/24"
+            ),
+            "got: {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn slash_on_ip_browse_opens_containment_filter() {
+        // IP-address browse filters by `parent=<cidr>` containment — `/` opens the
+        // browse filter, not search (the companion to the prefix case above).
+        let mut a = app();
+        a.focus = Focus::Nav;
+        a.nav_selected = 2; // IPs
+        let _ = a.handle_event(press(KeyCode::Enter));
+        assert_eq!(a.browse_kind, Some(ObjectKind::IpAddress));
+
+        a.handle_event(press(KeyCode::Char('/')));
+        assert_eq!(a.mode, Mode::BrowseFilter, "ip `/` routes to the filter");
+
+        for c in "10.0.0.0/24".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert_eq!(a.mode, Mode::Normal);
+        assert!(
+            matches!(
+                cmds.as_slice(),
+                [AppCommand::Browse { kind: ObjectKind::IpAddress, filter: Some(f), .. }] if f == "10.0.0.0/24"
+            ),
+            "got: {cmds:?}"
+        );
+    }
+
+    #[test]
+    fn invalid_cidr_in_browse_filter_stays_in_edit_with_an_error() {
+        // Containment filters take a CIDR — a typo is validated locally before
+        // sending, so it never round-trips a NetBox 400. Stays in BrowseFilter
+        // (the typed text is kept for fixing), no Browse command is issued, and
+        // the status line carries the reason.
+        let mut a = app();
+        a.focus = Focus::Nav;
+        a.nav_selected = 1; // Prefixes
+        let _ = a.handle_event(press(KeyCode::Enter));
+        a.handle_event(press(KeyCode::Char('/')));
+        assert_eq!(a.mode, Mode::BrowseFilter);
+
+        for c in "not-a-cidr".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert_eq!(
+            a.mode,
+            Mode::BrowseFilter,
+            "stays in the edit on a bad CIDR"
+        );
+        assert!(cmds.is_empty(), "no Browse command on an invalid CIDR");
+        assert!(
+            a.status.contains("invalid CIDR"),
+            "status explains the bad input: {:?}",
+            a.status
+        );
+        assert_eq!(a.browse_filter, None, "the filter is not set on a bad CIDR");
+    }
+
+    #[test]
+    fn slash_on_a_non_filterable_kind_falls_back_to_search() {
+        // Defensive fallback: a kind with no usable browse filter routes `/` to
+        // global search. No Nav-rail kind is in this state today (every rail kind
+        // is name- or containment-filterable), so this is pinned with a synthetic
+        // non-rail kind (Asn) set directly — it guards the router's `None` arm
+        // against a future non-filterable browse kind landing on the rail.
+        let mut a = app();
+        a.focus = Focus::Nav;
+        a.browse_kind = Some(ObjectKind::Asn);
+
+        a.handle_event(press(KeyCode::Char('/')));
+        assert_eq!(a.mode, Mode::Search, "non-filterable `/` routes to search");
         // The browse context survives — search layers on top of it.
-        assert_eq!(a.browse_kind, Some(ObjectKind::Prefix));
+        assert_eq!(a.browse_kind, Some(ObjectKind::Asn));
     }
 
     #[test]

@@ -88,10 +88,10 @@ See [AGENTS.md](../AGENTS.md) for the machine-readable surface and exit codes.
 `nbox` (no subcommand) launches the TUI — a three-pane home (a navigation rail of
 browsable kinds → results → a live detail preview):
 
-- `/` search — or, on a name-bearing browse kind (devices, sites, racks, VLANs,
-  VRFs, route-targets), a server-side substring filter (`name__ic`) on
-  that list; prefix/IP browse route `/` to search (NetBox has no CIDR/inet
-  substring lookup — containment filtering is planned), `:` command palette,
+- `/` search — or, on a browse kind, a server-side filter on that list: a name
+  substring (`name__ic`) for devices/sites/racks/VLANs/VRFs/route-targets, or
+  network containment for prefix (`within_include`) and IP (`parent`) browse
+  (type a CIDR, Enter; the title reads `within "10.0.0.0/24"`). `:` command palette,
   `f`/`F` filter / clear, `Tab`/`Shift+Tab` move between panes (or cycle detail
   tabs), `j`/`k` move (live-browse the kind while on the nav rail), `g`/`G`
   top/bottom, `Enter` open.
