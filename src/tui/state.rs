@@ -6254,16 +6254,16 @@ mod tests {
         a.handle_event(press(KeyCode::Char('/')));
         assert_eq!(a.mode, Mode::BrowseFilter);
 
-        for c in "bfr".chars() {
+        for c in "edge".chars() {
             a.handle_event(press(KeyCode::Char(c)));
         }
         let cmds = a.handle_event(press(KeyCode::Enter));
         assert_eq!(a.mode, Mode::Normal);
-        assert_eq!(a.browse_filter.as_deref(), Some("bfr"));
+        assert_eq!(a.browse_filter.as_deref(), Some("edge"));
         assert!(
             matches!(
                 cmds.as_slice(),
-                [AppCommand::Browse { kind: ObjectKind::Device, filter: Some(f), .. }] if f == "bfr"
+                [AppCommand::Browse { kind: ObjectKind::Device, filter: Some(f), .. }] if f == "edge"
             ),
             "got: {cmds:?}"
         );
@@ -6385,11 +6385,11 @@ mod tests {
         a.nav_selected = 0; // Devices
         let _ = a.handle_event(press(KeyCode::Enter));
         a.handle_event(press(KeyCode::Char('/')));
-        for c in "bfr".chars() {
+        for c in "edge".chars() {
             a.handle_event(press(KeyCode::Char(c)));
         }
         let _ = a.handle_event(press(KeyCode::Enter));
-        assert_eq!(a.browse_filter.as_deref(), Some("bfr"));
+        assert_eq!(a.browse_filter.as_deref(), Some("edge"));
 
         // Esc clears the filter (re-browse the kind unfiltered), keeping the kind.
         let cmds = a.handle_event(press(KeyCode::Esc));
@@ -6408,7 +6408,7 @@ mod tests {
         a.nav_selected = 0; // Devices
         let _ = a.handle_event(press(KeyCode::Enter));
         a.handle_event(press(KeyCode::Char('/')));
-        for c in "bfr".chars() {
+        for c in "edge".chars() {
             a.handle_event(press(KeyCode::Char(c)));
         }
         let _ = a.handle_event(press(KeyCode::Enter));
@@ -6418,7 +6418,7 @@ mod tests {
         assert!(
             matches!(
                 cmds.as_slice(),
-                [AppCommand::Browse { kind: ObjectKind::Device, filter: Some(f), .. }] if f == "bfr"
+                [AppCommand::Browse { kind: ObjectKind::Device, filter: Some(f), .. }] if f == "edge"
             ),
             "got: {cmds:?}"
         );

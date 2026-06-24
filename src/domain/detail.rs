@@ -738,9 +738,24 @@ pub async fn mac_view_by_ref(
     value: &str,
     not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
 ) -> Result<MacView> {
+    Ok(MacView::from_model(
+        resolve_mac(client, mac, value, not_found).await?,
+    ))
+}
+
+/// Resolve a (normalized) MAC to a single [`MacAddress`]. MACs aren't enforced
+/// globally unique, so >1 candidate is `Ambiguous` (exit 5) and 0 is not-found
+/// (exit 4) — never a silent first-pick. Shared by `nbox mac`, `nbox open
+/// mac/<addr>`, and `nbox journal mac <addr>` so all three honor the same
+/// exit-code contract.
+pub(crate) async fn resolve_mac(
+    client: &NetBoxClient,
+    mac: &str,
+    value: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<MacAddress> {
     let candidates = client.mac_candidates(mac).await?;
-    let m = resolve_unique("MAC", value, candidates, label_mac, not_found)?;
-    Ok(MacView::from_model(m))
+    resolve_unique("MAC", value, candidates, label_mac, not_found)
 }
 
 /// A MAC candidate's one-line label for the ambiguous-match list: the MAC plus

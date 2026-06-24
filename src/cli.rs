@@ -63,9 +63,9 @@ pub enum Command {
     /// Launch the interactive TUI.
     Tui,
 
-    /// Search devices, sites, racks, IPs, prefixes, VLANs, circuits, aggregates,
-    /// ASNs, IP ranges, tenants, contacts, providers, VMs, clusters, VRFs, and
-    /// route targets.
+    /// Search devices, sites, racks, rack groups, IPs, prefixes, VLANs, circuits,
+    /// virtual circuits, aggregates, ASNs, IP ranges, tenants, contacts, providers,
+    /// VMs, VM types, clusters, VRFs, and route targets.
     Search {
         /// Free-text query.
         query: String,
@@ -424,8 +424,10 @@ pub enum Command {
 
     /// Show recent journal entries for an object.
     Journal {
-        /// Object kind: device, ip, prefix, vlan, site, rack, circuit,
-        /// aggregate, asn, ip-range, or interface (`<device>/<name>`).
+        /// Object kind: device, ip, prefix, vlan, site, rack, rack-group, circuit,
+        /// virtual-circuit, aggregate, asn, ip-range, tenant, contact, provider,
+        /// vm, vm-type, cluster, vrf, route-target, mac, or interface
+        /// (`<device>/<name>`).
         kind: String,
 
         /// Object reference (name, address, CIDR, VID, slug, or ID).
