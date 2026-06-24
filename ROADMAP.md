@@ -23,9 +23,9 @@ Legend: ☐ planned · ◐ in progress · ☑ done
 
 The read surface is broad and stable today (full history in `CHANGELOG.md`):
 
-- **CLI lookups — 18 object types:** `device`, `interface`, `ip`, `prefix`, `vlan`, `site`, `rack`,
+- **CLI lookups — 19 object types:** `device`, `interface`, `ip`, `prefix`, `vlan`, `site`, `rack`,
   `circuit`, `provider`, `aggregate`, `asn`, `ip-range`, `tenant`, `contact`, `vm`, `cluster`, `vrf`,
-  `route-target`, plus `search`, `journal`, `tags`, `status`, `open`, `raw GET`. NetBox 4.2+ polymorphic scope + VRF
+  `route-target`, `mac`, plus `search`, `journal`, `tags`, `status`, `open`, `raw GET`. NetBox 4.2+ polymorphic scope + VRF
   correctness; ambiguous refs exit `5` with the candidate list.
 - **Search:** parallel multi-endpoint fan-out with `--status` / `--site` / `--region` /
   `--site-group` / `--location` / `--tenant` / `--role` / `--tag` / `--vrf` filters (per-endpoint
@@ -213,9 +213,16 @@ NetBox has moved to 4.6 (tick-tock cadence; 4.7 "tock" — may break — is the 
 A 2026-06 feature scan surfaced read-only, non-goal-respecting surface nbox doesn't yet
 cover. All of these stay within the read-only product and the explicit non-goals.
 
-- ☐ **MAC addresses as a first-class kind** _(NetBox 4.2)_. MACs became standalone objects
-  (multi-per-interface, primary designation). Add `nbox mac <addr>` to reverse-resolve
-  MAC → interface → device — a top operator/agent query nbox can't answer today. Highest value.
+- ☑ **MAC addresses as a first-class kind** _(NetBox 4.2)_. `nbox mac <addr>`
+  reverse-resolves a MAC to the interface(s)/device(s) that carry it — a top
+  operator/agent query nbox couldn't answer. Any common MAC form is normalized
+  first (a non-MAC is a usage error, no round-trip); MACs aren't globally unique,
+  so several carrying interfaces surface as ambiguous (exit 5) with the candidate
+  list. Polymorphic assignment (physical interface *or* VM interface) renders as
+  `"<parent> <interface>"`. On the CLI, MCP (`nbox_get` kind `mac` /
+  `nbox://mac/<addr>`), and `nbox open mac/<addr>`. Lookup-only (exact
+  `mac_address=`) — not browsable/searchable, since MACs aren't substring-meaningful.
+  Highest value, shipped.
 - ☐ **New object kinds from 4.2/4.6.** `virtual-circuit` (+ terminations, 4.2), and the 4.6
   additions `virtual-machine-type`, `rack-group`, `cable-bundle` — small, formulaic lookups
   that keep kind coverage current. (Each: model + `nbox <kind>` + detail view; `cable-bundle`

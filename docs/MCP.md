@@ -335,10 +335,10 @@ All tools are annotated read-only.
 
 `nbox_get` and `nbox_journal` take a `kind` and a `ref`. `kind` is one of
 `device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `circuit`, `aggregate`,
-`asn`, `ip_range`, `tenant`, `contact`, `provider`, `vm`, `cluster`, `vrf`, `route_target` — both
+`asn`, `ip_range`, `tenant`, `contact`, `provider`, `vm`, `cluster`, `vrf`, `route_target`, `mac` — both
 tools accept the full set. `ref` is the natural reference for that kind: a
 name/slug/ID for named objects, a CIDR for prefix and aggregate, an address for
-ip, a VID or name for vlan, the AS number for asn, a name/RD/ID for vrf, a name (e.g. 65000:100) or ID for route_target.
+ip, a VID or name for vlan, the AS number for asn, a name/RD/ID for vrf, a name (e.g. 65000:100) or ID for route_target, a MAC address (any common form, normalized) for mac.
 
 `nbox_get` also accepts `ip_address` as an alias for `ip` — that's the `kind` a
 `nbox_search` result carries, so a search → get chain can pass the hit's `kind`
@@ -355,7 +355,7 @@ nbox://{kind}/{ref}
 
 `kind` is the same set as `nbox_get` (`device`, `ip`, `prefix`, `vlan`, `site`,
 `rack`, `circuit`, `aggregate`, `asn`, `ip_range`, `tenant`, `contact`,
-`provider`, `vm`, `cluster`, `vrf`, `route_target`); `ref` is the same natural reference. Reading a resource returns the
+`provider`, `vm`, `cluster`, `vrf`, `route_target`, `mac`); `ref` is the same natural reference. Reading a resource returns the
 object as JSON — the exact view model `nbox_get` returns. Examples:
 `nbox://device/edge01`, `nbox://ip/10.0.0.1`, `nbox://site/iad1`.
 

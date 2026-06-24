@@ -1076,3 +1076,61 @@ async fn cluster_contains_with_multiple_matches_is_ambiguous() {
         "got: {msg}"
     );
 }
+
+#[tokio::test]
+async fn mac_candidates_uses_mac_address_filter() {
+    // The reverse-lookup filter is `mac_address=<canonical>`. The mock matches
+    // ONLY when that param is present, so an unfiltered request would get no reply.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/mac-addresses/"))
+        .and(query_param("mac_address", "aa:bb:cc:dd:ee:ff"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 7, "url": "http://nb/api/dcim/mac-addresses/7/",
+                "mac_address": "aa:bb:cc:dd:ee:ff",
+                "assigned_object": {"display": "xe-0/0/1", "device": {"display": "edge01"}}
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let macs = client(&server)
+        .mac_candidates("aa:bb:cc:dd:ee:ff")
+        .await
+        .unwrap();
+    assert_eq!(macs.len(), 1);
+    assert_eq!(macs[0].mac_address, "aa:bb:cc:dd:ee:ff");
+}
+
+#[tokio::test]
+async fn mac_candidates_can_return_multiple_for_an_ambiguous_mac() {
+    // MACs aren't globally unique — the same MAC on two interfaces returns both,
+    // which the resolver surfaces as ambiguous (exit 5), not a silent first-pick.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/mac-addresses/"))
+        .and(query_param("mac_address", "aa:bb:cc:dd:ee:ff"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [
+                {"id": 7, "url": "u", "mac_address": "aa:bb:cc:dd:ee:ff",
+                 "assigned_object": {"display": "xe-0/0/1", "device": {"display": "edge01"}}},
+                {"id": 8, "url": "u", "mac_address": "aa:bb:cc:dd:ee:ff",
+                 "assigned_object": {"display": "xe-0/0/2", "device": {"display": "edge01"}}}
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let macs = client(&server)
+        .mac_candidates("aa:bb:cc:dd:ee:ff")
+        .await
+        .unwrap();
+    assert_eq!(
+        macs.len(),
+        2,
+        "an ambiguous MAC returns every interface that carries it"
+    );
+}

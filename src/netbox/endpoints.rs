@@ -30,6 +30,7 @@ pub enum Endpoint {
     IpRanges,
     JournalEntries,
     Tags,
+    MacAddresses,
 }
 
 impl Endpoint {
@@ -63,6 +64,7 @@ impl Endpoint {
             Endpoint::IpRanges => "/api/ipam/ip-ranges/",
             Endpoint::JournalEntries => "/api/extras/journal-entries/",
             Endpoint::Tags => "/api/extras/tags/",
+            Endpoint::MacAddresses => "/api/dcim/mac-addresses/",
         }
     }
 

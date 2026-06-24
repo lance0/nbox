@@ -187,6 +187,48 @@ pub struct Rack {
     pub custom_fields: serde_json::Value,
 }
 
+/// A MAC address (`/api/dcim/mac-addresses/`, NetBox 4.2+). Standalone objects
+/// since 4.2 — an interface or VM interface can carry several, with a primary
+/// designation. The reverse-resolve query (`nbox mac <addr>`) is a top
+/// operator/agent ask (which device owns this MAC?).
+///
+/// `assigned_object` is polymorphic: a `dcim.interface` (carries a `device`) or
+/// a `virtualization.vminterface` (carries a `virtual_machine`). It's left as
+/// raw JSON and labeled by the view layer (see `mac_view::assigned_label`),
+/// mirroring how `IpAddress` handles its `assigned_object`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct MacAddress {
+    pub id: u64,
+    pub url: String,
+    /// NetBox's `display` (the MAC +, when assigned, the interface).
+    #[serde(default)]
+    pub display: Option<String>,
+    /// The MAC in NetBox's canonical form (e.g. `aa:bb:cc:dd:ee:ff`).
+    pub mac_address: String,
+    /// The dotted content type of the assigned object (`dcim.interface`,
+    /// `virtualization.vminterface`, …), or `None` for an unassigned MAC.
+    #[serde(default)]
+    pub assigned_object_type: Option<String>,
+    /// The id of the assigned object, or `None` for an unassigned MAC.
+    #[serde(default)]
+    pub assigned_object_id: Option<u64>,
+    /// The assigned interface/VM-interface brief (polymorphic; labeled in the
+    /// view). `None` when the MAC is unassigned.
+    #[serde(default)]
+    pub assigned_object: Option<serde_json::Value>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// The owner (a user/group, NetBox 4.5+); same shape as a brief object.
+    #[serde(default)]
+    pub owner: Option<BriefObject>,
+    #[serde(default)]
+    pub comments: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<Tag>,
+    #[serde(default)]
+    pub custom_fields: serde_json::Value,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

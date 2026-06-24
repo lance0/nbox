@@ -66,6 +66,10 @@ pub fn browse_filter_field(kind: ObjectKind) -> Option<BrowseFilter> {
         ObjectKind::Aggregate | ObjectKind::Asn | ObjectKind::IpRange | ObjectKind::Interface => {
             None
         }
+        // MAC isn't substring-meaningful (you reverse-resolve by exact MAC), so
+        // there's no browse filter — not browsable. (Listed for exhaustiveness; a
+        // MAC is never a Nav-rail kind.)
+        ObjectKind::Mac => None,
     }
 }
 

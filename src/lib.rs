@@ -31,6 +31,7 @@ pub mod cli;
 pub mod config;
 pub mod domain;
 pub mod error;
+pub mod mac;
 pub mod mcp;
 pub mod netbox;
 pub mod output;
@@ -336,6 +337,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Cluster { value }) => run_cluster(&ctx, &value).await,
         Some(Command::Vrf { value }) => run_vrf(&ctx, &value).await,
         Some(Command::RouteTarget { value }) => run_route_target(&ctx, &value).await,
+        Some(Command::Mac { value }) => run_mac(&ctx, &value).await,
         Some(Command::Vlan {
             value,
             site,
@@ -1306,6 +1308,21 @@ async fn run_route_target(ctx: &Ctx, value: &str) -> Result<()> {
     emit(ctx, &detail, || println!("{}", detail.to_plain()))
 }
 
+/// `nbox mac <addr>` — reverse-resolve a MAC to its interface(s)/device(s).
+/// The input is normalized first (any common MAC form); a non-MAC is a usage
+/// error (exit 2), no match is not-found (4), and >1 interface carrying it is
+/// ambiguous (5) — MACs aren't enforced globally unique.
+async fn run_mac(ctx: &Ctx, value: &str) -> Result<()> {
+    let client = connect(ctx)?;
+    let mac = crate::mac::normalize(value).ok_or_else(|| {
+        error::NboxError::Usage(format!(
+            "invalid MAC address \"{value}\" — try aa:bb:cc:dd:ee:ff"
+        ))
+    })?;
+    let view = detail::mac_view_by_ref(&client, &mac, value, &not_found).await?;
+    emit(ctx, &view, || view.to_key_values().print())
+}
+
 /// `nbox open <kind/ref>` — resolve an object and open it in the browser.
 async fn run_open(ctx: &Ctx, object_ref: &str) -> Result<()> {
     let (kind, value) = parse_object_ref(object_ref)?;
@@ -1400,8 +1417,24 @@ pub(crate) async fn resolve_object_url(
                 .ok_or_else(|| not_found("device", device))?;
             client.device_interface(dev.id, name).await?.map(|i| i.url)
         }
+        "mac" => {
+            // Normalize first; a non-MAC is a usage error. Open the first match —
+            // if several interfaces carry it, the operator narrows from the
+            // ambiguous error `nbox mac` would raise on a direct lookup.
+            let mac = crate::mac::normalize(value).ok_or_else(|| {
+                error::NboxError::Usage(format!(
+                    "invalid MAC address \"{value}\" — try aa:bb:cc:dd:ee:ff"
+                ))
+            })?;
+            client
+                .mac_candidates(&mac)
+                .await?
+                .into_iter()
+                .next()
+                .map(|m| m.url)
+        }
         other => anyhow::bail!(
-            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, interface)"
+            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, route-target, interface, mac)"
         ),
     };
     Ok(url)
@@ -1414,7 +1447,7 @@ fn parse_object_ref(s: &str) -> Result<(&str, &str)> {
         .filter(|(kind, value)| !kind.is_empty() && !value.is_empty())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "object reference must be `<kind>/<ref>` (e.g. device/edge01)\n\nKinds: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, route-target"
+                "object reference must be `<kind>/<ref>` (e.g. device/edge01)\n\nKinds: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, route-target, mac"
             )
         })
 }
@@ -1519,8 +1552,20 @@ pub(crate) async fn resolve_content_type_id(
             .route_target_by_ref(value)
             .await?
             .map(|rt| ("ipam.routetarget", rt.id)),
+        "mac" => {
+            // Normalize first; a non-MAC is a usage error here too. MACs aren't
+            // journalable in NetBox, so this resolves the id only (for `nbox open`).
+            let mac = crate::mac::normalize(value)
+                .ok_or_else(|| anyhow::anyhow!("invalid MAC address \"{value}\""))?;
+            client
+                .mac_candidates(&mac)
+                .await?
+                .into_iter()
+                .next()
+                .map(|m| ("dcim.macaddress", m.id))
+        }
         other => anyhow::bail!(
-            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, route-target)"
+            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, route-target, mac)"
         ),
     };
     resolved.ok_or_else(|| not_found(kind, value))

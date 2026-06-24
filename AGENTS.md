@@ -54,6 +54,7 @@ nbox vm <name|id>
 nbox cluster <name|id>
 nbox vrf <name|rd|id>
 nbox route-target <name|id>
+nbox mac <addr>                   # any common form (aa:bb:cc:dd:ee:ff, AABB.CCDD.EEFF, …) is normalized; reverse-resolves to the carrying interface(s)/device(s)
 nbox search <query> [--limit N] [--status S] [--site <name|slug|id>] [--region <name|slug|id>] [--site-group <name|slug|id>] [--location <name|slug|id>] [--tenant SLUG] [--role SLUG] [--tag SLUG] [--vrf <id|rd|name>] [--cols a,b,c] [--partial]
 nbox tags
 nbox journal <kind> <ref>
@@ -81,7 +82,7 @@ stderr. Every tool is annotated read-only.
 | ---- | ------- |
 | `nbox_status` | Connection + active backend capabilities + NetBox/Django/Python versions (call first to confirm reachability and inspect `capabilities`). |
 | `nbox_search` | Search devices/sites/racks/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP ranges/tenants/contacts/providers/VMs/clusters/VRFs/route-targets; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag` (one scope filter at a time), `vrf` (id\|rd\|name; filters IP/prefix results only). Find a reference before `nbox_get`; a result's `kind` (e.g. `ip_address`) feeds straight into `nbox_get`, which accepts it as an alias for `ip`. |
-| `nbox_get` | One object: `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target) + `ref`; `vrf`/`site`/`group` disambiguate (an ambiguous ref returns the candidates). |
+| `nbox_get` | One object: `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target, mac) + `ref`; `vrf`/`site`/`group` disambiguate (an ambiguous ref returns the candidates). |
 | `nbox_get_interface` | One interface on a device: config, addresses, cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix (nothing reserved); `count`, `vrf`. |
 | `nbox_next_prefix` | Available child prefix(es) in a prefix; `length` for a block of a size, else all free blocks; `vrf`. |
