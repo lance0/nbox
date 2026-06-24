@@ -331,6 +331,7 @@ All tools are annotated read-only.
 | `nbox_next_prefix` | Available child prefix(es) within a prefix. `length` returns the first free block of that size, else all free blocks. `vrf`. Nothing is reserved. |
 | `nbox_journal` | Recent journal entries for an object, newest first. `kind`/`ref` as `nbox_get`. |
 | `nbox_list_tags` | List tags (name, slug, color, usage count) — the valid `tag` values for `nbox_search`. |
+| `nbox_tagged` | Objects carrying a tag, across all kinds (NetBox 4.3+); `tag` (id\|name\|slug). A cross-kind reverse lookup (\"what has tag X\") — unlike `nbox_search` with the `tag` filter, which narrows a free-text search per-endpoint. Each result carries `kind`/`object_type`/`id`/`display`/`url` + the resolved tag. |
 | `nbox_cache_clear` | Drop nbox's local read cache so the next lookups fetch fresh from NetBox. Read-only with respect to NetBox (idempotent) — it only clears copies held in this server process; use after data changed out-of-band and you need current state before the TTL expires. |
 
 `nbox_get` and `nbox_journal` take a `kind` and a `ref`. `kind` is one of

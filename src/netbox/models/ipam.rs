@@ -32,6 +32,16 @@ pub struct IpAddress {
     #[serde(default)]
     pub description: Option<String>,
 
+    /// The inside IP this address is a NAT target for (NetBox 4.6 embeds it on
+    /// the *outside* IP). A brief IP ref (`id`/`url`/`display` — `display` is
+    /// the address). `None` when not a NAT outside or NetBox omits the field.
+    #[serde(default)]
+    pub nat_inside: Option<BriefObject>,
+    /// The outside IP(s) this inside address is NAT'd to (NetBox 4.6 embeds them
+    /// on the *inside* IP). Brief IP refs as above. Empty when not a NAT inside.
+    #[serde(default)]
+    pub nat_outside: Vec<BriefObject>,
+
     #[serde(default)]
     pub tags: Vec<Tag>,
     #[serde(default)]

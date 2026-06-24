@@ -9,6 +9,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **NAT inside/outside enrichment (`nbox ip`).** NetBox 4.6 embeds `nat_inside`
+  (a brief IP ref) on a NAT *outside* IP and `nat_outside` (an array) on the
+  *inside* IP. `nbox ip` now surfaces both: the outside IP shows its inside
+  address (`nat_inside: …`), the inside IP shows its outside address(es)
+  (`nat_outside: …`). Both are omitted when absent, so a non-NAT IP's output is
+  byte-identical to before. The device IP tab (which fetches full IPs) picks it
+  up for free.
+
+- **Reverse-tag lookup (`nbox tagged <tag>`).** A new command that answers
+  "what objects carry tag X" across all kinds in one call, via NetBox 4.3's
+  `/api/extras/tagged-objects/?tag_id=<id>`. Distinct from `search --tag`
+  (which needs a `q` and filters per-endpoint). The tag resolves by id, exact
+  name, or exact slug (names may carry colons, e.g. `prod:us-east`); a no-match
+  tag is not-found (exit 4). Each result carries a friendly `kind`/`object_type`
+  (mapped to nbox's kind labels, with a derived fallback for types nbox doesn't
+  model), the object id/display/url, plus the resolved tag. Available on the CLI
+  (`nbox tagged`) and via MCP (`nbox_tagged`).
+
 - **MAC reverse-lookup (`nbox mac <addr>`).** A new first-class kind (NetBox
   4.2+) that reverse-resolves a MAC address to the interface(s)/device(s) that
   carry it — a top operator/agent query nbox couldn't answer. Any common MAC
@@ -143,8 +161,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (`front → rear`); an unterminated side is shown explicitly. It's a dedicated
   "cable path" tab in the TUI and an inline section in `nbox interface` output.
 - **Cable views name the far device.** The Cables tab and an interface's "Connected
-  To" now show the remote *device* and port (e.g. `swp25 → dsr1-us-west-01a
-  1/1/c13/1`), not just the remote port — so you can tell where a cable goes.
+  To" now show the remote *device* and port (e.g. `swp25 → edge01 1/1/c13/1`),
+  not just the remote port — so you can tell where a cable goes.
 
 ### Fixed
 

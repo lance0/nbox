@@ -5,6 +5,7 @@
     "owner": "netops"
   },
   "dns_name": "printer-55.example.com",
+  "nat_inside": "100.64.0.55/30",
   "parent_prefix": "10.44.208.0/24",
   "scope": "den1",
   "scope_type": "site",

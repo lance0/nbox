@@ -11,7 +11,7 @@ use crate::netbox::models::circuits::{Circuit, Provider};
 use crate::netbox::models::dcim::{
     Device, Interface, Location, MacAddress, Rack, Region, Site, SiteGroup,
 };
-use crate::netbox::models::extras::{JournalEntry, TagInfo};
+use crate::netbox::models::extras::{JournalEntry, TagInfo, TaggedObject};
 use crate::netbox::models::ipam::{
     Aggregate, Asn, AvailableIp, AvailablePrefix, IpAddress, IpRange, Prefix, RouteTarget, Service,
     Vlan, VlanGroup, Vrf,
@@ -601,6 +601,45 @@ impl NetBoxClient {
     pub async fn tags(&self, max: usize) -> Result<Vec<TagInfo>> {
         self.list_all(Endpoint::Tags, vec![("ordering", "name".to_string())], max)
             .await
+    }
+
+    /// Resolve a tag reference (numeric id, exact name, or exact slug) to one
+    /// tag. Tag names may contain colons (e.g. `prod:us-east`), so the name is
+    /// matched exactly with `?name=` — a substring lookup would be ambiguous and
+    /// is not what `nbox tagged` means. Returns `None` when no tag matches.
+    pub async fn tag_by_ref(&self, value: &str) -> Result<Option<TagInfo>> {
+        if let Ok(id) = value.parse::<u64>() {
+            return self
+                .get_optional(&format!("/api/extras/tags/{id}/"), &[])
+                .await;
+        }
+        // Name (exact) first — names are unique, and the common operator spelling.
+        let by_name: crate::netbox::pagination::Page<TagInfo> = self
+            .list(Endpoint::Tags, vec![("name", value.to_string())])
+            .await?;
+        if let Some(t) = by_name.results.into_iter().next() {
+            return Ok(Some(t));
+        }
+        // Then slug (exact) — slugs strip the colons, so `prod:us-east` →
+        // `produs-east`; resolving by slug covers the normalized spelling.
+        let by_slug: crate::netbox::pagination::Page<TagInfo> = self
+            .list(Endpoint::Tags, vec![("slug", value.to_string())])
+            .await?;
+        Ok(by_slug.results.into_iter().next())
+    }
+
+    /// Every object carrying a tag (NetBox 4.3+ `/api/extras/tagged-objects/`),
+    /// across object kinds, up to `max`. Filtered server-side by `tag_id` — the
+    /// endpoint is polymorphic over all content types, so an unfiltered list is
+    /// enormous and never fetched. `tag_id` (not `tag`) is the supported filter;
+    /// `tag=<name>` 400s on this endpoint.
+    pub async fn tagged_objects(&self, tag_id: u64, max: usize) -> Result<Vec<TaggedObject>> {
+        self.list_all(
+            Endpoint::TaggedObjects,
+            vec![("tag_id", tag_id.to_string())],
+            max,
+        )
+        .await
     }
 
     /// Journal entries for an object (newest first, up to `max`), addressed by

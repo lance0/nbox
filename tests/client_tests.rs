@@ -305,3 +305,104 @@ async fn retries_recover_after_several_429s() {
         .unwrap();
     assert_eq!(page.count, 0);
 }
+
+// --- reverse-tag lookup (`/api/extras/tagged-objects/`) ---------------------
+
+/// `tag_by_ref` resolves a tag by exact name (names may carry colons, so no
+/// substring lookup), then by slug, then by id.
+#[tokio::test]
+async fn tag_by_ref_resolves_by_name_then_slug_then_id() {
+    let server = MockServer::start().await;
+    // Name match hits first.
+    Mock::given(method("GET"))
+        .and(path("/api/extras/tags/"))
+        .and(query_param("name", "prod:us-east"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 42, "name": "prod:us-east", "slug": "produs-east"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let t = client_for(&server)
+        .tag_by_ref("prod:us-east")
+        .await
+        .unwrap();
+    assert_eq!(t.unwrap().id, 42);
+}
+
+#[tokio::test]
+async fn tag_by_ref_resolves_by_numeric_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/extras/tags/42/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 42, "name": "prod:us-east", "slug": "produs-east"
+        })))
+        .mount(&server)
+        .await;
+
+    let t = client_for(&server).tag_by_ref("42").await.unwrap();
+    assert_eq!(t.unwrap().id, 42);
+}
+
+#[tokio::test]
+async fn tag_by_ref_returns_none_when_no_tag_matches() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/extras/tags/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 0, "next": null, "previous": null, "results": []
+        })))
+        .mount(&server)
+        .await;
+
+    assert!(
+        client_for(&server)
+            .tag_by_ref("nope")
+            .await
+            .unwrap()
+            .is_none()
+    );
+}
+
+/// `tagged_objects` filters by `tag_id` (the supported param — `tag=` 400s on
+/// this endpoint) and returns the polymorphic rows across kinds.
+#[tokio::test]
+async fn tagged_objects_filters_by_tag_id_and_returns_polymorphic_rows() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/extras/tagged-objects/"))
+        .and(query_param("tag_id", "42"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [
+                {
+                    "id": 1, "url": "http://nb/api/extras/tagged-objects/1/",
+                    "object_type": "dcim.device", "object_id": 7,
+                    "object": {"id": 7, "name": "edge01", "display": "edge01",
+                               "url": "http://nb/api/dcim/devices/7/"},
+                    "tag": {"id": 42, "name": "prod", "slug": "prod"},
+                    "display": "edge01 tagged with prod"
+                },
+                {
+                    "id": 2, "url": "http://nb/api/extras/tagged-objects/2/",
+                    "object_type": "dcim.rack", "object_id": 9,
+                    "object": {"id": 9, "name": "001", "display": "001",
+                               "url": "http://nb/api/dcim/racks/9/"},
+                    "tag": {"id": 42, "name": "prod", "slug": "prod"},
+                    "display": "001 tagged with prod"
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let rows = client_for(&server).tagged_objects(42, 50).await.unwrap();
+    assert_eq!(rows.len(), 2);
+    assert_eq!(rows[0].object_type, "dcim.device");
+    assert_eq!(rows[0].object_id, 7);
+    assert_eq!(rows[0].object.as_ref().unwrap().label(), "edge01");
+    assert_eq!(rows[1].object_type, "dcim.rack");
+    assert_eq!(rows[1].object.as_ref().unwrap().label(), "001");
+}

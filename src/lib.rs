@@ -19,6 +19,7 @@ use crate::domain::WithJournal;
 use crate::domain::detail;
 use crate::domain::journal_view::{JournalEntryRow, JournalView};
 use crate::domain::tag_view::TagsView;
+use crate::domain::tagged_view::{ResolvedTag, TaggedObjectView, TaggedReport};
 use crate::netbox::capabilities::SurfaceRouting;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::models::ipam::{AvailablePrefix, Prefix};
@@ -360,6 +361,7 @@ pub async fn run(cli: Cli) -> Result<()> {
         }
         Some(Command::Open { object_ref }) => run_open(&ctx, &object_ref).await,
         Some(Command::Tags { limit }) => run_tags(&ctx, limit).await,
+        Some(Command::Tagged { tag, limit }) => run_tagged(&ctx, &tag, limit).await,
         Some(Command::Journal { kind, value, limit }) => {
             run_journal(&ctx, &kind, &value, limit).await
         }
@@ -1466,6 +1468,32 @@ async fn run_tags(ctx: &Ctx, limit: usize) -> Result<()> {
     let tags = client.tags(limit).await?;
     let view = TagsView::from_models(tags);
     emit(ctx, &view, || println!("{}", view.to_plain()))
+}
+
+/// `nbox tagged <tag>` — objects carrying a tag (cross-kind reverse lookup).
+async fn run_tagged(ctx: &Ctx, tag: &str, limit: usize) -> Result<()> {
+    let client = connect(ctx)?;
+    let tag_info = client
+        .tag_by_ref(tag)
+        .await?
+        .ok_or_else(|| not_found("tag", tag))?;
+    let objects = client.tagged_objects(tag_info.id, limit).await?;
+    let report = TaggedReport {
+        tag: ResolvedTag::from_info(tag_info),
+        results: objects
+            .into_iter()
+            .map(TaggedObjectView::from_model)
+            .collect(),
+    };
+    emit(ctx, &report, || {
+        if report.results.is_empty() {
+            eprintln!("no objects carry tag \"{}\"", report.tag.name);
+            return;
+        }
+        for r in &report.results {
+            println!("{:<7} {}", r.kind, r.display);
+        }
+    })
 }
 
 /// `nbox journal <kind> <ref>` — recent journal entries for an object.

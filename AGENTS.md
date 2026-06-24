@@ -35,7 +35,7 @@ minimize tokens, `--fields` to trim payloads).
 
 ```
 nbox device <name|slug|id>
-nbox ip <address> [--vrf <name|slug|rd>]
+nbox ip <address> [--vrf <name|slug|rd>]  # surfaces nat_inside/nat_outside (NetBox 4.6) when set
 nbox prefix <cidr> [--vrf <name|slug|rd>]
 nbox next-ip <cidr> [--count N] [--vrf <name|slug|rd>]
 nbox next-prefix <cidr> [--length L] [--vrf <name|slug|rd>]
@@ -57,6 +57,8 @@ nbox route-target <name|id>
 nbox mac <addr>                   # any common form (aa:bb:cc:dd:ee:ff, AABB.CCDD.EEFF, …) is normalized; reverse-resolves to the carrying interface(s)/device(s)
 nbox search <query> [--limit N] [--status S] [--site <name|slug|id>] [--region <name|slug|id>] [--site-group <name|slug|id>] [--location <name|slug|id>] [--tenant SLUG] [--role SLUG] [--tag SLUG] [--vrf <id|rd|name>] [--cols a,b,c] [--partial]
 nbox tags
+nbox tagged <tag>               # objects carrying a tag, across kinds (NetBox 4.3+
+                                  # `/api/extras/tagged-objects/`); tag = id|name|slug
 nbox journal <kind> <ref>
 nbox open <kind>/<ref>
 nbox raw GET <api-path>          # path with or without /api/, e.g. dcim/devices/?limit=1
@@ -90,6 +92,7 @@ stderr. Every tool is annotated read-only.
 | `nbox_next_prefix` | Available child prefix(es) in a prefix; `length` for a block of a size, else all free blocks; `vrf`. |
 | `nbox_journal` | Recent journal entries for an object (`kind`/`ref` as `nbox_get`). |
 | `nbox_list_tags` | List tags (name, slug, color, usage count) — valid `tag` values for `nbox_search`. |
+| `nbox_tagged` | Objects carrying a tag, across kinds (NetBox 4.3+); `tag` (id\|name\|slug). Cross-kind reverse lookup — unlike `nbox_search --tag`, which narrows a free-text search per-endpoint. |
 | `nbox_cache_clear` | Drop nbox's local read cache so the next lookups fetch fresh from NetBox (read-only w.r.t. NetBox; idempotent). |
 
 The same objects are also exposed as MCP **resources** via one template,

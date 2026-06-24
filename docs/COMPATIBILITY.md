@@ -64,6 +64,13 @@ flag, and the per-surface backend routing.
   `auth_scheme = "auto"` detects the shape; force one with `auth_scheme =
   "bearer"`/`"token"` on the profile.
 
+- **NAT inside/outside (4.6).** NetBox 4.6 embeds `nat_inside` (a brief IP ref, on
+  the *outside* IP) and `nat_outside` (an array, on the *inside* IP) on the
+  full `IPAddress` object. `nbox ip` surfaces both when present and omits them
+  when absent, so a non-NAT IP's output is byte-identical on every version (the
+  fields simply deserialize to `None`/empty on pre-4.6). No version gate — the
+  enrichment is additive and free-when-absent.
+
 - **GraphQL schema probe.** When a surface opts into GraphQL, nbox probes the live
   schema (filter input shapes + pagination) instead of hard-coding a version, so
   4.2/4.3/4.5+ differences are absorbed, and falls back to REST (with the reason in

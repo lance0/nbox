@@ -11,6 +11,7 @@ use serde_json::Value;
 
 use crate::domain::custom;
 use crate::domain::util::non_empty;
+use crate::netbox::models::common::BriefObject;
 use crate::netbox::models::ipam::{IpAddress, Prefix};
 use crate::netbox::query::friendly_scope_type;
 use crate::output::plain::KeyValues;
@@ -40,6 +41,16 @@ pub struct IpView {
     /// Friendly scope type of the parent prefix, e.g. `site`/`location`/`region`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub scope_type: Option<String>,
+    /// The inside IP this address NATs for, when this is a NAT *outside* (NetBox
+    /// 4.6 embeds `nat_inside` on the outside IP). The address (e.g.
+    /// `100.64.0.9/30`). `None` when not a NAT outside or NetBox omits it.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub nat_inside: Option<String>,
+    /// The outside IP(s) this inside address is NAT'd to, when this is a NAT
+    /// *inside* (NetBox 4.6 embeds `nat_outside` on the inside IP). Addresses as
+    /// above. Empty when not a NAT inside.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub nat_outside: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -51,10 +62,7 @@ impl IpView {
     pub fn build(ip: IpAddress, parent: Option<Prefix>) -> Self {
         let (parent_prefix, vlan, scope, scope_type) = match parent {
             Some(p) => {
-                let scope = p
-                    .scope
-                    .as_ref()
-                    .map(super::super::netbox::models::common::BriefObject::label);
+                let scope = p.scope.as_ref().map(BriefObject::label);
                 let scope_type = p.scope_type.as_deref().map(friendly_scope_type);
                 (Some(p.prefix), p.vlan.map(|b| b.label()), scope, scope_type)
             }
@@ -72,6 +80,8 @@ impl IpView {
             vlan,
             scope,
             scope_type,
+            nat_inside: ip.nat_inside.as_ref().map(BriefObject::label),
+            nat_outside: ip.nat_outside.iter().map(BriefObject::label).collect(),
             tags: ip.tags.into_iter().map(|tag| tag.slug).collect(),
             custom_fields: custom::fields(&ip.custom_fields),
         }
@@ -89,7 +99,11 @@ impl IpView {
             .push_opt("parent_prefix", self.parent_prefix.clone())
             .push_opt("vlan", self.vlan.clone())
             .push_opt("scope", self.scope.clone())
-            .push_opt("scope_type", self.scope_type.clone());
+            .push_opt("scope_type", self.scope_type.clone())
+            .push_opt("nat_inside", self.nat_inside.clone());
+        if !self.nat_outside.is_empty() {
+            kv.push("nat_outside", self.nat_outside.join(", "));
+        }
         if !self.tags.is_empty() {
             kv.push("tags", self.tags.join(", "));
         }
@@ -206,6 +220,84 @@ mod tests {
         let value = serde_json::to_value(&view).unwrap();
         assert!(value.get("tags").is_none());
         assert!(!view.to_key_values().render().contains("tags:"));
+    }
+
+    #[test]
+    fn build_renders_nat_inside_on_an_outside_ip() {
+        // NetBox 4.6 embeds `nat_inside` (a brief IP ref) on the *outside* IP.
+        // Addresses are RFC-reserved (TEST-NET-3 outside, CGNAT inside) — no live
+        // infrastructure data.
+        let ip: IpAddress = serde_json::from_value(json!({
+            "id": 4101, "url": "http://nb/ip/4101/", "address": "203.0.113.5/32",
+            "nat_inside": {"id": 4100, "address": "100.64.0.9/30", "display": "100.64.0.9/30"}
+        }))
+        .unwrap();
+        let view = IpView::build(ip, None);
+        assert_eq!(view.nat_inside.as_deref(), Some("100.64.0.9/30"));
+        assert!(view.nat_outside.is_empty());
+
+        // JSON: `nat_inside` set, `nat_outside` omitted (empty Vec → skip).
+        let value = serde_json::to_value(&view).unwrap();
+        assert_eq!(value["nat_inside"], "100.64.0.9/30");
+        assert!(
+            value.get("nat_outside").is_none(),
+            "empty nat_outside must be omitted"
+        );
+
+        let kv = view.to_key_values().render();
+        assert!(kv.contains("nat_inside: 100.64.0.9/30"), "got: {kv}");
+        assert!(!kv.contains("nat_outside:"), "got: {kv}");
+    }
+
+    #[test]
+    fn build_renders_nat_outside_on_an_inside_ip() {
+        // The reciprocal: NetBox 4.6 embeds `nat_outside` (an array of brief IP
+        // refs) on the *inside* IP. Addresses are RFC-reserved (CGNAT inside,
+        // TEST-NET-3 outside) — no live infrastructure data.
+        let ip: IpAddress = serde_json::from_value(json!({
+            "id": 4100, "url": "http://nb/ip/4100/", "address": "100.64.0.9/30",
+            "nat_outside": [
+                {"id": 4101, "address": "203.0.113.5/32", "display": "203.0.113.5/32"},
+                {"id": 4102, "address": "203.0.113.71/32", "display": "203.0.113.71/32"}
+            ]
+        }))
+        .unwrap();
+        let view = IpView::build(ip, None);
+        assert!(view.nat_inside.is_none());
+        assert_eq!(view.nat_outside, vec!["203.0.113.5/32", "203.0.113.71/32"]);
+
+        let value = serde_json::to_value(&view).unwrap();
+        assert!(
+            value.get("nat_inside").is_none(),
+            "nat_inside absent on an inside IP"
+        );
+        assert_eq!(
+            value["nat_outside"],
+            serde_json::json!(["203.0.113.5/32", "203.0.113.71/32"])
+        );
+
+        let kv = view.to_key_values().render();
+        assert!(
+            kv.contains("nat_outside: 203.0.113.5/32, 203.0.113.71/32"),
+            "got: {kv}"
+        );
+        assert!(!kv.contains("nat_inside:"), "got: {kv}");
+    }
+
+    #[test]
+    fn build_omits_both_nat_fields_when_absent() {
+        // A non-NAT IP carries neither field — both stay omitted (byte-identical
+        // to pre-NAT output), so the enrichment can't disturb existing consumers.
+        let ip: IpAddress = serde_json::from_value(json!({
+            "id": 7, "url": "http://nb/ip/7/", "address": "10.0.0.5/24"
+        }))
+        .unwrap();
+        let view = IpView::build(ip, None);
+        assert!(view.nat_inside.is_none());
+        assert!(view.nat_outside.is_empty());
+        let value = serde_json::to_value(&view).unwrap();
+        assert!(value.get("nat_inside").is_none());
+        assert!(value.get("nat_outside").is_none());
     }
 
     #[test]

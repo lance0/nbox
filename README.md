@@ -248,6 +248,7 @@ nbox search <query> [--limit N] [--status/--site/--region/--site-group/--locatio
                                   # Full scope/filter semantics: docs/FEATURES.md
 nbox device <name-or-id> [--journal] [--journal-limit N]
 nbox ip <address> [--vrf <name>] [--journal]    # --vrf disambiguates duplicates across VRFs
+                                  # shows nat_inside/nat_outside (NetBox 4.6) when set
 nbox prefix <cidr> [--vrf <name>] [--journal]   # includes utilization + children when present
 nbox next-ip <cidr> [--count N] [--vrf <name>]        # next available address(es)
 nbox next-prefix <cidr> [--length L] [--vrf <name>]   # available free block(s)
@@ -265,6 +266,8 @@ nbox vm <name-or-id>
 nbox cluster <name-or-id>
 nbox interface <device> <interface>
 nbox tags                         # list tags (slug, name, count)
+nbox tagged <tag>                 # objects carrying a tag, across kinds
+                                  # (NetBox 4.3+; tag = id|name|slug)
 nbox journal <kind> <ref>         # recent journal entries for an object
                                   # --journal folds recent entries into a detail lookup (cap 5)
                                   # --journal-limit N overrides the cap (implies --journal)
@@ -483,6 +486,7 @@ The tools are all annotated read-only:
 | `nbox_next_prefix` | Available free child prefix(es) of a given length, or all free blocks. |
 | `nbox_journal` | Recent journal entries for an object. |
 | `nbox_list_tags` | List tags (name, slug, color, usage count). |
+| `nbox_tagged` | Objects carrying a tag, across kinds (NetBox 4.3+); `tag` (id\|name\|slug). |
 | `nbox_cache_clear` | Drop nbox's local read cache so the next lookups fetch fresh (read-only w.r.t. NetBox). |
 
 The same objects are also exposed as MCP **resources** via one template,

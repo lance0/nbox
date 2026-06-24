@@ -83,6 +83,8 @@ pub fn ip_view() -> IpView {
         vlan: Some("208 (v-prod)".into()),
         scope: Some("den1".into()),
         scope_type: Some("site".into()),
+        nat_inside: Some("100.64.0.55/30".into()),
+        nat_outside: vec![],
         tags: vec!["printer".into()],
         custom_fields: BTreeMap::from([("owner".to_string(), json!("netops"))]),
     }

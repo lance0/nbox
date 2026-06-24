@@ -2206,6 +2206,8 @@ mod tests {
             assigned_object: None,
             dns_name: None,
             description: None,
+            nat_inside: None,
+            nat_outside: Vec::new(),
             tags: Vec::new(),
             custom_fields: serde_json::Value::Null,
         }

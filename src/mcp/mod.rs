@@ -30,6 +30,7 @@ use crate::domain::detail;
 use crate::domain::interface_view::InterfaceView;
 use crate::domain::journal_view::JournalView;
 use crate::domain::tag_view::TagsView;
+use crate::domain::tagged_view::TaggedReport;
 use crate::error::NboxError;
 use crate::netbox::capabilities::{ApiRouting, NetBoxCapabilities};
 use crate::netbox::client::NetBoxClient;
@@ -241,6 +242,15 @@ pub struct JournalArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ListTagsArgs {
     /// Maximum number of tags to list. Defaults to 200.
+    pub limit: Option<usize>,
+}
+
+/// Arguments for `nbox_tagged`.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct TaggedArgs {
+    /// Tag reference: numeric id, exact name (e.g. `prod:us-east`), or exact slug.
+    pub tag: String,
+    /// Maximum number of tagged objects to return. Defaults to 200.
     pub limit: Option<usize>,
 }
 
@@ -646,6 +656,47 @@ impl NboxMcp {
             .await
             .map_err(to_mcp_error)?;
         Ok(Json(TagsView::from_models(tags)))
+    }
+
+    /// List the objects carrying a tag — a cross-kind reverse lookup (NetBox
+    /// 4.3+ `/api/extras/tagged-objects/`). Unlike `nbox_search` (which filters
+    /// per-endpoint and needs a `query`), this returns every object with the tag
+    /// in one call. The tag resolves by numeric id, exact name, or exact slug; a
+    /// no-match tag returns `invalid_params`. Each result carries a friendly
+    /// `kind`/`object_type` (nbox's kind label, with a derived fallback for types
+    /// nbox doesn't model), the object's id/display/url, and the resolved tag.
+    #[tool(
+        name = "nbox_tagged",
+        description = "List objects carrying a tag, across all kinds (NetBox 4.3+). The tag resolves by id, exact name, or exact slug. Returns each object's kind, object_type, id, display, and url, plus the resolved tag. Use this for \"what has tag X\"; use nbox_search with the `tag` filter to narrow a free-text search to tagged hits.",
+        annotations(read_only_hint = true)
+    )]
+    async fn nbox_tagged(
+        &self,
+        Parameters(args): Parameters<TaggedArgs>,
+    ) -> Result<Json<TaggedReport>, ErrorData> {
+        let tag_info = self
+            .client
+            .tag_by_ref(&args.tag)
+            .await
+            .map_err(to_mcp_error)?
+            .ok_or_else(|| {
+                // A no-match tag is caller-fixable → invalid_params, matching
+                // the CLI's not-found (exit 4) semantics.
+                ErrorData::invalid_params(format!("no tag matched \"{}\"", args.tag), None)
+            })?;
+        let objects = self
+            .client
+            .tagged_objects(tag_info.id, args.limit.unwrap_or(200))
+            .await
+            .map_err(to_mcp_error)?;
+        let report = TaggedReport {
+            tag: crate::domain::tagged_view::ResolvedTag::from_info(tag_info),
+            results: objects
+                .into_iter()
+                .map(crate::domain::tagged_view::TaggedObjectView::from_model)
+                .collect(),
+        };
+        Ok(Json(report))
     }
 }
 

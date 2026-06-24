@@ -12,7 +12,7 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{
     GetArgs, GetKind, InterfaceArgs, JournalArgs, ListTagsArgs, NboxMcp, NextIpArgs,
-    NextPrefixArgs, SearchArgs, parse_resource_uri, percent_decode, resource_templates,
+    NextPrefixArgs, SearchArgs, TaggedArgs, parse_resource_uri, percent_decode, resource_templates,
 };
 use crate::config::ProfileConfig;
 use crate::netbox::client::NetBoxClient;
@@ -1421,6 +1421,92 @@ async fn list_tags_returns_tag_rows() {
     assert_eq!(tags[0]["name"], "Critical");
     assert_eq!(tags[0]["count"], 3);
     assert_eq!(tags[1]["slug"], "edge");
+}
+
+#[tokio::test]
+async fn tagged_returns_objects_carrying_a_tag() {
+    // `nbox_tagged` resolves the tag (here by name) then lists the polymorphic
+    // tagged-objects rows. Addresses are RFC-reserved; names are synthetic.
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/extras/tags/"))
+        .and(query_param("name", "prod:us-east"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 42, "name": "prod:us-east", "slug": "produs-east"}]
+        })))
+        .mount(&mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/extras/tagged-objects/"))
+        .and(query_param("tag_id", "42"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [
+                {"id": 1, "url": "http://nb/api/extras/tagged-objects/1/",
+                 "object_type": "dcim.device", "object_id": 7,
+                 "object": {"id": 7, "name": "edge01", "display": "edge01",
+                            "url": "http://nb/api/dcim/devices/7/"},
+                 "tag": {"id": 42, "name": "prod:us-east", "slug": "produs-east"},
+                 "display": "edge01 tagged with prod:us-east"},
+                {"id": 2, "url": "http://nb/api/extras/tagged-objects/2/",
+                 "object_type": "ipam.prefix", "object_id": 9,
+                 "object": {"id": 9, "display": "10.0.0.0/24",
+                            "url": "http://nb/api/ipam/prefixes/9/"},
+                 "tag": {"id": 42, "name": "prod:us-east", "slug": "produs-east"},
+                 "display": "10.0.0.0/24 tagged with prod:us-east"}
+            ]
+        })))
+        .mount(&mock)
+        .await;
+
+    let Json(report) = server_for(&mock)
+        .nbox_tagged(Parameters(TaggedArgs {
+            tag: "prod:us-east".into(),
+            limit: None,
+        }))
+        .await
+        .expect("tagged");
+
+    assert_eq!(report.tag.id, 42);
+    assert_eq!(report.tag.name, "prod:us-east");
+    assert_eq!(report.results.len(), 2);
+    // The friendly `kind` is mapped to nbox's labels (device/prefix), not the
+    // raw dotted type.
+    assert_eq!(report.results[0].kind, "device");
+    assert_eq!(report.results[0].display, "edge01");
+    assert_eq!(report.results[1].kind, "prefix");
+    assert_eq!(report.results[1].display, "10.0.0.0/24");
+}
+
+#[tokio::test]
+async fn tagged_returns_invalid_params_for_a_no_match_tag() {
+    // A tag that resolves to nothing is caller-fixable → invalid_params, matching
+    // the CLI's not-found (exit 4).
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/extras/tags/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 0, "next": null, "previous": null, "results": []
+        })))
+        .mount(&mock)
+        .await;
+
+    let err: ErrorData = match server_for(&mock)
+        .nbox_tagged(Parameters(TaggedArgs {
+            tag: "nonexistent".into(),
+            limit: None,
+        }))
+        .await
+    {
+        Ok(_) => panic!("no-match tag should error"),
+        Err(e) => e,
+    };
+    assert!(
+        err.message.contains("no tag matched \"nonexistent\""),
+        "got: {}",
+        err.message
+    );
 }
 
 #[tokio::test]

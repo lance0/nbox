@@ -381,6 +381,19 @@ pub enum Command {
         limit: usize,
     },
 
+    /// List objects carrying a tag (NetBox 4.3+ `/api/extras/tagged-objects/`).
+    /// A cross-kind reverse lookup: "what has tag X" in one call — unlike
+    /// `search --tag`, which needs a `q` and filters per endpoint. The tag is
+    /// resolved by id, exact name, or exact slug.
+    Tagged {
+        /// Tag reference: id, exact name (e.g. `prod:us-east`), or exact slug.
+        tag: String,
+
+        /// Maximum number of tagged objects to list.
+        #[arg(short, long, default_value_t = 200)]
+        limit: usize,
+    },
+
     /// Show recent journal entries for an object.
     Journal {
         /// Object kind: device, ip, prefix, vlan, site, rack, circuit,

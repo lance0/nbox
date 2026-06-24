@@ -34,7 +34,7 @@ The read surface is broad and stable today (full history in `CHANGELOG.md`):
   trace, VRF-scoped child prefixes + contained IPs.
 - **Output:** `-o plain|json|csv`, `--raw`, `--envelope`, `--fields`, `--cols`; stable exit codes.
 - **MCP server (`nbox serve`):** stdio **and** HTTP (Streamable HTTP), OAuth 2.1 OIDC resource-server
-  mode (RFC 9728 metadata, audit log, per-caller rate limit), 9 read tools + a `nbox://{kind}/{ref}`
+  mode (RFC 9728 metadata, audit log, per-caller rate limit), 10 read tools + a `nbox://{kind}/{ref}`
   resource template (DESIGN §24; read-only Pattern 3).
 - **TUI:** list/preview split with focus, scrolling + position cues, 12 themes, command palette,
   fuzzy filter, recents, auto-refresh, device tabs, open-in-browser/copy, profile switcher
@@ -230,10 +230,13 @@ cover. All of these stay within the read-only product and the explicit non-goals
 - ☐ **`owner` field + `--owner` filter** _(4.5)_. NetBox added a native `owner` (users/groups)
   on most objects — structured ownership that beats tag-scraping for agents. Surface it on
   detail views and as a search filter.
-- ☐ **Reverse tag lookup** _(4.3, `/api/extras/tagged-objects/`)_. "What objects carry tag X"
-  across kinds — a natural CLI verb + MCP tool, complementing the existing `tags` listing.
-- ☐ **NAT inside/outside enrichment** _(4.6)_. 4.6 embeds `nat_inside`/`nat_outside` on
-  primary-IP fields; surface them in `nbox ip` / `nbox device` for free.
+- ☑ **Reverse tag lookup** _(4.3, `/api/extras/tagged-objects/`)_. `nbox tagged <tag>` answers
+  "what objects carry tag X" across kinds in one call (tag resolves by id/name/slug; each row
+  carries a friendly `kind`/`object_type`). Distinct from `search --tag`, which needs a `q` and
+  filters per-endpoint.
+- ☑ **NAT inside/outside enrichment** _(4.6)_. `nbox ip` surfaces `nat_inside` (on a NAT
+  outside IP) and `nat_outside` (on the inside IP); both omitted when absent (byte-identical for
+  non-NAT IPs). The device IP tab picks it up for free.
 - ☐ **Cable-profile / bundle-aware cable-path visualizer** _(4.5 cable profiles, 4.6 CableBundle)_.
   Breakout/lane cables otherwise trace inaccurately — keep the 0.9.0 visualizer correct on new NetBox.
 - ☐ **4.7 compatibility watch + GraphQL depth-cap defense.** Re-verify the matrix against 4.7
@@ -544,7 +547,7 @@ Consolidated future scope:
 ### v0.2.0 — shipped since v0.1.1
 
 - ☑ **MCP server** (`nbox serve`) — stdio + HTTP transport, OIDC resource-server auth, audit + rate
-  limit, 9 read tools, `nbox://{kind}/{ref}` resources.
+  limit, 10 read tools, `nbox://{kind}/{ref}` resources.
 - ☑ **Read coverage** — circuits, providers, aggregates, ASNs, IP ranges, tenants, contacts, VMs,
   clusters; journal command + inline `--journal`; services on device detail; cable/interface trace.
 - ☑ **Scope/VRF** — `search --vrf`, scope filters (`--region`/`--site-group`/`--location`), exact

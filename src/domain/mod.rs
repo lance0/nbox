@@ -25,6 +25,7 @@ pub mod rack_view;
 pub mod route_target_view;
 pub mod site_view;
 pub mod tag_view;
+pub mod tagged_view;
 pub mod tenant_view;
 pub mod util;
 pub mod vlan_view;

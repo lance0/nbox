@@ -2,7 +2,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use super::common::Choice;
+use super::common::{BriefObject, Choice, Tag};
 
 /// A tag, as returned by the listing endpoint (`/api/extras/tags/`).
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -19,6 +19,30 @@ pub struct TagInfo {
     /// Number of objects tagged (NetBox `tagged_items`).
     #[serde(default)]
     pub tagged_items: Option<u64>,
+}
+
+/// One row from `/api/extras/tagged-objects/` (NetBox 4.3+): an object carrying
+/// a tag, across kinds. The `object` brief is polymorphic (its shape depends on
+/// `object_type`); nbox reads only the display/name/id/url it carries.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct TaggedObject {
+    pub id: u64,
+    #[serde(default)]
+    pub url: Option<String>,
+    /// The dotted content type of the tagged object, e.g. `dcim.device`,
+    /// `ipam.ipaddress`. Drives the friendly `kind` label nbox renders.
+    pub object_type: String,
+    pub object_id: u64,
+    /// The tagged object itself — a brief carrying at least `id`/`url`/`display`
+    /// (and often `name`). Shape varies by `object_type`. `None` only if NetBox
+    /// omits it (it is present in practice).
+    #[serde(default)]
+    pub object: Option<BriefObject>,
+    /// The tag this row is about (id/name/slug/color).
+    pub tag: Tag,
+    /// NetBox's one-line label, e.g. `"edge01 tagged with prod"`.
+    #[serde(default)]
+    pub display: Option<String>,
 }
 
 /// A journal entry (`/api/extras/journal-entries/`).
