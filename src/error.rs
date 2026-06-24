@@ -81,6 +81,18 @@ pub fn is_broken_pipe(err: &anyhow::Error) -> bool {
     })
 }
 
+/// True if `err`'s chain contains a [`NboxError::NotFound`] — i.e. the request
+/// hit an HTTP 404. Used by version-gated search fan-out branches (kinds added
+/// in a later NetBox release, like rack-groups/vm-types in 4.6) to treat a
+/// missing endpoint as an empty result on older releases rather than fail the
+/// whole search. A 404 on a *list* endpoint means "this kind doesn't exist on
+/// this version" — never a per-object miss — so swallowing it is safe there.
+pub fn is_not_found(err: &anyhow::Error) -> bool {
+    err.chain()
+        .find_map(|e| e.downcast_ref::<NboxError>())
+        .is_some_and(|ne| matches!(ne, NboxError::NotFound(_)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

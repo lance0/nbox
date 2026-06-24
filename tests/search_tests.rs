@@ -1863,3 +1863,79 @@ async fn search_with_region_filters_devices_by_region_id() {
         .expect("region-scoped device filtered by region_id");
     assert_eq!(device.display, "edge01");
 }
+
+/// Regression: the 4.6 kinds (`vm-types`, `rack-groups`) are version-gated search
+/// fan-out branches. On a pre-4.6 NetBox those endpoints 404 — the branches must
+/// swallow the 404 and return empty, NOT fail the whole search closed. Before the
+/// fix, a 404 on either branch made every `nbox search` exit 1 with "search
+/// incomplete", breaking search entirely on 4.2–4.5.
+#[tokio::test]
+async fn search_swallows_404_on_version_gated_endpoints() {
+    let server = MockServer::start().await;
+
+    // The device hit is what we assert survives; everything else is empty.
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 1, "url": "http://nb/api/dcim/devices/1/", "name": "edge01"
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    // The always-present endpoints: empty pages keep the fan-out clean.
+    for ep in [
+        "/api/dcim/sites/",
+        "/api/ipam/ip-addresses/",
+        "/api/ipam/prefixes/",
+        "/api/ipam/vlans/",
+        "/api/circuits/circuits/",
+        "/api/circuits/virtual-circuits/",
+        "/api/ipam/aggregates/",
+        "/api/ipam/asns/",
+        "/api/ipam/ip-ranges/",
+        "/api/tenancy/tenants/",
+        "/api/tenancy/contacts/",
+        "/api/circuits/providers/",
+        "/api/virtualization/virtual-machines/",
+        "/api/virtualization/clusters/",
+        "/api/dcim/racks/",
+        "/api/ipam/vrfs/",
+        "/api/ipam/route-targets/",
+    ] {
+        mount_empty(&server, ep).await;
+    }
+
+    // The 4.6-only endpoints return 404 — the NetBox 4.2 reality.
+    for ep in [
+        "/api/virtualization/virtual-machine-types/",
+        "/api/dcim/rack-groups/",
+    ] {
+        Mock::given(method("GET"))
+            .and(path(ep))
+            .respond_with(ResponseTemplate::new(404).set_body_string("not found"))
+            .mount(&server)
+            .await;
+    }
+
+    let outcome = client(&server)
+        .search(SearchRequest {
+            query: "edge01".into(),
+            limit: 25,
+            filters: SearchFilters::default(),
+        })
+        .await
+        .expect("search must not fail closed when a version-gated endpoint 404s");
+
+    // No errors surfaced: the 404s are absorbed, not reported as partial failures.
+    assert!(outcome.errors.is_empty(), "errors: {:?}", outcome.errors);
+    // The device hit still comes through — search is fully usable on 4.2.
+    let device = outcome
+        .results
+        .iter()
+        .find(|r| r.kind == ObjectKind::Device)
+        .expect("device hit survives the 404s on version-gated branches");
+    assert_eq!(device.display, "edge01");
+}
