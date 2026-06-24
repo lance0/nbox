@@ -53,13 +53,16 @@ use crate::netbox::prefix_tree::build_nodes;
 use crate::netbox::query;
 use crate::netbox::search::ObjectKind;
 
-/// Cap on interfaces/IPs/services to pull for a device lookup (CLI, MCP, TUI).
-const DEVICE_CAP: usize = 200;
-/// Cap on child/IP rows pulled into a prefix or VLAN section (CLI, MCP, TUI).
-const SECTION_CAP: usize = 50;
-/// Cap on prefixes/addresses pulled into a VRF's scoped sections (the routing
-/// context can hold more than a single prefix's children, so a larger window).
-const VRF_SECTION_CAP: usize = 200;
+/// Cap on the child rows pulled into any one detail-view section: a device's
+/// interfaces/IPs/services, a prefix's child prefixes/member IPs, a VLAN's
+/// referencing prefixes, or a VRF's scoped prefixes/addresses. One concept
+/// ("rows in one detail section") → one cap, named at the rendering layer the
+/// cap operates on, not the dcim/ipam domain layer. Sized generously below
+/// NetBox's `MAX_PAGE_SIZE` (1000) so a section-full is a single round trip.
+/// NOTE: a full `/24` (254 hosts) still truncates at 200; closing that fully is
+/// a targeted `--all` toggle, not a cap bump (200 covers the vast majority and
+/// ends the prior 50-vs-200 inconsistency).
+const DETAIL_SECTION_CAP: usize = 200;
 /// How many recent journal entries to fold into a detail view with `--journal`.
 pub const JOURNAL_INLINE_MAX: usize = 5;
 
@@ -136,14 +139,14 @@ pub(crate) fn resolve_unique<T>(
 }
 
 /// Build a [`DeviceDetail`] from an already-resolved device: fan out to its
-/// interfaces, IPs, and services (cap [`DEVICE_CAP`]) and compose the view.
+/// interfaces, IPs, and services (cap [`DETAIL_SECTION_CAP`]) and compose the view.
 /// Shared by the CLI `device` handler and the MCP `nbox_get` device arm.
 async fn build_device_detail(client: &NetBoxClient, device: Device) -> Result<DeviceDetail> {
     let id = device.id;
     let (interfaces, ips, services) = tokio::try_join!(
-        client.device_interfaces(id, DEVICE_CAP),
-        client.device_ips(id, DEVICE_CAP),
-        client.device_services(id, DEVICE_CAP),
+        client.device_interfaces(id, DETAIL_SECTION_CAP),
+        client.device_ips(id, DETAIL_SECTION_CAP),
+        client.device_services(id, DETAIL_SECTION_CAP),
     )?;
     Ok(DeviceDetail::build(device, interfaces, ips, services))
 }
@@ -209,7 +212,7 @@ pub async fn interface_view_by_ref(
 ) -> Result<InterfaceView> {
     let iface = resolve_interface(client, device, interface, not_found).await?;
     let (ips, trace) = tokio::try_join!(
-        client.interface_ips(iface.id, DEVICE_CAP),
+        client.interface_ips(iface.id, DETAIL_SECTION_CAP),
         client.interface_trace(iface.id),
     )?;
     Ok(InterfaceView::build(iface, ips, trace))
@@ -259,7 +262,7 @@ pub async fn resolve_prefix(
 }
 
 /// `prefix <cidr>`: resolve a prefix (scoped by `vrf`) and build its view with
-/// children and member IPs (cap [`SECTION_CAP`]). Shared by CLI/MCP.
+/// children and member IPs (cap [`DETAIL_SECTION_CAP`]). Shared by CLI/MCP.
 pub async fn prefix_view_by_ref(
     client: &NetBoxClient,
     cidr: &str,
@@ -275,8 +278,8 @@ pub async fn prefix_view_by_ref(
     // one round-trip for the header plus one for both child collections, not
     // two sequential awaits.
     let (children, ips) = tokio::try_join!(
-        client.prefix_children(cidr, vrf_id, SECTION_CAP),
-        client.prefix_ips(cidr, vrf_id, SECTION_CAP),
+        client.prefix_children(cidr, vrf_id, DETAIL_SECTION_CAP),
+        client.prefix_ips(cidr, vrf_id, DETAIL_SECTION_CAP),
     )?;
     Ok(PrefixView::build(prefix, children, ips))
 }
@@ -296,7 +299,7 @@ async fn vlan_group_scope(client: &NetBoxClient, vlan: &Vlan) -> Result<Option<V
 
 /// `vlan <vid|name>`: resolve a VLAN (a VID present at several sites/groups is
 /// scoped by `site`/`group`, ambiguity-checked) and build its view with the
-/// prefixes that reference it (cap [`SECTION_CAP`]). Shared by CLI/MCP.
+/// prefixes that reference it (cap [`DETAIL_SECTION_CAP`]). Shared by CLI/MCP.
 pub async fn vlan_view_by_ref(
     client: &NetBoxClient,
     value: &str,
@@ -321,7 +324,7 @@ pub async fn vlan_view_by_ref(
             .await?
             .ok_or_else(|| not_found("VLAN", value))?
     };
-    let prefixes = client.vlan_prefixes(vlan.id, SECTION_CAP).await?;
+    let prefixes = client.vlan_prefixes(vlan.id, DETAIL_SECTION_CAP).await?;
     let group = vlan_group_scope(client, &vlan).await?;
     Ok(VlanView::build(vlan, prefixes, group))
 }
@@ -1169,7 +1172,7 @@ async fn contained_devices_tab(client: &NetBoxClient, param: &'static str, id: u
         .list_all::<Device>(
             Endpoint::Devices,
             vec![(param, id.to_string())],
-            SECTION_CAP,
+            DETAIL_SECTION_CAP,
         )
         .await
     {
@@ -1198,7 +1201,7 @@ async fn site_racks_tab(client: &NetBoxClient, site_id: u64) -> DetailTab {
         .list_all::<Rack>(
             Endpoint::Racks,
             vec![("site_id", site_id.to_string())],
-            SECTION_CAP,
+            DETAIL_SECTION_CAP,
         )
         .await
     {
@@ -1447,7 +1450,7 @@ async fn build_vrf_detail(client: &NetBoxClient, vrf: Vrf) -> Result<VrfDetail> 
         .await
         .uses_graphql()
     {
-        client.graphql_vrf_bundle(id, VRF_SECTION_CAP).await?
+        client.graphql_vrf_bundle(id, DETAIL_SECTION_CAP).await?
     } else {
         // REST: fetch the two child collections concurrently — they're
         // independent and this halves the detail's latency on a high-RTT link.
@@ -1455,12 +1458,12 @@ async fn build_vrf_detail(client: &NetBoxClient, vrf: Vrf) -> Result<VrfDetail> 
             client.list_all(
                 Endpoint::Prefixes,
                 vec![("vrf_id", id.to_string())],
-                VRF_SECTION_CAP,
+                DETAIL_SECTION_CAP,
             ),
             client.list_all(
                 Endpoint::IpAddresses,
                 vec![("vrf_id", id.to_string())],
-                VRF_SECTION_CAP,
+                DETAIL_SECTION_CAP,
             ),
         )?
     };
@@ -1560,12 +1563,12 @@ async fn build_route_target_detail(
             client.list_all(
                 Endpoint::Vrfs,
                 vec![("import_target_id", id.to_string())],
-                VRF_SECTION_CAP,
+                DETAIL_SECTION_CAP,
             ),
             client.list_all(
                 Endpoint::Vrfs,
                 vec![("export_target_id", id.to_string())],
-                VRF_SECTION_CAP,
+                DETAIL_SECTION_CAP,
             ),
         )?;
         (
@@ -1770,7 +1773,7 @@ async fn load_interface_detail_view(client: &NetBoxClient, id: u64) -> Result<De
     };
     // Assigned IPs and the cable trace are independent fetches — run concurrently.
     let (ips, trace) = tokio::try_join!(
-        client.interface_ips(iface.id, DEVICE_CAP),
+        client.interface_ips(iface.id, DETAIL_SECTION_CAP),
         client.interface_trace(iface.id),
     )?;
     let view = InterfaceView::build(iface, ips, trace);
@@ -1868,8 +1871,8 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             // (as build_vrf_detail does) so prefix detail costs one round-trip for
             // the header plus one for both child collections, not two sequential.
             let (children, ips) = tokio::try_join!(
-                client.prefix_children(&cidr, vrf_id, SECTION_CAP),
-                client.prefix_ips(&cidr, vrf_id, SECTION_CAP),
+                client.prefix_children(&cidr, vrf_id, DETAIL_SECTION_CAP),
+                client.prefix_ips(&cidr, vrf_id, DETAIL_SECTION_CAP),
             )?;
             let (title, prefix_body, prefix_tabs) = prefix_detail_parts(p, children, ips);
             tabs = prefix_tabs;
@@ -1878,7 +1881,7 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
         ObjectKind::Vlan => {
             let vlan: Vlan = client.get(&format!("/api/ipam/vlans/{id}/"), &[]).await?;
             links = vlan_links(&vlan);
-            let prefixes = client.vlan_prefixes(vlan.id, SECTION_CAP).await?;
+            let prefixes = client.vlan_prefixes(vlan.id, DETAIL_SECTION_CAP).await?;
             let group = vlan_group_scope(client, &vlan).await?;
             tabs = vec![vlan_prefixes_tab(&prefixes)];
             let v = VlanView::build(vlan, prefixes, group);
@@ -2122,8 +2125,8 @@ pub async fn load_detail_by_ref(
             // (as build_vrf_detail does) so prefix detail costs one round-trip for
             // the header plus one for both child collections, not two sequential.
             let (children, ips) = tokio::try_join!(
-                client.prefix_children(&cidr, vrf_id, SECTION_CAP),
-                client.prefix_ips(&cidr, vrf_id, SECTION_CAP),
+                client.prefix_children(&cidr, vrf_id, DETAIL_SECTION_CAP),
+                client.prefix_ips(&cidr, vrf_id, DETAIL_SECTION_CAP),
             )?;
             let (title, prefix_body, prefix_tabs) = prefix_detail_parts(p, children, ips);
             tabs = prefix_tabs;
@@ -2136,7 +2139,7 @@ pub async fn load_detail_by_ref(
                 .with_context(|| format!("no VLAN matched \"{value}\""))?;
             let id = vlan.id;
             links = vlan_links(&vlan);
-            let prefixes = client.vlan_prefixes(vlan.id, SECTION_CAP).await?;
+            let prefixes = client.vlan_prefixes(vlan.id, DETAIL_SECTION_CAP).await?;
             let group = vlan_group_scope(client, &vlan).await?;
             tabs = vec![vlan_prefixes_tab(&prefixes)];
             let v = VlanView::build(vlan, prefixes, group);

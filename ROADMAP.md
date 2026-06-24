@@ -23,13 +23,14 @@ Legend: ☐ planned · ◐ in progress · ☑ done
 
 The read surface is broad and stable today (full history in `CHANGELOG.md`):
 
-- **CLI lookups — 19 object types:** `device`, `interface`, `ip`, `prefix`, `vlan`, `site`, `rack`,
-  `circuit`, `provider`, `aggregate`, `asn`, `ip-range`, `tenant`, `contact`, `vm`, `cluster`, `vrf`,
-  `route-target`, `mac`, plus `search`, `journal`, `tags`, `status`, `open`, `raw GET`. NetBox 4.2+ polymorphic scope + VRF
+- **CLI lookups — every NetBox object type:** `device`, `interface`, `ip`, `prefix`, `vlan`,
+  `site`, `rack`, `rack-group`, `circuit`, `virtual-circuit`, `provider`, `aggregate`, `asn`,
+  `ip-range`, `tenant`, `contact`, `vm`, `vm-type`, `cluster`, `vrf`, `route-target`, `mac`,
+  plus `search`, `journal`, `tags`, `tagged`, `status`, `open`, `raw GET`. NetBox 4.2+ polymorphic scope + VRF
   correctness; ambiguous refs exit `5` with the candidate list.
 - **Search:** parallel multi-endpoint fan-out with `--status` / `--site` / `--region` /
-  `--site-group` / `--location` / `--tenant` / `--role` / `--tag` / `--vrf` filters (per-endpoint
-  allowlist, resolved to ids); fail-closed with `--partial` for best-effort.
+  `--site-group` / `--location` / `--tenant` / `--role` / `--tag` / `--owner` / `--owner-group` /
+  `--vrf` filters (per-endpoint allowlist, resolved to ids); fail-closed with `--partial` for best-effort.
 - **IPAM read:** `next-ip` / `next-prefix` (available, VRF-scoped), prefix utilization, cable/interface
   trace, VRF-scoped child prefixes + contained IPs.
 - **Output:** `-o plain|json|csv`, `--raw`, `--envelope`, `--fields`, `--cols`; stable exit codes.
@@ -94,14 +95,20 @@ Polish the read experience. No writes here.
     browse kind.
 - ☐ **Load-more on scroll (the browse/sub-resource cap fix).** A browse stops
   at the cap (1000) and the device-interfaces / prefix-children detail tabs
-  stop at their sub-resource caps (200 / 50) — past that the only path is the
+  stop at the detail-section cap (200, normalized from the prior 50/200/200 split
+  — see `DETAIL_SECTION_CAP`) — past that the only path is the
   filter. Pull the next page on scroll by following the server's `next` cursor
   (now the pagination mechanism in `list_all` — see 0.12.0) and raising those
   caps on demand. The `offset += page_size` skip that motivated `next`-following
   is already closed (a server capping `MAX_PAGE_SIZE` below the request no longer
   drops rows); what remains is the TUI scroll trigger and lifting the `max`
   ceilings, not the pagination itself. It's the real "browse everything" answer
-  the 1000 cap currently stands in for.
+  the 1000 cap currently stands in for. NOTE: load-more was reconsidered and
+  largely **dropped** — browse-at-1000 is a feature not a bite (nobody scrolls
+  past 1000 unfiltered rows; they search/filter), and the one cap that genuinely
+  bit (prefix child IPs at 50) is fixed by the normalization. The only
+  residual is a full `/24` (254 hosts) still truncating at 200, which wants a
+  targeted `--all`/fetch-all toggle, not scroll-paging.
 - ☐ **Hierarchical scope filters (descendant expansion).** `--region`/`--site-group`/`--location` (and the
   TUI scope) match **exactly** today — a region matches only prefixes scoped to the region itself, not the
   sites inside it (`KNOWN_ISSUES.md`). NetBox's `PrefixFilter` has no `within`/descendant lookup (see the
