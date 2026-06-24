@@ -201,6 +201,7 @@ async fn search_returns_results_and_errors() {
         "/api/ipam/prefixes/",
         "/api/ipam/vlans/",
         "/api/circuits/circuits/",
+        "/api/circuits/virtual-circuits/",
         "/api/ipam/aggregates/",
         "/api/ipam/asns/",
         "/api/ipam/ip-ranges/",
@@ -315,6 +316,7 @@ async fn search_reports_partial_endpoint_errors() {
         "/api/ipam/prefixes/",
         "/api/ipam/vlans/",
         "/api/circuits/circuits/",
+        "/api/circuits/virtual-circuits/",
         "/api/ipam/aggregates/",
         "/api/ipam/asns/",
         "/api/ipam/ip-ranges/",
@@ -1673,6 +1675,48 @@ async fn read_resource_returns_site_view() {
 }
 
 #[tokio::test]
+async fn read_resource_returns_virtual_circuit_view() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/circuits/virtual-circuits/"))
+        .and(query_param("cid", "VC-100"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 7, "url": "u", "cid": "VC-100",
+                "status": {"value": "active", "label": "Active"}
+            }]
+        })))
+        .mount(&mock)
+        .await;
+    // terminations fan-out (empty).
+    Mock::given(method("GET"))
+        .and(path("/api/circuits/virtual-circuit-terminations/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 0, "next": null, "previous": null, "results": []
+        })))
+        .mount(&mock)
+        .await;
+
+    let result = server_for(&mock)
+        .read_resource_impl("nbox://virtual_circuit/VC-100")
+        .await
+        .expect("read virtual-circuit resource");
+    let value = one_text(&result, "nbox://virtual_circuit/VC-100");
+    assert_eq!(value["cid"], "VC-100");
+    // The resource view matches the nbox_get view (cid + status; empty
+    // terminations omitted).
+    let mut keys: Vec<&str> = value
+        .as_object()
+        .unwrap()
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(keys, vec!["cid", "status"]);
+}
+
+#[tokio::test]
 async fn read_resource_returns_prefix_view_for_encoded_cidr() {
     let mock = MockServer::start().await;
     // prefix_candidates: exact CIDR match (the slash arrives percent-decoded).
@@ -1779,6 +1823,7 @@ mod contracts {
             "/api/ipam/prefixes/",
             "/api/ipam/vlans/",
             "/api/circuits/circuits/",
+            "/api/circuits/virtual-circuits/",
             "/api/ipam/aggregates/",
             "/api/ipam/asns/",
             "/api/ipam/ip-ranges/",
@@ -1955,6 +2000,7 @@ mod contracts {
             "/api/ipam/prefixes/",
             "/api/ipam/vlans/",
             "/api/circuits/circuits/",
+            "/api/circuits/virtual-circuits/",
             "/api/ipam/aggregates/",
             "/api/ipam/asns/",
             "/api/ipam/ip-ranges/",
@@ -2000,6 +2046,7 @@ mod contracts {
             "/api/ipam/prefixes/",
             "/api/ipam/vlans/",
             "/api/circuits/circuits/",
+            "/api/circuits/virtual-circuits/",
             "/api/ipam/aggregates/",
             "/api/ipam/asns/",
             "/api/ipam/ip-ranges/",
@@ -2521,6 +2568,50 @@ mod contracts {
         assert_eq!(value["entries"][0]["comments"], "flapped overnight");
     }
 
+    /// `nbox_journal virtual_circuit` resolves the VC by CID, then fetches
+    /// journal entries by the `circuits.virtualcircuit` content type — this
+    /// pins that the resolver emits the right content-type string (the one
+    /// path not live-verifiable without `view_virtualcircuit` permission).
+    #[tokio::test]
+    async fn journal_virtual_circuit_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/circuits/virtual-circuits/",
+            json!({"id": 7, "url": "u", "cid": "VC-100"}),
+        )
+        .await;
+        Mock::given(method("GET"))
+            .and(path("/api/extras/journal-entries/"))
+            .and(query_param(
+                "assigned_object_type",
+                "circuits.virtualcircuit",
+            ))
+            .and(query_param("assigned_object_id", "7"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{
+                    "id": 5, "created": "2024-01-02",
+                    "kind": {"value": "info", "label": "Info"},
+                    "comments": "vc provisioned"
+                }]
+            })))
+            .mount(&mock)
+            .await;
+
+        let Json(view) = server_for(&mock)
+            .nbox_journal(Parameters(JournalArgs {
+                kind: GetKind::VirtualCircuit,
+                reference: "VC-100".to_string(),
+                limit: None,
+            }))
+            .await
+            .expect("virtual-circuit journal");
+        let value = serde_json::to_value(&view).expect("serialize view");
+        assert_keys(&value, &["entries"]);
+        assert_eq!(value["entries"][0]["comments"], "vc provisioned");
+    }
+
     // ---- per-kind `nbox_get` view shapes ---------------------------------
     //
     // Each pins the JSON key set a host reads for one object of that kind. The
@@ -2694,6 +2785,80 @@ mod contracts {
             .expect("circuit lookup");
         assert_keys(&value, &["cid", "status"]);
         assert_eq!(value["cid"], "C-100");
+    }
+
+    /// `nbox_get virtual_circuit` → `VirtualCircuitView`: cid + the optional
+    /// provider_network/provider_account/type/status/tenant/owner/description
+    /// scalars + the skip-if-empty `terminations`/`tags`/`custom_fields`. The
+    /// termination row carries `endpoint` + the skip-if-none `device`/
+    /// `interface`/`role`/`description` refs — the structured form an agent
+    /// navigates by (no A/Z sides, no cable diagram: virtual circuits are
+    /// multi-point overlays on interfaces).
+    #[tokio::test]
+    async fn get_virtual_circuit_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/circuits/virtual-circuits/",
+            json!({
+                "id": 7, "url": "u", "cid": "VC-100",
+                "provider_network": {"id": 3, "name": "ACME Cloud"},
+                "provider_account": {"id": 9, "name": "primary", "account": "ACME-001"},
+                "type": {"id": 2, "name": "MPLS", "slug": "mpls"},
+                "status": {"value": "active", "label": "Active"},
+                "tenant": {"id": 4, "name": "acme"},
+                "owner": {"id": 1, "name": "netops"},
+                "description": "east-west overlay",
+                "tags": [{"id": 1, "name": "transit", "slug": "transit"}],
+                "custom_fields": {"sla": "gold"}
+            }),
+        )
+        .await;
+        // One termination landing on a device interface (with a role).
+        mount_one(
+            &mock,
+            "/api/circuits/virtual-circuit-terminations/",
+            json!({
+                "id": 10,
+                "interface": {
+                    "id": 50, "name": "xe-0/0/0",
+                    "device": {"id": 8, "name": "edge01"}
+                },
+                "role": {"value": "hub", "label": "Hub"},
+                "description": "a-side"
+            }),
+        )
+        .await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::VirtualCircuit, "VC-100")))
+            .await
+            .expect("virtual-circuit lookup");
+        assert_keys(
+            &value,
+            &[
+                "cid",
+                "provider_network",
+                "provider_account",
+                "type",
+                "status",
+                "tenant",
+                "owner",
+                "description",
+                "terminations",
+                "tags",
+                "custom_fields",
+            ],
+        );
+        assert_eq!(value["cid"], "VC-100");
+        // The termination row's full key set is pinned too.
+        assert_keys(
+            &value["terminations"][0],
+            &["endpoint", "device", "interface", "role", "description"],
+        );
+        assert_eq!(value["terminations"][0]["endpoint"], "edge01 xe-0/0/0");
+        assert_eq!(value["terminations"][0]["device"]["id"], 8);
+        assert_eq!(value["terminations"][0]["interface"]["name"], "xe-0/0/0");
     }
 
     /// `nbox_get aggregate` → `AggregateView`: prefix + the optional rir/tenant

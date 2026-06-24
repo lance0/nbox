@@ -7,7 +7,9 @@ use anyhow::Result;
 use crate::error::NboxError;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
-use crate::netbox::models::circuits::{Circuit, Provider};
+use crate::netbox::models::circuits::{
+    Circuit, Provider, VirtualCircuit, VirtualCircuitTermination,
+};
 use crate::netbox::models::dcim::{
     Device, Interface, Location, MacAddress, Rack, Region, Site, SiteGroup,
 };
@@ -674,6 +676,47 @@ impl NetBoxClient {
             8,
         )
         .await
+    }
+
+    /// The terminations of a virtual circuit (`?virtual_circuit_id=`). Virtual
+    /// circuits are multi-point (no A/Z sides), so this is a flat list; each
+    /// termination lands on a device interface. Capped at a generous bound — a
+    /// virtual circuit's termination set is small in practice.
+    pub async fn virtual_circuit_terminations(
+        &self,
+        virtual_circuit_id: u64,
+    ) -> Result<Vec<VirtualCircuitTermination>> {
+        self.list_all(
+            Endpoint::VirtualCircuitTerminations,
+            vec![("virtual_circuit_id", virtual_circuit_id.to_string())],
+            8,
+        )
+        .await
+    }
+
+    /// Resolve a virtual circuit by numeric ID, then exact CID, then a
+    /// CID-contains fallback (ambiguous → exit 5).
+    pub async fn virtual_circuit_by_ref(&self, value: &str) -> Result<Option<VirtualCircuit>> {
+        if let Ok(id) = value.parse::<u64>() {
+            return self
+                .get_optional(&format!("/api/circuits/virtual-circuits/{id}/"), &[])
+                .await;
+        }
+        let exact: Page<VirtualCircuit> = self
+            .list(Endpoint::VirtualCircuits, vec![("cid", value.to_string())])
+            .await?;
+        if let Some(vc) = exact.results.into_iter().next() {
+            return Ok(Some(vc));
+        }
+        let contains: Page<VirtualCircuit> = self
+            .list(
+                Endpoint::VirtualCircuits,
+                vec![("cid__ic", value.to_string())],
+            )
+            .await?;
+        ambiguous_or_first("virtual circuit", value, contains.results, |vc| {
+            vc.cid.clone()
+        })
     }
 
     /// Resolve a circuit by numeric ID, then exact CID, then a CID-contains

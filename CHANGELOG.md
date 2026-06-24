@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`virtual-circuit` kind (NetBox 4.2+).** `nbox virtual-circuit <cid|id>`
+  shows a virtual circuit and its terminations, and it's a full first-class kind:
+  `nbox_get kind=virtual_circuit` (MCP), `nbox journal virtual-circuit <cid>`,
+  `nbox open virtual-circuit/<cid>`, the `nbox://virtual_circuit/<cid>` resource,
+  and a `nbox search` fan-out. Virtual circuits are multi-point overlays on
+  device interfaces — no A/Z sides, no physical cables — so each termination is a
+  flat `device`/`interface` ref (for navigation) rather than a cable-path
+  diagram. The view also surfaces the optional `provider_network`,
+  `provider_account`, `type`, `status`, `tenant`, `owner` (4.5), and
+  `description` scalars. Model shape verified against the live 4.6.2 OpenAPI
+  schema.
+
 - **MCP response contracts: every `nbox_get` kind view pinned.** The JSON shape
   each `nbox_get` kind returns is now pinned by a response-contract test
   (`src/mcp/tests.rs::contracts`): a removed/renamed field, or a new one not

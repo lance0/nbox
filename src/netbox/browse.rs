@@ -57,7 +57,7 @@ pub fn browse_filter_field(kind: ObjectKind) -> Option<BrowseFilter> {
         | ObjectKind::Provider
         | ObjectKind::Tenant
         | ObjectKind::Contact => Some(BrowseFilter::Name("name__ic")),
-        ObjectKind::Circuit => Some(BrowseFilter::Name("cid__ic")),
+        ObjectKind::Circuit | ObjectKind::VirtualCircuit => Some(BrowseFilter::Name("cid__ic")),
         // CIDR-containment: prefix/IP browse narrows by network instead of name.
         ObjectKind::Prefix => Some(BrowseFilter::Containment("within_include")),
         ObjectKind::IpAddress => Some(BrowseFilter::Containment("parent")),

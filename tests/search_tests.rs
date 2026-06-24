@@ -56,6 +56,7 @@ async fn search_merges_ranks_and_dedups_across_endpoints() {
     mount_empty(&server, "/api/ipam/ip-addresses/").await;
     mount_empty(&server, "/api/ipam/prefixes/").await;
     mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
     mount_empty(&server, "/api/ipam/aggregates/").await;
     mount_empty(&server, "/api/ipam/asns/").await;
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
@@ -109,6 +110,7 @@ async fn search_truncates_to_limit() {
     mount_empty(&server, "/api/ipam/prefixes/").await;
     mount_empty(&server, "/api/ipam/vlans/").await;
     mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
     mount_empty(&server, "/api/ipam/aggregates/").await;
     mount_empty(&server, "/api/ipam/asns/").await;
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
@@ -154,6 +156,7 @@ async fn search_reports_partial_endpoint_failures() {
     mount_empty(&server, "/api/ipam/prefixes/").await;
     mount_empty(&server, "/api/ipam/vlans/").await;
     mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
     mount_empty(&server, "/api/ipam/aggregates/").await;
     mount_empty(&server, "/api/ipam/asns/").await;
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
@@ -313,6 +316,7 @@ async fn search_surfaces_tenants_and_contacts() {
     mount_empty(&server, "/api/ipam/prefixes/").await;
     mount_empty(&server, "/api/ipam/vlans/").await;
     mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
     mount_empty(&server, "/api/ipam/aggregates/").await;
     mount_empty(&server, "/api/ipam/asns/").await;
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
@@ -377,6 +381,7 @@ async fn search_surfaces_providers() {
     mount_empty(&server, "/api/ipam/prefixes/").await;
     mount_empty(&server, "/api/ipam/vlans/").await;
     mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
     mount_empty(&server, "/api/ipam/aggregates/").await;
     mount_empty(&server, "/api/ipam/asns/").await;
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
@@ -443,6 +448,7 @@ async fn search_surfaces_vms_and_clusters() {
     mount_empty(&server, "/api/ipam/prefixes/").await;
     mount_empty(&server, "/api/ipam/vlans/").await;
     mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
     mount_empty(&server, "/api/ipam/aggregates/").await;
     mount_empty(&server, "/api/ipam/asns/").await;
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
@@ -505,6 +511,7 @@ async fn search_surfaces_racks() {
     mount_empty(&server, "/api/ipam/prefixes/").await;
     mount_empty(&server, "/api/ipam/vlans/").await;
     mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
     mount_empty(&server, "/api/ipam/aggregates/").await;
     mount_empty(&server, "/api/ipam/asns/").await;
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
@@ -560,6 +567,7 @@ async fn search_surfaces_vrfs() {
     mount_empty(&server, "/api/ipam/prefixes/").await;
     mount_empty(&server, "/api/ipam/vlans/").await;
     mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
     mount_empty(&server, "/api/ipam/aggregates/").await;
     mount_empty(&server, "/api/ipam/asns/").await;
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
@@ -614,6 +622,7 @@ async fn search_surfaces_route_targets() {
     mount_empty(&server, "/api/ipam/prefixes/").await;
     mount_empty(&server, "/api/ipam/vlans/").await;
     mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
     mount_empty(&server, "/api/ipam/aggregates/").await;
     mount_empty(&server, "/api/ipam/asns/").await;
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
@@ -666,6 +675,7 @@ async fn search_matches_asn_by_number() {
     mount_empty(&server, "/api/ipam/prefixes/").await;
     mount_empty(&server, "/api/ipam/vlans/").await;
     mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
     mount_empty(&server, "/api/ipam/aggregates/").await;
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
     mount_empty(&server, "/api/tenancy/tenants/").await;
@@ -1268,6 +1278,7 @@ async fn search_with_vrf_filters_ip_and_prefix_by_vrf_id() {
     mount_empty(&server, "/api/dcim/sites/").await;
     mount_empty(&server, "/api/ipam/vlans/").await;
     mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
     mount_empty(&server, "/api/ipam/aggregates/").await;
     mount_empty(&server, "/api/ipam/asns/").await;
     mount_empty(&server, "/api/ipam/ip-ranges/").await;
@@ -1345,6 +1356,7 @@ async fn search_with_vrf_resolved_by_id_filters_prefixes() {
     mount_empty(&server, "/api/dcim/sites/").await;
     mount_empty(&server, "/api/ipam/vlans/").await;
     mount_empty(&server, "/api/circuits/circuits/").await;
+    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
     mount_empty(&server, "/api/ipam/aggregates/").await;
     mount_empty(&server, "/api/ipam/asns/").await;
     mount_empty(&server, "/api/ipam/ip-ranges/").await;

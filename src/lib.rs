@@ -317,6 +317,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             journal_limit,
         }) => run_circuit(&ctx, &value, journal, journal_limit).await,
         Some(Command::Provider { value }) => run_provider(&ctx, &value).await,
+        Some(Command::VirtualCircuit { value }) => run_virtual_circuit(&ctx, &value).await,
         Some(Command::Aggregate {
             value,
             journal,
@@ -1290,6 +1291,13 @@ async fn run_provider(ctx: &Ctx, value: &str) -> Result<()> {
     emit(ctx, &view, || view.to_key_values().print())
 }
 
+/// `nbox virtual-circuit <cid|id>` — show a virtual circuit and its terminations.
+async fn run_virtual_circuit(ctx: &Ctx, value: &str) -> Result<()> {
+    let client = connect(ctx)?;
+    let view = detail::virtual_circuit_view_by_ref(&client, value, &not_found).await?;
+    emit(ctx, &view, || println!("{}", view.to_plain()))
+}
+
 /// `nbox vm <name|id>` — show a virtual machine.
 async fn run_vm(ctx: &Ctx, value: &str) -> Result<()> {
     let client = connect(ctx)?;
@@ -1396,6 +1404,9 @@ pub(crate) async fn resolve_object_url(
             .next()
             .map(|ip| ip.url),
         "circuit" => client.circuit_by_ref(value).await?.map(|c| c.url),
+        "virtual-circuit" | "virtualcircuit" => {
+            client.virtual_circuit_by_ref(value).await?.map(|vc| vc.url)
+        }
         "aggregate" => client.aggregate_by_ref(value).await?.map(|a| a.url),
         "asn" => {
             let number: u32 = value
@@ -1440,7 +1451,7 @@ pub(crate) async fn resolve_object_url(
                 .map(|m| m.url)
         }
         other => anyhow::bail!(
-            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, route-target, interface, mac)"
+            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, virtual-circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, route-target, interface, mac)"
         ),
     };
     Ok(url)
@@ -1453,7 +1464,7 @@ fn parse_object_ref(s: &str) -> Result<(&str, &str)> {
         .filter(|(kind, value)| !kind.is_empty() && !value.is_empty())
         .ok_or_else(|| {
             anyhow::anyhow!(
-                "object reference must be `<kind>/<ref>` (e.g. device/edge01)\n\nKinds: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, route-target, mac"
+                "object reference must be `<kind>/<ref>` (e.g. device/edge01)\n\nKinds: device, ip, prefix, vlan, site, rack, circuit, virtual-circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, route-target, mac"
             )
         })
 }
@@ -1571,6 +1582,10 @@ pub(crate) async fn resolve_content_type_id(
             .provider_by_ref(value)
             .await?
             .map(|p| ("circuits.provider", p.id)),
+        "virtual-circuit" | "virtualcircuit" => client
+            .virtual_circuit_by_ref(value)
+            .await?
+            .map(|vc| ("circuits.virtualcircuit", vc.id)),
         "vm" => client
             .vm_by_ref(value)
             .await?
@@ -1611,7 +1626,7 @@ pub(crate) async fn resolve_content_type_id(
             iface.map(|i| ("dcim.interface", i.id))
         }
         other => anyhow::bail!(
-            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, route-target, interface, mac)"
+            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, virtual-circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, route-target, interface, mac)"
         ),
     };
     resolved.ok_or_else(|| not_found(kind, value))

@@ -71,6 +71,13 @@ flag, and the per-surface backend routing.
   fields simply deserialize to `None`/empty on pre-4.6). No version gate — the
   enrichment is additive and free-when-absent.
 
+- **`virtual-circuit` (4.2).** The `circuits/virtual-circuits/` and
+  `circuits/virtual-circuit-terminations/` endpoints ship in 4.2+ (nbox's whole
+  supported range), so there's no version gate. The `owner` scalar arrived in
+  4.5; it's an `Option` with a `#[serde(default)]`, so a pre-4.5 virtual circuit
+  deserializes fine and the field is simply omitted from the view (additive and
+  free-when-absent, like the NAT fields).
+
 - **GraphQL schema probe.** When a surface opts into GraphQL, nbox probes the live
   schema (filter input shapes + pagination) instead of hard-coding a version, so
   4.2/4.3/4.5+ differences are absorbed, and falls back to REST (with the reason in

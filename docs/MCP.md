@@ -324,7 +324,7 @@ All tools are annotated read-only.
 | Tool | Purpose |
 | ---- | ------- |
 | `nbox_status` | Connection target, per-surface `api` routing (configured vs effective backend), capabilities, NetBox/Django/Python versions, **and a token-validity preflight** (`token`: `valid`/`invalid`/`unverified` — the authenticated user on `valid`; NetBox 4.5+ `/api/authentication-check/`). Call first to confirm reachability, a valid token, and inspect the `api`/`capabilities` objects. |
-| `nbox_search` | Free-text search across devices, sites, racks, IPs, prefixes, VLANs, circuits, aggregates, ASNs, IP ranges, tenants, contacts, providers, virtual machines, clusters, VRFs, and route targets. Optional `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, and `vrf` filters (`vrf` filters IP/prefix results only; only one scope filter at a time). Use it to find an object's exact reference. |
+| `nbox_search` | Free-text search across devices, sites, racks, IPs, prefixes, VLANs, circuits, virtual circuits, aggregates, ASNs, IP ranges, tenants, contacts, providers, virtual machines, clusters, VRFs, and route targets. Optional `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, and `vrf` filters (`vrf` filters IP/prefix results only; only one scope filter at a time). Use it to find an object's exact reference. |
 | `nbox_get` | Fetch one object by `kind` + `ref`. An ambiguous `ref` returns a candidate list; pass `vrf` (ip/prefix) or `site`/`group` (vlan) to disambiguate. |
 | `nbox_get_interface` | One interface on a device: its config, assigned addresses, and cable-path trace. |
 | `nbox_next_ip` | Next available address(es) within a prefix. `count`, `vrf`. Nothing is reserved. |
@@ -335,11 +335,11 @@ All tools are annotated read-only.
 | `nbox_cache_clear` | Drop nbox's local read cache so the next lookups fetch fresh from NetBox. Read-only with respect to NetBox (idempotent) — it only clears copies held in this server process; use after data changed out-of-band and you need current state before the TTL expires. |
 
 `nbox_get` and `nbox_journal` take a `kind` and a `ref`. `kind` is one of
-`device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `circuit`, `aggregate`,
+`device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `circuit`, `virtual_circuit`, `aggregate`,
 `asn`, `ip_range`, `tenant`, `contact`, `provider`, `vm`, `cluster`, `vrf`, `route_target`, `mac`, `interface` — both
 tools accept the full set. `ref` is the natural reference for that kind: a
 name/slug/ID for named objects, a CIDR for prefix and aggregate, an address for
-ip, a VID or name for vlan, the AS number for asn, a name/RD/ID for vrf, a name (e.g. 65000:100) or ID for route_target, a MAC address (any common form, normalized) for mac, a `<device>/<name>` compound ref for interface (the name is taken verbatim after the device, since interface names may contain slashes).
+ip, a VID or name for vlan, the AS number for asn, a name/RD/ID for vrf, a name (e.g. 65000:100) or ID for route_target, a MAC address (any common form, normalized) for mac, a `<device>/<name>` compound ref for interface (the name is taken verbatim after the device, since interface names may contain slashes), a CID or numeric ID for virtual_circuit.
 
 `nbox_get` also accepts `ip_address` as an alias for `ip` — that's the `kind` a
 `nbox_search` result carries, so a search → get chain can pass the hit's `kind`
@@ -355,7 +355,7 @@ nbox://{kind}/{ref}
 ```
 
 `kind` is the same set as `nbox_get` (`device`, `ip`, `prefix`, `vlan`, `site`,
-`rack`, `circuit`, `aggregate`, `asn`, `ip_range`, `tenant`, `contact`,
+`rack`, `circuit`, `virtual_circuit`, `aggregate`, `asn`, `ip_range`, `tenant`, `contact`,
 `provider`, `vm`, `cluster`, `vrf`, `route_target`, `mac`, `interface`); `ref` is the same natural reference. Reading a resource returns the
 object as JSON — the exact view model `nbox_get` returns. Examples:
 `nbox://device/edge01`, `nbox://ip/10.0.0.1`, `nbox://site/iad1`,

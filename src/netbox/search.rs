@@ -12,7 +12,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
-use crate::netbox::models::circuits::{Circuit, Provider};
+use crate::netbox::models::circuits::{Circuit, Provider, VirtualCircuit};
 use crate::netbox::models::dcim::{Device, Rack, Site};
 use crate::netbox::models::ipam::{
     Aggregate, Asn, IpAddress, IpRange, Prefix, RouteTarget, Vlan, Vrf,
@@ -32,6 +32,11 @@ pub enum ObjectKind {
     Prefix,
     Vlan,
     Circuit,
+    /// A virtual circuit (NetBox 4.2+). Searchable by CID, openable as a detail
+    /// (its terminations), and a cross-navigation target. Carries no site scope,
+    /// so scope filters skip it. Kept last to preserve the existing variants'
+    /// order.
+    VirtualCircuit,
     Aggregate,
     Asn,
     IpRange,
@@ -78,6 +83,7 @@ impl ObjectKind {
             ObjectKind::Prefix => "prefix",
             ObjectKind::Vlan => "vlan",
             ObjectKind::Circuit => "circuit",
+            ObjectKind::VirtualCircuit => "virtual-circuit",
             ObjectKind::Aggregate => "aggregate",
             ObjectKind::Asn => "asn",
             ObjectKind::IpRange => "ip-range",
@@ -114,6 +120,7 @@ impl ObjectKind {
             ObjectKind::RouteTarget => "TENANT",
             // Not Nav-browsable today — never rendered; labelled for completeness.
             ObjectKind::Circuit => "PROVIDER",
+            ObjectKind::VirtualCircuit => "PROVIDER NETWORK",
             ObjectKind::Aggregate | ObjectKind::Asn => "RIR",
             ObjectKind::IpRange => "VRF",
             ObjectKind::Tenant | ObjectKind::Contact => "GROUP",
@@ -365,6 +372,7 @@ impl NetBoxClient {
             prefixes,
             vlans,
             circuits,
+            virtual_circuits,
             aggregates,
             asns,
             ip_ranges,
@@ -383,6 +391,7 @@ impl NetBoxClient {
             self.search_prefixes(&q, f, scope.as_ref(), vrf_id),
             self.search_vlans(&q, f, scope.as_ref()),
             self.search_circuits(&q, f, scope.as_ref()),
+            self.search_virtual_circuits(&q, f, scope.as_ref()),
             self.search_aggregates(&q, f, scope.as_ref()),
             self.search_asns(&q, f, scope.as_ref()),
             self.search_ip_ranges(&q, f, scope.as_ref()),
@@ -406,6 +415,7 @@ impl NetBoxClient {
             ("prefixes", prefixes),
             ("vlans", vlans),
             ("circuits", circuits),
+            ("virtual-circuits", virtual_circuits),
             ("aggregates", aggregates),
             ("asns", asns),
             ("ip-ranges", ip_ranges),
@@ -770,6 +780,38 @@ impl NetBoxClient {
                     .map(super::models::common::BriefObject::label),
                 url: api_to_web_url(&c.url),
                 display: c.cid,
+            })
+            .collect())
+    }
+
+    async fn search_virtual_circuits(
+        &self,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+    ) -> Result<Vec<SearchResult>> {
+        // Virtual circuits carry no scope filter that maps to our flags — any
+        // active scope (including `--site`) skips them.
+        if skip_for_any_scope(scope) {
+            return Ok(Vec::new());
+        }
+        let Some(params) = endpoint_params(q, f, &["status", "tenant", "tag"]) else {
+            return Ok(Vec::new());
+        };
+        let page: Page<VirtualCircuit> = self.list(Endpoint::VirtualCircuits, params).await?;
+        Ok(page
+            .results
+            .into_iter()
+            .map(|vc| SearchResult {
+                kind: ObjectKind::VirtualCircuit,
+                id: vc.id,
+                score: score_match(q, &vc.cid),
+                subtitle: vc
+                    .provider_network
+                    .as_ref()
+                    .map(super::models::common::BriefObject::label),
+                url: api_to_web_url(&vc.url),
+                display: vc.cid,
             })
             .collect())
     }

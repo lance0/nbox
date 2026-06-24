@@ -28,6 +28,7 @@ pub mod tag_view;
 pub mod tagged_view;
 pub mod tenant_view;
 pub mod util;
+pub mod virtual_circuit_view;
 pub mod vlan_view;
 pub mod vm_view;
 pub mod vrf_view;

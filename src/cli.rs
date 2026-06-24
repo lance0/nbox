@@ -250,6 +250,12 @@ pub enum Command {
         value: String,
     },
 
+    /// Show a virtual circuit by CID or numeric ID (NetBox 4.2+).
+    VirtualCircuit {
+        /// Virtual circuit CID or numeric ID.
+        value: String,
+    },
+
     /// Show an aggregate by CIDR or numeric ID.
     Aggregate {
         /// Aggregate prefix (CIDR) or numeric ID.
@@ -966,6 +972,15 @@ mod tests {
         assert!(matches!(
             provider.command,
             Some(Command::Provider { value }) if value == "acme-telecom"
+        ));
+    }
+
+    #[test]
+    fn parses_virtual_circuit_lookup() {
+        let vc = Cli::try_parse_from(["nbox", "virtual-circuit", "VC-100"]).unwrap();
+        assert!(matches!(
+            vc.command,
+            Some(Command::VirtualCircuit { value }) if value == "VC-100"
         ));
     }
 
