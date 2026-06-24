@@ -86,6 +86,23 @@ Polish the read experience. No writes here.
   - ☐ **CIDR-containment filter for prefix/IP browse.** The planned follow-up for the CIDR/inet-keyed
     kinds: filter those browses by `within_include`/`parent` (network containment) so `/` narrows a prefix/IP
     list by network instead of falling back to global search.
+- ☐ **Load-more / follow-`next` (the unifying browse fix).** A browse stops at the cap (1000) and the
+  device-interfaces / prefix-children detail tabs stop at their sub-resource caps (200 / 50) — past that
+  the only path is the filter. Pull the next page on scroll by **following the server's `next` cursor**
+  instead of computing offsets. This closes three `KNOWN_ISSUES.md` entries at once: the browse cap, the
+  sub-resource caps, and the `offset += page_size` skip when a server's `MAX_PAGE_SIZE` is below the
+  requested limit (following `next` never assumes page size equals request size). It's the real "browse
+  everything" answer the 1000 cap currently stands in for.
+- ☐ **Hierarchical scope filters (descendant expansion).** `--region`/`--site-group`/`--location` (and the
+  TUI scope) match **exactly** today — a region matches only prefixes scoped to the region itself, not the
+  sites inside it (`KNOWN_ISSUES.md`). NetBox's `PrefixFilter` has no `within`/descendant lookup (see the
+  Performance-candidates skip note below), so the fix is client-side: resolve the scope to its descendant
+  sites, then filter by those ids. Not a one-liner — it needs the region→site expansion path.
+- _Tracked vs by-design (`KNOWN_ISSUES.md` cross-reference, so the two docs stop drifting): the browse/
+  sub-resource caps + offset-skip are covered by load-more above; hierarchical scope by the item above;
+  read-only by **Writes — deferred** and CSV shape by **CSV/output-mode contracts**. The remaining two —
+  parent-prefix enrichment as a best-effort longest match, and name lookups resolving exact-then-contains —
+  are **by design** (surfacing ambiguity over guessing), acknowledged here, not tracked for a fix._
 - ☐ **Demo recording** — an asciinema/VHS cast for the README.
 - ☐ **Interface journal.** Surface an interface's journal entries (operator notes) like the other
   kinds now that the interface is a first-class TUI detail. Needs an `interface` entry in the journal /
