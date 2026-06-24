@@ -15,7 +15,7 @@ TUI, so output is consistent across both.
     The same authenticated client owns `/graphql/` POSTs. Holds the profile's
     per-surface `ApiConfig` and exposes `api_preference`/`effective_backend`.
   - `endpoints.rs` — endpoint paths.
-  - `pagination.rs` — `Page<T>`, offset paging (`list` / `list_all`).
+  - `pagination.rs` — `Page<T>`; `list` is one offset page, `list_all` follows the server's `next` link across pages.
   - `query.rs` — per-object resolvers (`*_by_ref`, candidates, scope labels).
   - `capabilities.rs` — resolves a surface's configured preference + live schema
     probe into an `EffectiveBackend` (with REST-fallback reason); the surface-aware

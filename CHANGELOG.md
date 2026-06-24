@@ -50,8 +50,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   pre-4.5 objects). In `search`, `--owner <name>` and `--owner-group <name>`
   filter by user/group name; owner is polymorphic (user **or** group) so the two
   are separate filters, and both are silently ignored on releases that carry no
-  owner data (all 18 search endpoints accept the params; nbox never sends a
-  filter a kind can't satisfy).
+  owner data (every owner-bearing search endpoint accepts the params; nbox never
+  sends a filter a kind can't satisfy).
 
 - **`virtual-circuit` kind (NetBox 4.2+).** `nbox virtual-circuit <cid|id>`
   shows a virtual circuit and its terminations, and it's a full first-class kind:
@@ -68,9 +68,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **MCP response contracts: every `nbox_get` kind view pinned.** The JSON shape
   each `nbox_get` kind returns is now pinned by a response-contract test
   (`src/mcp/tests.rs::contracts`): a removed/renamed field, or a new one not
-  listed, fails the test. Covers all 18 kinds (device, ip, prefix, vlan, site,
-  rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm,
-  cluster, vrf, route_target, mac, interface) plus the already-pinned
+  listed, fails the test. Covers every `nbox_get` kind plus the already-pinned
   status/search/journal/tags/tagged/available/cache-clear reports. Closes the
   remaining contract gap; zero runtime change.
 
@@ -182,7 +180,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Explicit (not live), so it doesn't hammer NetBox while you type. Uses the kind's
   case-insensitive name lookup (`name__ic` for devices/racks/sites/VLANs/VRFs/
   route-targets, `cid__ic` for circuits). The pane title shows the active filter and
-  count (`Devices · name contains "bfr" · 52`), `1000+` signals the result cap (refine
+  count (`Devices · name contains "edge" · 52`), `1000+` signals the result cap (refine
   to narrow). `Esc` on the list clears the active filter; while editing, `Esc`
   instead cancels the edit (keeping the filter), and `Ctrl+X` or an empty Enter
   clear it.

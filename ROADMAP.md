@@ -78,7 +78,7 @@ Polish the read experience. No writes here.
 - ☑ **Server-side browse filter (Nav rail).** From the Nav rail, `/` on a name-bearing kind
   (devices/racks/sites/VLANs/VRFs/route-targets) filters that list **server-side** by name (`name__ic`)
   instead of opening global search — explicit (Enter to apply, not live typeahead), so it doesn't hammer
-  NetBox while typing. The pane title shows the active filter + count (`Devices · name contains "bfr" · 52`),
+  NetBox while typing. The pane title shows the active filter + count (`Devices · name contains "edge" · 52`),
   `1000+` signals the browse cap; `Esc` clears (Normal) / cancels the edit (BrowseFilter), `Ctrl+X`/empty-
   Enter clear while editing. Prefix and IP-address now filter by network containment
   (the follow-up item below); aggregate keeps `/` as global search (it keys on a

@@ -376,11 +376,11 @@ mod tests {
         let server = MockServer::start().await;
         Mock::given(method("GET"))
             .and(path("/api/dcim/devices/"))
-            .and(query_param("name__ic", "bfr"))
+            .and(query_param("name__ic", "edge"))
             .respond_with(ResponseTemplate::new(200).set_body_json(json!({
                 "count": 1, "next": null, "previous": null,
                 "results": [{
-                    "id": 3, "url": "http://nb/api/dcim/devices/3/", "name": "bfr-core-01"
+                    "id": 3, "url": "http://nb/api/dcim/devices/3/", "name": "edge-core-01"
                 }]
             })))
             .mount(&server)
@@ -390,12 +390,12 @@ mod tests {
             &client_for(&server),
             ObjectKind::Device,
             BROWSE_CAP,
-            Some("bfr"),
+            Some("edge"),
         )
         .await
         .expect("filtered browse");
         assert_eq!(results.len(), 1);
-        assert_eq!(results[0].display, "bfr-core-01");
+        assert_eq!(results[0].display, "edge-core-01");
     }
 
     #[tokio::test]

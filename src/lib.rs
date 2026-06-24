@@ -1514,20 +1514,20 @@ pub(crate) async fn resolve_object_url(
             client.device_interface(dev.id, name).await?.map(|i| i.url)
         }
         "mac" => {
-            // Normalize first; a non-MAC is a usage error. Open the first match —
-            // if several interfaces carry it, the operator narrows from the
-            // ambiguous error `nbox mac` would raise on a direct lookup.
+            // Normalize first (a non-MAC is a usage error), then resolve uniquely:
+            // several interfaces carrying the MAC is ambiguous (exit 5) — the same
+            // contract `nbox mac` honors — not a silent first-pick that could open
+            // the wrong object.
             let mac = crate::mac::normalize(value).ok_or_else(|| {
                 error::NboxError::Usage(format!(
                     "invalid MAC address \"{value}\" — try aa:bb:cc:dd:ee:ff"
                 ))
             })?;
-            client
-                .mac_candidates(&mac)
-                .await?
-                .into_iter()
-                .next()
-                .map(|m| m.url)
+            Some(
+                detail::resolve_mac(client, &mac, value, &not_found)
+                    .await?
+                    .url,
+            )
         }
         other => anyhow::bail!(
             "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, rack-group, circuit, virtual-circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, vm-type, cluster, vrf, route-target, interface, mac)"
@@ -1687,16 +1687,13 @@ pub(crate) async fn resolve_content_type_id(
             .await?
             .map(|rt| ("ipam.routetarget", rt.id)),
         "mac" => {
-            // Normalize first; a non-MAC is a usage error here too. MACs aren't
-            // journalable in NetBox, so this resolves the id only (for `nbox open`).
+            // Normalize first; a non-MAC is a usage error here too. Resolve
+            // uniquely — a duplicate MAC is ambiguous (exit 5), matching `nbox
+            // mac`, not a silent first-pick.
             let mac = crate::mac::normalize(value)
                 .ok_or_else(|| anyhow::anyhow!("invalid MAC address \"{value}\""))?;
-            client
-                .mac_candidates(&mac)
-                .await?
-                .into_iter()
-                .next()
-                .map(|m| ("dcim.macaddress", m.id))
+            let m = detail::resolve_mac(client, &mac, value, &not_found).await?;
+            Some(("dcim.macaddress", m.id))
         }
         // `interface/<device>/<name>`: interfaces have no single-string ref (they're
         // addressed by device + name, or numeric id), so the journal resolver takes
@@ -2580,5 +2577,46 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error::NboxError::exit_code_for(&err), 4);
+    }
+
+    #[tokio::test]
+    async fn mac_is_ambiguous_exit_5_on_open_and_journal_not_first_pick() {
+        // Parity regression: a MAC on >1 interface is ambiguous (exit 5) on EVERY
+        // surface, not just `nbox mac`. `nbox open mac/<addr>` (resolve_object_url)
+        // and `nbox journal mac <addr>` (resolve_content_type_id) must NOT silently
+        // pick the first match — two candidates → both resolvers exit 5.
+        let server = MockServer::start().await;
+        let two = json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [
+                {"id": 1, "url": format!("{}/api/dcim/mac-addresses/1/", server.uri()),
+                 "mac_address": "aa:bb:cc:dd:ee:ff"},
+                {"id": 2, "url": format!("{}/api/dcim/mac-addresses/2/", server.uri()),
+                 "mac_address": "aa:bb:cc:dd:ee:ff"}
+            ]
+        });
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/mac-addresses/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(two))
+            .mount(&server)
+            .await;
+        let c = open_client(&server);
+
+        let open_err = crate::resolve_object_url(&c, "mac", "aa:bb:cc:dd:ee:ff")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error::NboxError::exit_code_for(&open_err),
+            5,
+            "open mac/<dup> must be ambiguous, not a first-pick"
+        );
+        let journal_err = resolve_content_type_id(&c, "mac", "aa:bb:cc:dd:ee:ff")
+            .await
+            .unwrap_err();
+        assert_eq!(
+            error::NboxError::exit_code_for(&journal_err),
+            5,
+            "journal mac <dup> must be ambiguous, not a first-pick"
+        );
     }
 }
