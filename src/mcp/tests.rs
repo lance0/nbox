@@ -1753,8 +1753,8 @@ async fn read_resource_missing_object_is_invalid_params() {
 mod contracts {
     use super::{
         ErrorCode, GetKind, JournalArgs, Json, ListTagsArgs, Mock, MockServer, NextIpArgs,
-        Parameters, ResponseTemplate, SearchArgs, empty_page, get_args, method, mount_empty,
-        mount_one, one_text, path, query_param, server_for,
+        Parameters, ResponseTemplate, SearchArgs, TaggedArgs, empty_page, get_args, method,
+        mount_empty, mount_one, one_text, path, query_param, server_for,
     };
     use rmcp::ErrorData;
     use serde_json::{Value, json};
@@ -2334,5 +2334,190 @@ mod contracts {
 
         assert_keys(&value, &["tags"]);
         assert_keys(&value["tags"][0], &["name", "slug", "color", "count"]);
+    }
+
+    /// `nbox_tagged` → `TaggedReport`: a top-level `tag` (the resolved
+    /// reference) + a `results` array. Each row carries the friendly `kind`, the
+    /// dotted `object_type`, and the object's `id`/`display`/`url` — the keys an
+    /// agent reads to answer "what has tag X". Two rows of different kinds pin
+    /// the row shape for both the device and a non-device content type.
+    #[tokio::test]
+    async fn tagged_report_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/extras/tags/"))
+            .and(query_param("name", "prod:us-east"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{"id": 42, "name": "prod:us-east", "slug": "produs-east"}]
+            })))
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/extras/tagged-objects/"))
+            .and(query_param("tag_id", "42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 2, "next": null, "previous": null,
+                "results": [
+                    {"id": 1, "url": "http://nb/api/extras/tagged-objects/1/",
+                     "object_type": "dcim.device", "object_id": 7,
+                     "object": {"id": 7, "display": "edge01",
+                                "url": "http://nb/api/dcim/devices/7/"},
+                     "tag": {"id": 42, "name": "prod:us-east", "slug": "produs-east"},
+                     "display": "edge01 tagged with prod:us-east"},
+                    {"id": 2, "url": "http://nb/api/extras/tagged-objects/2/",
+                     "object_type": "ipam.prefix", "object_id": 9,
+                     "object": {"id": 9, "display": "10.0.0.0/24",
+                                "url": "http://nb/api/ipam/prefixes/9/"},
+                     "tag": {"id": 42, "name": "prod:us-east", "slug": "produs-east"},
+                     "display": "10.0.0.0/24 tagged with prod:us-east"}
+                ]
+            })))
+            .mount(&mock)
+            .await;
+
+        let Json(report) = server_for(&mock)
+            .nbox_tagged(Parameters(TaggedArgs {
+                tag: "prod:us-east".to_string(),
+                limit: None,
+            }))
+            .await
+            .expect("tagged");
+        let value = serde_json::to_value(&report).expect("serialize report");
+
+        assert_keys(&value, &["tag", "results"]);
+        assert_keys(&value["tag"], &["id", "name", "slug"]);
+        assert_eq!(value["tag"]["id"], 42);
+        assert_keys(
+            &value["results"][0],
+            &["kind", "object_type", "id", "display", "url"],
+        );
+        // The friendly `kind` is mapped from the dotted type (device, not
+        // dcim.device), for both a device and a non-device content type.
+        assert_eq!(value["results"][0]["kind"], "device");
+        assert_eq!(value["results"][0]["object_type"], "dcim.device");
+        assert_eq!(value["results"][1]["kind"], "prefix");
+        assert_eq!(value["results"][1]["object_type"], "ipam.prefix");
+    }
+
+    /// `nbox_get interface` view shape: the `InterfaceView` keys a host reads.
+    /// `name`/`type` are mandatory (always present); optional scalars
+    /// (`device`/`enabled`/`mtu`/`mac_address`/`mode`/… ) are skip-if-none and
+    /// present in this fixture, so the FULL scalar set is pinned. The `ref` is
+    /// `<device>/<name>` — the interface kind's compound reference.
+    #[tokio::test]
+    async fn get_interface_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        // resolve_interface: device lookup, then interface by device_id+name.
+        mount_one(
+            &mock,
+            "/api/dcim/devices/",
+            json!({"id": 1, "url": "u", "name": "edge01"}),
+        )
+        .await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/interfaces/"))
+            .and(query_param("device_id", "1"))
+            .and(query_param("name", "xe-0/0/0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{
+                    "id": 42, "url": "u", "name": "xe-0/0/0",
+                    "device": {"id": 1, "display": "edge01"},
+                    "enabled": true,
+                    "type": {"value": "10gbase-x-sfpp", "label": "SFP+ (10GE)"},
+                    "mtu": 9000, "mac_address": "aa:bb:cc:dd:ee:ff",
+                    "mode": {"value": "access", "label": "Access"}
+                }]
+            })))
+            .mount(&mock)
+            .await;
+        mount_empty(&mock, "/api/ipam/ip-addresses/").await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/interfaces/42/trace/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!([])))
+            .mount(&mock)
+            .await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::Interface, "edge01/xe-0/0/0")))
+            .await
+            .expect("interface lookup");
+
+        // `name` is the only mandatory scalar; the optional scalars present in
+        // this fixture (device/enabled/type/mtu/mac_address/mode) pin them. The
+        // list sections (tagged_vlans/ip_addresses/trace/connected_to) are
+        // skip-if-empty and absent here (empty fixture) — their presence-when-
+        // populated is exercised by the dedicated interface tests.
+        assert_keys(
+            &value,
+            &[
+                "name",
+                "device",
+                "enabled",
+                "type",
+                "mtu",
+                "mac_address",
+                "mode",
+            ],
+        );
+        assert_eq!(value["name"], "xe-0/0/0");
+        assert_eq!(value["type"], "SFP+ (10GE)");
+    }
+
+    /// `nbox_journal` with an interface `kind`/`ref` (`<device>/<name>`): pins
+    /// that the journal resolver accepts the compound interface reference — the
+    /// one kind without a single-string ref — and surfaces the same `JournalView`
+    /// shape as the other kinds.
+    #[tokio::test]
+    async fn journal_interface_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/dcim/devices/",
+            json!({"id": 1, "url": "u", "name": "edge01"}),
+        )
+        .await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/interfaces/"))
+            .and(query_param("device_id", "1"))
+            .and(query_param("name", "xe-0/0/0"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{"id": 42, "url": "u", "name": "xe-0/0/0",
+                              "device": {"id": 1, "display": "edge01"}}]
+            })))
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/extras/journal-entries/"))
+            .and(query_param("assigned_object_type", "dcim.interface"))
+            .and(query_param("assigned_object_id", "42"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{
+                    "id": 5, "created": "2024-01-02",
+                    "kind": {"value": "info", "label": "Info"},
+                    "comments": "flapped overnight"
+                }]
+            })))
+            .mount(&mock)
+            .await;
+
+        let Json(view) = server_for(&mock)
+            .nbox_journal(Parameters(JournalArgs {
+                kind: GetKind::Interface,
+                reference: "edge01/xe-0/0/0".to_string(),
+                limit: None,
+            }))
+            .await
+            .expect("interface journal");
+        let value = serde_json::to_value(&view).expect("serialize view");
+
+        assert_keys(&value, &["entries"]);
+        // `comments` always present; `created`/`kind` present here; `author`
+        // skip-if-none (no `created_by` in this fixture).
+        assert_keys(&value["entries"][0], &["created", "kind", "comments"]);
+        assert_eq!(value["entries"][0]["comments"], "flapped overnight");
     }
 }

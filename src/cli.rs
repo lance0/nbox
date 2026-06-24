@@ -397,7 +397,7 @@ pub enum Command {
     /// Show recent journal entries for an object.
     Journal {
         /// Object kind: device, ip, prefix, vlan, site, rack, circuit,
-        /// aggregate, asn, or ip-range.
+        /// aggregate, asn, ip-range, or interface (`<device>/<name>`).
         kind: String,
 
         /// Object reference (name, address, CIDR, VID, slug, or ID).

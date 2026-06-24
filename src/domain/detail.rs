@@ -160,6 +160,42 @@ pub async fn device_detail_by_ref(
     build_device_detail(client, device).await
 }
 
+/// Split an interface reference `device/name` into its two parts. The device is
+/// the first segment; the name is EVERYTHING after the first `/` verbatim —
+/// interface names may contain slashes (e.g. `xe-0/0/1`, `Ethernet1/49`). A ref
+/// with no `/`, or an empty device/name, is a usage error. Shared by the
+/// `nbox open`/journal/`nbox_get` interface paths so they all parse identically.
+pub(crate) fn split_interface_ref(value: &str) -> Result<(&str, &str)> {
+    value
+        .split_once('/')
+        .filter(|(d, n)| !d.is_empty() && !n.is_empty())
+        .ok_or_else(|| {
+            NboxError::Usage(format!(
+                "interface reference must be `<device>/<name>` (e.g. edge01/xe-0/0/1) — interface names may contain slashes; the part after the device is the name verbatim. Got \"{value}\"."
+            ))
+            .into()
+        })
+}
+
+/// Resolve one interface on a device (by the device's user reference + the
+/// interface name) to the full [`Interface`] record. Shared by the interface
+/// detail view and the journal id-resolution path so they can't drift.
+pub(crate) async fn resolve_interface(
+    client: &NetBoxClient,
+    device: &str,
+    interface: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<crate::netbox::models::dcim::Interface> {
+    let dev = client
+        .device_by_ref(device)
+        .await?
+        .ok_or_else(|| not_found("device", device))?;
+    client
+        .device_interface(dev.id, interface)
+        .await?
+        .ok_or_else(|| not_found("interface", interface))
+}
+
 /// `interface <device> <interface>`: resolve one interface on a device and
 /// build its view (assigned IPs + cable-path trace). Shared by CLI/MCP.
 pub async fn interface_view_by_ref(
@@ -168,14 +204,7 @@ pub async fn interface_view_by_ref(
     interface: &str,
     not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
 ) -> Result<InterfaceView> {
-    let dev = client
-        .device_by_ref(device)
-        .await?
-        .ok_or_else(|| not_found("device", device))?;
-    let iface = client
-        .device_interface(dev.id, interface)
-        .await?
-        .ok_or_else(|| not_found("interface", interface))?;
+    let iface = resolve_interface(client, device, interface, not_found).await?;
     let (ips, trace) = tokio::try_join!(
         client.interface_ips(iface.id, DEVICE_CAP),
         client.interface_trace(iface.id),

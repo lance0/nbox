@@ -269,6 +269,7 @@ nbox tags                         # list tags (slug, name, count)
 nbox tagged <tag>                 # objects carrying a tag, across kinds
                                   # (NetBox 4.3+; tag = id|name|slug)
 nbox journal <kind> <ref>         # recent journal entries for an object
+                                  # kinds incl. interface as <device>/<name>
                                   # --journal folds recent entries into a detail lookup (cap 5)
                                   # --journal-limit N overrides the cap (implies --journal)
 nbox open <kind>/<ref>            # device, ip, prefix, vlan, site, rack, circuit, provider,
@@ -480,7 +481,7 @@ The tools are all annotated read-only:
 |------|------|
 | `nbox_status` | Connection + backend capabilities + NetBox/Django/Python versions + a token-validity preflight (`token`: `valid`/`invalid`/`unverified`; NetBox 4.5+). |
 | `nbox_search` | Search devices/sites/racks/IPs/prefixes/VLANs/circuits/providers/aggregates/ASNs/IP-ranges/tenants/contacts/VMs/clusters/VRFs/route-targets; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; filters IP/prefix results only). |
-| `nbox_get` | Fetch one object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target) + `ref`; `vrf`/`site`/`group` disambiguate. |
+| `nbox_get` | Fetch one object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target, mac, interface) + `ref`; `vrf`/`site`/`group` disambiguate. |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix (nothing is reserved). |
 | `nbox_next_prefix` | Available free child prefix(es) of a given length, or all free blocks. |

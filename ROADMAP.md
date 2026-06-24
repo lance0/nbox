@@ -114,11 +114,14 @@ Polish the read experience. No writes here.
   enrichment as a best-effort longest match, and name lookups resolving exact-then-contains — are **by
   design** (surfacing ambiguity over guessing), acknowledged here, not tracked for a fix._
 - ☐ **Demo recording** — an asciinema/VHS cast for the README.
-- ☐ **Interface journal.** Surface an interface's journal entries (operator notes) like the other
-  kinds now that the interface is a first-class TUI detail. Needs an `interface` entry in the journal /
-  MCP `GetKind` kind set **and** by-id resolution — interfaces have no single-string reference (they're
-  addressed by device + name, or a numeric id), so the journal path's `resolve_content_type_id` (keyed
-  by one `*_by_ref` string) can't take them through its existing arms as-is. Raised in PR #64 review.
+- ☑ **Interface journal + `nbox_get interface`.** Interfaces are now a
+  first-class `GetKind::Interface` in both `nbox_get` (MCP + resource) and the
+  journal resolver, so `nbox journal interface <device>/<name>` and `nbox_get`
+  with `kind=interface` work. Interfaces have no single-string ref (addressed
+  by device + name, or numeric id), so the resolver takes the compound
+  `<device>/<name>` form — the name is taken verbatim after the device, since
+  interface names may contain slashes (`xe-0/0/1`, `Ethernet1/49`). Raised in
+  PR #64 review.
 - ☐ **Filtered cable browse (only filtered).** Cables aren't a browsable kind today (no `ObjectKind::Cable`,
   no cable detail view); they surface via a device's Cables tab and the interface cable-path. A *flat* "browse
   all cables" is a trap at scale (millions of rows), but a **filtered** view — cables by site / rack / device /

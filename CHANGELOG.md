@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Interface journal + `nbox_get interface` (MCP).** Interfaces are now a
+  first-class kind in the journal resolver and `nbox_get`. `nbox journal
+  interface <device>/<name>` surfaces an interface's operator notes like every
+  other kind, and `nbox_get` (MCP tool + `nbox://interface/<device>/<name>`
+  resource) returns the same `InterfaceView` as `nbox interface`. Interfaces
+  have no single-string reference — they're addressed by device + name — so the
+  compound `<device>/<name>` form is the ref, taken verbatim after the device
+  since names may contain slashes (`xe-0/0/1`, `Ethernet1/49`). The `nbox open
+  interface/<device>/<name>` path now shares the same splitter.
+
 - **NAT inside/outside enrichment (`nbox ip`).** NetBox 4.6 embeds `nat_inside`
   (a brief IP ref) on a NAT *outside* IP and `nat_outside` (an array) on the
   *inside* IP. `nbox ip` now surfaces both: the outside IP shows its inside
@@ -25,7 +35,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   tag is not-found (exit 4). Each result carries a friendly `kind`/`object_type`
   (mapped to nbox's kind labels, with a derived fallback for types nbox doesn't
   model), the object id/display/url, plus the resolved tag. Available on the CLI
-  (`nbox tagged`) and via MCP (`nbox_tagged`).
+  (`nbox tagged`) and via MCP (`nbox_tagged`). The `TaggedReport` JSON shape is
+  pinned by a response-contract test (top-level `tag`/`results`, row
+  `kind`/`object_type`/`id`/`display`/`url`).
 
 - **MAC reverse-lookup (`nbox mac <addr>`).** A new first-class kind (NetBox
   4.2+) that reverse-resolves a MAC address to the interface(s)/device(s) that

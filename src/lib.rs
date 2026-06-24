@@ -1414,13 +1414,9 @@ pub(crate) async fn resolve_object_url(
         // `interface/<device-ref>/<name>`: the device ref is the first segment of
         // `value`, and EVERYTHING after the next `/` is the interface name —
         // taken verbatim, since names contain slashes (e.g. `xe-0/0/1`,
-        // `Ethernet1/49`). A future `interface-id/<id>` form could be added here.
+        // `Ethernet1/49`). The shared splitter produces the usage error.
         "interface" => {
-            let (device, name) = value.split_once('/').filter(|(d, n)| !d.is_empty() && !n.is_empty()).ok_or_else(|| {
-                error::NboxError::Usage(format!(
-                    "interface reference must be `interface/<device>/<name>` (e.g. interface/edge01/xe-0/0/1)\n\nInterface names may contain slashes; the part after the device is the name verbatim. Got \"interface/{value}\"."
-                ))
-            })?;
+            let (device, name) = detail::split_interface_ref(value)?;
             let dev = client
                 .device_by_ref(device)
                 .await?
@@ -1600,8 +1596,22 @@ pub(crate) async fn resolve_content_type_id(
                 .next()
                 .map(|m| ("dcim.macaddress", m.id))
         }
+        // `interface/<device>/<name>`: interfaces have no single-string ref (they're
+        // addressed by device + name, or numeric id), so the journal resolver takes
+        // the `device/name` form and resolves the interface id from it. The dotted
+        // content type is `dcim.interface`. A not-found device or interface flows
+        // through as `None` to the final `ok_or_else`, matching every other kind.
+        "interface" => {
+            let (device, name) = detail::split_interface_ref(value)?;
+            let dev = client.device_by_ref(device).await?;
+            let iface = match dev {
+                Some(d) => client.device_interface(d.id, name).await?,
+                None => None,
+            };
+            iface.map(|i| ("dcim.interface", i.id))
+        }
         other => anyhow::bail!(
-            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, route-target, mac)"
+            "unknown object kind \"{other}\" (expected: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, route-target, interface, mac)"
         ),
     };
     resolved.ok_or_else(|| not_found(kind, value))
@@ -1705,8 +1715,8 @@ fn not_found(noun: &str, value: &str) -> anyhow::Error {
 mod tests {
     use super::{
         Cli, CommandFactory, check_raw_method, error, first_subnet_of_length, init_logging,
-        no_tui_refusal, normalize_raw_path, not_found, parse_object_ref, resolve_logging, run_man,
-        tui_startup_status, wants_journal,
+        no_tui_refusal, normalize_raw_path, not_found, parse_object_ref, resolve_content_type_id,
+        resolve_logging, run_man, tui_startup_status, wants_journal,
     };
     use crate::domain::detail::resolve_unique;
     use crate::netbox::models::ipam::AvailablePrefix;
@@ -2347,6 +2357,73 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error::NboxError::exit_code_for(&err), 2);
-        assert!(format!("{err:#}").contains("interface/<device>/<name>"));
+        assert!(format!("{err:#}").contains("`<device>/<name>`"));
+    }
+
+    #[tokio::test]
+    async fn resolve_content_type_id_interface_resolves_device_then_name() {
+        // The journal resolver's `interface` arm: `device/name` → device id, then
+        // interface id, returning the dotted `dcim.interface` content type. The
+        // interface name is everything after the first `/`, verbatim (names may
+        // contain slashes).
+        let server = MockServer::start().await;
+        mount_interface(&server, 7, 42, "xe-0/0/1").await;
+
+        let (content_type, id) =
+            resolve_content_type_id(&open_client(&server), "interface", "7/xe-0/0/1")
+                .await
+                .expect("interface resolves");
+        assert_eq!(content_type, "dcim.interface");
+        assert_eq!(id, 42);
+    }
+
+    #[tokio::test]
+    async fn resolve_content_type_id_interface_name_may_contain_slashes() {
+        // A name WITH a slash (`Ethernet1/49`): the part after the device is the
+        // whole name verbatim, not split again.
+        let server = MockServer::start().await;
+        mount_interface(&server, 7, 49, "Ethernet1/49").await;
+
+        let (_content_type, id) =
+            resolve_content_type_id(&open_client(&server), "interface", "7/Ethernet1/49")
+                .await
+                .expect("interface resolves");
+        assert_eq!(id, 49);
+    }
+
+    #[tokio::test]
+    async fn resolve_content_type_id_interface_missing_name_is_usage_exit_2() {
+        // No `/` (or empty name) is a usage error, not a network round-trip.
+        let server = MockServer::start().await;
+        let err = resolve_content_type_id(&open_client(&server), "interface", "edge01")
+            .await
+            .unwrap_err();
+        assert_eq!(error::NboxError::exit_code_for(&err), 2);
+        assert!(format!("{err:#}").contains("`<device>/<name>`"));
+    }
+
+    #[tokio::test]
+    async fn resolve_content_type_id_interface_not_found_is_exit_4() {
+        // Device resolves, interface doesn't → not-found (exit 4), not a 500.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/devices/7/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 7, "url": format!("{}/api/dcim/devices/7/", server.uri()), "name": "edge01"
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/interfaces/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 0, "next": null, "previous": null, "results": []
+            })))
+            .mount(&server)
+            .await;
+
+        let err = resolve_content_type_id(&open_client(&server), "interface", "7/xe-0/0/9")
+            .await
+            .unwrap_err();
+        assert_eq!(error::NboxError::exit_code_for(&err), 4);
     }
 }

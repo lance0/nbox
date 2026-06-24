@@ -80,12 +80,17 @@ pub enum GetKind {
     /// normalized); a non-MAC is `invalid_params`, >1 interface carrying it is
     /// ambiguous.
     Mac,
+    /// An interface. The `ref` is `<device>/<name>` (e.g. `edge01/xe-0/0/1`),
+    /// verbatim after the device since names may contain slashes. Interfaces have
+    /// no single-string ref, so they aren't journalable via the `name`-only
+    /// resolver — this kind resolves the interface id from the device+name.
+    Interface,
 }
 
 impl GetKind {
     /// Every kind, in the order the docs and `nbox://{kind}/{ref}` template list
     /// them — the same set `nbox_get` accepts.
-    const ALL: [GetKind; 18] = [
+    const ALL: [GetKind; 19] = [
         GetKind::Device,
         GetKind::Ip,
         GetKind::Prefix,
@@ -104,6 +109,7 @@ impl GetKind {
         GetKind::Vrf,
         GetKind::RouteTarget,
         GetKind::Mac,
+        GetKind::Interface,
     ];
 
     /// The `snake_case` slug used in `nbox://{kind}/{ref}` URIs and the `kind`
@@ -128,6 +134,7 @@ impl GetKind {
             GetKind::Vrf => "vrf",
             GetKind::RouteTarget => "route_target",
             GetKind::Mac => "mac",
+            GetKind::Interface => "interface",
         }
     }
 
@@ -396,8 +403,9 @@ fn resource_templates() -> ListResourceTemplatesResult {
         .with_description(
             "Read one NetBox object as JSON. `kind` is one of device, ip, prefix, vlan, \
              site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, \
-             vm, cluster, vrf, route_target; `ref` is its natural reference (name/slug/ID; CIDR for \
-             prefix/aggregate; address for ip; VID or name for vlan; AS number for asn). \
+             vm, cluster, vrf, route_target, mac, interface; `ref` is its natural reference (name/slug/ID; CIDR for \
+             prefix/aggregate; address for ip; VID or name for vlan; AS number for asn; \
+             `<device>/<name>` for interface, taken verbatim after the device since names may contain slashes). \
              Percent-encode a `ref` that contains '/'. Same view as the nbox_get tool.",
         )
         .with_mime_type("application/json")
@@ -512,7 +520,7 @@ impl NboxMcp {
     // single concrete type (a oneOf over ~10 view types is out of scope).
     #[tool(
         name = "nbox_get",
-        description = "Look up a single object and its context. `kind` is one of: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target. `ref` is the natural reference for that kind (name/slug/ID; CIDR for prefix/aggregate; address for ip; VID or name for vlan; AS number for asn; slug/name/ID for tenant; name/ID for contact; slug/name/ID for provider; name/ID for vm and cluster). On an ambiguous reference the error lists the candidates: pass `vrf` for an ip/prefix in several VRFs, or `site`/`group` for a VLAN VID present at several sites.",
+        description = "Look up a single object and its context. `kind` is one of: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target, mac, interface. `ref` is the natural reference for that kind (name/slug/ID; CIDR for prefix/aggregate; address for ip; VID or name for vlan; AS number for asn; slug/name/ID for tenant; name/ID for contact; slug/name/ID for provider; name/ID for vm and cluster; `<device>/<name>` for interface, verbatim after the device since names may contain slashes). On an ambiguous reference the error lists the candidates: pass `vrf` for an ip/prefix in several VRFs, or `site`/`group` for a VLAN VID present at several sites.",
         output_schema = output_schema(),
         annotations(read_only_hint = true)
     )]
@@ -620,7 +628,7 @@ impl NboxMcp {
     /// Recent journal entries for an object.
     #[tool(
         name = "nbox_journal",
-        description = "Return recent journal entries (operator notes) for an object, newest first. `kind` and `ref` follow nbox_get; supported kinds are device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target.",
+        description = "Return recent journal entries (operator notes) for an object, newest first. `kind` and `ref` follow nbox_get; supported kinds are device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target, interface (as `<device>/<name>`).",
         annotations(read_only_hint = true)
     )]
     async fn nbox_journal(
@@ -800,6 +808,16 @@ impl NboxMcp {
                 })?;
                 serde_json::to_value(detail::mac_view_by_ref(c, &mac, r, &not_found).await?)?
             }
+            GetKind::Interface => {
+                // The interface ref is `<device>/<name>` (verbatim after the
+                // device — names may contain slashes). Split via the shared
+                // helper, then resolve through the same view path as `nbox
+                // interface`.
+                let (device, name) = detail::split_interface_ref(r)?;
+                serde_json::to_value(
+                    detail::interface_view_by_ref(c, device, name, &not_found).await?,
+                )?
+            }
         };
         Ok(Json(value))
     }
@@ -870,6 +888,7 @@ impl NboxMcp {
             GetKind::Vrf => "vrf",
             GetKind::RouteTarget => "route-target",
             GetKind::Mac => "mac",
+            GetKind::Interface => "interface",
         };
         crate::resolve_content_type_id(&self.client, cli_kind, value).await
     }
