@@ -9,6 +9,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`nbox serve --print-config` (install recipes).** Prints the paste-ready
+  `mcpServers` JSON object most MCP hosts read, then exits — without starting
+  the server or connecting to NetBox, so it works before a token is even set.
+  The `command` is the absolute path to this binary (the host finds it even if
+  `nbox` isn't on its `PATH`); `args` always begins with `serve` and echoes any
+  `--profile`/`--config` you passed so the snippet reproduces your invocation;
+  `env.NBOX_TOKEN` is a placeholder (set it there, export it, or drop the block
+  if `nbox config init` holds the token). docs/MCP.md now lists the exact
+  config-file path per host (Claude Code, Claude Desktop, Cursor). This prints
+  the stdio recipe; the HTTP/OIDC transport is configured separately.
+
 - **`rack-group` + `vm-type` kinds (NetBox 4.6).** Two new first-class lookups
   for the 4.6 additions: `nbox rack-group <slug|name|id>` and
   `nbox vm-type <slug|name|id>`, each a full kind — `nbox_get` (MCP),

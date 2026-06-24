@@ -85,7 +85,9 @@ best-effort results (failed endpoints are reported on stderr).
 subprocess and speaks JSON-RPC over stdin/stdout; the tools reuse the CLI's query +
 view layer, so they return the same JSON view models. URL/token come from the active
 profile (same `--profile` / `--config` flags). JSON-RPC is on stdout; logs go to
-stderr. Every tool is annotated read-only.
+stderr. Every tool is annotated read-only. `nbox serve --print-config` prints the
+paste-ready `mcpServers` JSON (absolute binary path, echoed `--profile`/`--config`,
+placeholder token) and exits — no server start, no NetBox connection.
 
 | Tool | Purpose |
 | ---- | ------- |

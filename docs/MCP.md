@@ -64,6 +64,45 @@ profile/config flags to `args` if needed, e.g. `["serve", "--profile", "work"]`.
 The exact file and the menu used to edit it differ per host — consult that
 host's MCP documentation; the object shape above is what they consume.
 
+### `nbox serve --print-config` (the recipe, generated)
+
+Rather than hand-write the block, ask nbox for it — `--print-config` emits the
+`mcpServers` JSON to stdout and exits, without starting the server or connecting
+to NetBox (so it works before you've even set a token):
+
+```bash
+$ nbox serve --print-config
+{
+  "mcpServers": {
+    "nbox": {
+      "args": ["serve"],
+      "command": "/usr/local/bin/nbox",
+      "env": { "NBOX_TOKEN": "<set-your-token>" }
+    }
+  }
+}
+```
+
+The `command` is the absolute path to this `nbox` binary (so the host finds it
+even if `nbox` isn't on its `PATH`); `args` echoes any `--profile`/`--config`
+you passed so the snippet reproduces your invocation; and `NBOX_TOKEN` is a
+placeholder — set it there, export it in your shell, or drop the `env` block
+entirely if `nbox config init` already holds the token. (This prints the stdio
+recipe; the HTTP/OIDC transport is configured separately — see below.)
+
+### Where each host reads it
+
+| Host | File |
+| ---- | ---- |
+| **Claude Code** | `.mcp.json` in the project root (per-project) or `~/.claude.json` (global); `mcpServers` at the top level |
+| **Claude Desktop** | `claude_desktop_config.json` — macOS: `~/Library/Application Support/Claude/`, Windows: `%APPDATA%\Claude\`, Linux: `~/.config/Claude/` |
+| **Cursor** | `.cursor/mcp.json` in the project root |
+| **Generic** | whatever the host documents; the `mcpServers` object above is the common shape |
+
+Paste the printed object into the host's config file (merging under its
+`mcpServers` key if the file already has other servers), restart the host, and
+the `nbox` server appears in its MCP server list.
+
 ## HTTP transport (loopback)
 
 Stdio is the default transport. For local clients that want HTTP framing

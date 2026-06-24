@@ -536,6 +536,17 @@ pub enum Command {
         /// it. Only meaningful with `--http`.
         #[arg(long, value_name = "N")]
         rate_limit: Option<u32>,
+
+        /// Print a copy-paste MCP server config (the `mcpServers` JSON object
+        /// most hosts read) to stdout and exit, without starting the server or
+        /// connecting to NetBox. The `command` is the absolute path to this
+        /// binary; `args` echoes any `--profile`/`--config` you passed so the
+        /// snippet reproduces your invocation. The token is left as a
+        /// placeholder — set it via `nbox config init`, the `NBOX_TOKEN` env
+        /// var, or the printed `env` block. For the HTTP/OIDC transport see
+        /// docs/MCP.md (this prints the stdio recipe).
+        #[arg(long)]
+        print_config: bool,
     },
 }
 
@@ -752,6 +763,7 @@ mod tests {
             r"\-\-audience",
             r"\-\-oidc\-jwks\-url",
             r"\-\-rate\-limit",
+            r"\-\-print\-config",
         ] {
             assert!(serve.contains(flag), "serve man page missing `{flag}`");
         }
@@ -852,6 +864,7 @@ mod tests {
                 oidc_jwks_url: None,
                 ref allowed_host,
                 rate_limit: None,
+                print_config: false,
             }) if allowed_host.is_empty()
         ));
         // `--http` (and the optional `--http-token`) parse onto the variant.
@@ -866,9 +879,36 @@ mod tests {
         .unwrap();
         assert!(matches!(
             http.command,
-            Some(Command::Serve { http: Some(a), http_token: Some(t), .. })
+            Some(Command::Serve { http: Some(a), http_token: Some(t), print_config: false, .. })
                 if a == "127.0.0.1:8080" && t == "abc123"
         ));
+    }
+
+    #[test]
+    fn serve_print_config_flag_parses_and_short_circuits() {
+        // `--print-config` sets the boolean; it coexists with the stdio defaults
+        // (no `--http`). The handler short-circuits before connecting, so this
+        // is the only signal needed to drive it.
+        let pc = Cli::try_parse_from(["nbox", "serve", "--print-config"]).unwrap();
+        assert!(matches!(
+            pc.command,
+            Some(Command::Serve {
+                print_config: true,
+                http: None,
+                ..
+            })
+        ));
+        // It composes with `--profile`/`--config` (echoed into the printed args).
+        let with_profile =
+            Cli::try_parse_from(["nbox", "--profile", "work", "serve", "--print-config"]).unwrap();
+        assert!(matches!(
+            with_profile.command,
+            Some(Command::Serve {
+                print_config: true,
+                ..
+            })
+        ));
+        assert_eq!(with_profile.profile.as_deref(), Some("work"));
     }
 
     #[test]

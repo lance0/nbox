@@ -284,8 +284,10 @@ all read-only. (Market positioning itself stays out of the repo — see private 
   utilization audit, path trace, find stale/unused prefixes) alongside the existing tools + resources.
 - ☐ **Token-budget discipline as a headline.** Lean default view models + `--fields` across CLI/MCP;
   document per-tool token footprints (the official server's headline is ~90% reduction via field filtering).
-- ☐ **First-class install recipes.** Copy-paste MCP config for Claude Code / Desktop / Cursor, plus an
+- ☑ **First-class install recipes.** Copy-paste MCP config for Claude Code / Desktop / Cursor, plus an
   `nbox serve --print-config` helper. (SKILL.md + the README "Add it to Claude" block are the start.)
+  `--print-config` now prints the paste-ready `mcpServers` JSON (absolute binary path, echoed
+  `--profile`/`--config`, placeholder token) and exits; docs/MCP.md lists the per-host config-file path.
 - ☐ **Per-domain agent-skills catalog.** Grow the single root `SKILL.md` into a small catalog of focused
   skills (e.g. search, IPAM, device/interface context, `serve`) in the standard agent-skills layout
   (`skills/<name>/SKILL.md`). Keep them flag-free — point at `nbox <cmd> --help` rather than enumerating
