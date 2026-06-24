@@ -1141,8 +1141,16 @@ impl NetBoxClient {
         let Some(params) = endpoint_params(q, f, &["tenant", "tag", "owner", "owner_group"]) else {
             return Ok(Vec::new());
         };
+        // `virtual-machine-types/` is a NetBox 4.6+ endpoint. On an older
+        // release it 404s — treat that as "this kind isn't available here" and
+        // return empty, so the search fan-out stays green on 4.2–4.5 instead
+        // of failing closed on a version-gated endpoint miss.
         let page: Page<VirtualMachineType> =
-            self.list(Endpoint::VirtualMachineTypes, params).await?;
+            match self.list(Endpoint::VirtualMachineTypes, params).await {
+                Ok(page) => page,
+                Err(e) if crate::error::is_not_found(&e) => return Ok(Vec::new()),
+                Err(e) => return Err(e),
+            };
         Ok(page
             .results
             .into_iter()
@@ -1268,7 +1276,15 @@ impl NetBoxClient {
         let Some(params) = endpoint_params(q, f, &["tenant", "tag", "owner", "owner_group"]) else {
             return Ok(Vec::new());
         };
-        let page: Page<RackGroup> = self.list(Endpoint::RackGroups, params).await?;
+        // `rack-groups/` is a NetBox 4.6+ endpoint; on an older release it 404s.
+        // Swallow that as an empty result so the search fan-out stays green on
+        // 4.2–4.5 (the kind is simply absent), rather than fail closed on a
+        // version-gated endpoint miss.
+        let page: Page<RackGroup> = match self.list(Endpoint::RackGroups, params).await {
+            Ok(page) => page,
+            Err(e) if crate::error::is_not_found(&e) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
         Ok(page
             .results
             .into_iter()
