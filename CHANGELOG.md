@@ -66,6 +66,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`list_all` follows the server's `next` link across pages.** Pagination no
+  longer computes `offset += page_size` itself; from the second page on it
+  follows the `next` URL NetBox (DRF `LimitOffsetPagination`) returns, which
+  echoes every original filter param and sizes its offset with the *capped*
+  limit. This fixes a silent row-skip on NetBox servers configured with
+  `MAX_PAGE_SIZE` below the requested limit (the short page advanced by the full
+  request size, overshooting the rows the server actually returned) — the gap
+  can no longer open. Default NetBox (`MAX_PAGE_SIZE` ≥ 1000) was unaffected and
+  sees no behavioral change; single-object lookups are unaffected. Output is
+  byte-identical on every path that was already correct.
+
 - **Prefix CLI/MCP detail fetch is now concurrent.** The shared `prefix_view_by_ref`
   path (the CLI `nbox prefix` and MCP `nbox_get` prefix arm) fetched the prefix's
   children and member IPs in two sequential awaits; it now mirrors the TUI detail

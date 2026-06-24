@@ -4,7 +4,9 @@
 //! Clients page through with `limit`/`offset`. NetBox's own default page size is
 //! 50, but nbox always sends an explicit `limit` (default 100), and the server
 //! caps `limit` at 1000 — so an over-large `page_size` is clamped client-side
-//! (see `NetBoxClient`) to keep the `offset` windows aligned.
+//! (see `NetBoxClient`). `list_all` follows the server's `next` link from the
+//! second page on, so pagination stays aligned with the rows the server
+//! actually returns even when it caps `limit` below what we requested.
 
 use serde::Deserialize;
 

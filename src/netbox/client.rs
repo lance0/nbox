@@ -25,8 +25,10 @@ use crate::netbox::pagination::Page;
 const DEFAULT_PAGE_SIZE: usize = 100;
 
 /// NetBox caps `limit` at `MAX_PAGE_SIZE` server-side; sending more is silently
-/// reduced to this, so we clamp at construction to keep `limit`/`offset` windows
-/// aligned (see `list_all`).
+/// reduced to this, so we clamp at construction. `list_all` follows the server's
+/// `next` link from the second page on, so the clamp just bounds the first
+/// page's request size — pagination alignment comes from `next`, not from our
+/// `limit`/`offset` matching (see `list_all`).
 pub(crate) const MAX_PAGE_SIZE: usize = 1000;
 
 /// An HTTP client bound to a single NetBox instance/profile.
@@ -81,10 +83,13 @@ impl NetBoxClient {
             Url::parse(&url).with_context(|| format!("invalid NetBox URL: {}", profile.url))?;
 
         // Clamp the page size into NetBox's valid window. A profile value of `0`
-        // means "return ALL" to NetBox (no `limit` cap), which breaks our
-        // offset-windowed paging, so it falls back to the default. Anything else
-        // is clamped to `1..=MAX_PAGE_SIZE`: values above the server cap would be
-        // silently reduced server-side, desyncing our `offset` from the page size.
+        // means "return ALL" to NetBox (no `limit` cap), which defeats paging, so
+        // it falls back to the default. Anything else is clamped to
+        // `1..=MAX_PAGE_SIZE`: values above the server cap would be silently
+        // reduced server-side. (`list_all` follows the server's `next` link, so a
+        // server-side clamp no longer desyncs our pagination — but an unclamped
+        // `0`/huge value still requests an unbounded first page, hence the
+        // floor/ceiling here.)
         let page_size = match profile.page_size {
             None | Some(0) => DEFAULT_PAGE_SIZE,
             Some(n) => n.clamp(1, MAX_PAGE_SIZE),
@@ -316,46 +321,77 @@ impl NetBoxClient {
     where
         T: DeserializeOwned,
     {
-        // Size each page to the larger of the configured `page_size` and `max`
-        // (the latter capped at the server's MAX_PAGE_SIZE). A large fetch — a
-        // 1000-row browse, a 1000-port panel, a 200-row VRF section — then lands in
-        // one round trip instead of `ceil(max / page_size)` sequential ones. The
-        // configured `page_size` (kept in 1..=MAX_PAGE_SIZE at construction) is a
-        // throughput knob, so it's a floor here: a small `max` keeps today's
-        // single-page behavior; a large `max` grows the page to match, never past
-        // MAX_PAGE_SIZE. No call pulls more rows per request than it did before
-        // unless `max` itself is larger (and those extra rows are kept, capped at
-        // `max` — not wasted).
+        // Size the FIRST page to the larger of the configured `page_size` and
+        // `max` (the latter capped at the server's MAX_PAGE_SIZE). A large fetch
+        // — a 1000-row browse, a 1000-port panel, a 200-row VRF section — then
+        // lands in one round trip instead of `ceil(max / page_size)` sequential
+        // ones. The configured `page_size` (kept in 1..=MAX_PAGE_SIZE at
+        // construction) is a throughput knob, so it's a floor here: a small `max`
+        // keeps today's single-page behavior; a large `max` grows the page to
+        // match, never past MAX_PAGE_SIZE. No call pulls more rows per request
+        // than it did before unless `max` itself is larger (and those extra rows
+        // are kept, capped at `max` — not wasted).
         let page_size = self.page_size.max(max.min(MAX_PAGE_SIZE));
         let mut out: Vec<T> = Vec::new();
-        let mut offset = 0usize;
 
-        loop {
-            let mut params = base_params.clone();
-            params.push(("limit", page_size.to_string()));
-            params.push(("offset", offset.to_string()));
-            if self.exclude_config_context && endpoint.has_config_context() {
-                params.push(("exclude", "config_context".to_string()));
-            }
+        // First page: build the request ourselves (limit/offset + filters +
+        // exclude). Subsequent pages follow the server's `next` link, which
+        // echoes every original query param — so filters and `exclude` carry
+        // forward without re-appending.
+        let mut first_params = base_params.clone();
+        first_params.push(("limit", page_size.to_string()));
+        first_params.push(("offset", "0".to_string()));
+        if self.exclude_config_context && endpoint.has_config_context() {
+            first_params.push(("exclude", "config_context".to_string()));
+        }
+        let mut page: Page<T> = self.get(endpoint.path(), &first_params).await?;
+        let count = page.count;
+        out.extend(page.results);
 
-            let page: Page<T> = self.get(endpoint.path(), &params).await?;
-            let got = page.results.len();
-            out.extend(page.results);
-
-            if got == 0 || out.len() >= page.count || out.len() >= max {
+        // Follow the server's `next` link for further pages. NetBox (Django REST
+        // Framework `LimitOffsetPagination`) builds `next` with offset = current
+        // + the *capped* limit (min(requested, MAX_PAGE_SIZE)), so following it
+        // lands exactly where the next row lives — even when the server caps our
+        // requested `limit` below `page_size`. Computing `offset += page_size`
+        // ourselves would overshoot the rows the server actually returned and
+        // silently skip them (see KNOWN_ISSUES: browse lists skip rows when
+        // MAX_PAGE_SIZE < the requested limit).
+        while out.len() < count && out.len() < max {
+            let Some(next) = page.next.as_deref() else {
+                break;
+            };
+            let (path, owned) = next_request(next)?;
+            let params: Vec<(&str, String)> =
+                owned.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+            let res = self.send(&path, &params).await?;
+            page = Self::decode(res).await?;
+            if page.results.is_empty() {
                 break;
             }
-            // NetBox `limit`/`offset` are absolute row windows: page N starts at
-            // `offset = N * limit`. Advance by the requested page size, not by the
-            // rows actually returned — a page can come back short (the server caps
-            // `limit` at MAX_PAGE_SIZE, or a serializer drops rows post-count), and
-            // `offset += got` would then land mid-window and skip rows.
-            offset += page_size;
+            out.extend(page.results);
         }
 
         out.truncate(max);
         Ok(out)
     }
+}
+
+/// Split a server-supplied `next` page link — an absolute URL carrying the next
+/// page's `limit`/`offset` plus every original filter param — back into a
+/// `(path, params)` pair for [`NetBoxClient::send`]. Only the path and query are
+/// used; the host is re-resolved against `base_url` in `send`, so a `next` link
+/// naming a different host (it shouldn't, on a single NetBox) still targets the
+/// configured box. DRF sizes `next`'s offset with the *capped* limit, which is
+/// exactly what keeps [`NetBoxClient::list_all`] aligned with the rows the
+/// server actually returned.
+fn next_request(next: &str) -> Result<(String, Vec<(String, String)>)> {
+    let url = reqwest::Url::parse(next).with_context(|| format!("parsing next link {next}"))?;
+    let path = url.path().to_string();
+    let params: Vec<(String, String)> = url
+        .query_pairs()
+        .map(|(k, v)| (k.into_owned(), v.into_owned()))
+        .collect();
+    Ok((path, params))
 }
 
 #[derive(Debug, Deserialize)]
@@ -653,19 +689,25 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn list_all_advances_offset_by_the_grown_page_size() {
-        // When `max` exceeds MAX_PAGE_SIZE the page caps at 1000, so a 2500-row
-        // fetch pages 1000/1000/500. The offset MUST advance by the grown page
-        // size (1000), not the configured page_size (100) — advancing by 100
-        // would land mid-window (offset=100, limit=1000) and re-fetch overlapping
-        // rows. Each mock matches its page's `offset` and `limit=1000` exactly,
-        // so a misaligned window gets no reply and the call fails.
+    async fn list_all_follows_the_server_next_link_across_pages() {
+        // When `max` (2500) exceeds MAX_PAGE_SIZE the first page caps at 1000 and
+        // the fetch pages 1000/1000/500 — following the server's `next` link each
+        // time rather than computing offsets. Each mock matches its page's
+        // `offset` and `limit=1000` exactly, so a request that strays from the
+        // `next` link gets no reply and the call fails. Three aligned round trips
+        // prove the `next` link carried the right offset (1000, then 2000).
         use serde_json::json;
         use wiremock::matchers::{method, path, query_param};
         use wiremock::{Mock, MockServer, ResponseTemplate};
 
         let server = MockServer::start().await;
-        let page = |offset: usize, n: usize| {
+        let next_url = |offset: usize| {
+            format!(
+                "{}/api/dcim/devices/?limit=1000&offset={offset}",
+                server.uri()
+            )
+        };
+        let page = |offset: usize, n: usize, next: Option<String>| {
             let rows: Vec<_> = (0..n)
                 .map(|i| json!({ "id": offset + i, "name": format!("d{}", offset + i) }))
                 .collect();
@@ -674,13 +716,13 @@ mod tests {
                 .and(query_param("limit", "1000"))
                 .and(query_param("offset", offset.to_string()))
                 .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-                    "count": 2500, "next": null, "previous": null, "results": rows
+                    "count": 2500, "next": next, "previous": null, "results": rows
                 })))
                 .mount(&server)
         };
-        page(0, 1000).await;
-        page(1000, 1000).await;
-        page(2000, 500).await; // last page: 500 rows → out hits the 2500 count.
+        page(0, 1000, Some(next_url(1000))).await;
+        page(1000, 1000, Some(next_url(2000))).await;
+        page(2000, 500, None).await;
 
         let client = NetBoxClient::new(
             &ProfileConfig {
@@ -696,12 +738,10 @@ mod tests {
             .await
             .expect("list_all");
         assert_eq!(rows.len(), 2500);
-        // Three aligned round trips — proves offset advanced by 1000 each time,
-        // not by the configured page_size (100).
         assert_eq!(
             server.received_requests().await.unwrap().len(),
             3,
-            "offset advances by the grown page size (1000), not page_size (100)"
+            "three aligned round trips following the server next link"
         );
     }
 }

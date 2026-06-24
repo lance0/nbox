@@ -68,27 +68,6 @@ ambiguous (exit 5) rather than guessed.
 
 ---
 
-### Browse lists can skip rows if the server's page-size ceiling is below the cap
-
-**Issue:** A Nav-rail browse pulls up to `BROWSE_CAP` (1000) rows, and `list_all`
-advances its offset by the requested page size, not by the rows actually returned.
-If a NetBox server lowers `MAX_PAGE_SIZE` below the requested limit, it returns a
-short page; the next offset overshoots and the rows in the gap are skipped. Default
-NetBox caps responses at 1000 and honors limits up to it, so a cap-sized browse
-fits one page and the gap can't open there.
-
-**Impact:** On a NetBox configured with `MAX_PAGE_SIZE` < 1000, browsing a kind with
-more rows than that ceiling may silently omit some (no error). Single-object detail
-lookups are unaffected — this is specific to the capped browse list. The cap raise
-(500 → 1000) widened the window slightly; the behavior itself is pre-existing.
-
-**Mitigation:** Keep NetBox's `MAX_PAGE_SIZE` ≥ 1000 (the default), or narrow the
-browse with the name filter (`/`) so the result fits one page. The robust fix —
-following the API's `next` link instead of computing offsets — is planned with
-load-more browsing.
-
----
-
 ### CSV is tabular-only
 
 **Issue:** `-o csv` renders arrays (lists) as a table. A single object is
