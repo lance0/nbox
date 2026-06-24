@@ -323,7 +323,7 @@ All tools are annotated read-only.
 
 | Tool | Purpose |
 | ---- | ------- |
-| `nbox_status` | Connection target, per-surface `api` routing (configured vs effective backend), capabilities, and NetBox/Django/Python versions. Call first to confirm reachability and inspect the `api`/`capabilities` objects. |
+| `nbox_status` | Connection target, per-surface `api` routing (configured vs effective backend), capabilities, NetBox/Django/Python versions, **and a token-validity preflight** (`token`: `valid`/`invalid`/`unverified` — the authenticated user on `valid`; NetBox 4.5+ `/api/authentication-check/`). Call first to confirm reachability, a valid token, and inspect the `api`/`capabilities` objects. |
 | `nbox_search` | Free-text search across devices, sites, racks, IPs, prefixes, VLANs, circuits, aggregates, ASNs, IP ranges, tenants, contacts, providers, virtual machines, clusters, VRFs, and route targets. Optional `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, and `vrf` filters (`vrf` filters IP/prefix results only; only one scope filter at a time). Use it to find an object's exact reference. |
 | `nbox_get` | Fetch one object by `kind` + `ref`. An ambiguous `ref` returns a candidate list; pass `vrf` (ip/prefix) or `site`/`group` (vlan) to disambiguate. |
 | `nbox_get_interface` | One interface on a device: its config, assigned addresses, and cable-path trace. |

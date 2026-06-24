@@ -34,6 +34,7 @@ use crate::error::NboxError;
 use crate::netbox::capabilities::{ApiRouting, NetBoxCapabilities};
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::search::{SearchFilters, SearchRequest, SearchResult};
+use crate::netbox::status::AuthCheck;
 
 /// The read-only NetBox MCP server.
 #[derive(Clone)]
@@ -262,6 +263,11 @@ pub struct StatusReport {
     pub python_version: Option<String>,
     /// Backend/version capability summary for this connected profile.
     pub capabilities: NetBoxCapabilities,
+    /// Credential preflight (`/api/authentication-check/`, NetBox 4.5+): whether
+    /// the active profile's token authenticated, and the identity it resolved to.
+    /// `unverified` when the endpoint is absent (NetBox < 4.5) or the probe could
+    /// not run — distinct from `invalid`, which means the token was rejected.
+    pub token: AuthCheck,
 }
 
 /// `nbox_search` result: ranked hits plus any per-endpoint failures.
@@ -424,17 +430,24 @@ impl NboxMcp {
         }
     }
 
-    /// Show NetBox connection and version info. Use this first to confirm
-    /// reachability and the NetBox/Django/Python versions. No parameters.
+    /// Show NetBox connection, active backend, and version info. Use this first to confirm
+    /// reachability, a valid token (the authenticated user), and the NetBox/Django/Python
+    /// versions before other lookups. No parameters.
     #[tool(
         name = "nbox_status",
-        description = "Show NetBox connection, active backend, and version info (NetBox/Django/Python versions). Use to confirm reachability before other lookups.",
+        description = "Show NetBox connection, active backend, versions, and a token-validity preflight (the authenticated user). Use to confirm reachability and a valid token before other lookups.",
         annotations(read_only_hint = true)
     )]
     async fn nbox_status(&self) -> Result<Json<StatusReport>, ErrorData> {
         let status = self.client.status().await.map_err(to_mcp_error)?;
         let api = self.client.api_routing().await;
-        let capabilities = self.client.capabilities(&status).await;
+        // The credential preflight is independent of the capability probe; overlap
+        // them so `nbox_status` costs no extra serial round-trip for the token
+        // verdict. Neither returns a `Result`, so a plain `join!` suffices.
+        let (capabilities, token) = tokio::join!(
+            self.client.capabilities(&status),
+            self.client.authentication_check(),
+        );
         Ok(Json(StatusReport {
             netbox_url: self.client.base_url().as_str().to_string(),
             api,
@@ -442,6 +455,7 @@ impl NboxMcp {
             django_version: status.django_version,
             python_version: status.python_version,
             capabilities,
+            token,
         }))
     }
 

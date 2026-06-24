@@ -405,7 +405,8 @@ pub enum Command {
         path: String,
     },
 
-    /// Show NetBox connection and version info.
+    /// Show NetBox connection, versions, backend capabilities, and a
+    /// token-validity preflight (NetBox 4.5+).
     Status,
 
     /// Manage configuration.

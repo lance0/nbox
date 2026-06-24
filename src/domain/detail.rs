@@ -238,8 +238,14 @@ pub async fn prefix_view_by_ref(
     // Scope children/member IPs to the resolved prefix's VRF (or the global table
     // when it has none), so a CIDR shared across VRFs can't pull the wrong VRF's.
     let vrf_id = prefix.vrf.as_ref().map(|v| v.id);
-    let children = client.prefix_children(cidr, vrf_id, SECTION_CAP).await?;
-    let ips = client.prefix_ips(cidr, vrf_id, SECTION_CAP).await?;
+    // Children and contained IPs are independent; fetch them concurrently (as
+    // the TUI `ObjectKind::Prefix` arms do) so the CLI/MCP prefix detail costs
+    // one round-trip for the header plus one for both child collections, not
+    // two sequential awaits.
+    let (children, ips) = tokio::try_join!(
+        client.prefix_children(cidr, vrf_id, SECTION_CAP),
+        client.prefix_ips(cidr, vrf_id, SECTION_CAP),
+    )?;
     Ok(PrefixView::build(prefix, children, ips))
 }
 

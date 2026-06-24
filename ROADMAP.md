@@ -242,9 +242,11 @@ cover. All of these stay within the read-only product and the explicit non-goals
 - ☐ **4.6 pagination/caching primitives (infra).** Optional, version-gated: the `start` cursor
   param for constant-time deep pagination on large fan-outs, and `ETag`/`If-None-Match`
   revalidation for the in-memory cache (cheap freshness without a full refetch). Falls back to offset.
-- ☐ **Credential preflight via `/api/authentication-check/` (4.5).** A dedicated token-validity probe
-  (cleaner than inferring auth from `/api/status/`) — surface it in `nbox status` and as an MCP preflight
-  tool so an operator/agent gets an unambiguous "is this token valid?" before a run.
+- ☑ **Credential preflight via `/api/authentication-check/` (4.5).** A dedicated token-validity probe
+  (cleaner than inferring auth from `/api/status/`) surfaced in `nbox status` and MCP `nbox_status` as
+  a `token` field (`valid`/`invalid`/`unverified`, the authenticated user on `valid`). Best-effort:
+  never errors, overlaps the capability probe, and the `nbox status` exit-code contract is unchanged
+  (a rejected token during the status fetch still exits 3).
 - ☐ **Schema-drift canary (CI).** Pin NetBox's OpenAPI spec and add a CI job that diffs it across
   releases for the endpoints/filters nbox actually uses, so a breaking change (e.g. 4.7) trips the build
   before it reaches users. Lightweight — nbox stays hand-curated; this is just an early-warning signal.
@@ -447,12 +449,11 @@ Consolidated future scope:
     IPs yields **zero round-trip reduction**. Deeper: children/IP filters both need the prefix's cidr+vrf_id,
     which only the header fetch provides, so even a GraphQL bundle is header(REST)+bundle = 2 round-trips —
     identical to the pure-REST concurrency fix below. See [[nbox-graphql-shapes]].
-  - ☐ **Make prefix-detail children + IPs concurrent (pure-REST, byte-identical micro-win).** The prefix
-    detail currently fetches `prefix_children` then `prefix_ips` **sequentially** (two awaits in
-    `domain/detail.rs`'s `ObjectKind::Prefix` arm); `build_vrf_detail` already runs its two child fetches
-    with `tokio::try_join!`. Mirror that for prefix → header(REST) + concurrent children+IPs = 2 round-trips,
-    the same latency the (infeasible) GraphQL bundle targeted, with no new backend and trivially identical
-    output. This is the actual deliverable that the prefix accelerator was standing in for.
+  - ☑ **Make prefix-detail children + IPs concurrent (pure-REST, byte-identical micro-win).** The prefix
+    detail's shared CLI/MCP path (`prefix_view_by_ref`) fetched `prefix_children` then `prefix_ips`
+    **sequentially**; it now mirrors the TUI `ObjectKind::Prefix` arms with one `tokio::try_join!` →
+    header(REST) + concurrent children+IPs = 2 round-trips, with no new backend and trivially identical
+    output. (The TUI arms were already concurrent; this finishes the CLI/MCP shared path.)
   - ☐ **VLAN / tenant detail views** (once the TUI detail contract settles) — VLAN (VLAN + prefixes +
     group/scope), tenant (tenant + devices/prefixes/IPs summary). Read-only GraphQL alternatives to the REST
     fan-outs; only pursue where the fan-out is a real latency cost, the relations sit behind *exact* filters

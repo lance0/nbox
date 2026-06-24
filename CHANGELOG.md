@@ -31,6 +31,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   containment); the router's `None` → search fallback remains for any future
   non-filterable browse kind.
 
+- **Credential preflight in `nbox status` (NetBox 4.5+).** `/api/status/` is
+  reachable without a valid token on instances with `LOGIN_REQUIRED=False`, so a
+  200 status response can hide a bad/expired token. `nbox status` and MCP
+  `nbox_status` now run a best-effort probe of NetBox 4.5's
+  `/api/authentication-check/` (gated on `IsAuthenticated`; returns the flat
+  `UserSerializer` body) and surface the verdict in a new `token` field: `valid`
+  (carrying the authenticated `username`/`display`), `invalid` (HTTP 401/403 — the
+  token was rejected, with the server's reason), or `unverified` (the endpoint is
+  absent on NetBox < 4.5, or the probe could not run). It never errors, so it can't
+  turn a successful status fetch into a failure, and the exit-code contract for
+  `nbox status` is unchanged: a rejected token during the status fetch still exits
+  3; the preflight is informational. The capability probe and the preflight now
+  overlap (`tokio::join!`), so `nbox status` costs no extra serial round-trip for
+  the token verdict.
+
+### Changed
+
+- **Prefix CLI/MCP detail fetch is now concurrent.** The shared `prefix_view_by_ref`
+  path (the CLI `nbox prefix` and MCP `nbox_get` prefix arm) fetched the prefix's
+  children and member IPs in two sequential awaits; it now mirrors the TUI detail
+  arms with one `tokio::try_join!`. A prefix detail costs one round-trip for the
+  header plus one for both child collections (byte-identical output, no new
+  backend), instead of two serial child fetches.
+
 ## [0.11.0] - 2026-06-23
 
 ### Added

@@ -901,11 +901,17 @@ async fn run_status(ctx: &Ctx) -> Result<()> {
     let client = connect(ctx)?;
     let status = client.status().await?;
     let api = client.api_routing().await;
-    let capabilities = client.capabilities(&status).await;
+    // The credential preflight is independent of the capability probe, so overlap
+    // them — `nbox status` costs no extra serial round-trip for the token verdict.
+    // The preflight never errors (a bad token → `Invalid`, an absent endpoint →
+    // `Unverified`), so it can't turn a successful status fetch into a failure.
+    let (capabilities, auth) =
+        tokio::join!(client.capabilities(&status), client.authentication_check(),);
     let url = client.base_url().as_str().to_string();
     let search_line = surface_routing_plain(&api.search);
     let vrf_line = surface_routing_plain(&api.vrf);
     let route_target_line = surface_routing_plain(&api.route_target);
+    let token_line = auth.plain();
 
     let report = serde_json::json!({
         "netbox_url": url,
@@ -914,11 +920,13 @@ async fn run_status(ctx: &Ctx) -> Result<()> {
         "django_version": status.django_version,
         "python_version": status.python_version,
         "capabilities": capabilities,
+        "token": auth,
     });
 
     emit(ctx, &report, || {
         let mut kv = KeyValues::new();
         kv.push("netbox_url", url.clone())
+            .push("token", token_line.clone())
             .push("api search", search_line.clone())
             .push("api vrf", vrf_line.clone())
             .push("api route_target", route_target_line.clone())

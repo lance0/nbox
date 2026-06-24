@@ -60,7 +60,9 @@ nbox tags
 nbox journal <kind> <ref>
 nbox open <kind>/<ref>
 nbox raw GET <api-path>          # path with or without /api/, e.g. dcim/devices/?limit=1
-nbox status
+nbox status                       # NetBox/Django/Python versions, api routing,
+                                  # capabilities, and a token-validity preflight
+                                  # (NetBox 4.5+ `/api/authentication-check/`)
 nbox completions <bash|zsh|fish|powershell|elvish>
 ```
 
@@ -80,7 +82,7 @@ stderr. Every tool is annotated read-only.
 
 | Tool | Purpose |
 | ---- | ------- |
-| `nbox_status` | Connection + active backend capabilities + NetBox/Django/Python versions (call first to confirm reachability and inspect `capabilities`). |
+| `nbox_status` | Connection + active backend capabilities + NetBox/Django/Python versions **and a token-validity preflight** (NetBox 4.5+): the `token` field is `valid`/`invalid`/`unverified` (the authenticated user on `valid`). Call first to confirm reachability, a valid token, and inspect `capabilities`. |
 | `nbox_search` | Search devices/sites/racks/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP ranges/tenants/contacts/providers/VMs/clusters/VRFs/route-targets; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag` (one scope filter at a time), `vrf` (id\|rd\|name; filters IP/prefix results only). Find a reference before `nbox_get`; a result's `kind` (e.g. `ip_address`) feeds straight into `nbox_get`, which accepts it as an alias for `ip`. |
 | `nbox_get` | One object: `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target, mac) + `ref`; `vrf`/`site`/`group` disambiguate (an ambiguous ref returns the candidates). |
 | `nbox_get_interface` | One interface on a device: config, addresses, cable-path trace. |

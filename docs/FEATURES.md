@@ -25,7 +25,7 @@ nbox is a read-only NetBox client — a CLI and a TUI over the same core.
 | `nbox mac <addr>` | Reverse-resolve a MAC to the interface(s)/device(s) that carry it (NetBox 4.2+). Any common form is normalized (`aa:bb:cc:dd:ee:ff`, `AABB.CCDD.EEFF`, `aa-bb-…`, `aabbccddeeff`); a non-MAC is a usage error, several carrying interfaces are ambiguous. |
 | `nbox tags` | List tags. |
 | `nbox journal <kind> <ref>` | Recent journal entries for an object. Kinds: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, route-target. `--journal` on a detail lookup folds the most recent entries inline (default 5); `--journal-limit <N>` overrides the cap and implies `--journal`. (`tenant`/`contact`/`provider`/`vm`/`cluster`/`vrf`/`route-target` have no inline `--journal` flag — use `nbox journal`.) |
-| `nbox status` | Connection + per-surface `api` routing (configured/effective) + capabilities + NetBox/Django/Python versions. |
+| `nbox status` | Connection + per-surface `api` routing (configured/effective) + capabilities + NetBox/Django/Python versions + a token-validity preflight (`token`: `valid`/`invalid`/`unverified`; NetBox 4.5+). |
 | `nbox open <kind>/<ref>` | Open an object in the browser. Kinds: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, cluster, vrf, route-target, mac, and `interface/<device>/<name>` (the interface name may contain slashes, e.g. `xe-0/0/1`). |
 | `nbox raw GET <path>` | Raw read-only API request (escape hatch). |
 
@@ -119,7 +119,7 @@ are annotated read-only.
 
 | Tool | What |
 | ---- | ---- |
-| `nbox_status` | Connection + active backend capabilities + NetBox/Django/Python versions. |
+| `nbox_status` | Connection + active backend capabilities + NetBox/Django/Python versions + a token-validity preflight (`token`: `valid`/`invalid`/`unverified`; NetBox 4.5+). |
 | `nbox_search` | Search devices/sites/racks/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers/VMs/clusters/VRFs/route-targets; `query`, `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; IP/prefix only). |
 | `nbox_get` | One object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target) + `ref`; `vrf`/`site`/`group` disambiguate. |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |

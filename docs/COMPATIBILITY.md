@@ -68,3 +68,18 @@ flag, and the per-surface backend routing.
   schema (filter input shapes + pagination) instead of hard-coding a version, so
   4.2/4.3/4.5+ differences are absorbed, and falls back to REST (with the reason in
   `status`) when the schema can't back the surface.
+
+- **Credential preflight (4.5).** `/api/status/` is reachable **without** a valid
+  token on an instance configured with `LOGIN_REQUIRED=False`, so a 200 status
+  response can hide a bad/expired token — nbox can't infer token validity from the
+  status fetch. NetBox 4.5 added a dedicated `/api/authentication-check/` endpoint
+  (gated on `IsAuthenticated`; returns the flat `UserSerializer` body), and `nbox
+  status` / MCP `nbox_status` now run it as a best-effort preflight and surface the
+  verdict in a `token` field: `valid` (carrying the authenticated username/display),
+  `invalid` (HTTP 401/403 — the token was rejected, with the server's reason), or
+  `unverified` (the endpoint is absent on NetBox < 4.5, or the probe could not run).
+  It never errors, so it can't turn a successful status fetch into a failure; on an
+  auth-required instance the status fetch itself rejects a bad token (exit 3)
+  before the preflight runs. The exit-code contract for `nbox status` is unchanged
+  — a rejected token during the status fetch still exits 3; the preflight is
+  informational (the `token` field), not an exit trigger.

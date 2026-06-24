@@ -233,6 +233,11 @@ pub fn status_report() -> Value {
         "netbox_version": "4.5.5",
         "django_version": "5.2.1",
         "python_version": "3.12.3",
+        "token": {
+            "status": "valid",
+            "username": "admin",
+            "display": "admin"
+        },
         "capabilities": {
             "version": {
                 "netbox": "4.5.5",

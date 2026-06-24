@@ -259,6 +259,20 @@ async fn status_returns_versions() {
         })))
         .mount(&mock)
         .await;
+    // `/api/authentication-check/` (4.5+) returns the flat `UserSerializer` body;
+    // mount it so the `token` preflight resolves to `valid`.
+    Mock::given(method("GET"))
+        .and(path("/api/authentication-check/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 1,
+            "username": "admin",
+            "display": "admin",
+            "first_name": "",
+            "last_name": "",
+            "email": "admin@example.com"
+        })))
+        .mount(&mock)
+        .await;
 
     let Json(report) = server_for(&mock).nbox_status().await.expect("status");
     let value = serde_json::to_value(&report).expect("serialize report");
@@ -276,6 +290,9 @@ async fn status_returns_versions() {
     assert_eq!(value["capabilities"]["graphql"]["probed"], false);
     // The configured base URL is echoed back (the mock's URI, trailing slash).
     assert_eq!(value["netbox_url"], format!("{}/", mock.uri()));
+    // The credential preflight resolves to the mocked user.
+    assert_eq!(value["token"]["status"], "valid");
+    assert_eq!(value["token"]["username"], "admin");
 }
 
 #[tokio::test]
@@ -1722,6 +1739,18 @@ mod contracts {
             })))
             .mount(&mock)
             .await;
+        Mock::given(method("GET"))
+            .and(path("/api/authentication-check/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "id": 1,
+                "username": "admin",
+                "display": "admin (Alice Admin)",
+                "first_name": "Alice",
+                "last_name": "Admin",
+                "email": "admin@example.com"
+            })))
+            .mount(&mock)
+            .await;
 
         let Json(report) = server_for(&mock).nbox_status().await.expect("status");
         let value = serde_json::to_value(&report).expect("serialize report");
@@ -1736,6 +1765,7 @@ mod contracts {
                 "django_version",
                 "python_version",
                 "capabilities",
+                "token",
             ],
         );
 
@@ -1764,6 +1794,13 @@ mod contracts {
         );
         // A REST profile never probes GraphQL, so `error`/`surfaces` stay omitted.
         assert_keys(&value["capabilities"]["graphql"], &["probed", "available"]);
+
+        // Credential preflight: the `token` verdict carries the discriminator and,
+        // on `valid`, the resolved identity (`display` is distinct from `username`).
+        assert_eq!(value["token"]["status"], "valid");
+        assert_keys(&value["token"], &["status", "username", "display"]);
+        assert_eq!(value["token"]["username"], "admin");
+        assert_eq!(value["token"]["display"], "admin (Alice Admin)");
     }
 
     /// `nbox_search` → `SearchReport`: a ranked hit's key set, the `kind`

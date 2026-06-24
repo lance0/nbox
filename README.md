@@ -242,6 +242,7 @@ a directory — `nbox man man/` — to write the full set instead (`nbox.1` plus
 ```bash
 nbox                              # launch the TUI
 nbox status                       # connection + backend capabilities + NetBox/Django/Python versions
+                                  # + token-validity preflight (NetBox 4.5+)
 nbox search <query> [--limit N] [--status/--site/--region/--site-group/--location/--tenant/--role/--tag <v>] [--vrf <id|rd|name>] [--cols a,b,c] [--partial]
                                   # one scope flag at a time, exact match; --vrf filters IP/prefix results.
                                   # Full scope/filter semantics: docs/FEATURES.md
@@ -474,7 +475,7 @@ The tools are all annotated read-only:
 
 | Tool | What |
 |------|------|
-| `nbox_status` | Connection + backend capabilities + NetBox/Django/Python versions. |
+| `nbox_status` | Connection + backend capabilities + NetBox/Django/Python versions + a token-validity preflight (`token`: `valid`/`invalid`/`unverified`; NetBox 4.5+). |
 | `nbox_search` | Search devices/sites/racks/IPs/prefixes/VLANs/circuits/providers/aggregates/ASNs/IP-ranges/tenants/contacts/VMs/clusters/VRFs/route-targets; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; filters IP/prefix results only). |
 | `nbox_get` | Fetch one object by `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target) + `ref`; `vrf`/`site`/`group` disambiguate. |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |
@@ -549,8 +550,10 @@ raw escape-hatch tool come later.
   4.5+ matrix: [docs/COMPATIBILITY.md](docs/COMPATIBILITY.md).
 - Targets the NetBox **REST API** (`/api/`) as the canonical integration path.
 - `nbox status --json` and MCP `nbox_status` include a per-surface `api` block
-  (configured vs effective backend) and a typed `capabilities` object with
-  version compatibility, REST behavior, and per-surface GraphQL support.
+  (configured vs effective backend), a typed `capabilities` object with
+  version compatibility, REST behavior, and per-surface GraphQL support, **and a
+  token-validity preflight** (`token`: `valid`/`invalid`/`unverified`, the
+  authenticated user on `valid`) via NetBox 4.5's `/api/authentication-check/`.
 - Auto-detects **v2 API tokens** (NetBox 4.5+, `Authorization: Bearer nbt_…`) and
   legacy **v1 tokens** (`Authorization: Token …`); force one with `auth_scheme`.
 - Optional, read-only **GraphQL** (`/graphql/`) as a **per-surface accelerator**
