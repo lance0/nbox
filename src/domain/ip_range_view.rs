@@ -27,6 +27,8 @@ pub struct IpRangeView {
     pub role: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -45,6 +47,7 @@ impl IpRangeView {
             tenant: r.tenant.map(|b| b.label()),
             role: r.role.map(|b| b.label()),
             description: r.description.and_then(non_empty),
+            owner: r.owner.map(|bo| bo.label()),
             tags: r.tags.into_iter().map(|tag| tag.slug).collect(),
             custom_fields: custom::fields(&r.custom_fields),
         }
@@ -64,6 +67,7 @@ impl IpRangeView {
         if !self.tags.is_empty() {
             kv.push("tags", self.tags.join(", "));
         }
+        kv.push_opt("owner", self.owner.clone());
         custom::append(&mut kv, &self.custom_fields);
         kv
     }

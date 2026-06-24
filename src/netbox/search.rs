@@ -13,12 +13,12 @@ use serde::{Deserialize, Serialize};
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
 use crate::netbox::models::circuits::{Circuit, Provider, VirtualCircuit};
-use crate::netbox::models::dcim::{Device, Rack, Site};
+use crate::netbox::models::dcim::{Device, Rack, RackGroup, Site};
 use crate::netbox::models::ipam::{
     Aggregate, Asn, IpAddress, IpRange, Prefix, RouteTarget, Vlan, Vrf,
 };
 use crate::netbox::models::tenancy::{Contact, Tenant};
-use crate::netbox::models::virtualization::{Cluster, VirtualMachine};
+use crate::netbox::models::virtualization::{Cluster, VirtualMachine, VirtualMachineType};
 use crate::netbox::pagination::Page;
 use crate::util::format::api_to_web_url;
 
@@ -43,12 +43,20 @@ pub enum ObjectKind {
     Tenant,
     Contact,
     Provider,
+    /// A virtual machine type (NetBox 4.6+). Searchable by name, openable as a
+    /// detail, and a cross-navigation target. Carries no site scope, so scope
+    /// filters skip it. Kept last to preserve the existing variants' order.
+    VmType,
     Vm,
     Cluster,
     /// A rack. Searchable by name (honoring the site/region/site-group/location
     /// scope), openable in the TUI, and a cross-navigation target (e.g. a device's
     /// rack). Kept last to preserve the existing variants' order.
     Rack,
+    /// A rack group (NetBox 4.6+). Searchable by name, openable as a detail, and a
+    /// cross-navigation target. Carries no site scope, so scope filters skip it.
+    /// Kept last to preserve the existing variants' order.
+    RackGroup,
     /// A VRF (routing/forwarding instance). Searchable by name/RD, openable in the
     /// TUI as a routing-context view (its prefix tree + scoped addresses + route
     /// targets), and a cross-navigation target. Carries no site scope, so scope
@@ -90,9 +98,11 @@ impl ObjectKind {
             ObjectKind::Tenant => "tenant",
             ObjectKind::Contact => "contact",
             ObjectKind::Provider => "provider",
+            ObjectKind::VmType => "vm-type",
             ObjectKind::Vm => "vm",
             ObjectKind::Cluster => "cluster",
             ObjectKind::Rack => "rack",
+            ObjectKind::RackGroup => "rack-group",
             ObjectKind::Vrf => "vrf",
             ObjectKind::RouteTarget => "route-target",
             ObjectKind::Interface => "interface",
@@ -125,8 +135,10 @@ impl ObjectKind {
             ObjectKind::IpRange => "VRF",
             ObjectKind::Tenant | ObjectKind::Contact => "GROUP",
             ObjectKind::Provider => "ASN",
+            ObjectKind::VmType => "OWNER",
             ObjectKind::Vm => "CLUSTER",
             ObjectKind::Cluster => "TYPE",
+            ObjectKind::RackGroup => "RACK COUNT",
             // Not Nav-browsable (no global interface list) — opened only from a
             // device's interfaces/cables tabs; labelled for completeness.
             ObjectKind::Interface => "DEVICE",
@@ -156,6 +168,14 @@ pub struct SearchFilters {
     pub tenant: Option<String>,
     pub role: Option<String>,
     pub tag: Option<String>,
+    /// Owner (NetBox 4.5+) — a user, by name (username). Sent as `owner=`; an
+    /// endpoint that carries no `owner` filter is skipped when this is set.
+    /// Orthogonal to the scope filters and to `owner_group`.
+    pub owner: Option<String>,
+    /// Owner group (NetBox 4.5+) — by name. Sent as `owner_group=`; orthogonal to
+    /// `owner`. (Owner is polymorphic: a user *or* a group, so the two are
+    /// separate filters rather than one ambiguous ref.)
+    pub owner_group: Option<String>,
     /// VRF reference (id | rd | name). Resolved once to a numeric id and applied
     /// as `vrf_id=` on the VRF-capable endpoints (IPs, prefixes) only; endpoints
     /// that carry no VRF are skipped for this filter. Orthogonal to the scope
@@ -185,11 +205,13 @@ impl SearchFilters {
     /// `?site=` param expects a *slug*, so a `--site` given as an id or display
     /// name would silently match nothing; the resolved id avoids that.
     fn params_for(&self, supported: &[&str]) -> Option<Vec<(&'static str, String)>> {
-        let active: [(&'static str, &Option<String>); 4] = [
+        let active: [(&'static str, &Option<String>); 6] = [
             ("status", &self.status),
             ("tenant", &self.tenant),
             ("role", &self.role),
             ("tag", &self.tag),
+            ("owner", &self.owner),
+            ("owner_group", &self.owner_group),
         ];
         let mut params = Vec::new();
         for (key, value) in active {
@@ -380,8 +402,10 @@ impl NetBoxClient {
             contacts,
             providers,
             vms,
+            vm_types,
             clusters,
             racks,
+            rack_groups,
             vrfs,
             route_targets,
         ) = tokio::join!(
@@ -399,8 +423,10 @@ impl NetBoxClient {
             self.search_contacts(&q, f, scope.as_ref()),
             self.search_providers(&q, f, scope.as_ref()),
             self.search_vms(&q, f, scope.as_ref()),
+            self.search_vm_types(&q, f, scope.as_ref()),
             self.search_clusters(&q, f, scope.as_ref()),
             self.search_racks(&q, f, scope.as_ref()),
+            self.search_rack_groups(&q, f, scope.as_ref()),
             self.search_vrfs(&q, f, scope.as_ref()),
             self.search_route_targets(&q, f, scope.as_ref()),
         );
@@ -423,8 +449,10 @@ impl NetBoxClient {
             ("contacts", contacts),
             ("providers", providers),
             ("vms", vms),
+            ("vm-types", vm_types),
             ("clusters", clusters),
             ("racks", racks),
+            ("rack-groups", rack_groups),
             ("vrfs", vrfs),
             ("route-targets", route_targets),
         ];
@@ -564,7 +592,11 @@ impl NetBoxClient {
             Some("dcim.location") => scope.map(|s| ("location_id", s.id)),
             _ => None,
         };
-        let Some(mut params) = endpoint_params(q, f, &["status", "tenant", "role", "tag"]) else {
+        let Some(mut params) = endpoint_params(
+            q,
+            f,
+            &["status", "tenant", "role", "tag", "owner", "owner_group"],
+        ) else {
             return Ok(Vec::new());
         };
         if let Some((key, id)) = device_scope {
@@ -601,7 +633,9 @@ impl NetBoxClient {
         if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(params) = endpoint_params(q, f, &["status", "tenant", "tag"]) else {
+        let Some(params) =
+            endpoint_params(q, f, &["status", "tenant", "tag", "owner", "owner_group"])
+        else {
             return Ok(Vec::new());
         };
         let page: Page<Site> = self.list(Endpoint::Sites, params).await?;
@@ -631,7 +665,11 @@ impl NetBoxClient {
         if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(mut params) = endpoint_params(q, f, &["status", "tenant", "role", "tag"]) else {
+        let Some(mut params) = endpoint_params(
+            q,
+            f,
+            &["status", "tenant", "role", "tag", "owner", "owner_group"],
+        ) else {
             return Ok(Vec::new());
         };
         // IPs carry a VRF: apply the resolved `--vrf` id as `vrf_id=`.
@@ -722,7 +760,11 @@ impl NetBoxClient {
         if skip_for_id_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(mut params) = endpoint_params(q, f, &["status", "tenant", "role", "tag"]) else {
+        let Some(mut params) = endpoint_params(
+            q,
+            f,
+            &["status", "tenant", "role", "tag", "owner", "owner_group"],
+        ) else {
             return Ok(Vec::new());
         };
         // Only a `dcim.site` scope reaches here (the id-based scopes skipped above):
@@ -763,7 +805,9 @@ impl NetBoxClient {
         if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(params) = endpoint_params(q, f, &["status", "tenant", "tag"]) else {
+        let Some(params) =
+            endpoint_params(q, f, &["status", "tenant", "tag", "owner", "owner_group"])
+        else {
             return Ok(Vec::new());
         };
         let page: Page<Circuit> = self.list(Endpoint::Circuits, params).await?;
@@ -795,7 +839,9 @@ impl NetBoxClient {
         if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(params) = endpoint_params(q, f, &["status", "tenant", "tag"]) else {
+        let Some(params) =
+            endpoint_params(q, f, &["status", "tenant", "tag", "owner", "owner_group"])
+        else {
             return Ok(Vec::new());
         };
         let page: Page<VirtualCircuit> = self.list(Endpoint::VirtualCircuits, params).await?;
@@ -827,7 +873,7 @@ impl NetBoxClient {
         if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(params) = endpoint_params(q, f, &["tenant", "tag"]) else {
+        let Some(params) = endpoint_params(q, f, &["tenant", "tag", "owner", "owner_group"]) else {
             return Ok(Vec::new());
         };
         let page: Page<Aggregate> = self.list(Endpoint::Aggregates, params).await?;
@@ -859,7 +905,8 @@ impl NetBoxClient {
         if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(mut params) = endpoint_params(q, f, &["tenant", "tag"]) else {
+        let Some(mut params) = endpoint_params(q, f, &["tenant", "tag", "owner", "owner_group"])
+        else {
             return Ok(Vec::new());
         };
         // A bare AS number won't be matched by the `q` quick-search (it scans
@@ -902,7 +949,11 @@ impl NetBoxClient {
         if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(params) = endpoint_params(q, f, &["status", "tenant", "role", "tag"]) else {
+        let Some(params) = endpoint_params(
+            q,
+            f,
+            &["status", "tenant", "role", "tag", "owner", "owner_group"],
+        ) else {
             return Ok(Vec::new());
         };
         let page: Page<IpRange> = self.list(Endpoint::IpRanges, params).await?;
@@ -940,7 +991,7 @@ impl NetBoxClient {
         }
         // The tenant endpoint accepts only `q` + `tag` from our filter set
         // (no status/tenant/role), so an unsupported active filter skips it.
-        let Some(params) = endpoint_params(q, f, &["tag"]) else {
+        let Some(params) = endpoint_params(q, f, &["tag", "owner", "owner_group"]) else {
             return Ok(Vec::new());
         };
         let page: Page<Tenant> = self.list(Endpoint::Tenants, params).await?;
@@ -973,7 +1024,7 @@ impl NetBoxClient {
             return Ok(Vec::new());
         }
         // Contacts accept only `q` + `tag` (no status/tenant/role).
-        let Some(params) = endpoint_params(q, f, &["tag"]) else {
+        let Some(params) = endpoint_params(q, f, &["tag", "owner", "owner_group"]) else {
             return Ok(Vec::new());
         };
         let page: Page<Contact> = self.list(Endpoint::Contacts, params).await?;
@@ -1007,7 +1058,7 @@ impl NetBoxClient {
             return Ok(Vec::new());
         }
         // Providers accept only `q` + `tag` (no status/tenant/role).
-        let Some(params) = endpoint_params(q, f, &["tag"]) else {
+        let Some(params) = endpoint_params(q, f, &["tag", "owner", "owner_group"]) else {
             return Ok(Vec::new());
         };
         let page: Page<Provider> = self.list(Endpoint::Providers, params).await?;
@@ -1045,7 +1096,11 @@ impl NetBoxClient {
         if skip_for_id_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(mut params) = endpoint_params(q, f, &["status", "tenant", "role", "tag"]) else {
+        let Some(mut params) = endpoint_params(
+            q,
+            f,
+            &["status", "tenant", "role", "tag", "owner", "owner_group"],
+        ) else {
             return Ok(Vec::new());
         };
         // Only a `dcim.site` scope reaches here (the id-based scopes skipped above):
@@ -1068,6 +1123,39 @@ impl NetBoxClient {
                     .map(super::models::common::BriefObject::label),
                 url: api_to_web_url(&vm.url),
                 display: vm.name,
+            })
+            .collect())
+    }
+
+    async fn search_vm_types(
+        &self,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+    ) -> Result<Vec<SearchResult>> {
+        // VM types carry no scope filter (site/region/site-group/location) —
+        // skip them for any active scope rather than return an unfiltered set.
+        if skip_for_any_scope(scope) {
+            return Ok(Vec::new());
+        }
+        let Some(params) = endpoint_params(q, f, &["tenant", "tag", "owner", "owner_group"]) else {
+            return Ok(Vec::new());
+        };
+        let page: Page<VirtualMachineType> =
+            self.list(Endpoint::VirtualMachineTypes, params).await?;
+        Ok(page
+            .results
+            .into_iter()
+            .map(|t| SearchResult {
+                kind: ObjectKind::VmType,
+                id: t.id,
+                score: score_match(q, &t.name),
+                subtitle: t
+                    .owner
+                    .as_ref()
+                    .map(super::models::common::BriefObject::label),
+                url: api_to_web_url(&t.url),
+                display: t.name,
             })
             .collect())
     }
@@ -1138,7 +1226,11 @@ impl NetBoxClient {
             Some("dcim.location") => scope.map(|s| ("location_id", s.id)),
             _ => None,
         };
-        let Some(mut params) = endpoint_params(q, f, &["status", "tenant", "role", "tag"]) else {
+        let Some(mut params) = endpoint_params(
+            q,
+            f,
+            &["status", "tenant", "role", "tag", "owner", "owner_group"],
+        ) else {
             return Ok(Vec::new());
         };
         if let Some((key, id)) = rack_scope {
@@ -1162,6 +1254,38 @@ impl NetBoxClient {
             .collect())
     }
 
+    async fn search_rack_groups(
+        &self,
+        q: &str,
+        f: &SearchFilters,
+        scope: Option<&ResolvedScope>,
+    ) -> Result<Vec<SearchResult>> {
+        // Rack groups carry no scope filter that maps to our flags — any active
+        // scope (including `--site`) skips them.
+        if skip_for_any_scope(scope) {
+            return Ok(Vec::new());
+        }
+        let Some(params) = endpoint_params(q, f, &["tenant", "tag", "owner", "owner_group"]) else {
+            return Ok(Vec::new());
+        };
+        let page: Page<RackGroup> = self.list(Endpoint::RackGroups, params).await?;
+        Ok(page
+            .results
+            .into_iter()
+            .map(|rg| SearchResult {
+                kind: ObjectKind::RackGroup,
+                id: rg.id,
+                score: score_match(q, &rg.name),
+                subtitle: rg
+                    .owner
+                    .as_ref()
+                    .map(super::models::common::BriefObject::label),
+                url: api_to_web_url(&rg.url),
+                display: rg.name,
+            })
+            .collect())
+    }
+
     async fn search_vrfs(
         &self,
         q: &str,
@@ -1175,7 +1299,7 @@ impl NetBoxClient {
         }
         // The VRF endpoint accepts `q` + `tenant` + `tag` from our filter set
         // (no status/role/site), so an unsupported active filter skips it.
-        let Some(params) = endpoint_params(q, f, &["tenant", "tag"]) else {
+        let Some(params) = endpoint_params(q, f, &["tenant", "tag", "owner", "owner_group"]) else {
             return Ok(Vec::new());
         };
         let page: Page<Vrf> = self.list(Endpoint::Vrfs, params).await?;
@@ -1210,7 +1334,7 @@ impl NetBoxClient {
         }
         // The route-target endpoint accepts `q` + `tenant` + `tag` (no
         // status/role/site), so an unsupported active filter skips it.
-        let Some(params) = endpoint_params(q, f, &["tenant", "tag"]) else {
+        let Some(params) = endpoint_params(q, f, &["tenant", "tag", "owner", "owner_group"]) else {
             return Ok(Vec::new());
         };
         let page: Page<RouteTarget> = self.list(Endpoint::RouteTargets, params).await?;

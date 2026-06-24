@@ -28,12 +28,14 @@ use crate::domain::journal_view::{JournalEntryRow, JournalView};
 use crate::domain::mac_view::MacView;
 use crate::domain::prefix_view::PrefixView;
 use crate::domain::provider_view::ProviderView;
+use crate::domain::rack_group_view::RackGroupView;
 use crate::domain::rack_view::RackView;
 use crate::domain::route_target_view::{RouteTargetDetail, RouteTargetView, VrfRef};
 use crate::domain::site_view::SiteView;
 use crate::domain::tenant_view::TenantView;
 use crate::domain::virtual_circuit_view::VirtualCircuitView;
 use crate::domain::vlan_view::VlanView;
+use crate::domain::vm_type_view::VirtualMachineTypeView;
 use crate::domain::vm_view::VmView;
 use crate::domain::vrf_view::{VrfAddressRow, VrfDetail, VrfPrefixRow, VrfView};
 use crate::error::NboxError;
@@ -41,12 +43,12 @@ use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
 use crate::netbox::models::circuits::{Circuit, CircuitTermination, Provider, VirtualCircuit};
 use crate::netbox::models::common::BriefObject;
-use crate::netbox::models::dcim::{Device, Interface, MacAddress, Rack, Site};
+use crate::netbox::models::dcim::{Device, Interface, MacAddress, Rack, RackGroup, Site};
 use crate::netbox::models::ipam::{
     Aggregate, Asn, IpAddress, IpRange, Prefix, RouteTarget, Vlan, VlanGroup, Vrf,
 };
 use crate::netbox::models::tenancy::{Contact, Tenant};
-use crate::netbox::models::virtualization::{Cluster, VirtualMachine};
+use crate::netbox::models::virtualization::{Cluster, VirtualMachine, VirtualMachineType};
 use crate::netbox::prefix_tree::build_nodes;
 use crate::netbox::query;
 use crate::netbox::search::ObjectKind;
@@ -348,6 +350,20 @@ pub async fn rack_view_by_ref(
         .await?
         .ok_or_else(|| not_found("rack", value))?;
     Ok(RackView::from_model(rack))
+}
+
+/// `rack-group <slug|name|id>`: resolve a rack group and build its view. Shared by
+/// CLI/MCP.
+pub async fn rack_group_view_by_ref(
+    client: &NetBoxClient,
+    value: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<RackGroupView> {
+    let rg = client
+        .rack_group_by_ref(value)
+        .await?
+        .ok_or_else(|| not_found("rack group", value))?;
+    Ok(RackGroupView::from_model(rg))
 }
 
 /// `circuit <cid|id>`: resolve a circuit and build its view. Shared by CLI/MCP.
@@ -817,6 +833,20 @@ pub async fn vm_view_by_ref(
         .await?
         .ok_or_else(|| not_found("virtual machine", value))?;
     Ok(VmView::from_model(vm))
+}
+
+/// `vm-type <slug|name|id>`: resolve a virtual machine type and build its view.
+/// Shared by CLI/MCP.
+pub async fn vm_type_view_by_ref(
+    client: &NetBoxClient,
+    value: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<VirtualMachineTypeView> {
+    let t = client
+        .vm_type_by_ref(value)
+        .await?
+        .ok_or_else(|| not_found("virtual machine type", value))?;
+    Ok(VirtualMachineTypeView::from_model(t))
 }
 
 /// `cluster <name|id>`: resolve a cluster and build its view. Shared by CLI/MCP.
@@ -1943,6 +1973,23 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             let v = VirtualCircuitView::build(vc, terminations);
             (format!("virtual circuit {}", v.cid), v.to_plain())
         }
+        ObjectKind::RackGroup => {
+            let rg: RackGroup = client
+                .get(&format!("/api/dcim/rack-groups/{id}/"), &[])
+                .await?;
+            let v = RackGroupView::from_model(rg);
+            (format!("rack group {}", v.name), v.to_key_values().render())
+        }
+        ObjectKind::VmType => {
+            let t: VirtualMachineType = client
+                .get(
+                    &format!("/api/virtualization/virtual-machine-types/{id}/"),
+                    &[],
+                )
+                .await?;
+            let v = VirtualMachineTypeView::from_model(t);
+            (format!("vm type {}", v.name), v.to_key_values().render())
+        }
     };
     Ok(DetailView::new(kind, id, title, body)
         .with_tabs(tabs)
@@ -2235,6 +2282,32 @@ pub async fn load_detail_by_ref(
             let v = VirtualCircuitView::build(vc, terminations);
             (id, format!("virtual circuit {}", v.cid), v.to_plain())
         }
+        ObjectKind::RackGroup => {
+            let rg = client
+                .rack_group_by_ref(value)
+                .await?
+                .with_context(|| format!("no rack group matched \"{value}\""))?;
+            let id = rg.id;
+            let v = RackGroupView::from_model(rg);
+            (
+                id,
+                format!("rack group {}", v.name),
+                v.to_key_values().render(),
+            )
+        }
+        ObjectKind::VmType => {
+            let t = client
+                .vm_type_by_ref(value)
+                .await?
+                .with_context(|| format!("no virtual machine type matched \"{value}\""))?;
+            let id = t.id;
+            let v = VirtualMachineTypeView::from_model(t);
+            (
+                id,
+                format!("vm type {}", v.name),
+                v.to_key_values().render(),
+            )
+        }
     };
     Ok(DetailView::new(kind, id, title, body)
         .with_tabs(tabs)
@@ -2271,6 +2344,7 @@ mod tests {
             description: None,
             nat_inside: None,
             nat_outside: Vec::new(),
+            owner: None,
             tags: Vec::new(),
             custom_fields: serde_json::Value::Null,
         }

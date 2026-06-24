@@ -22,6 +22,8 @@ pub struct AggregateView {
     pub date_added: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -37,6 +39,7 @@ impl AggregateView {
             tenant: a.tenant.map(|b| b.label()),
             date_added: a.date_added.and_then(non_empty),
             description: a.description.and_then(non_empty),
+            owner: a.owner.map(|bo| bo.label()),
             tags: a.tags.into_iter().map(|tag| tag.slug).collect(),
             custom_fields: custom::fields(&a.custom_fields),
         }
@@ -53,6 +56,7 @@ impl AggregateView {
         if !self.tags.is_empty() {
             kv.push("tags", self.tags.join(", "));
         }
+        kv.push_opt("owner", self.owner.clone());
         custom::append(&mut kv, &self.custom_fields);
         kv
     }

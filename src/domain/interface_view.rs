@@ -48,6 +48,8 @@ pub struct InterfaceView {
     /// the structured flat `trace` lines remain the machine-readable form.
     #[serde(skip)]
     pub diagram: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -79,6 +81,7 @@ impl InterfaceView {
             ip_addresses: ips.into_iter().map(|ip| ip.address).collect(),
             trace: format_trace(&trace),
             diagram: format_trace_diagram(&trace),
+            owner: i.owner.map(|bo| bo.label()),
             tags: i.tags.into_iter().map(|tag| tag.slug).collect(),
             custom_fields: custom::fields(&i.custom_fields),
         }
@@ -100,6 +103,7 @@ impl InterfaceView {
         if !self.tags.is_empty() {
             kv.push("tags", self.tags.join(", "));
         }
+        kv.push_opt("owner", self.owner.clone());
         custom::append(&mut kv, &self.custom_fields);
         kv.render()
     }

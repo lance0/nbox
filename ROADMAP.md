@@ -239,11 +239,12 @@ cover. All of these stay within the read-only product and the explicit non-goals
   flat termination list (each termination's `device`/`interface` refs, for
   navigation), not a cable-path diagram. Verified against the live 4.6.2
   OpenAPI schema for the model shape.
-- ☐ **New object kinds from 4.6.** The 4.6 additions `virtual-machine-type`,
+- ☑ **New object kinds from 4.6.** The 4.6 additions `virtual-machine-type`,
   `rack-group`, `cable-bundle` — small, formulaic lookups that keep kind coverage
   current. (Each: model + `nbox <kind>` + detail view; `cable-bundle` pairs with
-  the cable-path visualizer.)
-- ☐ **`owner` field + `--owner` filter** _(4.5)_. NetBox added a native `owner` (users/groups)
+  the cable-path visualizer.) `rack-group` and `vm-type` shipped; `cable-bundle`
+  remains, deferred to its cable-path-visualizer PR.
+- ☑ **`owner` field + `--owner` filter** _(4.5)_. NetBox added a native `owner` (users/groups)
   on most objects — structured ownership that beats tag-scraping for agents. Surface it on
   detail views and as a search filter.
 - ☑ **Reverse tag lookup** _(4.3, `/api/extras/tagged-objects/`)_. `nbox tagged <tag>` answers

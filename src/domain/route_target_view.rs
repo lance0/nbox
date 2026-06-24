@@ -56,6 +56,8 @@ pub struct RouteTargetView {
     pub tenant: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -71,6 +73,7 @@ impl RouteTargetView {
             name: rt.name,
             tenant: rt.tenant.map(|b| b.label()),
             description: rt.description.and_then(non_empty),
+            owner: rt.owner.map(|bo| bo.label()),
             tags: rt.tags.into_iter().map(|tag| tag.slug).collect(),
             custom_fields: custom::fields(&rt.custom_fields),
         }
@@ -150,6 +153,7 @@ mod tests {
                 name: "65000:100".into(),
                 tenant: Some("Acme".into()),
                 description: None,
+                owner: None,
                 tags: vec![],
                 custom_fields: BTreeMap::new(),
             },

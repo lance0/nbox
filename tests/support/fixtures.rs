@@ -35,6 +35,7 @@ pub fn vrf_detail() -> VrfDetail {
             prefix_count: Some(3),
             ipaddress_count: Some(1),
             description: Some("Customer production VRF".into()),
+            owner: None,
             tags: vec!["prod".into()],
             custom_fields: BTreeMap::new(),
         },
@@ -85,6 +86,7 @@ pub fn ip_view() -> IpView {
         scope_type: Some("site".into()),
         nat_inside: Some("100.64.0.55/30".into()),
         nat_outside: vec![],
+        owner: None,
         tags: vec!["printer".into()],
         custom_fields: BTreeMap::from([("owner".to_string(), json!("netops"))]),
     }
@@ -106,6 +108,7 @@ pub fn prefix_view() -> PrefixView {
         children: Some(2),
         utilization: Some(37.5),
         description: Some("user access prefix".into()),
+        owner: None,
         tags: vec!["prod".into()],
         custom_fields: BTreeMap::from([("vlan_owner".to_string(), json!("netops"))]),
         child_prefixes: vec!["10.44.208.0/26".into(), "10.44.208.64/26".into()],
@@ -139,6 +142,7 @@ pub fn vlan_view() -> VlanView {
         tenant: Some("Acme".into()),
         role: Some("access".into()),
         description: Some("production user VLAN".into()),
+        owner: None,
         tags: vec!["prod".into()],
         custom_fields: BTreeMap::from([("vlan_owner".to_string(), json!("netops"))]),
         prefixes: vec!["10.44.208.0/24".into(), "10.45.208.0/24".into()],
@@ -159,6 +163,7 @@ pub fn site_view() -> SiteView {
         tenant: Some("Acme".into()),
         facility: Some("DEN-1 / Suite 400".into()),
         description: Some("Denver edge site".into()),
+        owner: None,
         tags: vec!["edge".into(), "prod".into()],
         custom_fields: BTreeMap::from([("region_lead".to_string(), json!("netops"))]),
     }
@@ -193,6 +198,7 @@ pub fn interface_view() -> InterfaceView {
             " Z  core01".into(),
             "    xe-1/0/0".into(),
         ],
+        owner: None,
         tags: vec!["uplink".into()],
         custom_fields: BTreeMap::from([("link_owner".to_string(), json!("netops"))]),
     }
@@ -349,6 +355,7 @@ pub fn device_detail() -> DeviceDetailBuilder {
                 primary_ip6: None,
                 serial: Some("JN123".to_string()),
                 description: Some("edge leaf".to_string()),
+                owner: None,
                 tags: vec!["edge".to_string(), "prod".to_string()],
                 custom_fields: BTreeMap::from([
                     ("monitored".to_string(), json!(true)),

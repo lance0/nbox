@@ -39,6 +39,10 @@ pub struct Device {
     #[serde(default)]
     pub description: Option<String>,
 
+    /// The native owner (NetBox 4.5+); a user/group brief. `None` on older
+    /// releases or when unset.
+    #[serde(default)]
+    pub owner: Option<BriefObject>,
     #[serde(default)]
     pub tags: Vec<Tag>,
     #[serde(default)]
@@ -80,6 +84,10 @@ pub struct Interface {
     #[serde(default)]
     pub connected_endpoints: Option<Vec<BriefObject>>,
 
+    /// The native owner (NetBox 4.5+); a user/group brief. `None` on older
+    /// releases or when unset.
+    #[serde(default)]
+    pub owner: Option<BriefObject>,
     #[serde(default)]
     pub tags: Vec<Tag>,
     #[serde(default)]
@@ -109,6 +117,10 @@ pub struct Site {
     #[serde(default)]
     pub description: Option<String>,
 
+    /// The native owner (NetBox 4.5+); a user/group brief. `None` on older
+    /// releases or when unset.
+    #[serde(default)]
+    pub owner: Option<BriefObject>,
     #[serde(default)]
     pub tags: Vec<Tag>,
     #[serde(default)]
@@ -181,10 +193,41 @@ pub struct Rack {
     #[serde(default)]
     pub description: Option<String>,
 
+    /// The native owner (NetBox 4.5+); a user/group brief. `None` on older
+    /// releases or when unset.
+    #[serde(default)]
+    pub owner: Option<BriefObject>,
     #[serde(default)]
     pub tags: Vec<Tag>,
     #[serde(default)]
     pub custom_fields: serde_json::Value,
+}
+
+/// A rack group (`/api/dcim/rack-groups/`). A hierarchical container for racks
+/// within a site/location; nbox treats it as a flat lookup (the tree depth is in
+/// the wire object, not surfaced). Carries an `owner` (4.5+) and a cheap
+/// `rack_count` the serializer reports.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct RackGroup {
+    pub id: u64,
+    pub url: String,
+    #[serde(default)]
+    pub display: Option<String>,
+    pub name: String,
+    pub slug: String,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// The native owner (NetBox 4.5+); a user/group brief. `None` on older
+    /// releases or when unset.
+    #[serde(default)]
+    pub owner: Option<BriefObject>,
+    #[serde(default)]
+    pub tags: Vec<Tag>,
+    #[serde(default)]
+    pub custom_fields: serde_json::Value,
+    /// Relation count the serializer reports (read-only).
+    #[serde(default)]
+    pub rack_count: Option<u64>,
 }
 
 /// A MAC address (`/api/dcim/mac-addresses/`, NetBox 4.2+). Standalone objects

@@ -110,6 +110,16 @@ pub enum Command {
         #[arg(long)]
         tag: Option<String>,
 
+        /// Filter by owner (NetBox 4.5+) — a user, by name (username). Requires a
+        /// 4.5+ NetBox; on older releases the filter is silently ignored (those
+        /// releases carry no owner data).
+        #[arg(long)]
+        owner: Option<String>,
+
+        /// Filter by owner group (NetBox 4.5+) — by name. See `--owner`.
+        #[arg(long = "owner-group")]
+        owner_group: Option<String>,
+
         /// Filter by VRF (id, RD, or name). Applies to IP and prefix results;
         /// other object kinds carry no VRF and are unaffected.
         #[arg(long)]
@@ -230,6 +240,12 @@ pub enum Command {
         journal_limit: Option<usize>,
     },
 
+    /// Show a rack group by slug, name, or numeric ID.
+    RackGroup {
+        /// Rack group slug, name, or numeric ID.
+        value: String,
+    },
+
     /// Show a circuit by CID or numeric ID.
     Circuit {
         /// Circuit ID (CID) or numeric ID.
@@ -313,6 +329,12 @@ pub enum Command {
     /// Show a virtual machine by name or numeric ID.
     Vm {
         /// VM name or numeric ID.
+        value: String,
+    },
+
+    /// Show a virtual machine type by slug, name, or numeric ID (NetBox 4.6+).
+    VmType {
+        /// VM type slug, name, or numeric ID.
         value: String,
     },
 
@@ -963,6 +985,24 @@ mod tests {
         assert!(matches!(
             cluster.command,
             Some(Command::Cluster { value }) if value == "prod"
+        ));
+    }
+
+    #[test]
+    fn parses_rack_group_lookup() {
+        let rg = Cli::try_parse_from(["nbox", "rack-group", "row-a"]).unwrap();
+        assert!(matches!(
+            rg.command,
+            Some(Command::RackGroup { value }) if value == "row-a"
+        ));
+    }
+
+    #[test]
+    fn parses_vm_type_lookup() {
+        let t = Cli::try_parse_from(["nbox", "vm-type", "web-tier"]).unwrap();
+        assert!(matches!(
+            t.command,
+            Some(Command::VmType { value }) if value == "web-tier"
         ));
     }
 

@@ -209,8 +209,10 @@ async fn search_returns_results_and_errors() {
         "/api/tenancy/contacts/",
         "/api/circuits/providers/",
         "/api/virtualization/virtual-machines/",
+        "/api/virtualization/virtual-machine-types/",
         "/api/virtualization/clusters/",
         "/api/dcim/racks/",
+        "/api/dcim/rack-groups/",
         "/api/ipam/vrfs/",
         "/api/ipam/route-targets/",
     ] {
@@ -233,6 +235,8 @@ async fn search_returns_results_and_errors() {
             tenant: None,
             role: None,
             tag: None,
+            owner: None,
+            owner_group: None,
             vrf: None,
         }))
         .await
@@ -324,8 +328,10 @@ async fn search_reports_partial_endpoint_errors() {
         "/api/tenancy/contacts/",
         "/api/circuits/providers/",
         "/api/virtualization/virtual-machines/",
+        "/api/virtualization/virtual-machine-types/",
         "/api/virtualization/clusters/",
         "/api/dcim/racks/",
+        "/api/dcim/rack-groups/",
         "/api/ipam/vrfs/",
         "/api/ipam/route-targets/",
     ] {
@@ -344,6 +350,8 @@ async fn search_reports_partial_endpoint_errors() {
             tenant: None,
             role: None,
             tag: None,
+            owner: None,
+            owner_group: None,
             vrf: None,
         }))
         .await
@@ -1831,8 +1839,10 @@ mod contracts {
             "/api/tenancy/contacts/",
             "/api/circuits/providers/",
             "/api/virtualization/virtual-machines/",
+            "/api/virtualization/virtual-machine-types/",
             "/api/virtualization/clusters/",
             "/api/dcim/racks/",
+            "/api/dcim/rack-groups/",
             "/api/ipam/vrfs/",
             "/api/ipam/route-targets/",
         ] {
@@ -1852,6 +1862,8 @@ mod contracts {
             tenant: None,
             role: None,
             tag: None,
+            owner: None,
+            owner_group: None,
             vrf: None,
         }
     }
@@ -2008,8 +2020,10 @@ mod contracts {
             "/api/tenancy/contacts/",
             "/api/circuits/providers/",
             "/api/virtualization/virtual-machines/",
+            "/api/virtualization/virtual-machine-types/",
             "/api/virtualization/clusters/",
             "/api/dcim/racks/",
+            "/api/dcim/rack-groups/",
             "/api/ipam/vrfs/",
             "/api/ipam/route-targets/",
         ] {
@@ -2054,8 +2068,10 @@ mod contracts {
             "/api/tenancy/contacts/",
             "/api/circuits/providers/",
             "/api/virtualization/virtual-machines/",
+            "/api/virtualization/virtual-machine-types/",
             "/api/virtualization/clusters/",
             "/api/dcim/racks/",
+            "/api/dcim/rack-groups/",
             "/api/ipam/vrfs/",
             "/api/ipam/route-targets/",
         ] {
@@ -2635,6 +2651,7 @@ mod contracts {
             json!({
                 "id": 7, "url": "u", "name": "edge01",
                 "status": {"value": "active", "label": "Active"},
+                "owner": {"id": 7, "display": "netops"},
                 "custom_fields": {}
             }),
         )
@@ -2651,8 +2668,9 @@ mod contracts {
             .nbox_get(Parameters(get_args(GetKind::Device, "edge01")))
             .await
             .expect("device lookup");
-        assert_keys(&value, &["id", "name", "status"]);
+        assert_keys(&value, &["id", "name", "status", "owner"]);
         assert_eq!(value["name"], "edge01");
+        assert_eq!(value["owner"], "netops");
     }
 
     /// `nbox_get ip` → `IpView`: address + the optional parent-prefix/assigned/
@@ -2759,6 +2777,38 @@ mod contracts {
             .await
             .expect("rack lookup");
         assert_keys(&value, &["id", "name", "status"]);
+    }
+
+    /// `nbox_get rack_group` → `RackGroupView`: id/name/slug + the optional
+    /// description/owner scalars + the skip-if-none `rack_count` relation
+    /// count. Pins the present-`owner` case (4.5+) for the new 4.6 kind.
+    #[tokio::test]
+    async fn get_rack_group_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/dcim/rack-groups/",
+            json!({
+                "id": 4, "url": "u", "name": "Row A", "slug": "row-a",
+                "description": "Aisle A racks",
+                "owner": {"id": 7, "display": "netops"},
+                "rack_count": 12,
+                "custom_fields": {}
+            }),
+        )
+        .await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::RackGroup, "row-a")))
+            .await
+            .expect("rack-group lookup");
+        assert_keys(
+            &value,
+            &["id", "name", "slug", "description", "owner", "rack_count"],
+        );
+        assert_eq!(value["slug"], "row-a");
+        assert_eq!(value["owner"], "netops");
+        assert_eq!(value["rack_count"], 12);
     }
 
     /// `nbox_get circuit` → `CircuitView`: cid + the optional provider/type/
@@ -3020,6 +3070,54 @@ mod contracts {
             .await
             .expect("vm lookup");
         assert_keys(&value, &["id", "name", "status"]);
+    }
+
+    /// `nbox_get vm_type` → `VirtualMachineTypeView`: id/name/slug + the
+    /// optional default_platform/default_vcpus/default_memory/description/owner
+    /// scalars + the skip-if-none `virtual_machine_count` relation count. Pins
+    /// the present-`owner` case (4.5+) and the numeric defaults for the new 4.6
+    /// kind.
+    #[tokio::test]
+    async fn get_vm_type_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/virtualization/virtual-machine-types/",
+            json!({
+                "id": 5, "url": "u", "name": "web-tier", "slug": "web-tier",
+                "default_platform": {"id": 2, "display": "debian"},
+                "default_vcpus": 4.0,
+                "default_memory": 8192,
+                "description": "2 vCPU / 8 GiB web frontend",
+                "owner": {"id": 7, "display": "netops"},
+                "virtual_machine_count": 18,
+                "custom_fields": {}
+            }),
+        )
+        .await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::VmType, "web-tier")))
+            .await
+            .expect("vm-type lookup");
+        assert_keys(
+            &value,
+            &[
+                "id",
+                "name",
+                "slug",
+                "default_platform",
+                "default_vcpus",
+                "default_memory",
+                "description",
+                "owner",
+                "virtual_machine_count",
+            ],
+        );
+        assert_eq!(value["slug"], "web-tier");
+        assert_eq!(value["default_platform"], "debian");
+        assert_eq!(value["owner"], "netops");
+        assert_eq!(value["virtual_machine_count"], 18);
     }
 
     /// `nbox_get cluster` → `ClusterView`: id + name + the optional type/group/

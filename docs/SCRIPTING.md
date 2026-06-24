@@ -190,7 +190,7 @@ Generic MCP host config (e.g. Claude Desktop's JSON):
 }
 ```
 
-The nine tools, all annotated read-only:
+The ten tools, all annotated read-only:
 
 | Tool | What |
 |------|------|
@@ -202,6 +202,7 @@ The nine tools, all annotated read-only:
 | `nbox_next_prefix` | Available free child prefix(es) of a given length. |
 | `nbox_journal` | Recent journal entries for an object. |
 | `nbox_list_tags` | List tags (name, slug, color, usage count). |
+| `nbox_tagged` | Objects carrying a tag, across kinds (NetBox 4.3+); `tag` (id\|name\|slug). |
 | `nbox_cache_clear` | Drop nbox's local read cache so the next reads fetch fresh. |
 
 The same objects are also exposed as MCP resources via one template,

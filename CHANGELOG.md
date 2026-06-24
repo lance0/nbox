@@ -9,6 +9,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`rack-group` + `vm-type` kinds (NetBox 4.6).** Two new first-class lookups
+  for the 4.6 additions: `nbox rack-group <slug|name|id>` and
+  `nbox vm-type <slug|name|id>`, each a full kind — `nbox_get` (MCP),
+  `nbox journal <kind> <ref>`, `nbox open <kind>/<ref>`, the
+  `nbox://<kind>/<ref>` resource, and a `nbox search` fan-out. Both are
+  dead-simple name/slug/description objects with a relation count (`rack_count`
+  / `virtual_machine_count`), plus `owner`/`tags`/`custom_fields`. Model shapes
+  verified against the live 4.6.2 OpenAPI schema. (`cable-bundle`, the third 4.6
+  addition, is deferred — it pairs with the cable-path visualizer.)
+
+- **`owner` field + `--owner`/`--owner-group` filters (NetBox 4.5).** NetBox
+  4.5 added a native `owner` (a user or group) on most objects — structured
+  ownership that beats tag-scraping for agents. `owner` is now surfaced on every
+  detail view as a friendly label, omitted when absent (byte-identical for
+  pre-4.5 objects). In `search`, `--owner <name>` and `--owner-group <name>`
+  filter by user/group name; owner is polymorphic (user **or** group) so the two
+  are separate filters, and both are silently ignored on releases that carry no
+  owner data (all 18 search endpoints accept the params; nbox never sends a
+  filter a kind can't satisfy).
+
 - **`virtual-circuit` kind (NetBox 4.2+).** `nbox virtual-circuit <cid|id>`
   shows a virtual circuit and its terminations, and it's a full first-class kind:
   `nbox_get kind=virtual_circuit` (MCP), `nbox journal virtual-circuit <cid>`,

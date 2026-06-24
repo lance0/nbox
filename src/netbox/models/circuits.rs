@@ -31,6 +31,10 @@ pub struct Circuit {
     #[serde(default)]
     pub description: Option<String>,
 
+    /// The native owner (NetBox 4.5+); a user/group brief. `None` on older
+    /// releases or when unset.
+    #[serde(default)]
+    pub owner: Option<BriefObject>,
     #[serde(default)]
     pub tags: Vec<Tag>,
     #[serde(default)]
@@ -190,6 +194,10 @@ pub struct Provider {
     #[serde(default)]
     pub circuit_count: Option<u64>,
 
+    /// The native owner (NetBox 4.5+); a user/group brief. `None` on older
+    /// releases or when unset.
+    #[serde(default)]
+    pub owner: Option<BriefObject>,
     #[serde(default)]
     pub tags: Vec<Tag>,
     #[serde(default)]

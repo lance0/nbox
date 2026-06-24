@@ -21,6 +21,7 @@ pub mod journal_view;
 pub mod mac_view;
 pub mod prefix_view;
 pub mod provider_view;
+pub mod rack_group_view;
 pub mod rack_view;
 pub mod route_target_view;
 pub mod site_view;
@@ -30,6 +31,7 @@ pub mod tenant_view;
 pub mod util;
 pub mod virtual_circuit_view;
 pub mod vlan_view;
+pub mod vm_type_view;
 pub mod vm_view;
 pub mod vrf_view;
 

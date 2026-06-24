@@ -43,9 +43,11 @@ nbox vlan <vid|name> [--site <name|slug>] [--group <name|slug>]
 nbox interface <device> <interface>
 nbox site <name|slug>
 nbox rack <name|id>
+nbox rack-group <slug|name|id>      # NetBox 4.6+
 nbox circuit <cid|id>                 # JSON: `terminations` (A/Z), each path hop a `device` ref + a `diagram`
 nbox virtual-circuit <cid|id>        # JSON: `terminations` (multi-point interface refs); NetBox 4.2+
 nbox provider <slug|name|id>
+nbox vm-type <slug|name|id>          # NetBox 4.6+
 nbox aggregate <cidr|id>
 nbox asn <number>
 nbox ip-range <start|id>
@@ -56,13 +58,13 @@ nbox cluster <name|id>
 nbox vrf <name|rd|id>
 nbox route-target <name|id>
 nbox mac <addr>                   # any common form (aa:bb:cc:dd:ee:ff, AABB.CCDD.EEFF, …) is normalized; reverse-resolves to the carrying interface(s)/device(s)
-nbox search <query> [--limit N] [--status S] [--site <name|slug|id>] [--region <name|slug|id>] [--site-group <name|slug|id>] [--location <name|slug|id>] [--tenant SLUG] [--role SLUG] [--tag SLUG] [--vrf <id|rd|name>] [--cols a,b,c] [--partial]
+nbox search <query> [--limit N] [--status S] [--site <name|slug|id>] [--region <name|slug|id>] [--site-group <name|slug|id>] [--location <name|slug|id>] [--tenant SLUG] [--role SLUG] [--tag SLUG] [--owner <name>] [--owner-group <name>] [--vrf <id|rd|name>] [--cols a,b,c] [--partial]
 nbox tags
 nbox tagged <tag>               # objects carrying a tag, across kinds (NetBox 4.3+
                                   # `/api/extras/tagged-objects/`); tag = id|name|slug
-nbox journal <kind> <ref>         # kinds: device, ip, prefix, vlan, site, rack, circuit,
+nbox journal <kind> <ref>         # kinds: device, ip, prefix, vlan, site, rack, rack-group, circuit,
                                   # virtual-circuit, aggregate, asn, ip-range, tenant, contact, provider, vm,
-                                  # cluster, vrf, route-target, mac, interface (<device>/<name>)
+                                  # vm-type, cluster, vrf, route-target, mac, interface (<device>/<name>)
 nbox open <kind>/<ref>
 nbox raw GET <api-path>          # path with or without /api/, e.g. dcim/devices/?limit=1
 nbox status                       # NetBox/Django/Python versions, api routing,
@@ -88,8 +90,8 @@ stderr. Every tool is annotated read-only.
 | Tool | Purpose |
 | ---- | ------- |
 | `nbox_status` | Connection + active backend capabilities + NetBox/Django/Python versions **and a token-validity preflight** (NetBox 4.5+): the `token` field is `valid`/`invalid`/`unverified` (the authenticated user on `valid`). Call first to confirm reachability, a valid token, and inspect `capabilities`. |
-| `nbox_search` | Search devices/sites/racks/IPs/prefixes/VLANs/circuits/virtual-circuits/aggregates/ASNs/IP ranges/tenants/contacts/providers/VMs/clusters/VRFs/route-targets; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag` (one scope filter at a time), `vrf` (id\|rd\|name; filters IP/prefix results only). Find a reference before `nbox_get`; a result's `kind` (e.g. `ip_address`) feeds straight into `nbox_get`, which accepts it as an alias for `ip`. |
-| `nbox_get` | One object: `kind` (device, ip, prefix, vlan, site, rack, circuit, virtual_circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target, mac, interface) + `ref`; `vrf`/`site`/`group` disambiguate (an ambiguous ref returns the candidates). |
+| `nbox_search` | Search devices/sites/racks/IPs/prefixes/VLANs/circuits/virtual-circuits/aggregates/ASNs/IP ranges/tenants/contacts/providers/VMs/clusters/VRFs/route-targets; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag` (one scope filter at a time), `owner`/`owner_group` (4.5+; user/group by name), `vrf` (id\|rd\|name; filters IP/prefix results only). Find a reference before `nbox_get`; a result's `kind` (e.g. `ip_address`) feeds straight into `nbox_get`, which accepts it as an alias for `ip`. |
+| `nbox_get` | One object: `kind` (device, ip, prefix, vlan, site, rack, rack_group, circuit, virtual_circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, vm_type, cluster, vrf, route_target, mac, interface) + `ref`; `vrf`/`site`/`group` disambiguate (an ambiguous ref returns the candidates). |
 | `nbox_get_interface` | One interface on a device: config, addresses, cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix (nothing reserved); `count`, `vrf`. |
 | `nbox_next_prefix` | Available child prefix(es) in a prefix; `length` for a block of a size, else all free blocks; `vrf`. |
@@ -160,6 +162,11 @@ nbox device edge01 --json | jq '.primary_ip4'
 - Read-only today. Safe, diff-confirmed writes are planned for a later release.
 - Filters that an object type can't satisfy cause that type to be skipped in
   `search` (nbox does not send NetBox unknown query params).
+- `owner` (NetBox 4.5+): a native owner field (user or group) surfaced on most
+  detail views as a friendly label, omitted when absent (byte-identical for
+  pre-4.5 objects). In `search`, `--owner`/`--owner-group` filter by user/group
+  name; owner is polymorphic (user **or** group) so the two are separate filters,
+  and both are silently ignored on releases that carry no owner data.
 - Scope fields (NetBox 4.2+ polymorphic scope): `prefix` and `vlan` carry
   `scope` (the scope object's name, for any scope type) and `scope_type` (a
   friendly label — `site`, `location`, `region`, `site-group`, or the raw

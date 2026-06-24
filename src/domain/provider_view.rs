@@ -25,6 +25,8 @@ pub struct ProviderView {
     // Relation count the serializer reports — only surfaced when non-zero.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub circuit_count: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -42,6 +44,7 @@ impl ProviderView {
             accounts: p.accounts.iter().map(ProviderAccount::label).collect(),
             description: p.description.and_then(non_empty),
             circuit_count: non_zero(p.circuit_count),
+            owner: p.owner.map(|bo| bo.label()),
             tags: p.tags.into_iter().map(|tag| tag.slug).collect(),
             custom_fields: custom::fields(&p.custom_fields),
         }
@@ -70,6 +73,7 @@ impl ProviderView {
         if !self.tags.is_empty() {
             kv.push("tags", self.tags.join(", "));
         }
+        kv.push_opt("owner", self.owner.clone());
         custom::append(&mut kv, &self.custom_fields);
         kv
     }

@@ -41,10 +41,49 @@ pub struct VirtualMachine {
     #[serde(default)]
     pub description: Option<String>,
 
+    /// The native owner (NetBox 4.5+); a user/group brief. `None` on older
+    /// releases or when unset.
+    #[serde(default)]
+    pub owner: Option<BriefObject>,
     #[serde(default)]
     pub tags: Vec<Tag>,
     #[serde(default)]
     pub custom_fields: serde_json::Value,
+}
+
+/// A virtual machine type (`/api/virtualization/virtual-machine-types/`, 4.6+).
+/// A reusable template for VMs — default platform/vCPUs/memory — referenced by
+/// VMs. Carries an `owner` (4.5+) and a cheap `virtual_machine_count`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct VirtualMachineType {
+    pub id: u64,
+    pub url: String,
+    #[serde(default)]
+    pub display: Option<String>,
+    pub name: String,
+    pub slug: String,
+    /// Default platform for VMs of this type (a platform brief).
+    #[serde(default)]
+    pub default_platform: Option<BriefObject>,
+    /// Default vCPU count (a decimal in the OpenAPI schema).
+    #[serde(default)]
+    pub default_vcpus: Option<f64>,
+    /// Default memory, in megabytes.
+    #[serde(default)]
+    pub default_memory: Option<u64>,
+    #[serde(default)]
+    pub description: Option<String>,
+    /// The native owner (NetBox 4.5+); a user/group brief. `None` on older
+    /// releases or when unset.
+    #[serde(default)]
+    pub owner: Option<BriefObject>,
+    #[serde(default)]
+    pub tags: Vec<Tag>,
+    #[serde(default)]
+    pub custom_fields: serde_json::Value,
+    /// Relation count the serializer reports (read-only).
+    #[serde(default)]
+    pub virtual_machine_count: Option<u64>,
 }
 
 /// A cluster (`/api/virtualization/clusters/`).
@@ -84,6 +123,10 @@ pub struct Cluster {
     #[serde(default)]
     pub virtualmachine_count: Option<u64>,
 
+    /// The native owner (NetBox 4.5+); a user/group brief. `None` on older
+    /// releases or when unset.
+    #[serde(default)]
+    pub owner: Option<BriefObject>,
     #[serde(default)]
     pub tags: Vec<Tag>,
     #[serde(default)]

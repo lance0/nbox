@@ -51,7 +51,7 @@ See [Installation](#installation) below for setup instructions.
 - **Normalized search** — one `search` query runs in parallel across devices, sites, racks, IPs, prefixes, VLANs, circuits, virtual circuits, providers, aggregates, ASNs, IP ranges, tenants, contacts, VMs, clusters, VRFs, and route targets, returning ranked, deduped hits. Scope it with `--site`/`--region`/`--site-group`/`--location` (one at a time, exact scope), or narrow by `--status`/`--tenant`/`--role`/`--tag`/`--vrf`.
 - **IPAM-aware** — IP → most-specific parent prefix → VLAN → scope resolution, prefix utilization and children, a navigable prefix tree, and `next-ip` / `next-prefix` for free addresses and blocks (read-only — nothing is reserved).
 - **A k9s-style TUI** — a three-pane home (navigation rail → results → live preview), an overview dashboard, a hierarchical prefix tree, cross-object navigation between related objects (every detail's related-object tabs are navigable — open an interface from a device and see its cable path drawn as an A↔Z diagram), fuzzy filters, server-side name filtering on the browse list, recents, and an in-app profile + settings editor. Twelve themes; `NO_COLOR` honored.
-- **Agent-ready** — `nbox serve` is a read-only MCP server: the same lookups exposed as nine tools (plus every object as an `nbox://{kind}/{ref}` resource), returning the exact JSON view models the CLI does, so AI agents (Claude Code, Claude Desktop, …) query NetBox safely. Stdio for a local subprocess, or a loopback HTTP transport with OIDC resource-server auth for a network-reachable, read-only deployment. See [docs/MCP.md](docs/MCP.md); [SKILL.md](SKILL.md) is an installable Agent Skill that drives the CLI on matching requests.
+- **Agent-ready** — `nbox serve` is a read-only MCP server: the same lookups exposed as ten tools (plus every object as an `nbox://{kind}/{ref}` resource), returning the exact JSON view models the CLI does, so AI agents (Claude Code, Claude Desktop, …) query NetBox safely. Stdio for a local subprocess, or a loopback HTTP transport with OIDC resource-server auth for a network-reachable, read-only deployment. See [docs/MCP.md](docs/MCP.md); [SKILL.md](SKILL.md) is an installable Agent Skill that drives the CLI on matching requests.
 - **Scriptable** — `-o plain|json|csv`, `--fields`, `--raw`, versioned `--envelope`, and stable exit codes; stdout stays clean for piping, logs go to stderr. See [docs/SCRIPTING.md](docs/SCRIPTING.md).
 - **Fast on repeat** — a small in-memory read cache (per profile, ~30s) keeps TUI back-navigation and chatty agents from re-hitting NetBox; the detail footer shows "cached Ns ago" and `nbox_cache_clear` busts it.
 - **Multi-instance** — profiles for several NetBox instances (switch live in the TUI), journals folded into detail lookups, open-in-browser and copy, and tag listing.
@@ -243,8 +243,9 @@ a directory — `nbox man man/` — to write the full set instead (`nbox.1` plus
 nbox                              # launch the TUI
 nbox status                       # connection + backend capabilities + NetBox/Django/Python versions
                                   # + token-validity preflight (NetBox 4.5+)
-nbox search <query> [--limit N] [--status/--site/--region/--site-group/--location/--tenant/--role/--tag <v>] [--vrf <id|rd|name>] [--cols a,b,c] [--partial]
+nbox search <query> [--limit N] [--status/--site/--region/--site-group/--location/--tenant/--role/--tag <v>] [--owner <name>] [--owner-group <name>] [--vrf <id|rd|name>] [--cols a,b,c] [--partial]
                                   # one scope flag at a time, exact match; --vrf filters IP/prefix results.
+                                  # --owner/--owner-group filter by user/group name (NetBox 4.5+).
                                   # Full scope/filter semantics: docs/FEATURES.md
 nbox device <name-or-id> [--journal] [--journal-limit N]
 nbox ip <address> [--vrf <name>] [--journal]    # --vrf disambiguates duplicates across VRFs
@@ -255,6 +256,7 @@ nbox next-prefix <cidr> [--length L] [--vrf <name>]   # available free block(s)
 nbox vlan <vid-or-name> [--site <s>] [--group <g>] [--journal]
 nbox site <name-or-slug> [--journal]
 nbox rack <name-or-id> [--journal]
+nbox rack-group <slug-or-name-or-id>             # NetBox 4.6+
 nbox circuit <cid-or-id> [--journal]              # incl. its A↔Z terminations + path
 nbox virtual-circuit <cid-or-id>                   # incl. its multi-point terminations (4.2+)
 nbox provider <slug-or-name-or-id>
@@ -264,6 +266,7 @@ nbox ip-range <start-or-id> [--journal]
 nbox tenant <slug-or-name-or-id>
 nbox contact <name-or-id>
 nbox vm <name-or-id>
+nbox vm-type <slug-or-name-or-id>                 # NetBox 4.6+
 nbox cluster <name-or-id>
 nbox interface <device> <interface>
 nbox tags                         # list tags (slug, name, count)
@@ -273,8 +276,8 @@ nbox journal <kind> <ref>         # recent journal entries for an object
                                   # kinds incl. interface as <device>/<name>
                                   # --journal folds recent entries into a detail lookup (cap 5)
                                   # --journal-limit N overrides the cap (implies --journal)
-nbox open <kind>/<ref>            # device, ip, prefix, vlan, site, rack, circuit, virtual-circuit, provider,
-                                  # aggregate, asn, ip-range, tenant, contact, vm, cluster, vrf, route-target,
+nbox open <kind>/<ref>            # device, ip, prefix, vlan, site, rack, rack-group, circuit, virtual-circuit, provider,
+                                  # aggregate, asn, ip-range, tenant, contact, vm, vm-type, cluster, vrf, route-target,
                                   # and interface/<device>/<name> (the name may contain slashes,
                                   # e.g. xe-0/0/1)
 nbox raw GET <api-path>           # raw read-only API request (escape hatch)
@@ -481,8 +484,8 @@ The tools are all annotated read-only:
 | Tool | What |
 |------|------|
 | `nbox_status` | Connection + backend capabilities + NetBox/Django/Python versions + a token-validity preflight (`token`: `valid`/`invalid`/`unverified`; NetBox 4.5+). |
-| `nbox_search` | Search devices/sites/racks/IPs/prefixes/VLANs/circuits/virtual-circuits/providers/aggregates/ASNs/IP-ranges/tenants/contacts/VMs/clusters/VRFs/route-targets; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `vrf` (id\|rd\|name; filters IP/prefix results only). |
-| `nbox_get` | Fetch one object by `kind` (device, ip, prefix, vlan, site, rack, circuit, virtual_circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target, mac, interface) + `ref`; `vrf`/`site`/`group` disambiguate. |
+| `nbox_search` | Search devices/sites/racks/rack-groups/IPs/prefixes/VLANs/circuits/virtual-circuits/providers/aggregates/ASNs/IP-ranges/tenants/contacts/VMs/VM-types/clusters/VRFs/route-targets; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `owner`/`owner_group` (4.5+; user/group by name), `vrf` (id\|rd\|name; filters IP/prefix results only). |
+| `nbox_get` | Fetch one object by `kind` (device, ip, prefix, vlan, site, rack, rack_group, circuit, virtual_circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, vm_type, cluster, vrf, route_target, mac, interface) + `ref`; `vrf`/`site`/`group` disambiguate. |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix (nothing is reserved). |
 | `nbox_next_prefix` | Available free child prefix(es) of a given length, or all free blocks. |

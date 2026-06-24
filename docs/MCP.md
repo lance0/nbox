@@ -77,7 +77,7 @@ nbox serve --http 127.0.0.1:8080
 (The transport lives behind the `http` cargo feature, which is on by default;
 `cargo install nbox --no-default-features` gives a lean stdio-only build.)
 
-The same nine tools are mounted at `/mcp` (Streamable HTTP). It binds **only**
+The same ten tools are mounted at `/mcp` (Streamable HTTP). It binds **only**
 loopback: a non-loopback address (e.g. `0.0.0.0:8080`) is a usage error unless
 the OIDC resource-server auth mode is configured (see below) — there is no other
 bypass flag. The trust boundary is the loopback interface; the same profile/token
@@ -173,7 +173,7 @@ header (tokens in the query string are rejected); the JWT signature against the
 issuer's JWKS, selected by `kid`, with an explicit algorithm allowlist
 (RS256/ES256 — the token's own `alg` is never trusted, `none` is rejected); `iss`
 exact-match; `aud` contains the configured audience; and `exp` in the future (with
-a ≤120 s clock-skew leeway). The 9 read-only tools require the `nbox:read` scope.
+a ≤120 s clock-skew leeway). The 10 read-only tools require the `nbox:read` scope.
 JWKS is cached by `kid` (an unknown `kid` triggers a single rate-limited refresh,
 then rejects; a transient JWKS outage keeps serving from the cache).
 
@@ -324,7 +324,7 @@ All tools are annotated read-only.
 | Tool | Purpose |
 | ---- | ------- |
 | `nbox_status` | Connection target, per-surface `api` routing (configured vs effective backend), capabilities, NetBox/Django/Python versions, **and a token-validity preflight** (`token`: `valid`/`invalid`/`unverified` — the authenticated user on `valid`; NetBox 4.5+ `/api/authentication-check/`). Call first to confirm reachability, a valid token, and inspect the `api`/`capabilities` objects. |
-| `nbox_search` | Free-text search across devices, sites, racks, IPs, prefixes, VLANs, circuits, virtual circuits, aggregates, ASNs, IP ranges, tenants, contacts, providers, virtual machines, clusters, VRFs, and route targets. Optional `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, and `vrf` filters (`vrf` filters IP/prefix results only; only one scope filter at a time). Use it to find an object's exact reference. |
+| `nbox_search` | Free-text search across devices, sites, racks, rack groups, IPs, prefixes, VLANs, circuits, virtual circuits, aggregates, ASNs, IP ranges, tenants, contacts, providers, virtual machines, VM types, clusters, VRFs, and route targets. Optional `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `owner`/`owner_group` (4.5+; user/group by name), and `vrf` filters (`vrf` filters IP/prefix results only; only one scope filter at a time). Use it to find an object's exact reference. |
 | `nbox_get` | Fetch one object by `kind` + `ref`. An ambiguous `ref` returns a candidate list; pass `vrf` (ip/prefix) or `site`/`group` (vlan) to disambiguate. |
 | `nbox_get_interface` | One interface on a device: its config, assigned addresses, and cable-path trace. |
 | `nbox_next_ip` | Next available address(es) within a prefix. `count`, `vrf`. Nothing is reserved. |
@@ -335,8 +335,8 @@ All tools are annotated read-only.
 | `nbox_cache_clear` | Drop nbox's local read cache so the next lookups fetch fresh from NetBox. Read-only with respect to NetBox (idempotent) — it only clears copies held in this server process; use after data changed out-of-band and you need current state before the TTL expires. |
 
 `nbox_get` and `nbox_journal` take a `kind` and a `ref`. `kind` is one of
-`device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `circuit`, `virtual_circuit`, `aggregate`,
-`asn`, `ip_range`, `tenant`, `contact`, `provider`, `vm`, `cluster`, `vrf`, `route_target`, `mac`, `interface` — both
+`device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `rack_group`, `circuit`, `virtual_circuit`, `aggregate`,
+`asn`, `ip_range`, `tenant`, `contact`, `provider`, `vm`, `vm_type`, `cluster`, `vrf`, `route_target`, `mac`, `interface` — both
 tools accept the full set. `ref` is the natural reference for that kind: a
 name/slug/ID for named objects, a CIDR for prefix and aggregate, an address for
 ip, a VID or name for vlan, the AS number for asn, a name/RD/ID for vrf, a name (e.g. 65000:100) or ID for route_target, a MAC address (any common form, normalized) for mac, a `<device>/<name>` compound ref for interface (the name is taken verbatim after the device, since interface names may contain slashes), a CID or numeric ID for virtual_circuit.
@@ -355,8 +355,8 @@ nbox://{kind}/{ref}
 ```
 
 `kind` is the same set as `nbox_get` (`device`, `ip`, `prefix`, `vlan`, `site`,
-`rack`, `circuit`, `virtual_circuit`, `aggregate`, `asn`, `ip_range`, `tenant`, `contact`,
-`provider`, `vm`, `cluster`, `vrf`, `route_target`, `mac`, `interface`); `ref` is the same natural reference. Reading a resource returns the
+`rack`, `rack_group`, `circuit`, `virtual_circuit`, `aggregate`, `asn`, `ip_range`, `tenant`, `contact`,
+`provider`, `vm`, `vm_type`, `cluster`, `vrf`, `route_target`, `mac`, `interface`); `ref` is the same natural reference. Reading a resource returns the
 object as JSON — the exact view model `nbox_get` returns. Examples:
 `nbox://device/edge01`, `nbox://ip/10.0.0.1`, `nbox://site/iad1`,
 `nbox://interface/edge01/xe-0/0/1`.

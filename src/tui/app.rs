@@ -187,7 +187,10 @@ fn dispatch(command: AppCommand, client: NetBoxClient, cache: Cache, tx: mpsc::S
                     cache.invalidate(&key);
                 }
                 match cache
-                    .get_or_fetch(&key, || load_detail(&client, kind, id))
+                    .get_or_fetch(&key, || {
+                        Box::pin(load_detail(&client, kind, id))
+                            as std::pin::Pin<Box<dyn std::future::Future<Output = _> + Send>>
+                    })
                     .await
                 {
                     Ok(c) => {
@@ -241,7 +244,10 @@ fn dispatch(command: AppCommand, client: NetBoxClient, cache: Cache, tx: mpsc::S
                 // always happy with a within-TTL copy.
                 let key = CacheKey::detail(kind, id);
                 let result = cache
-                    .get_or_fetch(&key, || load_detail(&client, kind, id))
+                    .get_or_fetch(&key, || {
+                        Box::pin(load_detail(&client, kind, id))
+                            as std::pin::Pin<Box<dyn std::future::Future<Output = _> + Send>>
+                    })
                     .await
                     .map(|c| c.value);
                 // Tag with (kind, id) so a stale response (cursor moved on) can

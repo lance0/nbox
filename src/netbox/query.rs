@@ -11,7 +11,7 @@ use crate::netbox::models::circuits::{
     Circuit, Provider, VirtualCircuit, VirtualCircuitTermination,
 };
 use crate::netbox::models::dcim::{
-    Device, Interface, Location, MacAddress, Rack, Region, Site, SiteGroup,
+    Device, Interface, Location, MacAddress, Rack, RackGroup, Region, Site, SiteGroup,
 };
 use crate::netbox::models::extras::{JournalEntry, TagInfo, TaggedObject};
 use crate::netbox::models::ipam::{
@@ -19,7 +19,7 @@ use crate::netbox::models::ipam::{
     Vlan, VlanGroup, Vrf,
 };
 use crate::netbox::models::tenancy::{Contact, Tenant};
-use crate::netbox::models::virtualization::{Cluster, VirtualMachine};
+use crate::netbox::models::virtualization::{Cluster, VirtualMachine, VirtualMachineType};
 use crate::netbox::pagination::Page;
 
 /// `limit` sent on the `available-prefixes` GET. Without an explicit `limit`
@@ -758,6 +758,32 @@ impl NetBoxClient {
         ambiguous_or_first("rack", value, contains.results, |r| r.name.clone())
     }
 
+    /// Resolve a rack group by numeric ID, then slug, then exact name, then
+    /// name-contains (ambiguous → exit 5). Rack groups carry a slug.
+    pub async fn rack_group_by_ref(&self, value: &str) -> Result<Option<RackGroup>> {
+        if let Ok(id) = value.parse::<u64>() {
+            return self
+                .get_optional(&format!("/api/dcim/rack-groups/{id}/"), &[])
+                .await;
+        }
+        let by_slug: Page<RackGroup> = self
+            .list(Endpoint::RackGroups, vec![("slug", value.to_string())])
+            .await?;
+        if let Some(rg) = by_slug.results.into_iter().next() {
+            return Ok(Some(rg));
+        }
+        let exact: Page<RackGroup> = self
+            .list(Endpoint::RackGroups, vec![("name__ie", value.to_string())])
+            .await?;
+        if let Some(rg) = exact.results.into_iter().next() {
+            return Ok(Some(rg));
+        }
+        let contains: Page<RackGroup> = self
+            .list(Endpoint::RackGroups, vec![("name__ic", value.to_string())])
+            .await?;
+        ambiguous_or_first("rack group", value, contains.results, |rg| rg.name.clone())
+    }
+
     /// Resolve a tenant by numeric ID, then slug, then exact name, then
     /// name-contains. Mirrors [`site_by_ref`](Self::site_by_ref) (tenants, like
     /// sites, carry a slug), with an id fast-path for numeric refs.
@@ -866,6 +892,46 @@ impl NetBoxClient {
             .await?;
         ambiguous_or_first("virtual machine", value, contains.results, |v| {
             v.name.clone()
+        })
+    }
+
+    /// Resolve a virtual machine type by numeric ID, then slug, then exact name,
+    /// then name-contains (ambiguous → exit 5). VM types carry a slug.
+    pub async fn vm_type_by_ref(&self, value: &str) -> Result<Option<VirtualMachineType>> {
+        if let Ok(id) = value.parse::<u64>() {
+            return self
+                .get_optional(
+                    &format!("/api/virtualization/virtual-machine-types/{id}/"),
+                    &[],
+                )
+                .await;
+        }
+        let by_slug: Page<VirtualMachineType> = self
+            .list(
+                Endpoint::VirtualMachineTypes,
+                vec![("slug", value.to_string())],
+            )
+            .await?;
+        if let Some(t) = by_slug.results.into_iter().next() {
+            return Ok(Some(t));
+        }
+        let exact: Page<VirtualMachineType> = self
+            .list(
+                Endpoint::VirtualMachineTypes,
+                vec![("name__ie", value.to_string())],
+            )
+            .await?;
+        if let Some(t) = exact.results.into_iter().next() {
+            return Ok(Some(t));
+        }
+        let contains: Page<VirtualMachineType> = self
+            .list(
+                Endpoint::VirtualMachineTypes,
+                vec![("name__ic", value.to_string())],
+            )
+            .await?;
+        ambiguous_or_first("virtual machine type", value, contains.results, |t| {
+            t.name.clone()
         })
     }
 

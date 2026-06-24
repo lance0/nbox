@@ -78,6 +78,27 @@ flag, and the per-surface backend routing.
   deserializes fine and the field is simply omitted from the view (additive and
   free-when-absent, like the NAT fields).
 
+- **`owner` field + filters (4.5).** NetBox 4.5 added a native `owner` (a user
+  **or** group) on most objects. nbox surfaces it on every detail view as a
+  friendly label, omitted when absent (an `Option` with `#[serde(default)]` on
+  each model — byte-identical for pre-4.5 objects). In `search`, `--owner` /
+  `--owner-group` map to `owner=` / `owner_group=` params on every search
+  endpoint (no resolution step — the server matches by name); owner is
+  polymorphic, so the two are separate filters, and both are silently ignored
+  on releases that carry no owner data. No version gate — additive and
+  free-when-absent.
+
+- **`rack-group` + `vm-type` kinds (4.6).** NetBox 4.6 adds `dcim/rack-groups/`
+  and `virtualization/virtual-machine-types/` as distinct, listable object kinds.
+  Both are simple name/slug/description objects with a relation count
+  (`rack_count` / `virtual_machine_count`) plus `owner` (4.5) and the usual
+  `tags`/`custom_fields`. They're full first-class kinds on nbox (`nbox <kind>`,
+  `nbox_get`, `nbox journal`, `nbox open`, `nbox://` resource, `nbox search`
+  fan-out). Model shapes verified against the live 4.6.2 OpenAPI schema. The
+  third 4.6 kind, `cable-bundle`, is deferred — it pairs with the cable-path
+  visualizer. No version gate: on a pre-4.6 instance these endpoints 404 and nbox
+  reports not-found (exit `4`), like any absent kind.
+
 - **GraphQL schema probe.** When a surface opts into GraphQL, nbox probes the live
   schema (filter input shapes + pagination) instead of hard-coding a version, so
   4.2/4.3/4.5+ differences are absorbed, and falls back to REST (with the reason in

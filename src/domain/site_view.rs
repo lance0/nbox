@@ -28,6 +28,8 @@ pub struct SiteView {
     pub facility: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -47,6 +49,7 @@ impl SiteView {
             tenant: s.tenant.map(|b| b.label()),
             facility: s.facility.and_then(non_empty),
             description: s.description.and_then(non_empty),
+            owner: s.owner.map(|bo| bo.label()),
             tags: s.tags.into_iter().map(|tag| tag.slug).collect(),
             custom_fields: custom::fields(&s.custom_fields),
         }
@@ -66,6 +69,7 @@ impl SiteView {
         if !self.tags.is_empty() {
             kv.push("tags", self.tags.join(", "));
         }
+        kv.push_opt("owner", self.owner.clone());
         custom::append(&mut kv, &self.custom_fields);
         kv
     }

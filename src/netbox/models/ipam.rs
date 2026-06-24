@@ -42,6 +42,10 @@ pub struct IpAddress {
     #[serde(default)]
     pub nat_outside: Vec<BriefObject>,
 
+    /// The native owner (NetBox 4.5+); a user/group brief. `None` on older
+    /// releases or when unset.
+    #[serde(default)]
+    pub owner: Option<BriefObject>,
     #[serde(default)]
     pub tags: Vec<Tag>,
     #[serde(default)]
@@ -91,6 +95,10 @@ pub struct Prefix {
     #[serde(default)]
     pub utilization: Option<serde_json::Value>,
 
+    /// The native owner (NetBox 4.5+); a user/group brief. `None` on older
+    /// releases or when unset.
+    #[serde(default)]
+    pub owner: Option<BriefObject>,
     #[serde(default)]
     pub tags: Vec<Tag>,
     #[serde(default)]
@@ -133,6 +141,10 @@ pub struct Vlan {
     #[serde(default)]
     pub description: Option<String>,
 
+    /// The native owner (NetBox 4.5+); a user/group brief. `None` on older
+    /// releases or when unset.
+    #[serde(default)]
+    pub owner: Option<BriefObject>,
     #[serde(default)]
     pub tags: Vec<Tag>,
     #[serde(default)]
@@ -194,6 +206,10 @@ pub struct Vrf {
     #[serde(default)]
     pub ipaddress_count: Option<u64>,
 
+    /// The native owner (NetBox 4.5+); a user/group brief. `None` on older
+    /// releases or when unset.
+    #[serde(default)]
+    pub owner: Option<BriefObject>,
     #[serde(default)]
     pub tags: Vec<Tag>,
     #[serde(default)]
@@ -216,6 +232,10 @@ pub struct RouteTarget {
     pub tenant: Option<BriefObject>,
     #[serde(default)]
     pub description: Option<String>,
+    /// The native owner (NetBox 4.5+); a user/group brief. `None` on older
+    /// releases or when unset.
+    #[serde(default)]
+    pub owner: Option<BriefObject>,
     #[serde(default)]
     pub tags: Vec<Tag>,
     #[serde(default)]
@@ -245,6 +265,10 @@ pub struct IpRange {
     #[serde(default)]
     pub description: Option<String>,
 
+    /// The native owner (NetBox 4.5+); a user/group brief. `None` on older
+    /// releases or when unset.
+    #[serde(default)]
+    pub owner: Option<BriefObject>,
     #[serde(default)]
     pub tags: Vec<Tag>,
     #[serde(default)]
@@ -289,6 +313,10 @@ pub struct Aggregate {
     #[serde(default)]
     pub description: Option<String>,
 
+    /// The native owner (NetBox 4.5+); a user/group brief. `None` on older
+    /// releases or when unset.
+    #[serde(default)]
+    pub owner: Option<BriefObject>,
     #[serde(default)]
     pub tags: Vec<Tag>,
     #[serde(default)]
@@ -312,6 +340,10 @@ pub struct Asn {
     #[serde(default)]
     pub description: Option<String>,
 
+    /// The native owner (NetBox 4.5+); a user/group brief. `None` on older
+    /// releases or when unset.
+    #[serde(default)]
+    pub owner: Option<BriefObject>,
     #[serde(default)]
     pub tags: Vec<Tag>,
     #[serde(default)]

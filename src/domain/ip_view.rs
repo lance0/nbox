@@ -51,6 +51,8 @@ pub struct IpView {
     /// above. Empty when not a NAT inside.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub nat_outside: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -82,6 +84,7 @@ impl IpView {
             scope_type,
             nat_inside: ip.nat_inside.as_ref().map(BriefObject::label),
             nat_outside: ip.nat_outside.iter().map(BriefObject::label).collect(),
+            owner: ip.owner.map(|bo| bo.label()),
             tags: ip.tags.into_iter().map(|tag| tag.slug).collect(),
             custom_fields: custom::fields(&ip.custom_fields),
         }
@@ -107,6 +110,7 @@ impl IpView {
         if !self.tags.is_empty() {
             kv.push("tags", self.tags.join(", "));
         }
+        kv.push_opt("owner", self.owner.clone());
         custom::append(&mut kv, &self.custom_fields);
         kv
     }

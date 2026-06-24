@@ -29,6 +29,8 @@ pub struct ContactView {
     pub group: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub owner: Option<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<String>,
     #[serde(skip_serializing_if = "BTreeMap::is_empty")]
@@ -48,6 +50,7 @@ impl ContactView {
             link: c.link.and_then(non_empty),
             group: c.group.map(|b| b.label()),
             description: c.description.and_then(non_empty),
+            owner: c.owner.map(|bo| bo.label()),
             tags: c.tags.into_iter().map(|tag| tag.slug).collect(),
             custom_fields: custom::fields(&c.custom_fields),
         }
@@ -67,6 +70,7 @@ impl ContactView {
         if !self.tags.is_empty() {
             kv.push("tags", self.tags.join(", "));
         }
+        kv.push_opt("owner", self.owner.clone());
         custom::append(&mut kv, &self.custom_fields);
         kv
     }
