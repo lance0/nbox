@@ -267,9 +267,16 @@ cover. All of these stay within the read-only product and the explicit non-goals
   a `token` field (`valid`/`invalid`/`unverified`, the authenticated user on `valid`). Best-effort:
   never errors, overlaps the capability probe, and the `nbox status` exit-code contract is unchanged
   (a rejected token during the status fetch still exits 3).
-- ☐ **Schema-drift canary (CI).** Pin NetBox's OpenAPI spec and add a CI job that diffs it across
-  releases for the endpoints/filters nbox actually uses, so a breaking change (e.g. 4.7) trips the build
-  before it reaches users. Lightweight — nbox stays hand-curated; this is just an early-warning signal.
+- ☑ **Schema-drift canary (CI).** Pins a compact NetBox OpenAPI snapshot
+  (`tests/schema/netbox-4.6.2.json` — bare GET filter params per search endpoint)
+  and a `schema_canary` test (`src/netbox/search.rs`) that validates the search
+  fan-out's declared `search_supported()` filter set against it: a filter nbox
+  sends that the pinned release doesn't accept (e.g. the `tenant`-on-rack-groups
+  silent-over-broad bug the canary caught on first run) fails the build with the
+  exact endpoint + filter. Refresh the snapshot against a new release
+  (`scripts/gen_schema_snapshot.py` from `/api/schema/`) and the canary flags
+  the drift before it reaches users. Lightweight — nbox stays hand-curated; this
+  is just an early-warning signal.
 
 ## Agent / MCP wedge
 

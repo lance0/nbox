@@ -9,6 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Schema-drift canary.** A compact NetBox OpenAPI snapshot
+  (`tests/schema/netbox-4.6.2.json` — bare GET filter params per search endpoint)
+  is pinned in-repo, and a `schema_canary` test validates the search fan-out's
+  declared filter set (`search_supported`) against it at compile time
+  (`include_str!`). A filter nbox sends that the pinned release doesn't accept
+  fails the build naming the exact endpoint + filter — the manual
+  schema-curling this session relied on, replaced by a reproducible signal.
+  Refresh the snapshot against a new NetBox release with
+  `scripts/gen_schema_snapshot.py` (from a saved `/api/schema/` JSON or a live
+  URL) and the canary flags the drift before it reaches users. Centralizing the
+  per-endpoint filter lists into `search_supported()` also made it the single
+  source of truth the canary validates (no more scattered `&[...]` literals).
+
 - **`nbox serve --print-config` (install recipes).** Prints the paste-ready
   `mcpServers` JSON object most MCP hosts read, then exits — without starting
   the server or connecting to NetBox, so it works before a token is even set.
@@ -127,6 +140,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   3; the preflight is informational. The capability probe and the preflight now
   overlap (`tokio::join!`), so `nbox status` costs no extra serial round-trip for
   the token verdict.
+
+### Fixed
+
+- **`nbox search --tenant` no longer over-broadens rack-groups / VM types.**
+  The 4.6 kinds `rack-group` and `vm-type` have no `tenant` filter in the
+  NetBox OpenAPI schema, but the search fan-out declared one for them — so with
+  `--tenant` active those branches sent a `tenant=` param NetBox silently
+  ignores and returned the kind *unfiltered* (mixed in with the tenant-scoped
+  hits). They now declare only the filters the schema accepts (`tag`/
+  `owner`/`owner_group`) and are skipped when `--tenant` is active, matching
+  every other scope-mismatched branch. Caught by the new schema canary.
 
 ### Changed
 
