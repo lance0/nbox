@@ -855,13 +855,19 @@ fn render_home_list(frame: &mut Frame, area: Rect, app: &mut App) {
                 };
                 match &app.browse_filter {
                     Some(f) => {
-                        // "name contains" / "prefix contains" / "address contains" / …
-                        let field = crate::netbox::browse::browse_filter_field(kind)
-                            .map_or("name", |q| q.trim_end_matches("__ic"));
-                        format!(
-                            " {} · {field} contains \"{f}\" · {count} ",
-                            browse_label(kind)
-                        )
+                        // "name contains" for name filters; "within 10.0.0.0/8"
+                        // for the CIDR-containment filters (prefix/IP browse).
+                        match crate::netbox::browse::browse_filter_field(kind) {
+                            Some(crate::netbox::browse::BrowseFilter::Name(field)) => format!(
+                                " {} · {} contains \"{f}\" · {count} ",
+                                browse_label(kind),
+                                field.trim_end_matches("__ic"),
+                            ),
+                            Some(crate::netbox::browse::BrowseFilter::Containment(_)) => {
+                                format!(" {} · within \"{f}\" · {count} ", browse_label(kind))
+                            }
+                            None => format!(" {} · {count} ", browse_label(kind)),
+                        }
                     }
                     None => format!(" {} · {count} ", browse_label(kind)),
                 }
@@ -2241,8 +2247,8 @@ fn footer_nav(app: &App) -> &'static str {
         // (focus stays here), Enter commits and jumps into the list. `/` acts on the
         // settled browse_kind (what the list shows), not nav_selected — so the hint
         // matches the action even mid-scroll: `/ filter` for a name-bearing kind,
-        // `/ search` otherwise (prefix/IP, or Recent with no kind). Mirrors the
-        // router and the List-pane arm below.
+        // `/ search` otherwise (Recent with no kind). Mirrors the router and the
+        // List-pane arm below.
         Screen::Home if app.focus == Focus::Nav => {
             if app
                 .browse_kind
@@ -2254,8 +2260,9 @@ fn footer_nav(app: &App) -> &'static str {
             }
         }
         // A browse list (a kind picked from the Nav rail). Filterable kinds bind `/`
-        // to a name filter (Esc clears it); kinds with no substring filter
-        // (prefix/IP — CIDR/inet, see `browse_filter_field`) route `/` to search.
+        // to a server-side filter (Esc clears it): a name filter for name-bearing
+        // kinds, a CIDR-containment filter for prefix/IP. Kinds with no usable
+        // filter (none on the Nav rail today) route `/` to search.
         Screen::Home if app.browse_kind.is_some() && app.last_query.is_none() => {
             if app
                 .browse_kind
@@ -2357,6 +2364,44 @@ mod tests {
         assert!(
             text.contains("No matching"),
             "empty-state note shown: {text:?}"
+        );
+    }
+
+    #[test]
+    fn prefix_filtered_browse_title_says_within_not_contains() {
+        // A containment filter (prefix/IP browse) titles the pane `within "<cidr>"`,
+        // not `<field> contains "<cidr>"` — the filter is by network, not a name
+        // substring. Pins the BrowseFilter::Containment arm of the title builder.
+        use ratatui::Terminal;
+        use ratatui::backend::TestBackend;
+        let mut a = app();
+        a.browse_kind = Some(ObjectKind::Prefix);
+        a.browse_filter = Some("10.0.0.0/24".to_string());
+        a.last_query = None;
+        a.results.clear();
+        a.view.clear();
+
+        let mut term = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        term.draw(|f| render_home_list(f, f.area(), &mut a))
+            .unwrap();
+        let text: String = term
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect();
+        assert!(
+            text.contains("within"),
+            "containment title says `within`: {text:?}"
+        );
+        assert!(
+            text.contains("10.0.0.0/24"),
+            "title carries the CIDR: {text:?}"
+        );
+        assert!(
+            !text.contains("contains"),
+            "containment does not use the name-filter wording: {text:?}"
         );
     }
 
@@ -2913,24 +2958,40 @@ mod tests {
     #[test]
     fn footer_nav_browse_hint_is_kind_aware() {
         // The browse-list footer advertises `/` by the kind's filterability: a
-        // name-bearing kind filters in place (`/ filter`, Esc clears it); a kind
-        // with no NetBox substring lookup (prefix/IP) routes `/` to global search
-        // (`/ search`). Guards the hint against drifting from the `/` router.
+        // name-bearing kind filters in place (`/ filter`, Esc clears it); a
+        // CIDR-containment kind (prefix/IP) also advertises `/ filter` now — the
+        // filter is by network, not name, but `/` still binds to it. A kind with no
+        // usable filter (none on the Nav rail today; pinned here with a synthetic
+        // Asn) routes `/` to global search (`/ search`). Guards the hint against
+        // drifting from the `/` router.
         let mut a = app();
         a.screen = Screen::Home;
         a.focus = Focus::List;
         a.last_query = None;
 
         a.browse_kind = Some(ObjectKind::Device);
-        let filterable = footer_nav(&a);
-        assert!(filterable.contains("/ filter"), "filterable: {filterable}");
+        let name_filter = footer_nav(&a);
+        assert!(name_filter.contains("/ filter"), "device: {name_filter}");
 
+        // Prefix now filters by network containment → `/ filter`, not `/ search`.
         a.browse_kind = Some(ObjectKind::Prefix);
+        let net_filter = footer_nav(&a);
+        assert!(
+            net_filter.contains("/ filter"),
+            "prefix browse advertises the containment filter: {net_filter}"
+        );
+        assert!(
+            !net_filter.contains("/ search"),
+            "prefix no longer routes `/` to search: {net_filter}"
+        );
+
+        // Defensive: a non-filterable kind (none on the rail today) routes `/` to search.
+        a.browse_kind = Some(ObjectKind::Asn);
         let plain = footer_nav(&a);
-        assert!(plain.contains("/ search"), "prefix: {plain}");
+        assert!(plain.contains("/ search"), "non-filterable: {plain}");
         assert!(
             !plain.contains("/ filter"),
-            "prefix browse must not advertise a filter: {plain}"
+            "non-filterable must not advertise a filter: {plain}"
         );
 
         // The Nav rail is the app's landing posture, and `/` acts there too — so its
@@ -2948,11 +3009,20 @@ mod tests {
             "rail keeps its browse prefix: {rail_filterable}"
         );
         a.browse_kind = Some(ObjectKind::Prefix);
+        let rail_prefix = footer_nav(&a);
+        assert!(
+            rail_prefix.contains("/ filter"),
+            "rail prefix advertises the containment filter: {rail_prefix}"
+        );
+        a.browse_kind = Some(ObjectKind::Asn);
         let rail_plain = footer_nav(&a);
-        assert!(rail_plain.contains("/ search"), "rail prefix: {rail_plain}");
+        assert!(
+            rail_plain.contains("/ search"),
+            "rail non-filterable: {rail_plain}"
+        );
         assert!(
             !rail_plain.contains("/ filter"),
-            "rail prefix must not advertise a filter: {rail_plain}"
+            "rail non-filterable must not advertise a filter: {rail_plain}"
         );
     }
 

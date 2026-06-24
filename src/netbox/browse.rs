@@ -24,23 +24,27 @@ use crate::util::format::api_to_web_url;
 /// request for the remainder.
 pub const BROWSE_CAP: usize = 1000;
 
-/// The query field a browse `filter` maps to for `kind` — a case-insensitive
-/// `contains` (`__ic`) lookup on the kind's name field (`name__ic` for the
-/// name-bearing kinds, `cid__ic` for circuits). `None` means the kind has no usable
-/// substring filter, so the TUI routes `/` to global search instead.
+/// The server-side filter a browse `filter` maps to for `kind`. Two shapes, both
+/// applied server-side so a browse narrows without pulling the whole table:
+/// - [`BrowseFilter::Name`] — a case-insensitive `contains` (`__ic`) on a
+///   CharField (`name__ic` for the name-bearing kinds, `cid__ic` for circuits).
+///   Free text: a substring of the name.
+/// - [`BrowseFilter::Containment`] — network containment on a CIDR/inet field.
+///   Prefix uses `within_include` (the prefix itself + everything inside it);
+///   IpAddress uses `parent` (addresses inside the prefix). The value is a CIDR,
+///   validated locally before it's sent (see the TUI's Enter handler) — a typo is
+///   an instant error, not a NetBox 400 round-trip.
 ///
-/// Prefix, aggregate, and IP-address are deliberately `None`: their key field is a
-/// CIDR/inet column, not a CharField, so NetBox exposes no `__ic` lookup on it — and
-/// an unknown filter param is silently ignored (returns the whole table), so a
-/// `prefix__ic`/`address__ic` filter would look applied while matching nothing it
-/// claims to. Containment filters (`within_include`/`parent`) are the correct future
-/// filter for those kinds. (Checked against NetBox 4.2–4.6 ipam filtersets.)
+/// `None` means the kind has no usable browse filter, so the TUI routes `/` to
+/// global search instead. Aggregate keys on a CIDR field but isn't a Nav-rail browse
+/// kind (inert); Asn/IpRange/Interface have no useful browse filter today.
+/// (NetBox filter facts checked against 4.2–4.6 ipam filtersets.)
 ///
 /// Maps more kinds than [`browse`] currently lists (VM/cluster/provider/tenant/…):
 /// forward-looking, so the field is ready if those become browsable. Today
 /// `browse_kind` is always one of the Nav-rail kinds, so those arms are inert.
 #[must_use]
-pub fn browse_filter_field(kind: ObjectKind) -> Option<&'static str> {
+pub fn browse_filter_field(kind: ObjectKind) -> Option<BrowseFilter> {
     match kind {
         ObjectKind::Device
         | ObjectKind::Site
@@ -52,16 +56,45 @@ pub fn browse_filter_field(kind: ObjectKind) -> Option<&'static str> {
         | ObjectKind::Cluster
         | ObjectKind::Provider
         | ObjectKind::Tenant
-        | ObjectKind::Contact => Some("name__ic"),
-        ObjectKind::Circuit => Some("cid__ic"),
-        // Prefix/Aggregate/IpAddress key on a CIDR/inet field with no NetBox
-        // substring lookup (see above) — `None`, so `/` falls back to search.
-        ObjectKind::Prefix
-        | ObjectKind::Aggregate
-        | ObjectKind::IpAddress
-        | ObjectKind::Asn
-        | ObjectKind::IpRange
-        | ObjectKind::Interface => None,
+        | ObjectKind::Contact => Some(BrowseFilter::Name("name__ic")),
+        ObjectKind::Circuit => Some(BrowseFilter::Name("cid__ic")),
+        // CIDR-containment: prefix/IP browse narrows by network instead of name.
+        ObjectKind::Prefix => Some(BrowseFilter::Containment("within_include")),
+        ObjectKind::IpAddress => Some(BrowseFilter::Containment("parent")),
+        // No usable browse filter → `None`, so `/` falls back to global search.
+        // (Aggregate keys on a CIDR field but isn't a Nav-rail browse kind — inert.)
+        ObjectKind::Aggregate | ObjectKind::Asn | ObjectKind::IpRange | ObjectKind::Interface => {
+            None
+        }
+    }
+}
+
+/// The server-side filter a browse `filter` maps to for a kind. See
+/// [`browse_filter_field`] for the per-kind mapping and the rationale.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BrowseFilter {
+    /// Case-insensitive `contains` (`__ic`) on a name/cid field. Free text.
+    Name(&'static str),
+    /// Network containment on a CIDR/inet field (Prefix `within_include`,
+    /// IpAddress `parent`). The value is a CIDR, validated before it's sent.
+    Containment(&'static str),
+}
+
+impl BrowseFilter {
+    /// The NetBox query-param name (`name__ic` / `cid__ic` / `within_include` /
+    /// `parent`) to send with the filter value.
+    #[must_use]
+    pub const fn field(&self) -> &'static str {
+        match self {
+            Self::Name(f) | Self::Containment(f) => f,
+        }
+    }
+
+    /// True for CIDR-containment filters (prefix/IP), which validate their value
+    /// as a CIDR before sending. Name filters take free text.
+    #[must_use]
+    pub const fn is_containment(self) -> bool {
+        matches!(self, Self::Containment(_))
     }
 }
 
@@ -76,11 +109,14 @@ pub async fn browse(
     max: usize,
     filter: Option<&str>,
 ) -> Result<Vec<SearchResult>> {
-    // The optional name filter, as a query param applied to every kind's list.
+    // The optional server-side filter, as a query param applied to every kind's
+    // list. For Name filters the value is free text; for Containment (prefix/IP)
+    // it's a CIDR, validated by the caller (the TUI's Enter handler) before it
+    // reaches here.
     let filter_param: Option<(&'static str, String)> = filter
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .and_then(|v| browse_filter_field(kind).map(|field| (field, v.to_string())));
+        .and_then(|v| browse_filter_field(kind).map(|f| (f.field(), v.to_string())));
     let base = || -> Vec<(&str, String)> { filter_param.clone().into_iter().collect() };
     let mut out = match kind {
         ObjectKind::Device => {
@@ -298,15 +334,34 @@ mod tests {
 
     #[test]
     fn filter_field_maps_each_kind() {
-        assert_eq!(browse_filter_field(ObjectKind::Device), Some("name__ic"));
-        assert_eq!(browse_filter_field(ObjectKind::Rack), Some("name__ic"));
-        assert_eq!(browse_filter_field(ObjectKind::Circuit), Some("cid__ic"));
-        // CIDR/inet-keyed kinds have no NetBox substring lookup → `None` (so `/`
-        // routes to search, not a filter that would silently match the whole table).
-        assert_eq!(browse_filter_field(ObjectKind::Prefix), None);
+        // Name-bearing kinds → a `__ic` substring lookup.
+        assert_eq!(
+            browse_filter_field(ObjectKind::Device),
+            Some(BrowseFilter::Name("name__ic"))
+        );
+        assert_eq!(
+            browse_filter_field(ObjectKind::Rack),
+            Some(BrowseFilter::Name("name__ic"))
+        );
+        assert_eq!(
+            browse_filter_field(ObjectKind::Circuit),
+            Some(BrowseFilter::Name("cid__ic"))
+        );
+        // CIDR/inet-keyed browsable kinds → network containment (not a name
+        // substring — NetBox has no `__ic` on those columns).
+        assert_eq!(
+            browse_filter_field(ObjectKind::Prefix),
+            Some(BrowseFilter::Containment("within_include"))
+        );
+        assert_eq!(
+            browse_filter_field(ObjectKind::IpAddress),
+            Some(BrowseFilter::Containment("parent"))
+        );
+        // Kinds with no usable browse filter → `None` (so `/` routes to search).
+        // Aggregate keys on a CIDR field but isn't a Nav-rail browse kind (inert).
         assert_eq!(browse_filter_field(ObjectKind::Aggregate), None);
-        assert_eq!(browse_filter_field(ObjectKind::IpAddress), None);
         assert_eq!(browse_filter_field(ObjectKind::Asn), None);
+        assert_eq!(browse_filter_field(ObjectKind::IpRange), None);
     }
 
     #[tokio::test]
@@ -378,5 +433,67 @@ mod tests {
             1,
             "a cap-full browse is a single round trip"
         );
+    }
+
+    #[tokio::test]
+    async fn prefix_browse_pushes_within_include() {
+        // A prefix browse with a containment filter sends `within_include=<cidr>`
+        // (the prefix itself + everything inside it). The mock matches ONLY when
+        // that param is present, so an unfiltered request would get no reply.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/prefixes/"))
+            .and(query_param("within_include", "10.0.0.0/24"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{
+                    "id": 1, "url": "http://nb/api/ipam/prefixes/1/",
+                    "prefix": "10.0.0.0/24", "status": {"value": "active", "label": "Active"}
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let results = browse(
+            &client_for(&server),
+            ObjectKind::Prefix,
+            BROWSE_CAP,
+            Some("10.0.0.0/24"),
+        )
+        .await
+        .expect("filtered prefix browse");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].display, "10.0.0.0/24");
+    }
+
+    #[tokio::test]
+    async fn ip_browse_pushes_parent() {
+        // An IP-address browse with a containment filter sends `parent=<cidr>`
+        // (addresses inside the prefix). The mock matches ONLY when that param is
+        // present, so an unfiltered request would get no reply.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/ip-addresses/"))
+            .and(query_param("parent", "10.0.0.0/24"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{
+                    "id": 5, "url": "http://nb/api/ipam/ip-addresses/5/",
+                    "address": "10.0.0.1/32", "status": {"value": "active", "label": "Active"}
+                }]
+            })))
+            .mount(&server)
+            .await;
+
+        let results = browse(
+            &client_for(&server),
+            ObjectKind::IpAddress,
+            BROWSE_CAP,
+            Some("10.0.0.0/24"),
+        )
+        .await
+        .expect("filtered IP browse");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].display, "10.0.0.1/32");
     }
 }

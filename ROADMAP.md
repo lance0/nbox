@@ -80,12 +80,18 @@ Polish the read experience. No writes here.
   instead of opening global search — explicit (Enter to apply, not live typeahead), so it doesn't hammer
   NetBox while typing. The pane title shows the active filter + count (`Devices · name contains "bfr" · 52`),
   `1000+` signals the browse cap; `Esc` clears (Normal) / cancels the edit (BrowseFilter), `Ctrl+X`/empty-
-  Enter clear while editing. Prefix, aggregate, and IP-address keep `/` as global search — their key field
-  is a CIDR/inet column with no NetBox `__ic` lookup (an unknown filter param is silently ignored, so a name
-  filter there would match the whole table while looking applied).
-  - ☐ **CIDR-containment filter for prefix/IP browse.** The planned follow-up for the CIDR/inet-keyed
-    kinds: filter those browses by `within_include`/`parent` (network containment) so `/` narrows a prefix/IP
-    list by network instead of falling back to global search.
+  Enter clear while editing. Prefix and IP-address now filter by network containment
+  (the follow-up item below); aggregate keeps `/` as global search (it keys on a
+  CIDR column but isn't a Nav-rail browse kind).
+  - ☑ **CIDR-containment filter for prefix/IP browse.** The follow-up for the
+    CIDR/inet-keyed kinds: `/` on a prefix browse filters by `within_include`
+    (the prefix + everything inside it), on an IP-address browse by `parent`
+    (addresses inside the prefix) — so `/` narrows a prefix/IP list by network
+    instead of falling back to global search. The value is a CIDR, validated locally
+    on Enter (a typo is an instant error, not a NetBox 400); the pane title reads
+    `within "10.0.0.0/24"`. Every Nav-rail kind is now filterable; the router's
+    `None` → search arm stays as a defensive fallback for a future non-filterable
+    browse kind.
 - ☐ **Load-more / follow-`next` (the unifying browse fix).** A browse stops at the cap (1000) and the
   device-interfaces / prefix-children detail tabs stop at their sub-resource caps (200 / 50) — past that
   the only path is the filter. Pull the next page on scroll by **following the server's `next` cursor**

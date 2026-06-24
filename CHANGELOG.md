@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **CIDR-containment filter for prefix/IP browse.** From the Nav rail, `/` on a
+  prefix browse now filters **server-side** by network containment (`within_include`
+  — the prefix + everything inside it) and on an IP-address browse by `parent`
+  (addresses inside the prefix), instead of falling back to global search. The value
+  is a CIDR, validated locally on Enter — a typo is an instant error, not a NetBox
+  400 round-trip; the pane title reads `within "10.0.0.0/24"`. Completes the browse
+  filter across every Nav-rail kind (name-bearing kinds by `name__ic`, prefix/IP by
+  containment); the router's `None` → search fallback remains for any future
+  non-filterable browse kind.
+
 ## [0.11.0] - 2026-06-23
 
 ### Added
