@@ -44,6 +44,7 @@ nbox interface <device> <interface>
 nbox site <name|slug>
 nbox rack <name|id>
 nbox circuit <cid|id>                 # JSON: `terminations` (A/Z), each path hop a `device` ref + a `diagram`
+nbox virtual-circuit <cid|id>        # JSON: `terminations` (multi-point interface refs); NetBox 4.2+
 nbox provider <slug|name|id>
 nbox aggregate <cidr|id>
 nbox asn <number>
@@ -60,7 +61,7 @@ nbox tags
 nbox tagged <tag>               # objects carrying a tag, across kinds (NetBox 4.3+
                                   # `/api/extras/tagged-objects/`); tag = id|name|slug
 nbox journal <kind> <ref>         # kinds: device, ip, prefix, vlan, site, rack, circuit,
-                                  # aggregate, asn, ip-range, tenant, contact, provider, vm,
+                                  # virtual-circuit, aggregate, asn, ip-range, tenant, contact, provider, vm,
                                   # cluster, vrf, route-target, mac, interface (<device>/<name>)
 nbox open <kind>/<ref>
 nbox raw GET <api-path>          # path with or without /api/, e.g. dcim/devices/?limit=1
@@ -87,8 +88,8 @@ stderr. Every tool is annotated read-only.
 | Tool | Purpose |
 | ---- | ------- |
 | `nbox_status` | Connection + active backend capabilities + NetBox/Django/Python versions **and a token-validity preflight** (NetBox 4.5+): the `token` field is `valid`/`invalid`/`unverified` (the authenticated user on `valid`). Call first to confirm reachability, a valid token, and inspect `capabilities`. |
-| `nbox_search` | Search devices/sites/racks/IPs/prefixes/VLANs/circuits/aggregates/ASNs/IP ranges/tenants/contacts/providers/VMs/clusters/VRFs/route-targets; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag` (one scope filter at a time), `vrf` (id\|rd\|name; filters IP/prefix results only). Find a reference before `nbox_get`; a result's `kind` (e.g. `ip_address`) feeds straight into `nbox_get`, which accepts it as an alias for `ip`. |
-| `nbox_get` | One object: `kind` (device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target, mac, interface) + `ref`; `vrf`/`site`/`group` disambiguate (an ambiguous ref returns the candidates). |
+| `nbox_search` | Search devices/sites/racks/IPs/prefixes/VLANs/circuits/virtual-circuits/aggregates/ASNs/IP ranges/tenants/contacts/providers/VMs/clusters/VRFs/route-targets; `query` (required), `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag` (one scope filter at a time), `vrf` (id\|rd\|name; filters IP/prefix results only). Find a reference before `nbox_get`; a result's `kind` (e.g. `ip_address`) feeds straight into `nbox_get`, which accepts it as an alias for `ip`. |
+| `nbox_get` | One object: `kind` (device, ip, prefix, vlan, site, rack, circuit, virtual_circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target, mac, interface) + `ref`; `vrf`/`site`/`group` disambiguate (an ambiguous ref returns the candidates). |
 | `nbox_get_interface` | One interface on a device: config, addresses, cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix (nothing reserved); `count`, `vrf`. |
 | `nbox_next_prefix` | Available child prefix(es) in a prefix; `length` for a block of a size, else all free blocks; `vrf`. |

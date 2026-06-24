@@ -65,6 +65,11 @@ pub enum GetKind {
     Site,
     Rack,
     Circuit,
+    /// A virtual circuit (NetBox 4.2+). The `ref` is the CID or numeric ID. A
+    /// logical overlay between two or more device interfaces — multi-point (no
+    /// A/Z sides) and virtual (no cables), so its terminations are a flat list of
+    /// interface refs, not a cable-path diagram.
+    VirtualCircuit,
     Aggregate,
     Asn,
     IpRange,
@@ -90,7 +95,7 @@ pub enum GetKind {
 impl GetKind {
     /// Every kind, in the order the docs and `nbox://{kind}/{ref}` template list
     /// them — the same set `nbox_get` accepts.
-    const ALL: [GetKind; 19] = [
+    const ALL: [GetKind; 20] = [
         GetKind::Device,
         GetKind::Ip,
         GetKind::Prefix,
@@ -98,6 +103,7 @@ impl GetKind {
         GetKind::Site,
         GetKind::Rack,
         GetKind::Circuit,
+        GetKind::VirtualCircuit,
         GetKind::Aggregate,
         GetKind::Asn,
         GetKind::IpRange,
@@ -123,6 +129,7 @@ impl GetKind {
             GetKind::Site => "site",
             GetKind::Rack => "rack",
             GetKind::Circuit => "circuit",
+            GetKind::VirtualCircuit => "virtual_circuit",
             GetKind::Aggregate => "aggregate",
             GetKind::Asn => "asn",
             GetKind::IpRange => "ip_range",
@@ -402,7 +409,7 @@ fn resource_templates() -> ListResourceTemplatesResult {
         .with_title("NetBox object")
         .with_description(
             "Read one NetBox object as JSON. `kind` is one of device, ip, prefix, vlan, \
-             site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, \
+             site, rack, circuit, virtual_circuit, aggregate, asn, ip_range, tenant, contact, provider, \
              vm, cluster, vrf, route_target, mac, interface; `ref` is its natural reference (name/slug/ID; CIDR for \
              prefix/aggregate; address for ip; VID or name for vlan; AS number for asn; \
              `<device>/<name>` for interface, taken verbatim after the device since names may contain slashes). \
@@ -481,7 +488,7 @@ impl NboxMcp {
     /// aggregates, ASNs, and IP ranges.
     #[tool(
         name = "nbox_search",
-        description = "Search across devices, sites, racks, IP addresses, prefixes, VLANs, circuits, aggregates, ASNs, IP ranges, tenants, contacts, providers, virtual machines, clusters, VRFs, and route targets by free text. Returns ranked hits with kind, display name, and URL. Use this to find an object's exact reference before nbox_get. Optional filters narrow by status/site/tenant/role/tag; vrf (id|rd|name) narrows IP and prefix results.",
+        description = "Search across devices, sites, racks, IP addresses, prefixes, VLANs, circuits, virtual circuits, aggregates, ASNs, IP ranges, tenants, contacts, providers, virtual machines, clusters, VRFs, and route targets by free text. Returns ranked hits with kind, display name, and URL. Use this to find an object's exact reference before nbox_get. Optional filters narrow by status/site/tenant/role/tag; vrf (id|rd|name) narrows IP and prefix results.",
         annotations(read_only_hint = true)
     )]
     async fn nbox_search(
@@ -520,7 +527,7 @@ impl NboxMcp {
     // single concrete type (a oneOf over ~10 view types is out of scope).
     #[tool(
         name = "nbox_get",
-        description = "Look up a single object and its context. `kind` is one of: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target, mac, interface. `ref` is the natural reference for that kind (name/slug/ID; CIDR for prefix/aggregate; address for ip; VID or name for vlan; AS number for asn; slug/name/ID for tenant; name/ID for contact; slug/name/ID for provider; name/ID for vm and cluster; `<device>/<name>` for interface, verbatim after the device since names may contain slashes). On an ambiguous reference the error lists the candidates: pass `vrf` for an ip/prefix in several VRFs, or `site`/`group` for a VLAN VID present at several sites.",
+        description = "Look up a single object and its context. `kind` is one of: device, ip, prefix, vlan, site, rack, circuit, virtual_circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target, mac, interface. `ref` is the natural reference for that kind (name/slug/ID; CIDR for prefix/aggregate; address for ip; VID or name for vlan; AS number for asn; slug/name/ID for tenant; name/ID for contact; slug/name/ID for provider; name/ID for vm and cluster; `<device>/<name>` for interface, verbatim after the device since names may contain slashes; CID or ID for virtual_circuit). On an ambiguous reference the error lists the candidates: pass `vrf` for an ip/prefix in several VRFs, or `site`/`group` for a VLAN VID present at several sites.",
         output_schema = output_schema(),
         annotations(read_only_hint = true)
     )]
@@ -628,7 +635,7 @@ impl NboxMcp {
     /// Recent journal entries for an object.
     #[tool(
         name = "nbox_journal",
-        description = "Return recent journal entries (operator notes) for an object, newest first. `kind` and `ref` follow nbox_get; supported kinds are device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target, interface (as `<device>/<name>`).",
+        description = "Return recent journal entries (operator notes) for an object, newest first. `kind` and `ref` follow nbox_get; supported kinds are device, ip, prefix, vlan, site, rack, circuit, virtual_circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, cluster, vrf, route_target, interface (as `<device>/<name>`).",
         annotations(read_only_hint = true)
     )]
     async fn nbox_journal(
@@ -769,6 +776,9 @@ impl NboxMcp {
             GetKind::Circuit => {
                 serde_json::to_value(detail::circuit_view_by_ref(c, r, &not_found).await?)?
             }
+            GetKind::VirtualCircuit => {
+                serde_json::to_value(detail::virtual_circuit_view_by_ref(c, r, &not_found).await?)?
+            }
             GetKind::Aggregate => {
                 serde_json::to_value(detail::aggregate_view_by_ref(c, r, &not_found).await?)?
             }
@@ -877,6 +887,7 @@ impl NboxMcp {
             GetKind::Site => "site",
             GetKind::Rack => "rack",
             GetKind::Circuit => "circuit",
+            GetKind::VirtualCircuit => "virtual-circuit",
             GetKind::Aggregate => "aggregate",
             GetKind::Asn => "asn",
             GetKind::IpRange => "ip-range",

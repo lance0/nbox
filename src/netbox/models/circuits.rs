@@ -74,6 +74,66 @@ pub struct CircuitTermination {
     pub link_peers: Vec<BriefObject>,
 }
 
+/// A virtual circuit (`/api/circuits/virtual-circuits/`, NetBox 4.2+). A
+/// logical overlay between two or more interfaces — unlike a physical circuit
+/// it carries no cables, no A/Z sides, and no speeds: it is just a CID plus a
+/// flat list of terminations, each landing on a device interface.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct VirtualCircuit {
+    pub id: u64,
+    pub url: String,
+    #[serde(default)]
+    pub display: Option<String>,
+    /// The virtual circuit's provider-assigned ID.
+    pub cid: String,
+
+    #[serde(default)]
+    pub provider_network: Option<BriefObject>,
+    #[serde(default)]
+    pub provider_account: Option<BriefObject>,
+    #[serde(rename = "type", default)]
+    pub type_: Option<BriefObject>,
+    #[serde(default)]
+    pub status: Option<Choice<String>>,
+    #[serde(default)]
+    pub tenant: Option<BriefObject>,
+    /// The native owner (NetBox 4.5+); a user/group brief. `None` on older
+    /// releases or when unset.
+    #[serde(default)]
+    pub owner: Option<BriefObject>,
+    #[serde(default)]
+    pub description: Option<String>,
+
+    #[serde(default)]
+    pub tags: Vec<Tag>,
+    #[serde(default)]
+    pub custom_fields: serde_json::Value,
+}
+
+/// One termination of a virtual circuit (`/api/circuits/virtual-circuit-
+/// terminations/`, NetBox 4.2+). Lands on a single device `interface` (carrying
+/// its device as a nested brief) and carries an optional `role`. Virtual circuits
+/// are multi-point, so there is no A/Z `term_side` — terminations are a flat list.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct VirtualCircuitTermination {
+    pub id: u64,
+    #[serde(default)]
+    pub display: Option<String>,
+    /// The interface this termination lands on (a `BriefInterface`: `id`,
+    /// `name`, and a nested `device`). `None` when the termination is unset.
+    #[serde(default)]
+    pub interface: Option<BriefObject>,
+    /// The termination's role (e.g. `peer`/`hub`/`spoke`).
+    #[serde(default)]
+    pub role: Option<Choice<String>>,
+    #[serde(default)]
+    pub description: Option<String>,
+    #[serde(default)]
+    pub tags: Vec<Tag>,
+    #[serde(default)]
+    pub custom_fields: serde_json::Value,
+}
+
 /// A nested ASN as it appears in a provider's `asns` array. The serializer
 /// returns the full ASN object; we keep only the AS number for the brief list.
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -215,5 +275,63 @@ mod tests {
         assert_eq!(by_name.label(), "main");
         let bare: ProviderAccount = serde_json::from_value(json!({"id": 9})).unwrap();
         assert_eq!(bare.label(), "#9");
+    }
+
+    #[test]
+    fn virtual_circuit_deserializes_bare_and_full() {
+        let bare: VirtualCircuit =
+            serde_json::from_value(json!({"id": 7, "url": "u", "cid": "VC-100"})).unwrap();
+        assert_eq!(bare.cid, "VC-100");
+        assert!(bare.provider_network.is_none());
+        assert!(bare.type_.is_none());
+
+        let full: VirtualCircuit = serde_json::from_value(json!({
+            "id": 7, "url": "u", "cid": "VC-100",
+            "provider_network": {"id": 3, "name": "ACME Cloud", "display": "ACME Cloud"},
+            "provider_account": {"id": 9, "name": "primary", "account": "ACME-001"},
+            "type": {"id": 2, "name": "MPLS", "slug": "mpls"},
+            "status": {"value": "active", "label": "Active"},
+            "tenant": {"id": 4, "name": "acme"},
+            "owner": {"id": 1, "name": "netops"},
+            "description": "east-west overlay",
+            "tags": [{"id": 1, "name": "transit", "slug": "transit"}],
+            "custom_fields": {}
+        }))
+        .unwrap();
+        assert_eq!(full.cid, "VC-100");
+        assert_eq!(full.provider_network.unwrap().label(), "ACME Cloud");
+        assert_eq!(full.type_.unwrap().label(), "MPLS");
+        assert_eq!(full.status.unwrap().value, "active");
+        assert_eq!(full.tenant.unwrap().label(), "acme");
+        assert_eq!(full.owner.unwrap().label(), "netops");
+    }
+
+    #[test]
+    fn virtual_circuit_termination_deserializes_with_nested_device() {
+        let t: VirtualCircuitTermination = serde_json::from_value(json!({
+            "id": 10,
+            "interface": {
+                "id": 50, "name": "xe-0/0/0", "display": "edge01 xe-0/0/0",
+                "device": {"id": 8, "name": "edge01"}
+            },
+            "role": {"value": "peer", "label": "Peer"},
+            "description": "a-side"
+        }))
+        .unwrap();
+        let iface = t.interface.unwrap();
+        assert_eq!(iface.id, 50);
+        assert_eq!(iface.name.as_deref(), Some("xe-0/0/0"));
+        // The nested device brief rides along on BriefObject's `device` field.
+        let dev = iface.device.unwrap();
+        assert_eq!(dev.id, 8);
+        assert_eq!(dev.name.as_deref(), Some("edge01"));
+        assert_eq!(t.role.unwrap().value, "peer");
+    }
+
+    #[test]
+    fn virtual_circuit_termination_without_interface() {
+        let t: VirtualCircuitTermination = serde_json::from_value(json!({"id": 11})).unwrap();
+        assert!(t.interface.is_none());
+        assert!(t.role.is_none());
     }
 }

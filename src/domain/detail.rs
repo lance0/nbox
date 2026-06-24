@@ -32,13 +32,14 @@ use crate::domain::rack_view::RackView;
 use crate::domain::route_target_view::{RouteTargetDetail, RouteTargetView, VrfRef};
 use crate::domain::site_view::SiteView;
 use crate::domain::tenant_view::TenantView;
+use crate::domain::virtual_circuit_view::VirtualCircuitView;
 use crate::domain::vlan_view::VlanView;
 use crate::domain::vm_view::VmView;
 use crate::domain::vrf_view::{VrfAddressRow, VrfDetail, VrfPrefixRow, VrfView};
 use crate::error::NboxError;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
-use crate::netbox::models::circuits::{Circuit, CircuitTermination, Provider};
+use crate::netbox::models::circuits::{Circuit, CircuitTermination, Provider, VirtualCircuit};
 use crate::netbox::models::common::BriefObject;
 use crate::netbox::models::dcim::{Device, Interface, MacAddress, Rack, Site};
 use crate::netbox::models::ipam::{
@@ -788,6 +789,21 @@ pub async fn provider_view_by_ref(
         .await?
         .ok_or_else(|| not_found("provider", value))?;
     Ok(ProviderView::from_model(provider))
+}
+
+/// `virtual-circuit <cid|id>`: resolve a virtual circuit, fetch its terminations,
+/// and build the view. Shared by CLI/MCP.
+pub async fn virtual_circuit_view_by_ref(
+    client: &NetBoxClient,
+    value: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<VirtualCircuitView> {
+    let vc = client
+        .virtual_circuit_by_ref(value)
+        .await?
+        .ok_or_else(|| not_found("virtual circuit", value))?;
+    let terminations = client.virtual_circuit_terminations(vc.id).await?;
+    Ok(VirtualCircuitView::build(vc, terminations))
 }
 
 /// `vm <name|id>`: resolve a virtual machine and build its view. Shared by CLI/MCP.
@@ -1919,6 +1935,14 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             let v = MacView::from_model(m);
             (format!("mac {}", v.mac_address), v.to_key_values().render())
         }
+        ObjectKind::VirtualCircuit => {
+            let vc: VirtualCircuit = client
+                .get(&format!("/api/circuits/virtual-circuits/{id}/"), &[])
+                .await?;
+            let terminations = client.virtual_circuit_terminations(vc.id).await?;
+            let v = VirtualCircuitView::build(vc, terminations);
+            (format!("virtual circuit {}", v.cid), v.to_plain())
+        }
     };
     Ok(DetailView::new(kind, id, title, body)
         .with_tabs(tabs)
@@ -2200,6 +2224,16 @@ pub async fn load_detail_by_ref(
                 format!("mac {}", v.mac_address),
                 v.to_key_values().render(),
             )
+        }
+        ObjectKind::VirtualCircuit => {
+            let vc = client
+                .virtual_circuit_by_ref(value)
+                .await?
+                .with_context(|| format!("no virtual circuit matched \"{value}\""))?;
+            let id = vc.id;
+            let terminations = client.virtual_circuit_terminations(id).await?;
+            let v = VirtualCircuitView::build(vc, terminations);
+            (id, format!("virtual circuit {}", v.cid), v.to_plain())
         }
     };
     Ok(DetailView::new(kind, id, title, body)

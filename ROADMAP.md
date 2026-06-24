@@ -231,10 +231,18 @@ cover. All of these stay within the read-only product and the explicit non-goals
   `nbox://mac/<addr>`), and `nbox open mac/<addr>`. Lookup-only (exact
   `mac_address=`) — not browsable/searchable, since MACs aren't substring-meaningful.
   Highest value, shipped.
-- ☐ **New object kinds from 4.2/4.6.** `virtual-circuit` (+ terminations, 4.2), and the 4.6
-  additions `virtual-machine-type`, `rack-group`, `cable-bundle` — small, formulaic lookups
-  that keep kind coverage current. (Each: model + `nbox <kind>` + detail view; `cable-bundle`
-  pairs with the cable-path visualizer.)
+- ☑ **`virtual-circuit` (+ terminations, 4.2).** A full first-class kind: `nbox
+  virtual-circuit <cid|id>`, `nbox_get kind=virtual_circuit`, `nbox journal
+  virtual-circuit <cid>`, `nbox open virtual-circuit/<cid>`, `nbox://virtual_circuit/<cid>`
+  resource, and a search fan-out. Virtual circuits are multi-point overlays on
+  device interfaces — no A/Z sides, no cables — so the view is flat attributes + a
+  flat termination list (each termination's `device`/`interface` refs, for
+  navigation), not a cable-path diagram. Verified against the live 4.6.2
+  OpenAPI schema for the model shape.
+- ☐ **New object kinds from 4.6.** The 4.6 additions `virtual-machine-type`,
+  `rack-group`, `cable-bundle` — small, formulaic lookups that keep kind coverage
+  current. (Each: model + `nbox <kind>` + detail view; `cable-bundle` pairs with
+  the cable-path visualizer.)
 - ☐ **`owner` field + `--owner` filter** _(4.5)_. NetBox added a native `owner` (users/groups)
   on most objects — structured ownership that beats tag-scraping for agents. Surface it on
   detail views and as a search filter.

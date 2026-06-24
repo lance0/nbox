@@ -3979,6 +3979,7 @@ fn object_web_url(base_url: &str, kind: ObjectKind, id: u64) -> String {
         ObjectKind::Prefix => format!("ipam/prefixes/{id}/"),
         ObjectKind::Vlan => format!("ipam/vlans/{id}/"),
         ObjectKind::Circuit => format!("circuits/circuits/{id}/"),
+        ObjectKind::VirtualCircuit => format!("circuits/virtual-circuits/{id}/"),
         ObjectKind::Aggregate => format!("ipam/aggregates/{id}/"),
         ObjectKind::Asn => format!("ipam/asns/{id}/"),
         ObjectKind::IpRange => format!("ipam/ip-ranges/{id}/"),

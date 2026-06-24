@@ -485,6 +485,101 @@ async fn circuit_by_id_hits_detail_endpoint() {
 }
 
 #[tokio::test]
+async fn virtual_circuit_by_cid_uses_cid_filter() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/circuits/virtual-circuits/"))
+        .and(query_param("cid", "VC-100"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 7, "url": "http://nb/api/circuits/virtual-circuits/7/", "cid": "VC-100",
+                "provider_network": {"id": 3, "name": "ACME Cloud"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let vc = client(&server)
+        .virtual_circuit_by_ref("VC-100")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(vc.cid, "VC-100");
+    assert_eq!(vc.provider_network.unwrap().label(), "ACME Cloud");
+}
+
+#[tokio::test]
+async fn virtual_circuit_by_id_hits_detail_endpoint() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/circuits/virtual-circuits/7/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7, "url": "http://nb/api/circuits/virtual-circuits/7/", "cid": "VC-7"
+        })))
+        .mount(&server)
+        .await;
+
+    let vc = client(&server)
+        .virtual_circuit_by_ref("7")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(vc.id, 7);
+    assert_eq!(vc.cid, "VC-7");
+}
+
+#[tokio::test]
+async fn virtual_circuit_terminations_filter_by_vc_id() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/circuits/virtual-circuit-terminations/"))
+        .and(query_param("virtual_circuit_id", "7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [
+                {
+                    "id": 10,
+                    "interface": {
+                        "id": 50, "name": "xe-0/0/0",
+                        "device": {"id": 8, "name": "edge01"}
+                    },
+                    "role": {"value": "hub", "label": "Hub"}
+                },
+                {
+                    "id": 11,
+                    "interface": {
+                        "id": 51, "name": "xe-0/0/0",
+                        "device": {"id": 9, "name": "edge02"}
+                    }
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let terms = client(&server)
+        .virtual_circuit_terminations(7)
+        .await
+        .unwrap();
+    assert_eq!(terms.len(), 2);
+    assert_eq!(terms[0].interface.as_ref().unwrap().id, 50);
+    assert_eq!(
+        terms[0]
+            .interface
+            .as_ref()
+            .unwrap()
+            .device
+            .as_ref()
+            .unwrap()
+            .id,
+        8
+    );
+    assert_eq!(terms[0].role.as_ref().unwrap().value, "hub");
+    assert!(terms[1].role.is_none());
+}
+
+#[tokio::test]
 async fn tags_lists_all() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
