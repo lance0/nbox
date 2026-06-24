@@ -2520,4 +2520,466 @@ mod contracts {
         assert_keys(&value["entries"][0], &["created", "kind", "comments"]);
         assert_eq!(value["entries"][0]["comments"], "flapped overnight");
     }
+
+    // ---- per-kind `nbox_get` view shapes ---------------------------------
+    //
+    // Each pins the JSON key set a host reads for one object of that kind. The
+    // fixtures carry the optional scalars populated, so the FULL scalar set is
+    // pinned (catching a rename/drop). List sections that are skip-if-empty are
+    // left empty here (mounting one of each row is the dedicated-view tests'
+    // job) — a populated list section would just pin the row shape, already
+    // covered for prefix/ip by the prefix-view test above. Addresses are
+    // RFC-reserved; names are synthetic.
+
+    /// `nbox_get device` → `DeviceDetail`: a `summary` (the `DeviceView`) +
+    /// skip-if-empty list sections (interfaces/ip_addresses/cables/vlans/
+    /// services). A device with no fan-out pins just `summary` — the row shapes
+    /// are exercised by the dedicated interface/IP tests.
+    #[tokio::test]
+    async fn get_device_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/dcim/devices/",
+            json!({
+                "id": 7, "url": "u", "name": "edge01",
+                "status": {"value": "active", "label": "Active"},
+                "custom_fields": {}
+            }),
+        )
+        .await;
+        for ep in [
+            "/api/dcim/interfaces/",
+            "/api/ipam/ip-addresses/",
+            "/api/ipam/services/",
+        ] {
+            mount_empty(&mock, ep).await;
+        }
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::Device, "edge01")))
+            .await
+            .expect("device lookup");
+        assert_keys(&value, &["id", "name", "status"]);
+        assert_eq!(value["name"], "edge01");
+    }
+
+    /// `nbox_get ip` → `IpView`: address + the optional parent-prefix/assigned/
+    /// scope scalars. `parent_prefix` is populated here (the most-specific
+    /// containing prefix) so it's pinned too.
+    #[tokio::test]
+    async fn get_ip_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/ipam/ip-addresses/",
+            json!({
+                "id": 9, "url": "u", "address": "10.0.0.1/24",
+                "status": {"value": "active", "label": "Active"},
+                "custom_fields": {}
+            }),
+        )
+        .await;
+        // most-specific containing prefix → parent_prefix populated.
+        mount_one(
+            &mock,
+            "/api/ipam/prefixes/",
+            json!({"id": 5, "url": "u", "prefix": "10.0.0.0/24"}),
+        )
+        .await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::Ip, "10.0.0.1")))
+            .await
+            .expect("ip lookup");
+        assert_keys(&value, &["address", "status", "parent_prefix"]);
+        assert_eq!(value["address"], "10.0.0.1/24");
+        assert_eq!(value["parent_prefix"], "10.0.0.0/24");
+    }
+
+    /// `nbox_get vlan` → `VlanView`: vid + name + the scope/role scalars. The
+    /// `prefixes` list is always present (not skip-if-empty).
+    #[tokio::test]
+    async fn get_vlan_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/ipam/vlans/",
+            json!({
+                "id": 4, "url": "u", "vid": 208, "name": "mgmt",
+                "status": {"value": "active", "label": "Active"},
+                "custom_fields": {}
+            }),
+        )
+        .await;
+        // vlan_prefixes fan-out (empty here).
+        mount_empty(&mock, "/api/ipam/prefixes/").await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::Vlan, "208")))
+            .await
+            .expect("vlan lookup");
+        assert_keys(&value, &["vid", "name", "status", "prefixes"]);
+        assert_eq!(value["vid"], 208);
+    }
+
+    /// `nbox_get site` → `SiteView`: id + name + slug (mandatory) + the optional
+    /// status/region/group/tenant scalars.
+    #[tokio::test]
+    async fn get_site_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/dcim/sites/",
+            json!({
+                "id": 1, "url": "u", "name": "iad1", "slug": "iad1",
+                "status": {"value": "active", "label": "Active"},
+                "custom_fields": {}
+            }),
+        )
+        .await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::Site, "iad1")))
+            .await
+            .expect("site lookup");
+        assert_keys(&value, &["id", "name", "slug", "status"]);
+        assert_eq!(value["name"], "iad1");
+    }
+
+    /// `nbox_get rack` → `RackView`: id + name + the optional site/status/
+    /// role/tenant scalars.
+    #[tokio::test]
+    async fn get_rack_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/dcim/racks/",
+            json!({
+                "id": 3, "url": "u", "name": "R1",
+                "status": {"value": "active", "label": "Active"},
+                "custom_fields": {}
+            }),
+        )
+        .await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::Rack, "R1")))
+            .await
+            .expect("rack lookup");
+        assert_keys(&value, &["id", "name", "status"]);
+    }
+
+    /// `nbox_get circuit` → `CircuitView`: cid + the optional provider/type/
+    /// status scalars + the skip-if-empty `terminations` list.
+    #[tokio::test]
+    async fn get_circuit_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/circuits/circuits/",
+            json!({
+                "id": 2, "url": "u", "cid": "C-100",
+                "status": {"value": "active", "label": "Active"},
+                "custom_fields": {}
+            }),
+        )
+        .await;
+        // terminations fan-out (empty here).
+        mount_empty(&mock, "/api/circuits/circuit-terminations/").await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::Circuit, "C-100")))
+            .await
+            .expect("circuit lookup");
+        assert_keys(&value, &["cid", "status"]);
+        assert_eq!(value["cid"], "C-100");
+    }
+
+    /// `nbox_get aggregate` → `AggregateView`: prefix + the optional rir/tenant
+    /// scalars.
+    #[tokio::test]
+    async fn get_aggregate_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/ipam/aggregates/",
+            json!({
+                "id": 1, "url": "u", "prefix": "10.0.0.0/8",
+                "custom_fields": {}
+            }),
+        )
+        .await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::Aggregate, "10.0.0.0/8")))
+            .await
+            .expect("aggregate lookup");
+        assert_keys(&value, &["prefix"]);
+        assert_eq!(value["prefix"], "10.0.0.0/8");
+    }
+
+    /// `nbox_get asn` → `AsnView`: asn (the integer, not an id) + the optional
+    /// rir/tenant scalars.
+    #[tokio::test]
+    async fn get_asn_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/ipam/asns/",
+            json!({
+                "id": 1, "url": "u", "asn": 65000,
+                "custom_fields": {}
+            }),
+        )
+        .await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::Asn, "65000")))
+            .await
+            .expect("asn lookup");
+        assert_keys(&value, &["asn"]);
+        assert_eq!(value["asn"], 65000);
+    }
+
+    /// `nbox_get ip_range` → `IpRangeView`: start/end (mandatory) + the optional
+    /// size/status/vrf scalars.
+    #[tokio::test]
+    async fn get_ip_range_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/ipam/ip-ranges/",
+            json!({
+                "id": 1, "url": "u", "start_address": "10.0.0.10",
+                "end_address": "10.0.0.20", "size": 11,
+                "custom_fields": {}
+            }),
+        )
+        .await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::IpRange, "10.0.0.10")))
+            .await
+            .expect("ip-range lookup");
+        assert_keys(&value, &["start_address", "end_address", "size"]);
+        assert_eq!(value["size"], 11);
+    }
+
+    /// `nbox_get tenant` → `TenantView`: id + name + slug + the optional
+    /// description/group scalars.
+    #[tokio::test]
+    async fn get_tenant_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/tenancy/tenants/",
+            json!({
+                "id": 1, "url": "u", "name": "Engineering", "slug": "eng",
+                "custom_fields": {}
+            }),
+        )
+        .await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::Tenant, "eng")))
+            .await
+            .expect("tenant lookup");
+        assert_keys(&value, &["id", "name", "slug"]);
+        assert_eq!(value["slug"], "eng");
+    }
+
+    /// `nbox_get contact` → `ContactView`: id + name + the optional title/email/
+    /// group scalars.
+    #[tokio::test]
+    async fn get_contact_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/tenancy/contacts/",
+            json!({
+                "id": 1, "url": "u", "name": "Jane Q.",
+                "custom_fields": {}
+            }),
+        )
+        .await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::Contact, "Jane Q.")))
+            .await
+            .expect("contact lookup");
+        assert_keys(&value, &["id", "name"]);
+    }
+
+    /// `nbox_get provider` → `ProviderView`: id + name + slug + the skip-if-empty
+    /// `asns`/`accounts` lists.
+    #[tokio::test]
+    async fn get_provider_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/circuits/providers/",
+            json!({
+                "id": 1, "url": "u", "name": "Acme", "slug": "acme",
+                "custom_fields": {}
+            }),
+        )
+        .await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::Provider, "acme")))
+            .await
+            .expect("provider lookup");
+        assert_keys(&value, &["id", "name", "slug"]);
+        assert_eq!(value["slug"], "acme");
+    }
+
+    /// `nbox_get vm` → `VmView`: id + name + the optional status/cluster/tenant/
+    /// primary_ip scalars.
+    #[tokio::test]
+    async fn get_vm_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/virtualization/virtual-machines/",
+            json!({
+                "id": 1, "url": "u", "name": "vm01",
+                "status": {"value": "active", "label": "Active"},
+                "custom_fields": {}
+            }),
+        )
+        .await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::Vm, "vm01")))
+            .await
+            .expect("vm lookup");
+        assert_keys(&value, &["id", "name", "status"]);
+    }
+
+    /// `nbox_get cluster` → `ClusterView`: id + name + the optional type/group/
+    /// status/scope scalars.
+    #[tokio::test]
+    async fn get_cluster_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/virtualization/clusters/",
+            json!({
+                "id": 1, "url": "u", "name": "prod-cluster",
+                "custom_fields": {}
+            }),
+        )
+        .await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::Cluster, "prod-cluster")))
+            .await
+            .expect("cluster lookup");
+        assert_keys(&value, &["id", "name"]);
+    }
+
+    /// `nbox_get vrf` → `VrfDetail`: a `summary` (`VrfView`) + the always-
+    /// present `prefixes`/`addresses` lists + `prefix_total`/`address_total`.
+    /// The REST backend (default profile — no GraphQL configured) fetches the
+    /// two child collections; both empty here pins `summary` + the totals.
+    #[tokio::test]
+    async fn get_vrf_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/ipam/vrfs/",
+            json!({
+                "id": 5, "url": "u", "name": "customer-prod", "rd": "65000:100",
+                "custom_fields": {}
+            }),
+        )
+        .await;
+        // REST child fetches (default backend — no GraphQL configured).
+        for ep in ["/api/ipam/prefixes/", "/api/ipam/ip-addresses/"] {
+            mount_empty(&mock, ep).await;
+        }
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::Vrf, "65000:100")))
+            .await
+            .expect("vrf lookup");
+        assert_keys(
+            &value,
+            &[
+                "summary",
+                "prefixes",
+                "addresses",
+                "prefix_total",
+                "address_total",
+            ],
+        );
+        assert_keys(&value["summary"], &["id", "name", "rd"]);
+        assert_eq!(value["summary"]["rd"], "65000:100");
+    }
+
+    /// `nbox_get route_target` → `RouteTargetDetail`: a `summary`
+    /// (`RouteTargetView`) + the skip-if-empty `importing_vrfs`/`exporting_vrfs`
+    /// lists. The REST backend fetches the two VRF collections (import/export
+    /// targets); both empty here pins `summary` only.
+    #[tokio::test]
+    async fn get_route_target_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/ipam/route-targets/",
+            json!({
+                "id": 5, "url": "u", "name": "65000:100",
+                "custom_fields": {}
+            }),
+        )
+        .await;
+        // REST VRF fan-out (import/export targets) — empty here.
+        mount_empty(&mock, "/api/ipam/vrfs/").await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::RouteTarget, "65000:100")))
+            .await
+            .expect("route-target lookup");
+        assert_keys(&value, &["summary", "importing_vrfs", "exporting_vrfs"]);
+        assert_keys(&value["summary"], &["id", "name"]);
+        assert_eq!(value["summary"]["name"], "65000:100");
+    }
+
+    /// `nbox_get mac` → `MacView`: id + mac_address (mandatory) + the optional
+    /// assigned_object_type/assigned/device scalars. The resolver reverse-
+    /// resolves the MAC to its carrying interface(s); the first match's view is
+    /// pinned here.
+    #[tokio::test]
+    async fn get_mac_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/dcim/mac-addresses/",
+            json!({
+                "id": 1, "url": "u", "mac_address": "aa:bb:cc:dd:ee:ff",
+                "assigned_object_type": "dcim.interface",
+                "assigned_object": {"id": 42, "name": "xe-0/0/0",
+                                     "device": {"id": 7, "name": "edge01"}},
+                "custom_fields": {}
+            }),
+        )
+        .await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::Mac, "aa:bb:cc:dd:ee:ff")))
+            .await
+            .expect("mac lookup");
+        assert_keys(
+            &value,
+            &[
+                "id",
+                "mac_address",
+                "assigned_object_type",
+                "assigned",
+                "device",
+            ],
+        );
+        assert_eq!(value["mac_address"], "aa:bb:cc:dd:ee:ff");
+    }
 }

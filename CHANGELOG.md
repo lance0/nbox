@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MCP response contracts: every `nbox_get` kind view pinned.** The JSON shape
+  each `nbox_get` kind returns is now pinned by a response-contract test
+  (`src/mcp/tests.rs::contracts`): a removed/renamed field, or a new one not
+  listed, fails the test. Covers all 18 kinds (device, ip, prefix, vlan, site,
+  rack, circuit, aggregate, asn, ip_range, tenant, contact, provider, vm,
+  cluster, vrf, route_target, mac, interface) plus the already-pinned
+  status/search/journal/tags/tagged/available/cache-clear reports. Closes the
+  remaining contract gap; zero runtime change.
+
 - **Interface journal + `nbox_get interface` (MCP).** Interfaces are now a
   first-class kind in the journal resolver and `nbox_get`. `nbox journal
   interface <device>/<name>` surfaces an interface's operator notes like every

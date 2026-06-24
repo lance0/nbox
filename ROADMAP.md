@@ -302,11 +302,16 @@ reviewable PRs that lock contracts and reduce future change cost.
 - ☑ **Broaden output goldens** _(PR #16, #17)_ — file-backed JSON contracts for `ip`, `prefix`, `vlan`,
   `interface`, `site`, and `journal` (a journal-bearing response), via the shared `assert_golden` harness.
   The next best guardrail for agents and scripts.
-- ☐ **CSV/output-mode contracts** — pin CSV shape for list/search output, `--cols` ordering, empty
-  arrays, and the intentional “single objects are not CSV” usage error.
-- ☐ **MCP response contracts** — stable JSON shapes for `nbox_status`, `nbox_search`, `nbox_get`,
-  resource reads, and MCP error mapping (`invalid_params` vs internal errors). Keep these against
-  direct server calls, not brittle protocol snapshots.
+- ☑ **CSV/output-mode contracts** — CSV shape for list/search output, `--cols` ordering, empty
+  arrays, and the intentional “single objects are not CSV” usage error are all pinned in
+  `tests/csv_contracts_tests.rs` (cols ordering, unknown cols, empty arrays, single-object
+  rejection at render/emit/binary-exit-2, comma quoting).
+- ☑ **MCP response contracts** — stable JSON shapes for `nbox_status`, `nbox_search`, `nbox_get`
+  (every kind: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant,
+  contact, provider, vm, cluster, vrf, route_target, mac, interface), `nbox_get_interface`,
+  `nbox_journal`, `nbox_list_tags`, `nbox_tagged`, `nbox_next_ip`/`nbox_next_prefix`, resource
+  reads, and the MCP error mapping (`invalid_params` vs internal errors) are all pinned against
+  direct server/tool calls in `src/mcp/tests.rs::contracts` (not brittle protocol snapshots).
 - ☐ **Fixture migration pass** — move repeated inline NetBox JSON in `search_tests`, `query_tests`,
   `scope_tests`, MCP tests, and custom-field tests onto `tests/support` builders as those files are
   next touched.
