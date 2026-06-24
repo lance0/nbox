@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Detail-section cap normalized to 200.** The three detail-view section caps
+  (`DEVICE_CAP` 200, `SECTION_CAP` 50, `VRF_SECTION_CAP` 200) collapsed into a
+  single `DETAIL_SECTION_CAP = 200` (`src/domain/detail.rs`). `SECTION_CAP = 50`
+  was an unprincipled outlier — a VRF's addresses showed 200 but a prefix's child
+  IPs (the same kind of data) showed 50, a 4× gap that truncated common `/24`
+  prefixes (254 hosts) at 50 rows. Prefix/VLAN child rows now rise to 200 (covering
+  the vast majority) and the three-names-one-concept inconsistency ends. The cap
+  is a rendering concern (rows in one detail section), so it's named at that
+  layer, not the dcim/ipam domain layer. `BROWSE_CAP = 1000` (whole-kind browse,
+  a different concept) is unchanged. A full `/24` still truncates at 200; closing
+  that fully is a targeted `--all`/fetch-all toggle, not a cap bump.
+
 ## [0.12.0] - 2026-06-24
 
 ### Added
