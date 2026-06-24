@@ -73,12 +73,17 @@ pub enum GetKind {
     Cluster,
     Vrf,
     RouteTarget,
+    /// A MAC address (NetBox 4.2+). Reverse-resolves a MAC to the interface(s)/
+    /// device(s) that carry it. The `ref` is the MAC string (any common form is
+    /// normalized); a non-MAC is `invalid_params`, >1 interface carrying it is
+    /// ambiguous.
+    Mac,
 }
 
 impl GetKind {
     /// Every kind, in the order the docs and `nbox://{kind}/{ref}` template list
     /// them — the same set `nbox_get` accepts.
-    const ALL: [GetKind; 17] = [
+    const ALL: [GetKind; 18] = [
         GetKind::Device,
         GetKind::Ip,
         GetKind::Prefix,
@@ -96,6 +101,7 @@ impl GetKind {
         GetKind::Cluster,
         GetKind::Vrf,
         GetKind::RouteTarget,
+        GetKind::Mac,
     ];
 
     /// The `snake_case` slug used in `nbox://{kind}/{ref}` URIs and the `kind`
@@ -119,6 +125,7 @@ impl GetKind {
             GetKind::Cluster => "cluster",
             GetKind::Vrf => "vrf",
             GetKind::RouteTarget => "route_target",
+            GetKind::Mac => "mac",
         }
     }
 
@@ -720,6 +727,14 @@ impl NboxMcp {
             GetKind::RouteTarget => {
                 serde_json::to_value(detail::route_target_detail_by_ref(c, r, &not_found).await?)?
             }
+            GetKind::Mac => {
+                let mac = crate::mac::normalize(r).ok_or_else(|| {
+                    NboxError::Usage(format!(
+                        "invalid MAC address \"{r}\" — try aa:bb:cc:dd:ee:ff"
+                    ))
+                })?;
+                serde_json::to_value(detail::mac_view_by_ref(c, &mac, r, &not_found).await?)?
+            }
         };
         Ok(Json(value))
     }
@@ -789,6 +804,7 @@ impl NboxMcp {
             GetKind::Cluster => "cluster",
             GetKind::Vrf => "vrf",
             GetKind::RouteTarget => "route-target",
+            GetKind::Mac => "mac",
         };
         crate::resolve_content_type_id(&self.client, cli_kind, value).await
     }

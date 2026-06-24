@@ -18,6 +18,7 @@ pub mod interface_view;
 pub mod ip_range_view;
 pub mod ip_view;
 pub mod journal_view;
+pub mod mac_view;
 pub mod prefix_view;
 pub mod provider_view;
 pub mod rack_view;

@@ -3991,6 +3991,7 @@ fn object_web_url(base_url: &str, kind: ObjectKind, id: u64) -> String {
         ObjectKind::Vrf => format!("ipam/vrfs/{id}/"),
         ObjectKind::RouteTarget => format!("ipam/route-targets/{id}/"),
         ObjectKind::Interface => format!("dcim/interfaces/{id}/"),
+        ObjectKind::Mac => format!("dcim/mac-addresses/{id}/"),
     };
 
     let mut base = base_url.to_string();

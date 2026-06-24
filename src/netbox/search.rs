@@ -60,6 +60,12 @@ pub enum ObjectKind {
     /// (its attributes + cable-path trace), addressed by numeric id. Kept last to
     /// preserve the existing variants' order.
     Interface,
+    /// A MAC address (NetBox 4.2+). A reverse-lookup kind, not a search/browse
+    /// kind: `nbox mac <addr>` resolves a MAC to the interface(s)/device(s)
+    /// that carry it (MACs aren't substring-meaningful, so there's no browse
+    /// filter and no search fan-out). Addressed by the MAC string. Kept last to
+    /// preserve the existing variants' order.
+    Mac,
 }
 
 impl ObjectKind {
@@ -84,6 +90,7 @@ impl ObjectKind {
             ObjectKind::Vrf => "vrf",
             ObjectKind::RouteTarget => "route-target",
             ObjectKind::Interface => "interface",
+            ObjectKind::Mac => "mac",
         }
     }
 
@@ -116,6 +123,8 @@ impl ObjectKind {
             // Not Nav-browsable (no global interface list) — opened only from a
             // device's interfaces/cables tabs; labelled for completeness.
             ObjectKind::Interface => "DEVICE",
+            // Not Nav-browsable — a reverse-lookup kind; labelled for completeness.
+            ObjectKind::Mac => "ASSIGNED",
         }
     }
 }

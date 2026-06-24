@@ -328,6 +328,15 @@ pub enum Command {
         value: String,
     },
 
+    /// Show a MAC address — reverse-resolve it to the interface(s)/device(s)
+    /// that carry it (NetBox 4.2+).
+    Mac {
+        /// The MAC address. Any common form is accepted and normalized
+        /// (`aa:bb:cc:dd:ee:ff`, `AABB.CCDD.EEFF`, `aa-bb-…`, `aabbccddeeff`,
+        /// a trailing `/48` is stripped).
+        value: String,
+    },
+
     /// Show a VLAN by VID or name.
     Vlan {
         /// VLAN VID or name.

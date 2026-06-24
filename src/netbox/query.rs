@@ -8,7 +8,9 @@ use crate::error::NboxError;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
 use crate::netbox::models::circuits::{Circuit, Provider};
-use crate::netbox::models::dcim::{Device, Interface, Location, Rack, Region, Site, SiteGroup};
+use crate::netbox::models::dcim::{
+    Device, Interface, Location, MacAddress, Rack, Region, Site, SiteGroup,
+};
 use crate::netbox::models::extras::{JournalEntry, TagInfo};
 use crate::netbox::models::ipam::{
     Aggregate, Asn, AvailableIp, AvailablePrefix, IpAddress, IpRange, Prefix, RouteTarget, Service,
@@ -200,6 +202,21 @@ impl NetBoxClient {
             .list(
                 Endpoint::IpAddresses,
                 vec![("address", address.to_string())],
+            )
+            .await?;
+        Ok(page.results)
+    }
+
+    /// All MAC addresses matching `mac` (NetBox 4.2+). MACs aren't enforced
+    /// globally unique — the same MAC can appear on several interfaces — so this
+    /// returns the full candidate set; the resolver surfaces >1 as ambiguous
+    /// (exit 5) rather than silently picking one. `mac` should be normalized to
+    /// NetBox's canonical form first (see `normalize_mac`).
+    pub async fn mac_candidates(&self, mac: &str) -> Result<Vec<MacAddress>> {
+        let page: Page<MacAddress> = self
+            .list(
+                Endpoint::MacAddresses,
+                vec![("mac_address", mac.to_string())],
             )
             .await?;
         Ok(page.results)

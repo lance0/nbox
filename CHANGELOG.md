@@ -9,6 +9,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MAC reverse-lookup (`nbox mac <addr>`).** A new first-class kind (NetBox
+  4.2+) that reverse-resolves a MAC address to the interface(s)/device(s) that
+  carry it — a top operator/agent query nbox couldn't answer. Any common MAC
+  form is accepted and normalized (`aa:bb:cc:dd:ee:ff`, `AABB.CCDD.EEFF`,
+  `aa-bb-…`, `aabbccddeeff`, a trailing `/48` is stripped); a non-MAC is a usage
+  error (exit 2) with no NetBox round-trip. MACs aren't enforced globally unique,
+  so several carrying interfaces surface as ambiguous (exit 5) with the candidate
+  list, not a silent first-pick. Available on the CLI (`nbox mac`), via MCP
+  (`nbox_get` kind `mac` / `nbox://mac/<addr>`), and `nbox open mac/<addr>`.
+  Polymorphic assignment (physical interface *or* VM interface) is rendered as
+  `"<parent> <interface>"`.
+
 - **CIDR-containment filter for prefix/IP browse.** From the Nav rail, `/` on a
   prefix browse now filters **server-side** by network containment (`within_include`
   — the prefix + everything inside it) and on an IP-address browse by `parent`

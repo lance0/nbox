@@ -137,3 +137,66 @@ async fn generic_api_error_exits_1_and_keeps_stdout_clean() {
 
     assert_error_contract(&output, 1, "NetBox API request failed");
 }
+
+/// Run `nbox mac <value>` against a mock NetBox at `config`.
+fn run_mac(config: &tempfile::NamedTempFile, value: &str) -> CommandOutput {
+    run_nbox([
+        "--config".as_ref(),
+        config.path().as_os_str(),
+        "--no-tui".as_ref(),
+        "mac".as_ref(),
+        value.as_ref(),
+    ])
+}
+
+#[tokio::test]
+async fn mac_invalid_input_exits_2_without_a_netbox_round_trip() {
+    // A non-MAC is a usage error (exit 2), normalized locally — no request is
+    // sent. (No mock is mounted, so a round trip would 404 and exit 1 here.)
+    let config = temp_config("http://unused.example/");
+    let output = run_mac(&config, "not-a-mac");
+    assert_error_contract(&output, 2, "invalid MAC address");
+}
+
+#[tokio::test]
+async fn mac_not_found_exits_4_and_keeps_stdout_clean() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/mac-addresses/"))
+        .and(query_param("mac_address", "aa:bb:cc:dd:ee:ff"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(Vec::new())))
+        .mount(&server)
+        .await;
+
+    let config = temp_config(&server.uri());
+    // Any accepted form normalizes to the same canonical MAC before the request.
+    let output = run_mac(&config, "AABB.CCDD.EEFF");
+    assert_error_contract(&output, 4, "no MAC matched");
+}
+
+#[tokio::test]
+async fn mac_ambiguous_exits_5_and_lists_the_interfaces() {
+    // The same MAC on two interfaces → ambiguous (exit 5), naming both so the
+    // operator can disambiguate.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/mac-addresses/"))
+        .and(query_param("mac_address", "aa:bb:cc:dd:ee:ff"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            json!({"id": 7, "url": "u", "mac_address": "aa:bb:cc:dd:ee:ff",
+                  "assigned_object": {"display": "xe-0/0/1", "device": {"display": "edge01"}}}),
+            json!({"id": 8, "url": "u", "mac_address": "aa:bb:cc:dd:ee:ff",
+                  "assigned_object": {"display": "xe-0/0/2", "device": {"display": "edge01"}}}),
+        ])))
+        .mount(&server)
+        .await;
+
+    let config = temp_config(&server.uri());
+    let output = run_mac(&config, "aa:bb:cc:dd:ee:ff");
+    assert_error_contract(&output, 5, "MAC \"aa:bb:cc:dd:ee:ff\" is ambiguous");
+    assert!(
+        output.stderr.contains("edge01 xe-0/0/1") && output.stderr.contains("edge01 xe-0/0/2"),
+        "stderr should name the carrying interfaces: {:?}",
+        output.stderr
+    );
+}

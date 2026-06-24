@@ -25,6 +25,7 @@ use crate::domain::interface_view::InterfaceView;
 use crate::domain::ip_range_view::IpRangeView;
 use crate::domain::ip_view::{IpView, assigned_label, most_specific};
 use crate::domain::journal_view::{JournalEntryRow, JournalView};
+use crate::domain::mac_view::MacView;
 use crate::domain::prefix_view::PrefixView;
 use crate::domain::provider_view::ProviderView;
 use crate::domain::rack_view::RackView;
@@ -39,7 +40,7 @@ use crate::netbox::client::NetBoxClient;
 use crate::netbox::endpoints::Endpoint;
 use crate::netbox::models::circuits::{Circuit, CircuitTermination, Provider};
 use crate::netbox::models::common::BriefObject;
-use crate::netbox::models::dcim::{Device, Interface, Rack, Site};
+use crate::netbox::models::dcim::{Device, Interface, MacAddress, Rack, Site};
 use crate::netbox::models::ipam::{
     Aggregate, Asn, IpAddress, IpRange, Prefix, RouteTarget, Vlan, VlanGroup, Vrf,
 };
@@ -673,6 +674,33 @@ pub async fn asn_view_by_ref(
         .await?
         .ok_or_else(|| not_found("ASN", value))?;
     Ok(AsnView::from_model(asn))
+}
+
+/// `mac <addr>`: reverse-resolve a MAC to its assignment. MACs aren't enforced
+/// globally unique (the same MAC can appear on several interfaces), so >1
+/// candidate surfaces as `Ambiguous` (exit 5) with the candidate list — the
+/// caller normalizes the MAC before passing it in. Shared by CLI/MCP.
+pub async fn mac_view_by_ref(
+    client: &NetBoxClient,
+    mac: &str,
+    value: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<MacView> {
+    let candidates = client.mac_candidates(mac).await?;
+    let m = resolve_unique("MAC", value, candidates, label_mac, not_found)?;
+    Ok(MacView::from_model(m))
+}
+
+/// A MAC candidate's one-line label for the ambiguous-match list: the MAC plus
+/// its assignment (e.g. `aa:…:ff → edge01 xe-0/0/1`), so an ambiguous MAC names
+/// the competing interfaces.
+fn label_mac(m: &MacAddress) -> String {
+    let assigned = m
+        .assigned_object
+        .as_ref()
+        .and_then(crate::domain::mac_view::assigned_label)
+        .unwrap_or_else(|| "unassigned".to_string());
+    format!("{} → {}", m.mac_address, assigned)
 }
 
 /// `ip-range <start|id>`: resolve an IP range and build its view. Shared by CLI/MCP.
@@ -1849,6 +1877,13 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             // link); it's reached only by id, from a device's interfaces/cables tab.
             return load_interface_detail_view(client, id).await;
         }
+        ObjectKind::Mac => {
+            let m: MacAddress = client
+                .get(&format!("/api/dcim/mac-addresses/{id}/"), &[])
+                .await?;
+            let v = MacView::from_model(m);
+            (format!("mac {}", v.mac_address), v.to_key_values().render())
+        }
     };
     Ok(DetailView::new(kind, id, title, body)
         .with_tabs(tabs)
@@ -2115,6 +2150,21 @@ pub async fn load_detail_by_ref(
                 .parse()
                 .map_err(|_| tui_not_found("interface", value))?;
             return load_interface_detail_view(client, id).await;
+        }
+        ObjectKind::Mac => {
+            // A MAC is normalized before lookup; a non-MAC input is a usage error
+            // (not a NetBox round-trip). Resolve → Ambiguous (exit 5) if several
+            // interfaces carry it, else the flat MAC view.
+            let mac = crate::mac::normalize(value).ok_or_else(|| tui_not_found("MAC", value))?;
+            let candidates = client.mac_candidates(&mac).await?;
+            let m = resolve_unique("MAC", value, candidates, label_mac, &tui_not_found)?;
+            let id = m.id;
+            let v = MacView::from_model(m);
+            (
+                id,
+                format!("mac {}", v.mac_address),
+                v.to_key_values().render(),
+            )
         }
     };
     Ok(DetailView::new(kind, id, title, body)
