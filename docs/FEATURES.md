@@ -126,7 +126,10 @@ Twelve themes (`NO_COLOR` honored); `?`/`F1` shows the full keymap.
 subprocess and speaks JSON-RPC over stdin/stdout; the tools reuse the CLI's query
 + view layer and return the same JSON view models. JSON-RPC on stdout, logs on
 stderr; URL/token from the active profile (same `-p`/`--config` flags). All tools
-are annotated read-only.
+are annotated read-only. `nbox serve --print-config` prints the paste-ready
+`mcpServers` JSON (absolute binary path, echoed `--profile`/`--config`, placeholder
+token) and exits — no server start, no connection; see docs/MCP.md for the per-host
+config-file path.
 
 | Tool | What |
 | ---- | ---- |

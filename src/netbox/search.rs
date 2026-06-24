@@ -330,6 +330,50 @@ fn vlan_subtitle(v: &Vlan) -> Option<String> {
 
 /// Build the `q=` query plus any applicable filters for an endpoint, or `None`
 /// to skip the endpoint (an active filter it can't satisfy).
+/// The REST filter params each search endpoint accepts (alongside `q`).
+///
+/// Single source of truth for the search fan-out: every `search_*` branch passes
+/// its endpoint's slice here, so the supported-filter set can't drift from what
+/// the schema canary (``mod schema_canary`` below) validates against a pinned
+/// NetBox OpenAPI snapshot. The scope filters (`site`/`region`/`site_group`/
+/// `location`) are *not* here — they're resolved to an id once and applied
+/// out-of-band per endpoint (`site_id`/`region_id`/… or `scope_type`+`scope_id`)
+/// by each branch, never as the raw `?site=` slug.
+///
+/// `tag`/`owner`/`owner_group` are common to most kinds; `status`/`tenant`/
+/// `role` vary. Returns an empty slice for endpoints that aren't part of the
+/// search fan-out (the canary skips those).
+fn search_supported(ep: Endpoint) -> &'static [&'static str] {
+    match ep {
+        Endpoint::Devices
+        | Endpoint::IpAddresses
+        | Endpoint::Vlans
+        | Endpoint::IpRanges
+        | Endpoint::VirtualMachines
+        | Endpoint::Racks => &["status", "tenant", "role", "tag", "owner", "owner_group"],
+        Endpoint::Sites | Endpoint::Circuits | Endpoint::VirtualCircuits => {
+            &["status", "tenant", "tag", "owner", "owner_group"]
+        }
+        Endpoint::Aggregates | Endpoint::Asns | Endpoint::Vrfs | Endpoint::RouteTargets => {
+            &["tenant", "tag", "owner", "owner_group"]
+        }
+        Endpoint::Tenants | Endpoint::Contacts | Endpoint::Providers => {
+            &["tag", "owner", "owner_group"]
+        }
+        // 4.6 kinds: rack-groups and vm-types carry no `tenant` filter in the
+        // OpenAPI schema (verified against 4.6.2). Declaring it here would send
+        // a `tenant=` NetBox silently ignores, returning the kind *unfiltered* —
+        // a silent over-broad result. The schema canary pins this.
+        Endpoint::RackGroups | Endpoint::VirtualMachineTypes => &["tag", "owner", "owner_group"],
+        // Prefixes and clusters apply scope out-of-band (scope_type+scope_id),
+        // so they pass a scope-stripped filters variant and a smaller in-band
+        // set (no owner/role — those aren't sent in-band on these branches).
+        Endpoint::Prefixes => &["status", "tenant", "role", "tag"],
+        Endpoint::Clusters => &["status", "tenant", "tag"],
+        _ => &[],
+    }
+}
+
 fn endpoint_params(
     q: &str,
     filters: &SearchFilters,
@@ -592,11 +636,7 @@ impl NetBoxClient {
             Some("dcim.location") => scope.map(|s| ("location_id", s.id)),
             _ => None,
         };
-        let Some(mut params) = endpoint_params(
-            q,
-            f,
-            &["status", "tenant", "role", "tag", "owner", "owner_group"],
-        ) else {
+        let Some(mut params) = endpoint_params(q, f, search_supported(Endpoint::Devices)) else {
             return Ok(Vec::new());
         };
         if let Some((key, id)) = device_scope {
@@ -633,9 +673,7 @@ impl NetBoxClient {
         if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(params) =
-            endpoint_params(q, f, &["status", "tenant", "tag", "owner", "owner_group"])
-        else {
+        let Some(params) = endpoint_params(q, f, search_supported(Endpoint::Sites)) else {
             return Ok(Vec::new());
         };
         let page: Page<Site> = self.list(Endpoint::Sites, params).await?;
@@ -665,11 +703,8 @@ impl NetBoxClient {
         if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(mut params) = endpoint_params(
-            q,
-            f,
-            &["status", "tenant", "role", "tag", "owner", "owner_group"],
-        ) else {
+        let Some(mut params) = endpoint_params(q, f, search_supported(Endpoint::IpAddresses))
+        else {
             return Ok(Vec::new());
         };
         // IPs carry a VRF: apply the resolved `--vrf` id as `vrf_id=`.
@@ -715,7 +750,7 @@ impl NetBoxClient {
             ..f.clone()
         };
         let Some(mut params) =
-            endpoint_params(q, &without_scope, &["status", "tenant", "role", "tag"])
+            endpoint_params(q, &without_scope, search_supported(Endpoint::Prefixes))
         else {
             return Ok(Vec::new());
         };
@@ -760,11 +795,7 @@ impl NetBoxClient {
         if skip_for_id_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(mut params) = endpoint_params(
-            q,
-            f,
-            &["status", "tenant", "role", "tag", "owner", "owner_group"],
-        ) else {
+        let Some(mut params) = endpoint_params(q, f, search_supported(Endpoint::Vlans)) else {
             return Ok(Vec::new());
         };
         // Only a `dcim.site` scope reaches here (the id-based scopes skipped above):
@@ -805,9 +836,7 @@ impl NetBoxClient {
         if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(params) =
-            endpoint_params(q, f, &["status", "tenant", "tag", "owner", "owner_group"])
-        else {
+        let Some(params) = endpoint_params(q, f, search_supported(Endpoint::Circuits)) else {
             return Ok(Vec::new());
         };
         let page: Page<Circuit> = self.list(Endpoint::Circuits, params).await?;
@@ -839,8 +868,7 @@ impl NetBoxClient {
         if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(params) =
-            endpoint_params(q, f, &["status", "tenant", "tag", "owner", "owner_group"])
+        let Some(params) = endpoint_params(q, f, search_supported(Endpoint::VirtualCircuits))
         else {
             return Ok(Vec::new());
         };
@@ -873,7 +901,7 @@ impl NetBoxClient {
         if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(params) = endpoint_params(q, f, &["tenant", "tag", "owner", "owner_group"]) else {
+        let Some(params) = endpoint_params(q, f, search_supported(Endpoint::Aggregates)) else {
             return Ok(Vec::new());
         };
         let page: Page<Aggregate> = self.list(Endpoint::Aggregates, params).await?;
@@ -905,8 +933,7 @@ impl NetBoxClient {
         if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(mut params) = endpoint_params(q, f, &["tenant", "tag", "owner", "owner_group"])
-        else {
+        let Some(mut params) = endpoint_params(q, f, search_supported(Endpoint::Asns)) else {
             return Ok(Vec::new());
         };
         // A bare AS number won't be matched by the `q` quick-search (it scans
@@ -949,11 +976,7 @@ impl NetBoxClient {
         if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(params) = endpoint_params(
-            q,
-            f,
-            &["status", "tenant", "role", "tag", "owner", "owner_group"],
-        ) else {
+        let Some(params) = endpoint_params(q, f, search_supported(Endpoint::IpRanges)) else {
             return Ok(Vec::new());
         };
         let page: Page<IpRange> = self.list(Endpoint::IpRanges, params).await?;
@@ -991,7 +1014,7 @@ impl NetBoxClient {
         }
         // The tenant endpoint accepts only `q` + `tag` from our filter set
         // (no status/tenant/role), so an unsupported active filter skips it.
-        let Some(params) = endpoint_params(q, f, &["tag", "owner", "owner_group"]) else {
+        let Some(params) = endpoint_params(q, f, search_supported(Endpoint::Tenants)) else {
             return Ok(Vec::new());
         };
         let page: Page<Tenant> = self.list(Endpoint::Tenants, params).await?;
@@ -1024,7 +1047,7 @@ impl NetBoxClient {
             return Ok(Vec::new());
         }
         // Contacts accept only `q` + `tag` (no status/tenant/role).
-        let Some(params) = endpoint_params(q, f, &["tag", "owner", "owner_group"]) else {
+        let Some(params) = endpoint_params(q, f, search_supported(Endpoint::Contacts)) else {
             return Ok(Vec::new());
         };
         let page: Page<Contact> = self.list(Endpoint::Contacts, params).await?;
@@ -1058,7 +1081,7 @@ impl NetBoxClient {
             return Ok(Vec::new());
         }
         // Providers accept only `q` + `tag` (no status/tenant/role).
-        let Some(params) = endpoint_params(q, f, &["tag", "owner", "owner_group"]) else {
+        let Some(params) = endpoint_params(q, f, search_supported(Endpoint::Providers)) else {
             return Ok(Vec::new());
         };
         let page: Page<Provider> = self.list(Endpoint::Providers, params).await?;
@@ -1096,11 +1119,8 @@ impl NetBoxClient {
         if skip_for_id_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(mut params) = endpoint_params(
-            q,
-            f,
-            &["status", "tenant", "role", "tag", "owner", "owner_group"],
-        ) else {
+        let Some(mut params) = endpoint_params(q, f, search_supported(Endpoint::VirtualMachines))
+        else {
             return Ok(Vec::new());
         };
         // Only a `dcim.site` scope reaches here (the id-based scopes skipped above):
@@ -1138,7 +1158,8 @@ impl NetBoxClient {
         if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(params) = endpoint_params(q, f, &["tenant", "tag", "owner", "owner_group"]) else {
+        let Some(params) = endpoint_params(q, f, search_supported(Endpoint::VirtualMachineTypes))
+        else {
             return Ok(Vec::new());
         };
         // `virtual-machine-types/` is a NetBox 4.6+ endpoint. On an older
@@ -1190,7 +1211,8 @@ impl NetBoxClient {
         };
         // Clusters accept `status`/`tenant`/`tag` (no `role`); scope is applied
         // out-of-band below.
-        let Some(mut params) = endpoint_params(q, &without_scope, &["status", "tenant", "tag"])
+        let Some(mut params) =
+            endpoint_params(q, &without_scope, search_supported(Endpoint::Clusters))
         else {
             return Ok(Vec::new());
         };
@@ -1234,11 +1256,7 @@ impl NetBoxClient {
             Some("dcim.location") => scope.map(|s| ("location_id", s.id)),
             _ => None,
         };
-        let Some(mut params) = endpoint_params(
-            q,
-            f,
-            &["status", "tenant", "role", "tag", "owner", "owner_group"],
-        ) else {
+        let Some(mut params) = endpoint_params(q, f, search_supported(Endpoint::Racks)) else {
             return Ok(Vec::new());
         };
         if let Some((key, id)) = rack_scope {
@@ -1273,7 +1291,7 @@ impl NetBoxClient {
         if skip_for_any_scope(scope) {
             return Ok(Vec::new());
         }
-        let Some(params) = endpoint_params(q, f, &["tenant", "tag", "owner", "owner_group"]) else {
+        let Some(params) = endpoint_params(q, f, search_supported(Endpoint::RackGroups)) else {
             return Ok(Vec::new());
         };
         // `rack-groups/` is a NetBox 4.6+ endpoint; on an older release it 404s.
@@ -1315,7 +1333,7 @@ impl NetBoxClient {
         }
         // The VRF endpoint accepts `q` + `tenant` + `tag` from our filter set
         // (no status/role/site), so an unsupported active filter skips it.
-        let Some(params) = endpoint_params(q, f, &["tenant", "tag", "owner", "owner_group"]) else {
+        let Some(params) = endpoint_params(q, f, search_supported(Endpoint::Vrfs)) else {
             return Ok(Vec::new());
         };
         let page: Page<Vrf> = self.list(Endpoint::Vrfs, params).await?;
@@ -1350,7 +1368,7 @@ impl NetBoxClient {
         }
         // The route-target endpoint accepts `q` + `tenant` + `tag` (no
         // status/role/site), so an unsupported active filter skips it.
-        let Some(params) = endpoint_params(q, f, &["tenant", "tag", "owner", "owner_group"]) else {
+        let Some(params) = endpoint_params(q, f, search_supported(Endpoint::RouteTargets)) else {
             return Ok(Vec::new());
         };
         let page: Page<RouteTarget> = self.list(Endpoint::RouteTargets, params).await?;
@@ -1375,6 +1393,152 @@ impl NetBoxClient {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // --- Schema-drift canary -----------------------------------------------
+    //
+    // Pins the search fan-out's declared filter set (`search_supported`)
+    // against a compact NetBox OpenAPI snapshot embedded at compile time
+    // (`tests/schema/netbox-4.6.2.json`). Refresh the snapshot against a new
+    // NetBox release (scripts/gen_schema_snapshot.py from /api/schema/) and
+    // the canary immediately flags any endpoint/filter nbox uses that the new
+    // release dropped — the manual schema-curling this replaces.
+
+    /// `(Endpoint, api_path)` for every endpoint the search fan-out hits. The
+    /// path is the snapshot key and must match `Endpoint::path()` exactly.
+    const CANARY_EXPECTED: &[(Endpoint, &str)] = &[
+        (Endpoint::Devices, "/api/dcim/devices/"),
+        (Endpoint::Sites, "/api/dcim/sites/"),
+        (Endpoint::IpAddresses, "/api/ipam/ip-addresses/"),
+        (Endpoint::Prefixes, "/api/ipam/prefixes/"),
+        (Endpoint::Vlans, "/api/ipam/vlans/"),
+        (Endpoint::Circuits, "/api/circuits/circuits/"),
+        (Endpoint::VirtualCircuits, "/api/circuits/virtual-circuits/"),
+        (Endpoint::Aggregates, "/api/ipam/aggregates/"),
+        (Endpoint::Asns, "/api/ipam/asns/"),
+        (Endpoint::IpRanges, "/api/ipam/ip-ranges/"),
+        (Endpoint::Tenants, "/api/tenancy/tenants/"),
+        (Endpoint::Contacts, "/api/tenancy/contacts/"),
+        (Endpoint::Providers, "/api/circuits/providers/"),
+        (
+            Endpoint::VirtualMachines,
+            "/api/virtualization/virtual-machines/",
+        ),
+        (
+            Endpoint::VirtualMachineTypes,
+            "/api/virtualization/virtual-machine-types/",
+        ),
+        (Endpoint::Clusters, "/api/virtualization/clusters/"),
+        (Endpoint::Racks, "/api/dcim/racks/"),
+        (Endpoint::RackGroups, "/api/dcim/rack-groups/"),
+        (Endpoint::Vrfs, "/api/ipam/vrfs/"),
+        (Endpoint::RouteTargets, "/api/ipam/route-targets/"),
+    ];
+
+    #[test]
+    fn schema_canary_search_filters_match_pinned_openapi_snapshot() {
+        let snapshot: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/schema/netbox-4.6.2.json"))
+                .expect("pinned snapshot is valid JSON");
+
+        // The snapshot holds exactly the fan-out endpoints (plus `_meta`).
+        let mut snap_keys: std::collections::HashSet<String> = snapshot
+            .as_object()
+            .expect("snapshot is an object")
+            .keys()
+            .cloned()
+            .collect();
+        snap_keys.remove("_meta");
+        let expected_paths: std::collections::HashSet<String> =
+            CANARY_EXPECTED.iter().map(|(_, p)| p.to_string()).collect();
+        assert_eq!(
+            snap_keys, expected_paths,
+            "snapshot endpoints diverge from the fan-out set — refresh the snapshot \
+             (scripts/gen_schema_snapshot.py) and reconcile search_supported"
+        );
+
+        for (ep, path) in CANARY_EXPECTED {
+            // The snapshot is keyed by the canonical path, so a `path()` change
+            // shows up here too.
+            assert_eq!(
+                ep.path(),
+                *path,
+                "CANARY_EXPECTED path drifts from Endpoint::path()"
+            );
+            let supported = search_supported(*ep);
+            assert!(
+                !supported.is_empty(),
+                "{path}: search_supported({ep:?}) is empty — endpoint forgotten in the \
+                 table (it would silently send no filters)"
+            );
+            let params = snapshot[path]
+                .as_array()
+                .unwrap_or_else(|| panic!("{path}: snapshot entry is not a param list"));
+            let param_set: std::collections::HashSet<&str> =
+                params.iter().filter_map(|v| v.as_str()).collect();
+            for filter in supported {
+                assert!(
+                    param_set.contains(*filter),
+                    "{path}: search_supported declares `{filter}` but the pinned NetBox \
+                     snapshot has no such GET param on this endpoint — the server would \
+                     silently ignore it (over-broad results). Fix search_supported or \
+                     refresh the snapshot."
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn schema_canary_supported_table_matches_fanout_set_exactly() {
+        // Every endpoint in the fan-out set returns a non-empty slice, and every
+        // other Endpoint variant returns empty — so the table tracks the fan-out
+        // exactly. A new endpoint added to the fan-out but not to `search_supported`
+        // (or vice versa) fails here.
+        let all = [
+            Endpoint::Devices,
+            Endpoint::Interfaces,
+            Endpoint::FrontPorts,
+            Endpoint::Sites,
+            Endpoint::Regions,
+            Endpoint::SiteGroups,
+            Endpoint::Locations,
+            Endpoint::Racks,
+            Endpoint::RackGroups,
+            Endpoint::IpAddresses,
+            Endpoint::Prefixes,
+            Endpoint::Vlans,
+            Endpoint::VlanGroups,
+            Endpoint::Vrfs,
+            Endpoint::RouteTargets,
+            Endpoint::Tenants,
+            Endpoint::Contacts,
+            Endpoint::VirtualMachines,
+            Endpoint::VirtualMachineTypes,
+            Endpoint::Clusters,
+            Endpoint::Circuits,
+            Endpoint::CircuitTerminations,
+            Endpoint::VirtualCircuits,
+            Endpoint::VirtualCircuitTerminations,
+            Endpoint::Providers,
+            Endpoint::Aggregates,
+            Endpoint::Asns,
+            Endpoint::Services,
+            Endpoint::IpRanges,
+            Endpoint::JournalEntries,
+            Endpoint::Tags,
+            Endpoint::TaggedObjects,
+            Endpoint::MacAddresses,
+        ];
+        let in_fanout = |e: Endpoint| CANARY_EXPECTED.iter().any(|(x, _)| *x == e);
+        for e in all {
+            let nonempty = !search_supported(e).is_empty();
+            let in_set = in_fanout(e);
+            assert_eq!(
+                nonempty, in_set,
+                "{e:?}: search_supported non-empty={nonempty} but fan-out membership={in_set} \
+                 — keep the table in sync with the search fan-out",
+            );
+        }
+    }
 
     #[test]
     fn scoring_orders_exact_prefix_contains() {

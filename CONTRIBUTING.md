@@ -108,10 +108,31 @@ The wire→view split makes most additions mechanical. End to end:
 3. **View model** — add `src/domain/<kind>_view.rs` (flattened; owns plain-text
    rendering and `Serialize`), wired into `domain::detail`.
 4. **CLI** — add the subcommand in `src/cli.rs` and dispatch it in `src/lib.rs`.
-5. **Surfaces** — add it to `search` (if searchable), the TUI Nav rail, the MCP
-   `nbox_get` kinds, and the `open` / `journal` resolvers.
+5. **Surfaces** — add it to `search` (if searchable: register its filter set in
+   `search_supported()` and the `CANARY_EXPECTED` list in the `schema_canary`
+   test, then refresh `tests/schema/netbox-<ver>.json` via
+   `scripts/gen_schema_snapshot.py`), the TUI Nav rail, the MCP `nbox_get`
+   kinds, and the `open` / `journal` resolvers.
 6. **Tests + docs** — a `wiremock` test (plus a golden if it has a JSON shape) and
    the kind lists in README, docs/FEATURES.md, and AGENTS.md, kept in sync.
+
+### Schema-drift canary
+
+`src/netbox/search.rs` has a `schema_canary` test that pins the search fan-out's
+per-endpoint filter set (`search_supported()`) against a compact NetBox OpenAPI
+snapshot embedded at compile time (`tests/schema/netbox-<ver>.json`). If you add
+a search endpoint or change which filters a branch sends, update `search_supported`
++ `CANARY_EXPECTED` and refresh the snapshot; the canary fails with the exact
+endpoint + filter on any mismatch. To regenerate the snapshot against a new
+NetBox release:
+
+```bash
+scripts/gen_schema_snapshot.py /tmp/nb_schema.json -o tests/schema/netbox-4.7.0.json
+# or: scripts/gen_schema_snapshot.py https://netbox.example.com/api/schema/ --token NBT_xxx -o tests/schema/netbox-4.7.0.json
+```
+
+Then point the `include_str!` in the `schema_canary` test at the new file and run
+the canary — drift shows up as a failing test naming the culprit.
 
 For an output format or a config knob, start from `src/output/` and `src/config.rs`
 (the `set_ui_field` + format-preserving `save_ui_field`/`save_ui_fields` setters).

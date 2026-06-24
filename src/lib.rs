@@ -404,6 +404,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             oidc_jwks_url,
             allowed_host,
             rate_limit,
+            print_config,
         }) => {
             run_serve(
                 &ctx,
@@ -415,6 +416,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                     oidc_jwks_url,
                     allowed_host,
                     rate_limit,
+                    print_config,
                 },
             )
             .await
@@ -523,6 +525,8 @@ struct ServeFlags {
     allowed_host: Vec<String>,
     /// Per-caller requests-per-minute cap; `None` ⇒ fall back to config / off.
     rate_limit: Option<u32>,
+    /// `--print-config`: print the `mcpServers` snippet and exit (no connect).
+    print_config: bool,
 }
 
 /// `nbox serve` — run the read-only MCP server.
@@ -533,6 +537,17 @@ struct ServeFlags {
 /// resource-server mode (inbound IdP JWTs validated on `/mcp`, a routable bind
 /// allowed). Flags take precedence over the config file.
 async fn run_serve(ctx: &Ctx, flags: ServeFlags) -> Result<()> {
+    // `--print-config` is a pure helper: emit the `mcpServers` snippet and exit,
+    // before resolving any serve config or connecting to NetBox. Works with no
+    // config file and no token — run it anytime to get the paste-ready block.
+    if flags.print_config {
+        let cfg = build_mcp_config(ctx);
+        // stdout carries only the JSON (data); pretty-printed for pasteability.
+        serde_json::to_writer_pretty(std::io::stdout(), &cfg).context("writing MCP config")?;
+        println!();
+        return Ok(());
+    }
+
     // Resolve every serve input from flags first, then the config's `[serve]`
     // section. A missing/unreadable config is fine here — stdio needs none of it,
     // and `connect()` reports a missing config on its own.
@@ -594,6 +609,46 @@ async fn run_serve(ctx: &Ctx, flags: ServeFlags) -> Result<()> {
 /// Build the read cache for `nbox serve` from the `[cache]` config (best-effort —
 /// a missing/unreadable config yields the defaults: cache on, 30s) and the
 /// connected client (its URL + backend key the cache partition).
+/// Build the `mcpServers` JSON object most MCP hosts read, for `nbox serve
+/// --print-config`. Pure (no network, no config read beyond the globals already
+/// on `Ctx`), so it's unit-testable and works with no token/config. The
+/// `command` is the absolute path to this binary when discoverable, else the
+/// bare `nbox` (the operator puts it on `PATH` or swaps in an absolute path).
+/// `args` always begins with `serve` and echoes `--profile`/`--config` when set
+/// so the snippet reproduces the invocation. `env.NBOX_TOKEN` is a placeholder
+/// — the operator sets it (or removes the block if `nbox config init` holds the
+/// token). Never echoes a real token.
+fn build_mcp_config(ctx: &Ctx) -> serde_json::Value {
+    let command = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.to_str().map(str::to_string))
+        .unwrap_or_else(|| "nbox".to_string());
+
+    let mut args = vec!["serve".to_string()];
+    if let Some(profile) = &ctx.profile {
+        args.push("--profile".to_string());
+        args.push(profile.clone());
+    }
+    if let Some(config) = &ctx.config_path
+        && let Some(s) = config.to_str()
+    {
+        args.push("--config".to_string());
+        args.push(s.to_string());
+    }
+
+    serde_json::json!({
+        "mcpServers": {
+            "nbox": {
+                "command": command,
+                "args": args,
+                "env": {
+                    "NBOX_TOKEN": "<set-your-token>"
+                }
+            }
+        }
+    })
+}
+
 fn serve_cache(ctx: &Ctx, client: &NetBoxClient) -> cache::Cache {
     let settings = ctx
         .config_path
@@ -1761,15 +1816,68 @@ fn not_found(noun: &str, value: &str) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, CommandFactory, check_raw_method, error, first_subnet_of_length, init_logging,
-        no_tui_refusal, normalize_raw_path, not_found, parse_object_ref, resolve_content_type_id,
-        resolve_logging, run_man, tui_startup_status, wants_journal,
+        Cli, CommandFactory, build_mcp_config, check_raw_method, error, first_subnet_of_length,
+        init_logging, no_tui_refusal, normalize_raw_path, not_found, parse_object_ref,
+        resolve_content_type_id, resolve_logging, run_man, tui_startup_status, wants_journal,
     };
     use crate::domain::detail::resolve_unique;
     use crate::netbox::models::ipam::AvailablePrefix;
     use std::path::PathBuf;
 
     // --- `nbox raw` path normalization -------------------------------------
+
+    /// A minimal `Ctx` for `build_mcp_config` tests — only `profile`/`config_path`
+    /// matter to the builder; the rest are inert defaults.
+    fn ctx_for(profile: Option<&str>, config: Option<&str>) -> super::Ctx {
+        super::Ctx {
+            config_path: config.map(std::path::PathBuf::from),
+            profile: profile.map(str::to_string),
+            format: crate::output::Format::default(),
+            json_opts: crate::output::json::JsonOptions::default(),
+            no_tui: false,
+        }
+    }
+
+    #[test]
+    fn build_mcp_config_emits_stdio_recipe_with_placeholder_token() {
+        let cfg = build_mcp_config(&ctx_for(None, None));
+        let nbox = &cfg["mcpServers"]["nbox"];
+        // `command` is an absolute path to this binary (resolves in the test run).
+        let command = nbox["command"].as_str().expect("command present");
+        assert!(command.contains("nbox"), "command names nbox: {command}");
+        // `args` always begins with `serve`; no profile/config → just that.
+        assert_eq!(nbox["args"].as_array().unwrap()[0].as_str(), Some("serve"));
+        assert_eq!(nbox["args"].as_array().unwrap().len(), 1);
+        // The token is a placeholder, never a real value.
+        assert_eq!(nbox["env"]["NBOX_TOKEN"].as_str(), Some("<set-your-token>"));
+    }
+
+    #[test]
+    fn build_mcp_config_echoes_profile_and_config_flags() {
+        let cfg = build_mcp_config(&ctx_for(Some("work"), Some("/tmp/nb.toml")));
+        let args: Vec<String> = nbox_args(&cfg);
+        assert_eq!(
+            args,
+            vec!["serve", "--profile", "work", "--config", "/tmp/nb.toml"]
+        );
+    }
+
+    #[test]
+    fn build_mcp_config_omits_profile_when_unset() {
+        // Only `--config` set → no `--profile` pair in args.
+        let cfg = build_mcp_config(&ctx_for(None, Some("/tmp/nb.toml")));
+        let args: Vec<String> = nbox_args(&cfg);
+        assert_eq!(args, vec!["serve", "--config", "/tmp/nb.toml"]);
+    }
+
+    fn nbox_args(cfg: &serde_json::Value) -> Vec<String> {
+        cfg["mcpServers"]["nbox"]["args"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap().to_string())
+            .collect()
+    }
 
     #[test]
     fn normalize_raw_path_targets_the_api_for_every_accepted_form() {

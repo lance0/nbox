@@ -282,6 +282,7 @@ nbox open <kind>/<ref>            # device, ip, prefix, vlan, site, rack, rack-g
                                   # e.g. xe-0/0/1)
 nbox raw GET <api-path>           # raw read-only API request (escape hatch)
 nbox serve [--http <addr>]        # read-only MCP server for AI agents (stdio, or loopback/OIDC HTTP)
+                                  # --print-config prints the paste-ready mcpServers JSON and exits
 nbox config <init|path|show|token>    # token: status reports the resolved source (never echoed)
 nbox profile <add|use|remove|list|show>
 nbox completions <bash|zsh|fish|powershell|elvish>
@@ -516,6 +517,11 @@ claude mcp add nbox -- nbox serve
   }
 }
 ```
+
+Or skip the hand-editing — `nbox serve --print-config` prints the ready-to-paste
+`mcpServers` object (with the absolute binary path and any `--profile`/`--config`
+you passed echoed into `args`); see [docs/MCP.md](docs/MCP.md) for the exact
+config-file path per host (Claude Code, Claude Desktop, Cursor).
 
 Both reuse the same `config.toml` / `NBOX_TOKEN` as the CLI. Prefer driving the CLI
 directly? Install nbox as a **Claude Code Agent Skill** — `mkdir -p

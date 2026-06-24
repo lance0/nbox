@@ -267,9 +267,16 @@ cover. All of these stay within the read-only product and the explicit non-goals
   a `token` field (`valid`/`invalid`/`unverified`, the authenticated user on `valid`). Best-effort:
   never errors, overlaps the capability probe, and the `nbox status` exit-code contract is unchanged
   (a rejected token during the status fetch still exits 3).
-- ☐ **Schema-drift canary (CI).** Pin NetBox's OpenAPI spec and add a CI job that diffs it across
-  releases for the endpoints/filters nbox actually uses, so a breaking change (e.g. 4.7) trips the build
-  before it reaches users. Lightweight — nbox stays hand-curated; this is just an early-warning signal.
+- ☑ **Schema-drift canary (CI).** Pins a compact NetBox OpenAPI snapshot
+  (`tests/schema/netbox-4.6.2.json` — bare GET filter params per search endpoint)
+  and a `schema_canary` test (`src/netbox/search.rs`) that validates the search
+  fan-out's declared `search_supported()` filter set against it: a filter nbox
+  sends that the pinned release doesn't accept (e.g. the `tenant`-on-rack-groups
+  silent-over-broad bug the canary caught on first run) fails the build with the
+  exact endpoint + filter. Refresh the snapshot against a new release
+  (`scripts/gen_schema_snapshot.py` from `/api/schema/`) and the canary flags
+  the drift before it reaches users. Lightweight — nbox stays hand-curated; this
+  is just an early-warning signal.
 
 ## Agent / MCP wedge
 
@@ -284,8 +291,10 @@ all read-only. (Market positioning itself stays out of the repo — see private 
   utilization audit, path trace, find stale/unused prefixes) alongside the existing tools + resources.
 - ☐ **Token-budget discipline as a headline.** Lean default view models + `--fields` across CLI/MCP;
   document per-tool token footprints (the official server's headline is ~90% reduction via field filtering).
-- ☐ **First-class install recipes.** Copy-paste MCP config for Claude Code / Desktop / Cursor, plus an
+- ☑ **First-class install recipes.** Copy-paste MCP config for Claude Code / Desktop / Cursor, plus an
   `nbox serve --print-config` helper. (SKILL.md + the README "Add it to Claude" block are the start.)
+  `--print-config` now prints the paste-ready `mcpServers` JSON (absolute binary path, echoed
+  `--profile`/`--config`, placeholder token) and exits; docs/MCP.md lists the per-host config-file path.
 - ☐ **Per-domain agent-skills catalog.** Grow the single root `SKILL.md` into a small catalog of focused
   skills (e.g. search, IPAM, device/interface context, `serve`) in the standard agent-skills layout
   (`skills/<name>/SKILL.md`). Keep them flag-free — point at `nbox <cmd> --help` rather than enumerating
