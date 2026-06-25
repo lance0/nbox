@@ -692,7 +692,7 @@ impl NboxMcp {
     /// Change history (audit log) for an object.
     #[tool(
         name = "nbox_history",
-        description = "Return the change history (system audit log: create/update/delete, who and when) for an object, newest first. Distinct from nbox_journal (operator notes): this is the system-recorded audit trail from /api/core/object-changes/. `kind` and `ref` follow nbox_get; supported kinds are device, ip, prefix, vlan, site, rack, rack_group, circuit, virtual_circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, vm_type, cluster, vrf, route_target, interface (as `<device>/<name>`). Each row includes the top-level fields that changed (pre vs post), not the full before/after JSON.",
+        description = "Return the change history (system audit log: create/update/delete, who and when) for an object, newest first. Distinct from nbox_journal (operator notes): this is the system-recorded audit trail from /api/core/object-changes/. `kind` and `ref` follow nbox_get; supported kinds are device, ip, prefix, vlan, site, rack, rack_group, circuit, virtual_circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, vm_type, cluster, vrf, route_target, interface (as `<device>/<name>`). Each row includes the top-level fields that changed (pre vs post); pass `diff=true` (pair with a small `limit`, e.g. 1) to include the full before/after JSON payloads per row.",
         annotations(read_only_hint = true)
     )]
     async fn nbox_history(
