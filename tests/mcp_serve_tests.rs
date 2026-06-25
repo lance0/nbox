@@ -48,6 +48,7 @@ const EXPECTED_TOOLS: &[&str] = &[
     "nbox_next_ip",
     "nbox_next_prefix",
     "nbox_journal",
+    "nbox_history",
     "nbox_list_tags",
     "nbox_tagged",
     "nbox_cache_clear",

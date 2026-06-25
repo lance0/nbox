@@ -17,6 +17,7 @@ use ipnet::IpNet;
 use crate::cli::{Cli, Command};
 use crate::domain::WithJournal;
 use crate::domain::detail;
+use crate::domain::history_view::HistoryView;
 use crate::domain::journal_view::{JournalEntryRow, JournalView};
 use crate::domain::tag_view::TagsView;
 use crate::domain::tagged_view::{ResolvedTag, TaggedObjectView, TaggedReport};
@@ -371,6 +372,9 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Tagged { tag, limit }) => run_tagged(&ctx, &tag, limit).await,
         Some(Command::Journal { kind, value, limit }) => {
             run_journal(&ctx, &kind, &value, limit).await
+        }
+        Some(Command::History { kind, value, limit }) => {
+            run_history(&ctx, &kind, &value, limit).await
         }
         Some(Command::Raw { method, path }) => run_raw(&ctx, &method, &path).await,
         Some(Command::Status) => run_status(&ctx).await,
@@ -1589,6 +1593,19 @@ async fn run_journal(ctx: &Ctx, kind: &str, value: &str, limit: usize) -> Result
     let entries = client.journal_entries(content_type, id, limit).await?;
 
     let view = JournalView::from_models(entries);
+    emit(ctx, &view, || println!("{}", view.to_plain()))
+}
+
+/// `nbox history <kind> <ref>`: resolve the object, fetch its audit-log entries
+/// (system-recorded create/update/delete), and render the timeline. Mirrors
+/// [`run_journal`](fn@run_journal) against `/api/core/object-changes/` instead
+/// of operator journal notes.
+async fn run_history(ctx: &Ctx, kind: &str, value: &str, limit: usize) -> Result<()> {
+    let client = connect(ctx)?;
+    let (content_type, id) = resolve_content_type_id(&client, kind, value).await?;
+    let changes = client.object_changes(content_type, id, limit).await?;
+
+    let view = HistoryView::from_models(changes);
     emit(ctx, &view, || println!("{}", view.to_plain()))
 }
 

@@ -65,6 +65,9 @@ nbox tagged <tag>               # objects carrying a tag, across kinds (NetBox 4
 nbox journal <kind> <ref>         # kinds: device, ip, prefix, vlan, site, rack, rack-group, circuit,
                                   # virtual-circuit, aggregate, asn, ip-range, tenant, contact, provider, vm,
                                   # vm-type, cluster, vrf, route-target, mac, interface (<device>/<name>)
+nbox history <kind> <ref>         # system audit log (create/update/delete, who + when) for an object —
+                                  # `/api/core/object-changes/` (NetBox 4.x); distinct from `journal`
+                                  # (operator notes). Same kind set as `journal`.
 nbox open <kind>/<ref>
 nbox raw GET <api-path>          # path with or without /api/, e.g. dcim/devices/?limit=1
 nbox status                       # NetBox/Django/Python versions, api routing,
@@ -98,6 +101,7 @@ placeholder token) and exits — no server start, no NetBox connection.
 | `nbox_next_ip` | Next available address(es) in a prefix (nothing reserved); `count`, `vrf`. |
 | `nbox_next_prefix` | Available child prefix(es) in a prefix; `length` for a block of a size, else all free blocks; `vrf`. |
 | `nbox_journal` | Recent journal entries for an object (`kind`/`ref` as `nbox_get`). |
+| `nbox_history` | Change history (system audit log: create/update/delete, who + when) for an object (`kind`/`ref` as `nbox_get`); `/api/core/object-changes/` (NetBox 4.x). Distinct from `nbox_journal` (operator notes): this is the system-recorded audit trail. Each row includes the top-level fields that changed (pre vs post), not the full before/after JSON. |
 | `nbox_list_tags` | List tags (name, slug, color, usage count) — valid `tag` values for `nbox_search`. |
 | `nbox_tagged` | Objects carrying a tag, across kinds (NetBox 4.3+); `tag` (id\|name\|slug). Cross-kind reverse lookup — unlike `nbox_search --tag`, which narrows a free-text search per-endpoint. |
 | `nbox_cache_clear` | Drop nbox's local read cache so the next lookups fetch fresh from NetBox (read-only w.r.t. NetBox; idempotent). |

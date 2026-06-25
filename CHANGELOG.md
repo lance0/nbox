@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **`nbox history` — object change history (audit log).** `nbox history <kind>
+  <ref>` shows the system-recorded create/update/delete timeline for an object
+  (who, when, and which fields changed), from `/api/core/object-changes/` (NetBox
+  4.x). Distinct from `nbox journal` (operator notes): this is the audit trail.
+  Each row carries `time`/`action`/`user`/`object`/`message`/`fields_changed`
+  (the top-level fields whose values differ pre vs post — not the full
+  before/after JSON) /`request_id`. Same kind set + ref resolution as `journal`.
+  MCP tool `nbox_history` mirrors it (tools: 10 → 11).
+
 ### Changed
 
 - **Search per-endpoint row cap.** Each search branch now fetches at most

@@ -14,6 +14,7 @@ pub mod custom;
 pub mod detail;
 pub mod device_detail;
 pub mod device_view;
+pub mod history_view;
 pub mod interface_view;
 pub mod ip_range_view;
 pub mod ip_view;

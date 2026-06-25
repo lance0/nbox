@@ -438,6 +438,25 @@ pub enum Command {
         limit: usize,
     },
 
+    /// Show the change history (audit log) for an object — what changed, when,
+    /// and by whom. Distinct from `journal` (operator notes): this is the
+    /// system-recorded create/update/delete log from NetBox's `/api/core/
+    /// object-changes/` (NetBox 4.x).
+    History {
+        /// Object kind: device, ip, prefix, vlan, site, rack, rack-group, circuit,
+        /// virtual-circuit, aggregate, asn, ip-range, tenant, contact, provider,
+        /// vm, vm-type, cluster, vrf, route-target, mac, or interface
+        /// (`<device>/<name>`).
+        kind: String,
+
+        /// Object reference (name, address, CIDR, VID, slug, or ID).
+        value: String,
+
+        /// Maximum number of entries (newest first).
+        #[arg(short, long, default_value_t = 20)]
+        limit: usize,
+    },
+
     /// Make a raw read-only API request (escape hatch for unmodeled endpoints).
     Raw {
         /// HTTP method. Only GET is supported until writes land (a later release).

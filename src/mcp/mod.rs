@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cache::{Cache, CacheKey};
 use crate::domain::detail;
+use crate::domain::history_view::HistoryView;
 use crate::domain::interface_view::InterfaceView;
 use crate::domain::journal_view::JournalView;
 use crate::domain::tag_view::TagsView;
@@ -258,6 +259,18 @@ pub struct NextPrefixArgs {
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct JournalArgs {
     /// What kind of object the entries are attached to.
+    pub kind: GetKind,
+    /// The object reference (same forms as `nbox_get`).
+    #[serde(rename = "ref")]
+    pub reference: String,
+    /// Maximum number of entries (newest first). Defaults to 20.
+    pub limit: Option<usize>,
+}
+
+/// Arguments for `nbox_history`.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct HistoryArgs {
+    /// What kind of object to fetch the audit log for.
     pub kind: GetKind,
     /// The object reference (same forms as `nbox_get`).
     #[serde(rename = "ref")]
@@ -669,6 +682,29 @@ impl NboxMcp {
             .await
             .map_err(to_mcp_error)?;
         Ok(Json(JournalView::from_models(entries)))
+    }
+
+    /// Change history (audit log) for an object.
+    #[tool(
+        name = "nbox_history",
+        description = "Return the change history (system audit log: create/update/delete, who and when) for an object, newest first. Distinct from nbox_journal (operator notes): this is the system-recorded audit trail from /api/core/object-changes/. `kind` and `ref` follow nbox_get; supported kinds are device, ip, prefix, vlan, site, rack, rack_group, circuit, virtual_circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, vm_type, cluster, vrf, route_target, interface (as `<device>/<name>`). Each row includes the top-level fields that changed (pre vs post), not the full before/after JSON.",
+        annotations(read_only_hint = true)
+    )]
+    async fn nbox_history(
+        &self,
+        Parameters(args): Parameters<HistoryArgs>,
+    ) -> Result<Json<HistoryView>, ErrorData> {
+        let limit = args.limit.unwrap_or(20);
+        let (content_type, id) = self
+            .resolve_content_type_id(args.kind, &args.reference)
+            .await
+            .map_err(to_mcp_error)?;
+        let changes = self
+            .client
+            .object_changes(content_type, id, limit)
+            .await
+            .map_err(to_mcp_error)?;
+        Ok(Json(HistoryView::from_models(changes)))
     }
 
     /// List the tags defined in NetBox.
