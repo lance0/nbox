@@ -27,6 +27,7 @@ nbox is a read-only NetBox client — a CLI and a TUI over the same core.
 | `nbox tags` | List tags. |
 | `nbox tagged <tag>` | Objects carrying a tag, across kinds (NetBox 4.3+ `/api/extras/tagged-objects/`); tag = id/name/slug. |
 | `nbox journal <kind> <ref>` | Recent journal entries for an object. Kinds: device, ip, prefix, vlan, site, rack, rack-group, circuit, virtual-circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, vm-type, cluster, vrf, route-target, interface (`<device>/<name>`). `--journal` on a detail lookup folds the most recent entries inline (default 5); `--journal-limit <N>` overrides the cap and implies `--journal`. (`tenant`/`contact`/`provider`/`vm`/`vm-type`/`cluster`/`vrf`/`route-target`/`interface`/`virtual-circuit` have no inline `--journal` flag — use `nbox journal`.) |
+| `nbox history <kind> <ref>` | Change history (system audit log: create/update/delete, who + when) for an object, newest first. Same kind set as `journal`. `/api/core/object-changes/` (NetBox 4.x) — distinct from `journal` (operator notes). Each row includes the top-level fields that changed (pre vs post), not the full before/after JSON. |
 | `nbox status` | Connection + per-surface `api` routing (configured/effective) + capabilities + NetBox/Django/Python versions + a token-validity preflight (`token`: `valid`/`invalid`/`unverified`; NetBox 4.5+). |
 | `nbox open <kind>/<ref>` | Open an object in the browser. Kinds: device, ip, prefix, vlan, site, rack, rack-group, circuit, virtual-circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, vm-type, cluster, vrf, route-target, mac, and `interface/<device>/<name>` (the interface name may contain slashes, e.g. `xe-0/0/1`). |
 | `nbox raw GET <path>` | Raw read-only API request (escape hatch). |
@@ -140,6 +141,7 @@ config-file path.
 | `nbox_next_ip` | Next available address(es) in a prefix. |
 | `nbox_next_prefix` | Available child prefix(es) of a given length, or all free blocks. |
 | `nbox_journal` | Recent journal entries for an object. |
+| `nbox_history` | Change history (system audit log: create/update/delete, who + when) for an object. `/api/core/object-changes/` (NetBox 4.x) — distinct from `nbox_journal` (operator notes). |
 | `nbox_list_tags` | List tags. |
 | `nbox_tagged` | Objects carrying a tag, across kinds (NetBox 4.3+); `tag` (id\|name\|slug). Cross-kind reverse lookup. |
 | `nbox_cache_clear` | Drop nbox's local read cache so the next lookups fetch fresh (read-only w.r.t. NetBox). |

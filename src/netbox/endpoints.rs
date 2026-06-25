@@ -36,6 +36,7 @@ pub enum Endpoint {
     Tags,
     TaggedObjects,
     MacAddresses,
+    CoreObjectChanges,
 }
 
 impl Endpoint {
@@ -75,6 +76,7 @@ impl Endpoint {
             Endpoint::Tags => "/api/extras/tags/",
             Endpoint::TaggedObjects => "/api/extras/tagged-objects/",
             Endpoint::MacAddresses => "/api/dcim/mac-addresses/",
+            Endpoint::CoreObjectChanges => "/api/core/object-changes/",
         }
     }
 

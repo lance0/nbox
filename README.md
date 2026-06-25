@@ -51,7 +51,7 @@ See [Installation](#installation) below for setup instructions.
 - **Normalized search** — one `search` query runs in parallel across devices, sites, racks, IPs, prefixes, VLANs, circuits, virtual circuits, providers, aggregates, ASNs, IP ranges, tenants, contacts, VMs, clusters, VRFs, and route targets, returning ranked, deduped hits. Scope it with `--site`/`--region`/`--site-group`/`--location` (one at a time, exact scope), or narrow by `--status`/`--tenant`/`--role`/`--tag`/`--vrf`.
 - **IPAM-aware** — IP → most-specific parent prefix → VLAN → scope resolution, prefix utilization and children, a navigable prefix tree, and `next-ip` / `next-prefix` for free addresses and blocks (read-only — nothing is reserved).
 - **A k9s-style TUI** — a three-pane home (navigation rail → results → live preview), an overview dashboard, a hierarchical prefix tree, cross-object navigation between related objects (every detail's related-object tabs are navigable — open an interface from a device and see its cable path drawn as an A↔Z diagram), fuzzy filters, server-side name filtering on the browse list, recents, and an in-app profile + settings editor. Twelve themes; `NO_COLOR` honored.
-- **Agent-ready** — `nbox serve` is a read-only MCP server: the same lookups exposed as ten tools (plus every object as an `nbox://{kind}/{ref}` resource), returning the exact JSON view models the CLI does, so AI agents (Claude Code, Claude Desktop, …) query NetBox safely. Stdio for a local subprocess, or a loopback HTTP transport with OIDC resource-server auth for a network-reachable, read-only deployment. See [docs/MCP.md](docs/MCP.md); [SKILL.md](SKILL.md) is an installable Agent Skill that drives the CLI on matching requests.
+- **Agent-ready** — `nbox serve` is a read-only MCP server: the same lookups exposed as eleven tools (plus every object as an `nbox://{kind}/{ref}` resource), returning the exact JSON view models the CLI does, so AI agents (Claude Code, Claude Desktop, …) query NetBox safely. Stdio for a local subprocess, or a loopback HTTP transport with OIDC resource-server auth for a network-reachable, read-only deployment. See [docs/MCP.md](docs/MCP.md); [SKILL.md](SKILL.md) is an installable Agent Skill that drives the CLI on matching requests.
 - **Scriptable** — `-o plain|json|csv`, `--fields`, `--raw`, versioned `--envelope`, and stable exit codes; stdout stays clean for piping, logs go to stderr. See [docs/SCRIPTING.md](docs/SCRIPTING.md).
 - **Fast on repeat** — a small in-memory read cache (per profile, ~30s) keeps TUI back-navigation and chatty agents from re-hitting NetBox; the detail footer shows "cached Ns ago" and `nbox_cache_clear` busts it.
 - **Multi-instance** — profiles for several NetBox instances (switch live in the TUI), journals folded into detail lookups, open-in-browser and copy, and tag listing.
@@ -276,6 +276,8 @@ nbox journal <kind> <ref>         # recent journal entries for an object
                                   # kinds incl. interface as <device>/<name>
                                   # --journal folds recent entries into a detail lookup (cap 5)
                                   # --journal-limit N overrides the cap (implies --journal)
+nbox history <kind> <ref>         # system audit log (create/update/delete, who + when)
+                                  # /api/core/object-changes/ (NetBox 4.x); distinct from journal
 nbox open <kind>/<ref>            # device, ip, prefix, vlan, site, rack, rack-group, circuit, virtual-circuit, provider,
                                   # aggregate, asn, ip-range, tenant, contact, vm, vm-type, cluster, vrf, route-target,
                                   # and interface/<device>/<name> (the name may contain slashes,
@@ -491,6 +493,7 @@ The tools are all annotated read-only:
 | `nbox_next_ip` | Next available address(es) in a prefix (nothing is reserved). |
 | `nbox_next_prefix` | Available free child prefix(es) of a given length, or all free blocks. |
 | `nbox_journal` | Recent journal entries for an object. |
+| `nbox_history` | Change history (system audit log: create/update/delete, who + when) for an object. `/api/core/object-changes/` (NetBox 4.x) — distinct from `nbox_journal` (operator notes). |
 | `nbox_list_tags` | List tags (name, slug, color, usage count). |
 | `nbox_tagged` | Objects carrying a tag, across kinds (NetBox 4.3+); `tag` (id\|name\|slug). |
 | `nbox_cache_clear` | Drop nbox's local read cache so the next lookups fetch fresh (read-only w.r.t. NetBox). |

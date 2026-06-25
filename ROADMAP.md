@@ -35,7 +35,7 @@ The read surface is broad and stable today (full history in `CHANGELOG.md`):
   trace, VRF-scoped child prefixes + contained IPs.
 - **Output:** `-o plain|json|csv`, `--raw`, `--envelope`, `--fields`, `--cols`; stable exit codes.
 - **MCP server (`nbox serve`):** stdio **and** HTTP (Streamable HTTP), OAuth 2.1 OIDC resource-server
-  mode (RFC 9728 metadata, audit log, per-caller rate limit), 10 read tools + a `nbox://{kind}/{ref}`
+  mode (RFC 9728 metadata, audit log, per-caller rate limit), 11 read tools + a `nbox://{kind}/{ref}`
   resource template (DESIGN §24; read-only Pattern 3).
 - **TUI:** list/preview split with focus, scrolling + position cues, 12 themes, command palette,
   fuzzy filter, recents, auto-refresh, device tabs, open-in-browser/copy, profile switcher
@@ -311,8 +311,13 @@ all read-only. (Market positioning itself stays out of the repo — see private 
   skills (e.g. search, IPAM, device/interface context, `serve`) in the standard agent-skills layout
   (`skills/<name>/SKILL.md`). Keep them flag-free — point at `nbox <cmd> --help` rather than enumerating
   flags, so they can't silently drift as the CLI evolves — and lint the shape in CI.
-- ☐ **Read-only history/changelog tool.** `nbox history <object>` / an MCP tool that summarizes an
-  object's changelog ("what changed and when") — answers agent "what happened to this prefix?" queries.
+- ☑ **Read-only history/changelog tool.** `nbox history <kind> <ref>` shows the
+  system-recorded create/update/delete timeline for an object (who, when, and
+  which fields changed) from `/api/core/object-changes/` (NetBox 4.x), distinct
+  from `journal` (operator notes). Each row carries `time`/`action`/`user`/
+  `object`/`message`/`fields_changed`/`request_id` — the top-level fields whose
+  values differ pre vs post, not the full before/after JSON. MCP `nbox_history`
+  mirrors it. Answers agent "what happened to this prefix?" queries.
 - ☐ **Structured read-only exports.** An export mode producing Prometheus targets / firewall
   address-lists / device inventories from live NetBox (the `netbox-lists` niche, as one fast binary).
 
@@ -594,7 +599,7 @@ Consolidated future scope:
 ### v0.2.0 — shipped since v0.1.1
 
 - ☑ **MCP server** (`nbox serve`) — stdio + HTTP transport, OIDC resource-server auth, audit + rate
-  limit, 10 read tools, `nbox://{kind}/{ref}` resources.
+  limit, 11 read tools, `nbox://{kind}/{ref}` resources.
 - ☑ **Read coverage** — circuits, providers, aggregates, ASNs, IP ranges, tenants, contacts, VMs,
   clusters; journal command + inline `--journal`; services on device detail; cable/interface trace.
 - ☑ **Scope/VRF** — `search --vrf`, scope filters (`--region`/`--site-group`/`--location`), exact

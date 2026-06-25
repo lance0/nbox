@@ -11,7 +11,7 @@ use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{
-    GetArgs, GetKind, InterfaceArgs, JournalArgs, ListTagsArgs, NboxMcp, NextIpArgs,
+    GetArgs, GetKind, HistoryArgs, InterfaceArgs, JournalArgs, ListTagsArgs, NboxMcp, NextIpArgs,
     NextPrefixArgs, SearchArgs, TaggedArgs, parse_resource_uri, percent_decode, resource_templates,
 };
 use crate::config::ProfileConfig;
@@ -1403,6 +1403,65 @@ async fn journal_for_unknown_kind_errors() {
 }
 
 #[tokio::test]
+async fn history_returns_changes_for_device() {
+    let mock = MockServer::start().await;
+    // resolve_content_type_id(Device) → device_by_ref (exact name).
+    mount_one(
+        &mock,
+        "/api/dcim/devices/",
+        json!({"id": 1, "url": "u", "name": "edge01"}),
+    )
+    .await;
+    // object_changes filtered by changed_object_type + changed_object_id.
+    Mock::given(method("GET"))
+        .and(path("/api/core/object-changes/"))
+        .and(query_param("changed_object_type", "dcim.device"))
+        .and(query_param("changed_object_id", "1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [{
+                "id": 10, "action": {"value": "update", "label": "Updated"},
+                "time": "2025-12-08T23:56:49Z", "user_name": "neteng",
+                "object_repr": "edge01", "message": "",
+                "request_id": "bc44-0001",
+                "prechange_data": {"name": "edge01", "status": "active"},
+                "postchange_data": {"name": "edge01", "status": "decommissioned", "site_id": 2}
+            }, {
+                "id": 9, "action": {"value": "create", "label": "Created"},
+                "time": "2025-11-01T00:00:00Z", "user_name": "fleetops",
+                "object_repr": "edge01", "message": "initial provisioning",
+                "request_id": "bc44-0002",
+                "prechange_data": null,
+                "postchange_data": null
+            }]
+        })))
+        .mount(&mock)
+        .await;
+
+    let Json(view) = server_for(&mock)
+        .nbox_history(Parameters(HistoryArgs {
+            kind: GetKind::Device,
+            reference: "edge01".to_string(),
+            limit: None,
+        }))
+        .await
+        .expect("history");
+
+    let value = serde_json::to_value(&view).expect("serialize view");
+    let entries = value["entries"].as_array().expect("entries array");
+    assert_eq!(entries.len(), 2);
+    // Update row: fields changed are site_id (added) + status (changed); name unchanged.
+    assert_eq!(entries[0]["action"], "update");
+    assert_eq!(entries[0]["user"], "neteng");
+    assert_eq!(entries[0]["fields_changed"], json!(["site_id", "status"]));
+    // Create row: no pre/post data → no fields_changed; message surfaces.
+    assert_eq!(entries[1]["action"], "create");
+    assert_eq!(entries[1]["message"], "initial provisioning");
+    // fields_changed is empty for the create row → omitted (skip_serializing_if).
+    assert!(entries[1].get("fields_changed").is_none() || entries[1]["fields_changed"].is_null());
+}
+
+#[tokio::test]
 async fn list_tags_returns_tag_rows() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
@@ -1804,9 +1863,9 @@ async fn read_resource_missing_object_is_invalid_params() {
 // JSON-RPC wire snapshots.
 mod contracts {
     use super::{
-        ErrorCode, GetKind, JournalArgs, Json, ListTagsArgs, Mock, MockServer, NextIpArgs,
-        Parameters, ResponseTemplate, SearchArgs, TaggedArgs, empty_page, get_args, method,
-        mount_empty, mount_one, one_text, path, query_param, server_for,
+        ErrorCode, GetKind, HistoryArgs, JournalArgs, Json, ListTagsArgs, Mock, MockServer,
+        NextIpArgs, Parameters, ResponseTemplate, SearchArgs, TaggedArgs, empty_page, get_args,
+        method, mount_empty, mount_one, one_text, path, query_param, server_for,
     };
     use rmcp::ErrorData;
     use serde_json::{Value, json};
@@ -2371,6 +2430,74 @@ mod contracts {
         assert_keys(entry, &["created", "kind", "author", "comments"]);
         // `author` is the resolved user label (display), not the raw user object.
         assert_eq!(entry["author"], "neteng");
+    }
+
+    /// `nbox_history` → `HistoryView`: a top-level `entries` array whose rows
+    /// carry `time`, `action`, `action_label`, `user`, `object`, `message`,
+    /// `fields_changed`, and `request_id`. The empty/skip-if-none fields are
+    /// omitted here so the present key set is exact, and `fields_changed` lists
+    /// the top-level fields whose values differ (pre vs post) — not the full
+    /// before/after JSON.
+    #[tokio::test]
+    async fn history_view_shape_is_pinned() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/dcim/devices/",
+            json!({"id": 1, "url": "u", "name": "edge01"}),
+        )
+        .await;
+        Mock::given(method("GET"))
+            .and(path("/api/core/object-changes/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{
+                    "id": 10,
+                    "action": {"value": "update", "label": "Updated"},
+                    "time": "2025-12-08T23:56:49Z",
+                    "user_name": "neteng",
+                    "object_repr": "edge01",
+                    "message": "",
+                    "request_id": "bc44-0001",
+                    "prechange_data": {"name": "edge01", "status": "active"},
+                    "postchange_data": {"name": "edge01", "status": "decommissioned", "site_id": 2}
+                }]
+            })))
+            .mount(&mock)
+            .await;
+
+        let Json(view) = server_for(&mock)
+            .nbox_history(Parameters(HistoryArgs {
+                kind: GetKind::Device,
+                reference: "edge01".to_string(),
+                limit: None,
+            }))
+            .await
+            .expect("history");
+        let value = serde_json::to_value(&view).expect("serialize view");
+
+        assert_keys(&value, &["entries"]);
+        let entry = &value["entries"][0];
+        // message is empty here so it's skip-if-empty → omitted.
+        assert_keys(
+            entry,
+            &[
+                "time",
+                "action",
+                "action_label",
+                "user",
+                "object",
+                "fields_changed",
+                "request_id",
+            ],
+        );
+        assert_eq!(entry["action"], "update");
+        assert_eq!(entry["action_label"], "Updated");
+        assert_eq!(entry["user"], "neteng");
+        assert_eq!(entry["object"], "edge01");
+        // status (changed), site_id (added); name unchanged → not listed.
+        assert_eq!(entry["fields_changed"], json!(["site_id", "status"]));
+        assert_eq!(entry["request_id"], "bc44-0001");
     }
 
     /// `nbox_list_tags` → `TagsView`: a top-level `tags` array of rows. `name`/

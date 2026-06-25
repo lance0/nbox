@@ -13,7 +13,7 @@ use crate::netbox::models::circuits::{
 use crate::netbox::models::dcim::{
     Device, Interface, Location, MacAddress, Rack, RackGroup, Region, Site, SiteGroup,
 };
-use crate::netbox::models::extras::{JournalEntry, TagInfo, TaggedObject};
+use crate::netbox::models::extras::{JournalEntry, ObjectChange, TagInfo, TaggedObject};
 use crate::netbox::models::ipam::{
     Aggregate, Asn, AvailableIp, AvailablePrefix, IpAddress, IpRange, Prefix, RouteTarget, Service,
     Vlan, VlanGroup, Vrf,
@@ -658,6 +658,29 @@ impl NetBoxClient {
                 ("assigned_object_type", content_type.to_string()),
                 ("assigned_object_id", object_id.to_string()),
                 ("ordering", "-created".to_string()),
+            ],
+            max,
+        )
+        .await
+    }
+
+    /// Recent object changes (audit-log entries) for one object, newest first,
+    /// from `/api/core/object-changes/` (NetBox 4.x). Mirrors
+    /// [`journal_entries`](Self::journal_entries) but against the system audit log
+    /// rather than operator journal notes. Scoped by dotted content type + numeric
+    /// id — `changed_object_id` alone is ambiguous across types.
+    pub async fn object_changes(
+        &self,
+        content_type: &str,
+        object_id: u64,
+        max: usize,
+    ) -> Result<Vec<ObjectChange>> {
+        self.list_all(
+            Endpoint::CoreObjectChanges,
+            vec![
+                ("changed_object_type", content_type.to_string()),
+                ("changed_object_id", object_id.to_string()),
+                ("ordering", "-time".to_string()),
             ],
             max,
         )

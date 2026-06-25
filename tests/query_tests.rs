@@ -626,6 +626,38 @@ async fn journal_entries_filter_by_assigned_object() {
 }
 
 #[tokio::test]
+async fn object_changes_filter_by_changed_object() {
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/core/object-changes/"))
+        .and(query_param("changed_object_type", "dcim.device"))
+        .and(query_param("changed_object_id", "1"))
+        .and(query_param("ordering", "-time"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 8,
+                "action": {"value": "update", "label": "Updated"},
+                "time": "2024-01-02T00:00:00Z",
+                "user_name": "neteng",
+                "object_repr": "edge01",
+                "message": "",
+                "prechange_data": {"status": "active"},
+                "postchange_data": {"status": "offline"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    let entries = client(&server)
+        .object_changes("dcim.device", 1, 20)
+        .await
+        .unwrap();
+    assert_eq!(entries.len(), 1);
+    assert_eq!(entries[0].object_repr.as_deref(), Some("edge01"));
+}
+
+#[tokio::test]
 async fn ip_range_by_start_uses_start_address_filter() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))

@@ -62,6 +62,46 @@ pub struct JournalEntry {
     pub comments: String,
 }
 
+/// An object change (audit-log entry) from `/api/core/object-changes/` (NetBox
+/// 4.x; was `extras/object-changes/` pre-4.0). One row per atomic write to an
+/// object: the action (create/update/delete), who did it, when, and the
+/// before/after state. Scoped to one object via `changed_object_type` (dotted,
+/// e.g. `dcim.device`) + `changed_object_id`.
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct ObjectChange {
+    pub id: u64,
+    #[serde(default)]
+    pub url: Option<String>,
+    /// The action: `{value: "create"|"update"|"delete", label: "Created"|…}`.
+    #[serde(default)]
+    pub action: Option<Choice<String>>,
+    /// When the change was recorded (ISO 8601, UTC).
+    #[serde(default)]
+    pub time: Option<String>,
+    /// The username of the actor (a convenience flat field alongside `user`).
+    #[serde(default)]
+    pub user_name: Option<String>,
+    /// The nested user object (id/display/url), when present.
+    #[serde(default)]
+    pub user: Option<BriefObject>,
+    /// The object's human label at change time (e.g. `edge01 (asset-tag)`).
+    #[serde(default)]
+    pub object_repr: Option<String>,
+    /// A free-text message (often empty; some integrations annotate here).
+    #[serde(default)]
+    pub message: String,
+    /// Groups all object-changes from one atomic request (a single user action
+    /// can write several objects; they share this UUID).
+    #[serde(default)]
+    pub request_id: Option<String>,
+    /// The full pre-change object state (JSON). Large; not rendered by default.
+    #[serde(default)]
+    pub prechange_data: Option<serde_json::Value>,
+    /// The full post-change object state (JSON). Large; not rendered by default.
+    #[serde(default)]
+    pub postchange_data: Option<serde_json::Value>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
