@@ -153,21 +153,16 @@ fn ip_utilization_audit(args: Option<&JsonObject>) -> String {
     };
     format!(
         "Audit IP prefix utilization in NetBox.{scope}\n\
-         \nSteps:\n\
-         1. Call `nbox_search` with an empty `query` (limit ~50) to list prefixes\
-         — apply the scope filters above if any.\n\
-         2. For each prefix result, call `nbox_get` with `kind=prefix`,\
-         `ref=<the prefix CIDR>` to read its `utilization` field.\n\
-         3. Flag prefixes with utilization >= 0.85 (near-full — expansion\
-         candidates) and prefixes with utilization < 0.10 (stale — reclaim\
-         candidates).\n\
-         4. For each flagged prefix, call `nbox_get` again and read its\
-         `ip_addresses` to confirm the assignment count.\n\
-         5. Report a table: prefix | utilization | assigned IPs | status |\
-         recommendation (expand / reclaim / monitor).\n\
-         \nAll calls are read-only. Use `nbox_status` first to confirm the\
-         connection and `nbox_search` with `--partial`-style tolerance if some\
-         endpoints fail."
+         \n\
+         Steps:\n\
+         1. Call `nbox_search` with an empty `query` (limit ~50) to list prefixes — apply the scope filters above if any.\n\
+         2. For each prefix result, call `nbox_get` with `kind=prefix`, `ref=<the prefix CIDR>` and read these fields:\n\
+         - `utilization` — a precomputed percentage. Authoritative when present, but NetBox 4.5+ no longer returns it from the REST API for leaf prefixes, so treat it as best-effort, not guaranteed.\n\
+         - `child_prefixes` and `ip_addresses` — the fallback signal when `utilization` is absent: for a prefix carved into children, utilization ≈ the address space its `child_prefixes` cover; for a leaf prefix, utilization ≈ assigned `ip_addresses` / the prefix's host capacity.\n\
+         3. Flag prefixes that are >= 85% utilized (near-full — expansion candidates) and < 10% utilized (stale — reclaim candidates), using `utilization` when present and the derived value otherwise.\n\
+         4. Report a table: prefix | assigned IPs | children | utilization (or derived) | status | recommendation (expand / reclaim / monitor).\n\
+         \n\
+         All calls are read-only. Call `nbox_status` first to confirm the connection; if `nbox_search` returns a non-empty `errors` list (partial failure), note which endpoints were unavailable before trusting the set."
     )
 }
 
@@ -176,21 +171,21 @@ fn cable_path_trace(args: Option<&JsonObject>) -> String {
     let interface = arg_str(args, "interface").unwrap_or_else(|| "<interface>".into());
     format!(
         "Trace the cable path for a device interface end-to-end.\n\
-         \nDevice: {device}\nInterface: {interface}\n\
-         \nSteps:\n\
-         1. Call `nbox_get_interface` with `kind=interface`,\
-         `ref=\"{device}/{interface}\"` to fetch the interface and its cable path.\n\
-         2. Read the `cable_path` — the A-side ↔ Z-side trace, including any\
-         intermediate patch panels and the far device/interface.\n\
+         \n\
+         Device: {device}\n\
+         Interface: {interface}\n\
+         \n\
+         Steps:\n\
+         1. Call `nbox_get_interface` with `device=\"{device}\"`, `interface=\"{interface}\"` to fetch the interface and its cable path.\n\
+         2. Read the `trace` field — the A-side ↔ Z-side cable path as structured hops (near terminations — cable — far terminations), including any intermediate patch panels and the far device/interface. (`cable` is the label of the cable directly attached to this interface.)\n\
          3. Report the full path as a hop list:\n\
          A-side: {device} / {interface}\n\
          → [patch panels, if any, each with its position]\n\
          → Z-side: <far device> / <far interface>\n\
-         4. Note the link status and flag any unterminated side (an interface\
-         with no cable returns an empty path — report \"unterminated\").\n\
-         5. If you need device context (site, role), call `nbox_get` with\
-         `kind=device`, `ref=\"{device}\"`.\n\
-         \nAll calls are read-only."
+         4. Flag any unterminated side: an interface with no cable has an empty `trace` — report \"unterminated\".\n\
+         5. If you need device context (site, role), call `nbox_get` with `kind=device`, `ref=\"{device}\"`.\n\
+         \n\
+         All calls are read-only."
     )
 }
 
@@ -202,22 +197,17 @@ fn find_stale_prefixes(args: Option<&JsonObject>) -> String {
     };
     format!(
         "Find prefixes that may be reclaimable in NetBox.\n\
-         \n{scope}\n\
-         \nSteps:\n\
-         1. Call `nbox_search` with an empty `query` (limit ~100) to list\
-         prefixes; apply the site scope if given.\n\
-         2. For each prefix, call `nbox_get` with `kind=prefix`,\
-         `ref=<CIDR>` and read `utilization` + the `ip_addresses` list.\n\
-         3. Flag prefixes with 0 assigned IPs, or utilization below 0.10.\n\
-         4. For each stale candidate, call `nbox_history` with `kind=prefix`,\
-         `ref=<CIDR>`, `limit=10` to confirm nothing modified it recently — a\
-         prefix touched in the last 90 days is probably in use, so lower its\
-         reclaim confidence.\n\
-         5. Report: prefix | utilization | assigned IPs | last-change age |\
-         reclaim confidence (high if no recent changes, low otherwise).\n\
-         \nThe `nbox_history` step is the system audit log (create/update/delete\
-         by whom + when) — distinct from `nbox_journal` (operator notes).\
-         All calls are read-only."
+         \n\
+         {scope}\n\
+         \n\
+         Steps:\n\
+         1. Call `nbox_search` with an empty `query` (limit ~100) to list prefixes; apply the site scope if given.\n\
+         2. For each prefix, call `nbox_get` with `kind=prefix`, `ref=<CIDR>` and read its `ip_addresses` (assigned addresses) and `child_prefixes`. A prefix with no assigned `ip_addresses` and no `child_prefixes` is a reclaim candidate. (NetBox <= 4.4 also returns a `utilization` percentage — cross-check it when present, but 4.5+ dropped it from the REST API, so the assigned-address / child count is the primary signal.)\n\
+         3. Flag prefixes with 0 assigned `ip_addresses` and no `child_prefixes`.\n\
+         4. For each stale candidate, call `nbox_history` with `kind=prefix`, `ref=<CIDR>`, `limit=10` to confirm nothing modified it recently — a prefix touched in the last 90 days is probably in use, so lower its reclaim confidence.\n\
+         5. Report: prefix | assigned IPs | children | last-change age | reclaim confidence (high if no recent changes, low otherwise).\n\
+         \n\
+         The `nbox_history` step is the system audit log (create/update/delete by whom + when) — distinct from `nbox_journal` (operator notes). All calls are read-only."
     )
 }
 
@@ -226,22 +216,17 @@ fn object_change_review(args: Option<&JsonObject>) -> String {
     let reference = arg_str(args, "ref").unwrap_or_else(|| "<ref>".into());
     format!(
         "Review an object's recent change history for risk.\n\
-         \nObject: kind={kind}, ref=\"{reference}\"\n\
-         \nSteps:\n\
-         1. Call `nbox_history` with `kind={kind}`, `ref=\"{reference}\"`,\
-         `limit=20` to fetch the audit-log entries (newest first).\n\
-         2. Group entries by `request_id` — one user action can produce several\
-         object-changes sharing a UUID; grouping shows the real actions.\n\
-         3. For each group, summarize: who (user), when (time), and the\
-         `fields_changed`.\n\
-         4. Flag high-risk changes: any `delete` action, or `fields_changed`\
-         containing status, tenant, site, cluster, or owner (ownership/scope\
-         moves are the riskiest read-only signals).\n\
-         5. Report a timeline grouped by request, with risk flags, and a\
-         one-line summary of the most recent change.\n\
-         \n`nbox_history` reads `/api/core/object-changes/` (NetBox 4.x) — the\
-         system audit log, distinct from `nbox_journal` (operator notes).\
-         All calls are read-only."
+         \n\
+         Object: kind={kind}, ref=\"{reference}\"\n\
+         \n\
+         Steps:\n\
+         1. Call `nbox_history` with `kind={kind}`, `ref=\"{reference}\"`, `limit=20` to fetch the audit-log entries (newest first).\n\
+         2. Group entries by `request_id` — one user action can produce several object-changes sharing a UUID; grouping shows the real actions.\n\
+         3. For each group, summarize: who (user), when (time), and the `fields_changed`.\n\
+         4. Flag high-risk changes: any `delete` action, or `fields_changed` containing status, tenant, site, cluster, or owner (ownership/scope moves are the riskiest read-only signals).\n\
+         5. Report a timeline grouped by request, with risk flags, and a one-line summary of the most recent change.\n\
+         \n\
+         `nbox_history` reads `/api/core/object-changes/` (NetBox 4.x) — the system audit log, distinct from `nbox_journal` (operator notes). All calls are read-only."
     )
 }
 
@@ -356,9 +341,10 @@ mod tests {
             text.contains("Interface: xe-0/0/1"),
             "interface not substituted: {text}"
         );
+        // The dedicated tool takes `device`/`interface` (not `kind`/`ref`).
         assert!(
-            text.contains("\"edge01/xe-0/0/1\""),
-            "compound ref not in plan: {text}"
+            text.contains("device=\"edge01\"") && text.contains("interface=\"xe-0/0/1\""),
+            "interface call args not substituted: {text}"
         );
     }
 
@@ -390,5 +376,132 @@ mod tests {
             text.contains("no scope filters"),
             "absent-optional plan: {text}"
         );
+    }
+
+    /// The rendered plan text for `name`.
+    fn plan_text(name: &str) -> String {
+        let result = render_prompt(request(name)).expect("render");
+        match &result.messages[0].content {
+            rmcp::model::PromptMessageContent::Text { text } => text.clone(),
+            other => panic!("{name} returned non-text content: {other:?}"),
+        }
+    }
+
+    /// A plan must only point the agent at response fields the tool actually
+    /// returns — otherwise the "curated, executable" promise breaks the moment
+    /// an agent follows it. This pins each prefix/interface plan's field
+    /// references to the real serialized fields of the view the tool returns
+    /// (`PrefixView` for `nbox_get kind=prefix`, `InterfaceView` for
+    /// `nbox_get_interface`). It would have caught the `cable_path` typo (the
+    /// interface path is `trace`, not `cable_path`) and guards against drift if
+    /// a view field is renamed.
+    #[test]
+    fn plan_field_references_exist_in_tool_output() {
+        use std::collections::{BTreeMap, BTreeSet};
+
+        use crate::domain::interface_view::InterfaceView;
+        use crate::domain::prefix_view::{PrefixIp, PrefixView};
+
+        // The serialized top-level field names of a value. A fully-populated
+        // sample so `skip_serializing_if` doesn't hide any field; the literals
+        // also fail to compile if a struct field is added/renamed, keeping this
+        // test honest about the real shape.
+        fn json_fields<T: serde::Serialize>(v: &T) -> BTreeSet<String> {
+            serde_json::to_value(v)
+                .expect("serialize")
+                .as_object()
+                .expect("object")
+                .keys()
+                .cloned()
+                .collect()
+        }
+
+        let iface = InterfaceView {
+            device: Some("d".into()),
+            name: "n".into(),
+            enabled: Some(true),
+            type_: Some("t".into()),
+            mtu: Some(1500),
+            mac_address: Some("m".into()),
+            mode: Some("access".into()),
+            untagged_vlan: Some("v".into()),
+            tagged_vlans: vec!["v2".into()],
+            cable: Some("c".into()),
+            connected_to: vec!["x".into()],
+            description: Some("d".into()),
+            ip_addresses: vec!["1.2.3.4/32".into()],
+            trace: vec!["hop".into()],
+            diagram: vec!["dia".into()],
+            owner: Some("o".into()),
+            tags: vec!["tag".into()],
+            custom_fields: BTreeMap::from([("k".to_string(), serde_json::Value::Null)]),
+        };
+        let prefix = PrefixView {
+            prefix: "10.0.0.0/24".into(),
+            status: Some("active".into()),
+            vrf: Some("v".into()),
+            vlan: Some("vl".into()),
+            scope: Some("s".into()),
+            scope_type: Some("site".into()),
+            tenant: Some("t".into()),
+            role: Some("r".into()),
+            children: Some(1),
+            utilization: Some(0.5),
+            description: Some("d".into()),
+            owner: Some("o".into()),
+            tags: vec!["tag".into()],
+            custom_fields: BTreeMap::from([("k".to_string(), serde_json::Value::Null)]),
+            child_prefixes: vec!["10.0.0.0/25".into()],
+            ip_addresses: vec![PrefixIp {
+                address: "10.0.0.1/24".into(),
+                assigned: None,
+            }],
+        };
+        let iface_fields = json_fields(&iface);
+        let prefix_fields = json_fields(&prefix);
+
+        // (prompt, the view's real fields, the response fields the plan cites).
+        let cases: [(&str, &BTreeSet<String>, &[&str]); 3] = [
+            ("cable_path_trace", &iface_fields, &["trace", "cable"]),
+            (
+                "ip_utilization_audit",
+                &prefix_fields,
+                &["utilization", "child_prefixes", "ip_addresses"],
+            ),
+            (
+                "find_stale_prefixes",
+                &prefix_fields,
+                &["utilization", "child_prefixes", "ip_addresses"],
+            ),
+        ];
+        for (name, fields, cited) in cases {
+            let text = plan_text(name);
+            for field in cited {
+                assert!(
+                    fields.contains(*field),
+                    "{name} cites `{field}`, which is not a field the tool returns (has: {fields:?})"
+                );
+                assert!(
+                    text.contains(field),
+                    "{name} plan should reference the `{field}` field but doesn't:\n{text}"
+                );
+            }
+        }
+
+        // Regression guard for the original bug: the interface view exposes
+        // `trace` (structured hops) + `cable` (label); `diagram` is render-only
+        // (`#[serde(skip)]`) and `cable_path` never existed. The plan must name
+        // none of those non-fields.
+        let cable = plan_text("cable_path_trace");
+        for non_field in ["cable_path", "diagram"] {
+            assert!(
+                !iface_fields.contains(non_field),
+                "test assumption broken: `{non_field}` is now an InterfaceView field"
+            );
+            assert!(
+                !cable.contains(non_field),
+                "cable_path_trace plan references the non-field `{non_field}`:\n{cable}"
+            );
+        }
     }
 }

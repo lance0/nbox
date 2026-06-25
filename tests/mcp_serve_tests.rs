@@ -365,7 +365,7 @@ fn serve_handshake_lists_all_tools_with_clean_stdout() {
         .as_str()
         .unwrap_or_else(|| panic!("prompt message had no text: {get}"));
     assert!(
-        text.contains("edge01/xe-0/0/1"),
+        text.contains("interface=\"xe-0/0/1\""),
         "args not substituted: {text}"
     );
     assert!(

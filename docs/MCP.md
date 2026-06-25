@@ -428,10 +428,11 @@ operator question. Discover them with `prompts/list`, expand one with
 
 `prompts/get` returns a single user-role message with the plan, tailored to the
 supplied arguments (e.g. `cable_path_trace` with `device=edge01,
-interface=xe-0/0/1` returns a plan referencing `nbox_get_interface
-"edge01/xe-0/0/1"`). No NetBox round-trip — a prompt is a plan, not data; the
-agent runs the plan against the tools. An unknown prompt name returns
-`invalid_params` listing the available prompts.
+interface=xe-0/0/1` returns a plan that calls `nbox_get_interface` with
+`device=edge01, interface=xe-0/0/1` and reads its `trace` field). No NetBox
+round-trip — a prompt is a plan, not data; the agent runs the plan against the
+tools. An unknown prompt name returns `invalid_params` listing the available
+prompts.
 
 ## Security and behavior
 
