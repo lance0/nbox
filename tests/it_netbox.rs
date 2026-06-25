@@ -180,6 +180,11 @@ fn graphql_backend_status_and_vrf_detail_work() {
     assert_eq!(v["api"]["vrf"]["configured"], "graphql", "got: {v}");
     assert_eq!(v["api"]["vrf"]["effective"], "graphql", "got: {v}");
     assert_eq!(
+        v["api"]["route_target"]["configured"], "graphql",
+        "got: {v}"
+    );
+    assert_eq!(v["api"]["route_target"]["effective"], "graphql", "got: {v}");
+    assert_eq!(
         v["api"]["search"]["effective"], "rest",
         "search must stay REST: {v}"
     );
