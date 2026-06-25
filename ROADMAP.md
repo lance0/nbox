@@ -299,8 +299,15 @@ all read-only. (Market positioning itself stays out of the repo — see private 
 
 - ☐ **Lean into "the agent-native NetBox binary."** One static musl binary, zero runtime, drops into
   any agent sandbox — vs the all-Python MCP field. Worth a measured cold-start/latency comparison.
-- ☐ **MCP prompts catalog.** Curated read-only prompt templates for common investigations (IP
-  utilization audit, path trace, find stale/unused prefixes) alongside the existing tools + resources.
+- ☑ **MCP prompts catalog.** Curated read-only prompt templates for common
+  investigations advertised via `prompts/list` + `prompts/get`: `ip_utilization_audit`,
+  `cable_path_trace`, `find_stale_prefixes`, `object_change_review`. Each returns a
+  user-role message with a structured investigation plan naming the exact nbox tools
+  to call (incl. `nbox_history`), tailored to the supplied arguments. Zero live
+  dependency — a prompt is a plan, not data; the agent runs the plan against the
+  tools. `enable_prompts()` capability advertised; the catalog is static (no NetBox
+  round-trip). Wired the same way as the manual `list_resources` path (the
+  `#[tool_handler]` macro only emits tool methods).
 - ☐ **Token-budget discipline as a headline.** Lean default view models + `--fields` across CLI/MCP;
   document per-tool token footprints (the official server's headline is ~90% reduction via field filtering).
 - ☑ **First-class install recipes.** Copy-paste MCP config for Claude Code / Desktop / Cursor, plus an

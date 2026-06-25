@@ -17,6 +17,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   (the top-level fields whose values differ pre vs post — not the full
   before/after JSON) /`request_id`. Same kind set + ref resolution as `journal`.
   MCP tool `nbox_history` mirrors it (tools: 10 → 11).
+- **MCP prompts catalog.** `nbox serve` advertises a small catalog of read-only
+  investigation prompts via `prompts/list` + `prompts/get`:
+  `ip_utilization_audit`, `cable_path_trace`, `find_stale_prefixes`,
+  `object_change_review`. Each returns a user-role message with a structured
+  plan naming the exact nbox tools to call (incl. `nbox_history`), tailored to
+  the supplied arguments. Zero live dependency — a prompt is a plan, not data;
+  the agent runs the plan against the tools. `enable_prompts()` capability
+  advertised.
 
 ### Changed
 

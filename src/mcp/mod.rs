@@ -14,9 +14,10 @@ use std::sync::Arc;
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{
-    AnnotateAble, JsonObject, ListResourceTemplatesResult, ListResourcesResult,
-    PaginatedRequestParams, ProtocolVersion, RawResourceTemplate, ReadResourceRequestParams,
-    ReadResourceResult, ResourceContents, ServerCapabilities, ServerInfo,
+    AnnotateAble, GetPromptRequestParams, GetPromptResult, JsonObject, ListPromptsResult,
+    ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParams, ProtocolVersion,
+    RawResourceTemplate, ReadResourceRequestParams, ReadResourceResult, ResourceContents,
+    ServerCapabilities, ServerInfo,
 };
 use rmcp::service::RequestContext;
 use rmcp::{
@@ -976,12 +977,16 @@ impl ServerHandler for NboxMcp {
         info.capabilities = ServerCapabilities::builder()
             .enable_tools()
             .enable_resources()
+            .enable_prompts()
             .build();
         info.instructions = Some(
             "Read-only NetBox lookups: search, devices, IPs, prefixes, VLANs, sites, racks, \
-             circuits, journals, tags. Use nbox_search to find an object's reference, then \
-             nbox_get to fetch it. Objects are also exposed as nbox://{kind}/{ref} resources \
-             (same view as nbox_get). Nothing is ever written."
+             circuits, journals, tags, and the change-history (audit log). Use nbox_search to \
+             find an object's reference, then nbox_get to fetch it; nbox_history for what changed \
+             and nbox_journal for operator notes. Objects are also exposed as nbox://{kind}/{ref} \
+             resources (same view as nbox_get). Curated investigation prompts (IP utilization \
+             audit, cable path trace, stale-prefix sweep, object change review) are available \
+             via prompts/list. Nothing is ever written."
                 .into(),
         );
         info
@@ -1017,6 +1022,31 @@ impl ServerHandler for NboxMcp {
     ) -> Result<ReadResourceResult, ErrorData> {
         self.read_resource_impl(&request.uri).await
     }
+
+    // Curated investigation prompts (ROADMAP "MCP prompts catalog"). The catalog
+    // is static (no NetBox round-trip — a prompt is a plan, not data), so
+    // `list_prompts` returns the fixed set and `get_prompt` expands a named
+    // prompt into a user-role message. These sit alongside the `#[tool_handler]`
+    // methods (the macro only emits tool methods) and the manual resource
+    // methods — same pattern as `list_resources`.
+    async fn list_prompts(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListPromptsResult, ErrorData> {
+        Ok(ListPromptsResult {
+            prompts: prompts::prompts(),
+            ..Default::default()
+        })
+    }
+
+    async fn get_prompt(
+        &self,
+        request: GetPromptRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<GetPromptResult, ErrorData> {
+        prompts::render_prompt(request)
+    }
 }
 
 /// Serve the MCP server over stdio until the client disconnects.
@@ -1034,10 +1064,12 @@ pub async fn serve(client: NetBoxClient, cache: Cache) -> anyhow::Result<()> {
 /// [`audit`] is the v1 ops layer (structured audit log + per-caller rate limit).
 #[cfg(feature = "http")]
 pub mod audit;
+
 #[cfg(feature = "http")]
 pub mod http;
 #[cfg(feature = "http")]
 pub mod oidc;
+pub mod prompts;
 #[cfg(feature = "http")]
 pub use http::{OidcArgs, ServeOptions, serve_http};
 

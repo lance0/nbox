@@ -232,6 +232,11 @@ fn serve_handshake_lists_all_tools_with_clean_stdout() {
         result["capabilities"].get("resources").is_some(),
         "initialize result missing capabilities.resources: {init}"
     );
+    // capabilities.prompts must be advertised (the server enables the prompt catalog).
+    assert!(
+        result["capabilities"].get("prompts").is_some(),
+        "initialize result missing capabilities.prompts: {init}"
+    );
     // The negotiated protocol version is echoed back.
     assert_eq!(result["protocolVersion"], PROTOCOL_VERSION);
 
@@ -303,6 +308,69 @@ fn serve_handshake_lists_all_tools_with_clean_stdout() {
     assert!(
         empty.is_empty(),
         "expected no static resources: {resources}"
+    );
+
+    // 6) prompts/list (id 5): the curated investigation-prompt catalog. Proves
+    //    the prompt ServerHandler methods are wired through the real protocol.
+    server.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 5,
+        "method": "prompts/list",
+        "params": {}
+    }));
+
+    let prompts_resp = server.read_response(5);
+    let prompts = prompts_resp["result"]["prompts"]
+        .as_array()
+        .unwrap_or_else(|| panic!("prompts/list had no result.prompts: {prompts_resp}"));
+    let names: Vec<String> = prompts
+        .iter()
+        .map(|p| {
+            p["name"]
+                .as_str()
+                .unwrap_or_else(|| panic!("prompt missing name: {p}"))
+                .to_string()
+        })
+        .collect();
+    assert_eq!(
+        names,
+        vec![
+            "ip_utilization_audit",
+            "cable_path_trace",
+            "find_stale_prefixes",
+            "object_change_review",
+        ],
+        "prompts/list returned an unexpected catalog"
+    );
+
+    // 7) prompts/get (id 6): expanding a named prompt returns a user-role
+    //    message whose text references the nbox tools to call.
+    server.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 6,
+        "method": "prompts/get",
+        "params": {
+            "name": "cable_path_trace",
+            "arguments": {"device": "edge01", "interface": "xe-0/0/1"}
+        }
+    }));
+
+    let get = server.read_response(6);
+    let messages = get["result"]["messages"]
+        .as_array()
+        .unwrap_or_else(|| panic!("prompts/get had no result.messages: {get}"));
+    assert_eq!(messages.len(), 1, "expected one message: {get}");
+    assert_eq!(messages[0]["role"], "user");
+    let text = messages[0]["content"]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("prompt message had no text: {get}"));
+    assert!(
+        text.contains("interface=\"xe-0/0/1\""),
+        "args not substituted: {text}"
+    );
+    assert!(
+        text.contains("nbox_get_interface"),
+        "plan missing tool ref: {text}"
     );
 
     // Close stdin and make sure the process exits (killed as a backstop).
