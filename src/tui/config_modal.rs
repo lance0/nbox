@@ -21,6 +21,7 @@
 //! the modal unit-testable without a terminal or a network.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::hash::{Hash, Hasher};
 
 use crate::config::BackendPreference;
 use crate::netbox::auth::AuthScheme;
@@ -29,7 +30,7 @@ use crate::tui::theme::Theme;
 
 /// Which section of the Config modal is active. `Tab` switches sections at the
 /// Profiles list level and from the Settings form.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ConfigSection {
     Profiles,
     Settings,
@@ -47,7 +48,7 @@ pub mod field {
 }
 
 /// The result of a test-connect attempt, shown in the form before committing.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TestState {
     /// No test run yet for the current form contents.
     Idle,
@@ -394,6 +395,26 @@ impl ProfileForm {
         }
         Ok(())
     }
+
+    /// Feed the visible form state into a render signature. The token field is
+    /// masked by [`FormInput::hash_render_state`], so the raw token is not hashed.
+    fn hash_render_state<H: Hasher>(&self, h: &mut H) {
+        self.inputs.hash_render_state(h);
+        match self.auth_scheme {
+            AuthScheme::Auto => "auto",
+            AuthScheme::Bearer => "bearer",
+            AuthScheme::Token => "token",
+        }
+        .hash(h);
+        self.verify_tls.hash(h);
+        self.exclude_config_context.hash(h);
+        self.api_vrf.as_str().hash(h);
+        self.api_route_target.as_str().hash(h);
+        self.editing.hash(h);
+        self.test.hash(h);
+        self.message.hash(h);
+        self.clear_token.hash(h);
+    }
 }
 
 /// What the Profiles section is currently showing: the list, or an add/edit form,
@@ -430,7 +451,7 @@ impl ProfilesPane {
 }
 
 /// A single setting field.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SettingId {
     /// `[ui].theme` — a cycle (Left/Right/Space), hot-applied live.
     Theme,
@@ -503,7 +524,7 @@ pub const SETTINGS_CATEGORIES: &[(&str, &[SettingId])] = &[
 ];
 
 /// Which pane of the two-pane Settings section holds focus.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum SettingsFocus {
     /// The left category list: `↑/↓` select, `→` enters the fields.
     Categories,
@@ -731,6 +752,27 @@ impl SettingsPane {
         self.api_route_target
     }
 
+    /// Feed the visible settings state into a render signature.
+    fn hash_render_state<H: Hasher>(&self, h: &mut H) {
+        self.focus.hash(h);
+        self.category.hash(h);
+        self.field.hash(h);
+        self.theme_index.hash(h);
+        self.theme_name().hash(h);
+        self.refresh.hash_render_state(h);
+        self.browser.hash_render_state(h);
+        self.log_level.hash_render_state(h);
+        self.log_file.hash_render_state(h);
+        self.cache_enabled.hash(h);
+        self.cache_ttl.hash_render_state(h);
+        self.page_size.hash_render_state(h);
+        self.timeout.hash_render_state(h);
+        self.exclude_config_context.hash(h);
+        self.api_vrf.as_str().hash(h);
+        self.api_route_target.as_str().hash(h);
+        self.message.hash(h);
+    }
+
     /// Cycle an api backend between `rest` and `graphql` (Left/Right/Space on its
     /// row). Two values, so any cycle key flips it.
     fn cycle_api(&mut self, id: SettingId) {
@@ -880,6 +922,29 @@ impl ConfigModal {
                 connection,
             ),
         }
+    }
+
+    /// Feed the on-screen modal state into a render signature.
+    pub(crate) fn hash_render_state<H: Hasher>(&self, h: &mut H) {
+        self.section.hash(h);
+        match &self.profiles.mode {
+            ProfilesMode::List { selected } => {
+                "profiles-list".hash(h);
+                selected.hash(h);
+            }
+            ProfilesMode::Form(form) => {
+                "profiles-form".hash(h);
+                form.hash_render_state(h);
+            }
+            ProfilesMode::ConfirmDelete { name, selected } => {
+                "profiles-confirm-delete".hash(h);
+                name.hash(h);
+                selected.hash(h);
+            }
+        }
+        self.profiles.message.hash(h);
+        self.profiles.last_selected.hash(h);
+        self.settings.hash_render_state(h);
     }
 }
 

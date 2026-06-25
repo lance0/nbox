@@ -705,7 +705,7 @@ escape hatch, and GraphQL still cannot replace canonical REST `q` search.
   dropped as stale. Options, in order: summary-only preview; longer idle delay before warm-prefetch; abort
   handles for superseded preview/search/browse generations. Opening a row should still use the full detail
   cache and preserve the "preview warms open" behavior where possible.
-- ☐ **TUI render dirty-signature (idle CPU/SSH win).** The event loop redraws on the 180ms preview tick even
+- ☑ **TUI render dirty-signature (idle CPU/SSH win).** The event loop redraws on the 180ms preview tick even
   when nothing visible changed; `render_home_list` rebuilds/clones the full row set each draw. Use a
   render-signature diff rather than hand-threading a fragile dirty bool. Signature should include visible
   state (`screen`, `mode`, focus, selections, result/detail ids, status+TTL, spinner frame when loading,
@@ -729,7 +729,7 @@ escape hatch, and GraphQL still cannot replace canonical REST `q` search.
     ~88 for a 42U rack, not 1000) are two round-trips today. They return *different shapes* (full `Device`
     objects vs unit-oriented elevation rows), so "share them" is conditional — only worth it when the elevation
     data suffices for the devices tab and that tab isn't rendered from fields the elevation endpoint lacks;
-  - VLAN detail: `vlan_prefixes` and `vlan_group_scope` are independent — `try_join!`;
+  - ☑ VLAN detail: `vlan_prefixes` and `vlan_group_scope` are independent — `try_join!`;
   - circuit path: memo a panel device's front-port list per detail load so A/Z walks or repeated hops through
     the same patch panel do not page the same 1000 front ports more than once.
 - ☐ **Resolver fallback concurrency.** For non-numeric refs, run exact alternatives concurrently where the

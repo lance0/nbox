@@ -1,7 +1,8 @@
 //! TUI entry point and event loop.
 
 use anyhow::Result;
-use ratatui::DefaultTerminal;
+use ratatui::backend::Backend;
+use ratatui::{DefaultTerminal, Terminal};
 use tokio::sync::mpsc;
 
 use crate::cache::{Cache, CacheKey};
@@ -108,8 +109,9 @@ async fn event_loop(
         );
     }
 
+    let mut render_gate = RenderGate::default();
     while !app.should_quit {
-        terminal.draw(|frame| ui::render(frame, app))?;
+        draw_if_dirty(terminal, app, &mut render_gate)?;
 
         let Some(event) = rx.recv().await else { break };
         // Never await network here — dispatch each command on its own task,
@@ -129,6 +131,53 @@ async fn event_loop(
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct RenderSignature {
+    digest: u64,
+}
+
+impl RenderSignature {
+    fn new(app: &App, size: (u16, u16)) -> Self {
+        Self {
+            digest: app.render_digest(size),
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+struct RenderGate {
+    last_drawn: Option<RenderSignature>,
+}
+
+impl RenderGate {
+    fn needs_draw(&self, app: &App, size: (u16, u16)) -> bool {
+        self.last_drawn != Some(RenderSignature::new(app, size))
+    }
+
+    fn record_drawn(&mut self, app: &App, size: (u16, u16)) {
+        self.last_drawn = Some(RenderSignature::new(app, size));
+    }
+}
+
+fn draw_if_dirty<B>(
+    terminal: &mut Terminal<B>,
+    app: &mut App,
+    gate: &mut RenderGate,
+) -> Result<bool>
+where
+    B: Backend,
+    B::Error: std::error::Error + Send + Sync + 'static,
+{
+    let size = terminal.size()?;
+    let size = (size.width, size.height);
+    if !gate.needs_draw(app, size) {
+        return Ok(false);
+    }
+    terminal.draw(|frame| ui::render(frame, app))?;
+    gate.record_drawn(app, size);
+    Ok(true)
 }
 
 /// Spawn the auto-refresh ticker at `secs` (skipping `None`/`0` = off), returning
@@ -398,4 +447,211 @@ fn copy_to_clipboard(text: &str) -> Result<()> {
 #[cfg(not(feature = "clipboard"))]
 fn copy_to_clipboard(_text: &str) -> Result<()> {
     anyhow::bail!("clipboard support was not built in (enable the `clipboard` feature)")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::ProfileConfig;
+    use crate::netbox::search::{ObjectKind, SearchOutcome, SearchResult};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use ratatui::backend::TestBackend;
+
+    fn app() -> App {
+        let profile = ProfileConfig {
+            url: "http://localhost".into(),
+            ..Default::default()
+        };
+        let client = NetBoxClient::new(&profile, None).unwrap();
+        App::new(
+            client,
+            "default",
+            "test".into(),
+            "http://localhost".into(),
+            "4.6.0".into(),
+            None,
+        )
+    }
+
+    fn terminal() -> Terminal<TestBackend> {
+        Terminal::new(TestBackend::new(80, 24)).unwrap()
+    }
+
+    fn buffer_text(term: &Terminal<TestBackend>) -> String {
+        term.backend()
+            .buffer()
+            .content
+            .iter()
+            .map(ratatui::buffer::Cell::symbol)
+            .collect()
+    }
+
+    fn result() -> SearchResult {
+        SearchResult {
+            kind: ObjectKind::Device,
+            id: 42,
+            display: "edge01".into(),
+            subtitle: Some("dc1".into()),
+            url: "http://localhost/dcim/devices/42/".into(),
+            score: 100,
+        }
+    }
+
+    fn press(code: KeyCode) -> AppEvent {
+        AppEvent::Key(KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn render_gate_initial_draw_happens() {
+        let mut app = app();
+        let mut term = terminal();
+        let mut gate = RenderGate::default();
+
+        assert!(draw_if_dirty(&mut term, &mut app, &mut gate).unwrap());
+        assert!(buffer_text(&term).contains("profile:"));
+    }
+
+    #[test]
+    fn render_gate_idle_preview_tick_after_stable_frame_skips_draw() {
+        let mut app = app();
+        let mut term = terminal();
+        let mut gate = RenderGate::default();
+
+        assert!(draw_if_dirty(&mut term, &mut app, &mut gate).unwrap());
+        let before = buffer_text(&term);
+        assert!(app.handle_event(AppEvent::PreviewTick).is_empty());
+
+        assert!(!draw_if_dirty(&mut term, &mut app, &mut gate).unwrap());
+        assert_eq!(buffer_text(&term), before);
+    }
+
+    #[test]
+    fn render_gate_spinner_draws_while_loading_and_stops_after_settle() {
+        let mut app = app();
+        let mut term = terminal();
+        let mut gate = RenderGate::default();
+
+        assert!(draw_if_dirty(&mut term, &mut app, &mut gate).unwrap());
+        app.pending = 1;
+        assert!(draw_if_dirty(&mut term, &mut app, &mut gate).unwrap());
+
+        assert!(app.handle_event(AppEvent::PreviewTick).is_empty());
+        assert!(
+            draw_if_dirty(&mut term, &mut app, &mut gate).unwrap(),
+            "spinner frame change redraws"
+        );
+
+        app.handle_event(AppEvent::SearchComplete {
+            req: 0,
+            result: Ok(SearchOutcome {
+                results: Vec::new(),
+                errors: Vec::new(),
+            }),
+        });
+        assert!(
+            draw_if_dirty(&mut term, &mut app, &mut gate).unwrap(),
+            "settle redraws to clear spinner"
+        );
+        assert!(app.handle_event(AppEvent::PreviewTick).is_empty());
+        assert!(
+            !draw_if_dirty(&mut term, &mut app, &mut gate).unwrap(),
+            "idle ticks stop drawing after settle"
+        );
+    }
+
+    #[test]
+    fn render_gate_transient_status_draws_until_it_clears() {
+        let mut app = app();
+        let mut term = terminal();
+        let mut gate = RenderGate::default();
+
+        assert!(draw_if_dirty(&mut term, &mut app, &mut gate).unwrap());
+        app.handle_event(AppEvent::Status("copied: edge01".into()));
+        assert!(draw_if_dirty(&mut term, &mut app, &mut gate).unwrap());
+        assert!(buffer_text(&term).contains("copied: edge01"));
+
+        for _ in 0..9 {
+            assert!(app.handle_event(AppEvent::PreviewTick).is_empty());
+            assert!(
+                draw_if_dirty(&mut term, &mut app, &mut gate).unwrap(),
+                "ttl countdown redraws"
+            );
+        }
+
+        assert!(app.handle_event(AppEvent::PreviewTick).is_empty());
+        assert!(
+            draw_if_dirty(&mut term, &mut app, &mut gate).unwrap(),
+            "ttl expiry redraws once to clear"
+        );
+        assert!(!buffer_text(&term).contains("copied: edge01"));
+
+        assert!(app.handle_event(AppEvent::PreviewTick).is_empty());
+        assert!(!draw_if_dirty(&mut term, &mut app, &mut gate).unwrap());
+    }
+
+    #[test]
+    fn render_gate_preview_debounce_command_alone_does_not_redraw() {
+        let mut app = app();
+        let mut term = terminal();
+        let mut gate = RenderGate::default();
+        app.results = vec![result()];
+        app.view = vec![0];
+        app.selected = 0;
+        app.preview_dirty = true;
+
+        assert!(draw_if_dirty(&mut term, &mut app, &mut gate).unwrap());
+        let commands = app.handle_event(AppEvent::PreviewTick);
+        assert!(matches!(
+            commands.as_slice(),
+            [AppCommand::LoadPreview {
+                kind: ObjectKind::Device,
+                id: 42
+            }]
+        ));
+        assert!(!draw_if_dirty(&mut term, &mut app, &mut gate).unwrap());
+    }
+
+    #[test]
+    fn render_gate_async_result_events_redraw() {
+        let mut app = app();
+        let mut term = terminal();
+        let mut gate = RenderGate::default();
+
+        assert!(draw_if_dirty(&mut term, &mut app, &mut gate).unwrap());
+        app.handle_event(AppEvent::SearchComplete {
+            req: 0,
+            result: Ok(SearchOutcome {
+                results: vec![result()],
+                errors: Vec::new(),
+            }),
+        });
+
+        assert!(draw_if_dirty(&mut term, &mut app, &mut gate).unwrap());
+        assert!(buffer_text(&term).contains("edge01"));
+    }
+
+    #[test]
+    fn render_gate_keypress_visible_change_redraws() {
+        let mut app = app();
+        let mut term = terminal();
+        let mut gate = RenderGate::default();
+
+        assert!(draw_if_dirty(&mut term, &mut app, &mut gate).unwrap());
+        assert!(app.handle_event(press(KeyCode::Tab)).is_empty());
+
+        assert!(draw_if_dirty(&mut term, &mut app, &mut gate).unwrap());
+    }
+
+    #[test]
+    fn render_gate_terminal_resize_redraws() {
+        let mut app = app();
+        let mut term = terminal();
+        let mut gate = RenderGate::default();
+
+        assert!(draw_if_dirty(&mut term, &mut app, &mut gate).unwrap());
+        assert!(!draw_if_dirty(&mut term, &mut app, &mut gate).unwrap());
+
+        term.backend_mut().resize(100, 30);
+        assert!(draw_if_dirty(&mut term, &mut app, &mut gate).unwrap());
+    }
 }

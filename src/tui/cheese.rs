@@ -20,6 +20,7 @@ use ratatui::widgets::Paragraph;
 use ratatui_cheese::input::{Input, InputState};
 use ratatui_cheese::spinner::{SpinnerState, SpinnerType};
 use ratatui_cheese::theme::Palette;
+use std::hash::{Hash, Hasher};
 
 use crate::tui::theme::Theme;
 
@@ -170,6 +171,15 @@ impl TextInput {
         } else {
             self.state.value().to_string()
         }
+    }
+
+    /// Feed the on-screen input state into a render signature. Masked fields hash
+    /// only their rendered bullets, never the secret value.
+    pub(crate) fn hash_render_state<H: Hasher>(&self, h: &mut H) {
+        self.rendered_text().hash(h);
+        self.placeholder.hash(h);
+        self.cursor_pos().hash(h);
+        self.masked.hash(h);
     }
 
     /// Apply a key to the input, mutating its text/cursor. PURE: no I/O, just a
@@ -511,6 +521,16 @@ impl FormInput {
             .iter()
             .map(|(label, input)| (label.clone(), input.rendered_text()))
             .collect()
+    }
+
+    /// Feed the visible form state into a render signature. Masked fields hash
+    /// their rendered text through [`TextInput::hash_render_state`].
+    pub(crate) fn hash_render_state<H: Hasher>(&self, h: &mut H) {
+        self.focus.hash(h);
+        for (label, input) in &self.fields {
+            label.hash(h);
+            input.hash_render_state(h);
+        }
     }
 
     /// Render the form into `area`, one labelled row per field, returning the

@@ -7,6 +7,7 @@
 //! "one scope at a time" is a UI invariant rather than a post-hoc error.
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use std::hash::{Hash, Hasher};
 
 use crate::netbox::search::SearchFilters;
 use crate::tui::cheese::TextInput;
@@ -133,6 +134,19 @@ impl FilterModal {
             }
         }
         f
+    }
+
+    /// Feed the on-screen modal state into a render signature.
+    pub(crate) fn hash_render_state<H: Hasher>(&self, h: &mut H) {
+        self.focus.hash(h);
+        self.scope_type.hash(h);
+        self.scope_type_label().hash(h);
+        self.status.hash_render_state(h);
+        self.scope_value.hash_render_state(h);
+        self.tenant.hash_render_state(h);
+        self.role.hash_render_state(h);
+        self.tag.hash_render_state(h);
+        self.vrf.hash_render_state(h);
     }
 
     fn focus_next(&mut self) {
