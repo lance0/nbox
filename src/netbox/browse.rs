@@ -19,10 +19,16 @@ use crate::util::format::api_to_web_url;
 
 /// Upper bound on rows pulled for a single browse (keeps a large instance from
 /// dragging the whole table into memory; search is the tool for finding a needle).
-/// Sized to NetBox's per-request `MAX_PAGE_SIZE` ceiling (1000) so a cap-full
-/// browse lands in a single round trip — go higher and `list_all` pages a second
-/// request for the remainder.
-pub const BROWSE_CAP: usize = 1000;
+///
+/// Deliberately 500, not the `MAX_PAGE_SIZE` ceiling (1000): a cap-full list is
+/// still a single round trip (500 ≤ 1000), and the rows past a few hundred are
+/// essentially never scrolled to — at that scale the filter narrows, not the cap.
+/// The larger cap also doubles the TUI's idle render work (the list `Vec<Row>` is
+/// rebuilt on every draw, ~5.5 Hz while the 180ms `PreviewTick` is firing; see
+/// the ROADMAP `TUI render dirty-flag` item), for rows no one reads. The filter
+/// is the escape hatch, not a bigger cap. (0.11.0 briefly raised this 500 → 1000;
+/// reverted because the network-only "free" claim ignored the render side.)
+pub const BROWSE_CAP: usize = 500;
 
 /// The server-side filter a browse `filter` maps to for `kind`. Two shapes, both
 /// applied server-side so a browse narrows without pulling the whole table:

@@ -683,11 +683,11 @@ A batch of proposed perf wins, each verified against the code. Net: one quick wi
   filters need the resolved ids (`site_id`/`vrf_id`/scope content-type), so it can't start blind; a
   cancellation token doesn't help when the input is the missing value.
 - ☐ **TUI render dirty-flag (idle-CPU win, medium).** The event loop `terminal.draw`s on every event, and
-  the 180ms `PreviewTick` always arrives → a full widget rebuild ≥5.5 Hz even when idle (1000-row `Vec<Row>`
-  clones + `format!`). ratatui diffs the *buffer* (I/O minimal) but not the Rust-side rebuild. A render-dirty
-  flag would skip the redraw when nothing changed — a battery/SSH win, not latency. CARE: the tick also
-  advances the spinner, status-TTL expiry, and the browse/preview debounce flush, so the flag must key on
-  *state mutation* (and still mark dirty on spinner ticks, status changes, async results) — not on "no
+  the 180ms `PreviewTick` always arrives → a full widget rebuild ≥5.5 Hz even when idle (a cap-full `Vec<Row>`
+  clones + `format!`; 500 rows post-revert, was 1000). ratatui diffs the *buffer* (I/O minimal) but not the
+  Rust-side rebuild. A render-dirty flag would skip the redraw when nothing changed — a battery/SSH win, not
+  latency. CARE: the tick also advances the spinner, status-TTL expiry, and the browse/preview debounce flush,
+  so the flag must key on *state mutation* (and still mark dirty on spinner ticks, status changes, async results) — not on "no
   keypress," or it freezes the spinner / stalls TTL.
 - ☐ **HTTP/2 multiplexing — probe DONE (2026-06-21), promising; implement+verify next.** reqwest's `http2`
   feature is **off** (the `h2` in the lockfile is axum's MCP server, not the outbound client), so the client
