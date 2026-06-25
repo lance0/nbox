@@ -1,0 +1,63 @@
+# cargo-deny policy for scheduled supply-chain checks.
+#
+# PRs run `cargo audit` for advisories. This broader scheduled gate also checks
+# licenses, duplicate-version pressure, and dependency sources. Keep exceptions
+# documented here so dependency drift is reviewable.
+
+[graph]
+all-features = true
+targets = [
+    "x86_64-unknown-linux-gnu",
+    "x86_64-unknown-linux-musl",
+    "aarch64-unknown-linux-musl",
+    "aarch64-unknown-linux-gnu",
+    "aarch64-apple-darwin",
+    "x86_64-apple-darwin",
+    "x86_64-pc-windows-msvc",
+]
+
+[advisories]
+version = 2
+yanked = "warn"
+ignore = [
+    # RUSTSEC-2023-0071 — same rationale as `.cargo/audit.toml`: reaches the
+    # shipped binary through jsonwebtoken's RSA verification path only; no RSA
+    # private-key oracle is exposed by nbox. Revisit when upstream fixes `rsa`
+    # or we can move to a release-safe non-vulnerable backend.
+    "RUSTSEC-2023-0071",
+]
+
+[licenses]
+version = 2
+confidence-threshold = 0.8
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "CDLA-Permissive-2.0",
+    "ISC",
+    "MIT",
+    "MPL-2.0",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+
+[licenses.private]
+ignore = false
+
+[bans]
+# The current graph intentionally carries several transitive duplicate stacks
+# (notably crypto and Windows crates). Keep this quiet until a focused dependency
+# cleanup can make duplicate-version pressure actionable.
+multiple-versions = "allow"
+wildcards = "allow"
+highlight = "all"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

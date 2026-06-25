@@ -604,6 +604,7 @@ Full list with copy-paste fixes: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.
 - [Compatibility](docs/COMPATIBILITY.md) — NetBox 4.2 / 4.3 / 4.5+ matrix and how nbox adapts
 - [Comparison](docs/COMPARISON.md) — nbox vs the NetBox web UI / raw API, and when to use each
 - [Scripting & automation](docs/SCRIPTING.md) — JSON/CSV/envelope schemas, exit codes, jq recipes, CI
+- [Continuous Integration](docs/CI.md) — required checks, scheduled gates, local smoke
 - [MCP server](docs/MCP.md) — agent setup, tools, HTTP/OIDC
 - [Architecture](docs/ARCHITECTURE.md) — internal design and module structure
 - [Agents](AGENTS.md) — machine-readable surface, output formats, exit codes

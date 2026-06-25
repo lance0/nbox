@@ -1,0 +1,47 @@
+name: Security
+
+on:
+  schedule:
+    - cron: "43 10 * * 1"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  supply-chain:
+    name: supply-chain
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo-audit
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-0.21
+
+      - name: Install cargo-audit
+        run: command -v cargo-audit || cargo install cargo-audit --locked
+
+      - name: Cache cargo-deny
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-deny
+          key: cargo-deny-0.19
+
+      - name: Install cargo-deny
+        run: command -v cargo-deny || cargo install cargo-deny --locked
+
+      - name: Run security audit
+        run: cargo audit
+
+      - name: Run cargo-deny
+        run: cargo deny check advisories bans sources licenses
