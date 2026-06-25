@@ -699,13 +699,24 @@ escape hatch, and GraphQL still cannot replace canonical REST `q` search.
   state (`screen`, `mode`, focus, selections, result/detail ids, status+TTL, spinner frame when loading,
   browse/filter state, theme, update banner, terminal size). Failure mode should be over-redraw = status quo,
   never frozen UI.
+  - **tick paths that mutate rendered state** (must invalidate the signature): spinner advances *while
+    `pending > 0`*; browse/preview debounce flushes *while their dirty flag is set* (the cmd they emit
+    redraws on arrival); status-TTL expiry; the async completions (`SearchComplete`/`BrowseComplete`/
+    `DetailLoaded`/`PreviewLoaded`/`NavCounts`/`Status`); and `Resize` (terminal size, not `App` state).
+  - **test matrix:** idle-no-redraw · spinner-advances-while-loading (then stops on settle) · status-expires
+    (redraws while TTL > 0, stops after) · debounce-emits-cmd (no redraw on the tick itself) ·
+    async-result-redraws · keypress-redraws · resize-redraws. Extend the existing `TestBackend` +
+    `buffer().content` scaffold (`ui.rs:2340`).
 - ☐ **Cache render products / viewport-only render.** Once redraw frequency is under control, cache derived
   list data (`sub_w`, owned row cells) when `results/view` changes, and cache active detail-tab lines/counts
   when `(detail id, tab, theme)` changes. For long tabs and prefix-tree views, render only the viewport slice
   instead of every visible row.
 - ☐ **Backend fan-out cleanup.** Small, safe latency wins:
-  - rack detail: fetch rack devices once and share them between the devices tab and rack elevation instead of
-    one `DETAIL_SECTION_CAP` list plus a second 1000-row elevation list;
+  - rack detail: the devices tab (`contained_devices_tab`, a `DETAIL_SECTION_CAP` `Device` list) and the
+    elevation tab (`load_rack_elevation`, a *separate* height-bounded fetch — `limit = (u_height*2+4).max(50)`,
+    ~88 for a 42U rack, not 1000) are two round-trips today. They return *different shapes* (full `Device`
+    objects vs unit-oriented elevation rows), so "share them" is conditional — only worth it when the elevation
+    data suffices for the devices tab and that tab isn't rendered from fields the elevation endpoint lacks;
   - VLAN detail: `vlan_prefixes` and `vlan_group_scope` are independent — `try_join!`;
   - circuit path: memo a panel device's front-port list per detail load so A/Z walks or repeated hops through
     the same patch panel do not page the same 1000 front ports more than once.
