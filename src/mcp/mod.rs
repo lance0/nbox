@@ -278,6 +278,10 @@ pub struct HistoryArgs {
     pub reference: String,
     /// Maximum number of entries (newest first). Defaults to 20.
     pub limit: Option<usize>,
+    /// Include the full before/after change payload on each row. The payloads
+    /// are kilobytes each, so pair with a small `limit` (e.g. 1) to inspect one
+    /// change in full; defaults to `false` (compact rows, no payloads).
+    pub diff: Option<bool>,
 }
 
 /// Arguments for `nbox_list_tags`.
@@ -696,6 +700,7 @@ impl NboxMcp {
         Parameters(args): Parameters<HistoryArgs>,
     ) -> Result<Json<HistoryView>, ErrorData> {
         let limit = args.limit.unwrap_or(20);
+        let diff = args.diff.unwrap_or(false);
         let (content_type, id) = self
             .resolve_content_type_id(args.kind, &args.reference)
             .await
@@ -705,7 +710,7 @@ impl NboxMcp {
             .object_changes(content_type, id, limit)
             .await
             .map_err(to_mcp_error)?;
-        Ok(Json(HistoryView::from_models(changes)))
+        Ok(Json(HistoryView::from_models(changes, diff)))
     }
 
     /// List the tags defined in NetBox.

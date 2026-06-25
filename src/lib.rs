@@ -373,9 +373,12 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Journal { kind, value, limit }) => {
             run_journal(&ctx, &kind, &value, limit).await
         }
-        Some(Command::History { kind, value, limit }) => {
-            run_history(&ctx, &kind, &value, limit).await
-        }
+        Some(Command::History {
+            kind,
+            value,
+            limit,
+            diff,
+        }) => run_history(&ctx, &kind, &value, limit, diff).await,
         Some(Command::Raw { method, path }) => run_raw(&ctx, &method, &path).await,
         Some(Command::Status) => run_status(&ctx).await,
         Some(Command::Config { command }) => config::run_config(
@@ -1600,12 +1603,22 @@ async fn run_journal(ctx: &Ctx, kind: &str, value: &str, limit: usize) -> Result
 /// (system-recorded create/update/delete), and render the timeline. Mirrors
 /// [`run_journal`](fn@run_journal) against `/api/core/object-changes/` instead
 /// of operator journal notes.
-async fn run_history(ctx: &Ctx, kind: &str, value: &str, limit: usize) -> Result<()> {
+async fn run_history(
+    ctx: &Ctx,
+    kind: &str,
+    value: &str,
+    limit: Option<usize>,
+    diff: bool,
+) -> Result<()> {
     let client = connect(ctx)?;
     let (content_type, id) = resolve_content_type_id(&client, kind, value).await?;
+    // `--diff` inspects a single change's full before/after payload, so default
+    // to one entry; an explicit `--limit` still wins so an agent can pull several
+    // full payloads at once.
+    let limit = limit.unwrap_or(if diff { 1 } else { 20 });
     let changes = client.object_changes(content_type, id, limit).await?;
 
-    let view = HistoryView::from_models(changes);
+    let view = HistoryView::from_models(changes, diff);
     emit(ctx, &view, || println!("{}", view.to_plain()))
 }
 

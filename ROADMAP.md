@@ -332,13 +332,16 @@ all read-only. (Market positioning itself stays out of the repo — see private 
   skills (e.g. search, IPAM, device/interface context, `serve`) in the standard agent-skills layout
   (`skills/<name>/SKILL.md`). Keep them flag-free — point at `nbox <cmd> --help` rather than enumerating
   flags, so they can't silently drift as the CLI evolves — and lint the shape in CI.
-- ☑ **Read-only history/changelog tool.** `nbox history <kind> <ref>` shows the
-  system-recorded create/update/delete timeline for an object (who, when, and
-  which fields changed) from `/api/core/object-changes/` (NetBox 4.x), distinct
+- ☑ **Read-only history/changelog tool + `--diff`.** `nbox history <kind> <ref>`
+  shows the system-recorded create/update/delete timeline for an object (who, when,
+  and which fields changed) from `/api/core/object-changes/` (NetBox 4.x), distinct
   from `journal` (operator notes). Each row carries `time`/`action`/`user`/
   `object`/`message`/`fields_changed`/`request_id` — the top-level fields whose
-  values differ pre vs post, not the full before/after JSON. MCP `nbox_history`
-  mirrors it. Answers agent "what happened to this prefix?" queries.
+  values differ pre vs post. MCP `nbox_history` mirrors it. `--diff` (CLI) /
+  `diff=true` (MCP) additionally includes the full `before`/`after` change payloads
+  per row — the full JSON for a single change (CLI `--diff` implies `--limit 1`),
+  closing the loop on the compact `fields_changed` summary. Answers agent "what
+  happened to this prefix?" queries.
 - ☐ **Structured read-only exports.** An export mode producing Prometheus targets / firewall
   address-lists / device inventories from live NetBox (the `netbox-lists` niche, as one fast binary).
 
