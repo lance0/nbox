@@ -46,6 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **TUI browse switching.** Browse-by-kind results are now cached in the TUI
   session by kind + active browse filter, so revisiting a Nav kind repaints the
   prior list immediately while a background browse refreshes it.
+- **TUI preview cancellation.** Scrolling the results list spawns a background
+  preview fetch per settle; a second settle while the first fetch is still in
+  flight now aborts the superseded task instead of letting it run to completion
+  and dropping its result on arrival — freeing the connection + CPU. Stale-
+  response suppression stays as a backstop; the detail cache ("preview warms
+  open") is unaffected.
 - **VLAN detail fan-out.** VLAN detail now fetches referencing prefixes and the
   VLAN group's scope concurrently, preserving the same JSON/plain view shape while
   saving one round trip when a VLAN has both.
