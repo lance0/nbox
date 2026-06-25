@@ -115,6 +115,14 @@ Polish the read experience. No writes here.
   parent-prefix enrichment as a best-effort longest match, and name lookups resolving exact-then-contains
   — are **by design** (surfacing ambiguity over guessing), acknowledged here, not tracked for a fix._
 - ☐ **Demo recording** — an asciinema/VHS cast for the README.
+- ☐ **Headless/SSH clipboard (OSC 52).** `y`-copy uses `arboard`, which only speaks X11/Wayland — over
+  SSH with no display forwarding it waits out the X11 connection timeout, then fails with a cryptic error
+  (the copy runs on a spawned task, so the UI doesn't freeze, but nothing reaches a clipboard). Fix: when
+  no `$DISPLAY`/`$WAYLAND_DISPLAY` is set, skip `arboard` and emit an OSC 52 escape
+  (`ESC ]52;c;<base64>BEL`) so the *local* terminal writes the *local* clipboard over the SSH stream; keep
+  `arboard` when a display is present, and fall back to OSC 52 on an `arboard` error rather than surfacing
+  the X11 message. Document the caveats (tmux needs `set -g set-clipboard on`; some terminals disable OSC
+  52) and keep the status honest ("copied via terminal").
 - ☑ **Interface journal + `nbox_get interface`.** Interfaces are now a
   first-class `GetKind::Interface` in both `nbox_get` (MCP + resource) and the
   journal resolver, so `nbox journal interface <device>/<name>` and `nbox_get`
