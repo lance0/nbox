@@ -9,6 +9,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Search per-endpoint row cap.** Each search branch now fetches at most
+  `min(page_size, max(req.limit, SEARCH_BRANCH_FLOOR))` rows (floor 25), not the
+  full `page_size` (100 by default). The merge truncates to `req.limit` anyway,
+  so a `--limit 25` search previously deserialized ~20 endpoints × 100 rows
+  (2000 rows) to return 25; it now fetches ~20 × 25 (500). The merge/sort/
+  dedupe/truncate behavior is unchanged — each branch just contributes a narrower
+  top-K. A floor of 25 keeps each branch wide enough to rank across endpoints
+  (nbox's `score_match` is coarser than NetBox's own `q` relevance). A regression
+  test pins the per-endpoint `limit=` query param so the cap can't drift back to
+  `page_size`.
 - **Detail-section cap normalized to 200.** The three detail-view section caps
   (`DEVICE_CAP` 200, `SECTION_CAP` 50, `VRF_SECTION_CAP` 200) collapsed into a
   single `DETAIL_SECTION_CAP = 200` (`src/domain/detail.rs`). `SECTION_CAP = 50`

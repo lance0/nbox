@@ -1939,3 +1939,131 @@ async fn search_swallows_404_on_version_gated_endpoints() {
         .expect("device hit survives the 404s on version-gated branches");
     assert_eq!(device.display, "edge01");
 }
+
+// --- search per-endpoint row cap (0.12.1) --------------------------------------
+// Each search branch fetches min(page_size, max(req.limit, SEARCH_BRANCH_FLOOR))
+// rows, not the full page_size — the merge truncates to req.limit anyway, so the
+// extra rows are deserialized only to be thrown away. These tests pin the limit=
+// query param so the cap can't silently regress to page_size.
+
+/// All 20 search endpoints except the one under test, mounted empty (no limit
+/// constraint) so only the constrained mock can prove the limit value.
+async fn mount_empty_all_except(server: &MockServer, except: &str) {
+    let all = [
+        "/api/dcim/devices/",
+        "/api/dcim/sites/",
+        "/api/ipam/ip-addresses/",
+        "/api/ipam/prefixes/",
+        "/api/ipam/vlans/",
+        "/api/circuits/circuits/",
+        "/api/circuits/virtual-circuits/",
+        "/api/ipam/aggregates/",
+        "/api/ipam/asns/",
+        "/api/ipam/ip-ranges/",
+        "/api/tenancy/tenants/",
+        "/api/tenancy/contacts/",
+        "/api/circuits/providers/",
+        "/api/virtualization/virtual-machines/",
+        "/api/virtualization/virtual-machine-types/",
+        "/api/virtualization/clusters/",
+        "/api/dcim/racks/",
+        "/api/dcim/rack-groups/",
+        "/api/ipam/vrfs/",
+        "/api/ipam/route-targets/",
+    ];
+    for p in all {
+        if p != except {
+            mount_empty(server, p).await;
+        }
+    }
+}
+
+#[tokio::test]
+async fn search_caps_per_endpoint_at_req_limit() {
+    // A `--limit 25` search (page_size 100) caps each branch at 25, not 100.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/"))
+        .and(query_param("limit", "25"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 1, "url": "u", "name": "edge01",
+                         "site": {"id": 9, "display": "iad1"}}]
+        })))
+        .expect(1) // regression catcher: must be called with limit=25
+        .mount(&server)
+        .await;
+    mount_empty_all_except(&server, "/api/dcim/devices/").await;
+
+    let results = client(&server)
+        .search(SearchRequest {
+            query: "edge01".into(),
+            limit: 25,
+            filters: SearchFilters::default(),
+        })
+        .await
+        .unwrap()
+        .results;
+    assert_eq!(results.len(), 1);
+}
+
+#[tokio::test]
+async fn search_floors_per_endpoint_limit_at_25() {
+    // A tiny `--limit 5` still sends limit=25 (the floor), not 5 — the merge
+    // needs enough candidates to rank across endpoints.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/"))
+        .and(query_param("limit", "25")) // floor, not 5
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 1, "url": "u", "name": "edge01",
+                         "site": {"id": 9, "display": "iad1"}}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    mount_empty_all_except(&server, "/api/dcim/devices/").await;
+
+    let results = client(&server)
+        .search(SearchRequest {
+            query: "edge01".into(),
+            limit: 5,
+            filters: SearchFilters::default(),
+        })
+        .await
+        .unwrap()
+        .results;
+    assert_eq!(results.len(), 1);
+}
+
+#[tokio::test]
+async fn search_caps_per_endpoint_at_page_size_for_large_limit() {
+    // A `--limit 200` (above page_size 100) caps each branch at 100 (page_size),
+    // not 200 — the server would silently clamp it anyway, but we avoid sending
+    // a value above MAX_PAGE_SIZE.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/"))
+        .and(query_param("limit", "100")) // page_size, not 200
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 1, "url": "u", "name": "edge01",
+                         "site": {"id": 9, "display": "iad1"}}]
+        })))
+        .expect(1)
+        .mount(&server)
+        .await;
+    mount_empty_all_except(&server, "/api/dcim/devices/").await;
+
+    let results = client(&server)
+        .search(SearchRequest {
+            query: "edge01".into(),
+            limit: 200,
+            filters: SearchFilters::default(),
+        })
+        .await
+        .unwrap()
+        .results;
+    assert_eq!(results.len(), 1);
+}

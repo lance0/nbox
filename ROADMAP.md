@@ -683,11 +683,11 @@ escape hatch, and GraphQL still cannot replace canonical REST `q` search.
   independent sequential awaits before the fan-out; now `tokio::try_join!`ed — saves 1-4 RTTs on
   filtered searches, zero risk, byte-identical results. Do **not** fire the fan-out before resolution:
   the branches need resolved ids (`site_id`/`vrf_id`/scope content-type).
-- ☐ **Search per-endpoint row cap (highest backend win).** `SearchRequest.limit` may be 25/50, but each
-  branch currently fetches the profile `page_size` before the merged result is truncated. A broad search can
-  deserialize/rank ~20 endpoints × 100 rows to return 25. Add `list_limited` / a limit override and cap each
-  branch at `min(page_size, max(req.limit, floor))`, preserving the global merge/sort/dedupe/truncate behavior.
-  Add a request-count/`limit=` regression test so this does not drift.
+- ☑ **Search per-endpoint row cap (highest backend win).** `SearchRequest.limit` may be 25/50, but each
+  branch previously fetched the profile `page_size` before the merged result was truncated. A broad search
+  deserialized/ranked ~20 endpoints × 100 rows to return 25. Done: a `list_limited` method caps each branch
+  at `min(page_size, max(req.limit, SEARCH_BRANCH_FLOOR))` (floor 25), preserving the global
+  merge/sort/dedupe/truncate behavior. A `limit=` regression test pins the cap.
 - ☐ **Cheap/cancellable TUI preview.** `LoadPreview` currently uses the same full detail path as `Enter`.
   Scrolling over devices/prefixes/sites/racks/VRFs can fan out into multi-request details that are later
   dropped as stale. Options, in order: summary-only preview; longer idle delay before warm-prefetch; abort
