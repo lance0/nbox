@@ -20,6 +20,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   layer, not the dcim/ipam domain layer. `BROWSE_CAP = 1000` (whole-kind browse,
   a different concept) is unchanged. A full `/24` still truncates at 200; closing
   that fully is a targeted `--all`/fetch-all toggle, not a cap bump.
+- **Browse cap reverted 1000 → 500.** A Nav-rail browse now pulls up to 500 rows
+  (0.11.0 raised it to 1000; reverted). 500 is still a single round trip (it's
+  below NetBox's per-request `MAX_PAGE_SIZE` ceiling of 1000), so the network
+  cost is identical — but the rows past a few hundred are essentially never
+  scrolled to (at that scale the filter narrows, not the cap), and 1000 doubled
+  the TUI's idle render work: the list `Vec<Row>` is rebuilt on every draw
+  (~5.5 Hz while the 180ms `PreviewTick` fires; see the ROADMAP `TUI render
+  dirty-flag` item) for rows no one reads. The filter is the escape hatch, not
+  a bigger cap. The list-count badge reads `500+` when capped. (The dirty-flag
+  fix would eliminate idle rebuilds for *all* list sizes — a separate, scheduled
+  win; it doesn't change that 500 is the right cap either way, since every
+  *change* still rebuilds the full list and 1000 stays 2× the cost at those
+  moments.)
 
 ## [0.12.0] - 2026-06-24
 
