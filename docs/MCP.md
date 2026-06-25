@@ -411,6 +411,28 @@ caller-fixable mapping `nbox_get` uses (an ambiguous `ref` can't be
 disambiguated through a flat URI, so use `nbox_get` with `vrf`/`site`/`group` for
 those).
 
+## Prompts
+
+`nbox serve` advertises a small catalog of **read-only investigation prompts**
+(ROADMAP "MCP prompts catalog"). A prompt is a parameterized *plan* — a
+structured set of steps naming the exact nbox tools to call — for a common
+operator question. Discover them with `prompts/list`, expand one with
+`prompts/get`:
+
+| Prompt | Args | Investigates |
+| ------ | ---- | ------------- |
+| `ip_utilization_audit` | `site?`, `status?` | Prefixes ≥85% (near-full) and <10% (stale), with per-prefix recommendations. |
+| `cable_path_trace` | `device`, `interface` | An interface's A-side ↔ Z-side cable path, through patch panels. |
+| `find_stale_prefixes` | `site?` | Reclaimable prefixes (no/few assigned IPs), cross-checked against recent change history. |
+| `object_change_review` | `kind`, `ref` | An object's recent audit-log changes, grouped by request, with risk flags (deletes, ownership/scope moves). |
+
+`prompts/get` returns a single user-role message with the plan, tailored to the
+supplied arguments (e.g. `cable_path_trace` with `device=edge01,
+interface=xe-0/0/1` returns a plan referencing `nbox_get_interface
+"edge01/xe-0/0/1"`). No NetBox round-trip — a prompt is a plan, not data; the
+agent runs the plan against the tools. An unknown prompt name returns
+`invalid_params` listing the available prompts.
+
 ## Security and behavior
 
 - **Use a read-only NetBox token.** The server exposes no write path, but a

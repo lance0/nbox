@@ -113,6 +113,12 @@ the same JSON view as `nbox_get`, routed through the same view layer; `kind`/`re
 follow `nbox_get` (percent-encode a `ref` with `/`, e.g. a CIDR). It's a template,
 not a static list, so `resources/list` is empty.
 
+A small catalog of **read-only investigation prompts** (`prompts/list`/
+`prompts/get`) ships with it: `ip_utilization_audit`, `cable_path_trace`,
+`find_stale_prefixes`, `object_change_review`. Each returns a user-role message
+with a structured plan naming the exact nbox tools to call (incl. `nbox_history`),
+tailored to the supplied arguments — a plan, not data (no NetBox round-trip).
+
 An HTTP transport ships in the default build (behind the `http` cargo feature,
 which is on by default; `--no-default-features` for stdio-only):
 `nbox serve --http 127.0.0.1:8080`, optional `--http-token` — same tools at
@@ -130,7 +136,7 @@ the limit → `429`+`Retry-After`; `0`/absent = off). This is **read-only Patter
 the last hop to NetBox still uses the one local profile token, so the audit log is
 accountability, not per-user RBAC — trusted single-team read-only only. Per-user
 NetBox identity bridging (the Pattern 2 vault, v2), a raw escape-hatch tool, and
-MCP prompts are later. See `docs/MCP.md`.
+full per-prompt argument schemas are later. See `docs/MCP.md`.
 
 ## Configuration
 
