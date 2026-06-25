@@ -8,7 +8,7 @@
 
 use std::collections::HashMap;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
@@ -155,9 +155,16 @@ impl NetBoxClient {
     pub async fn graphql_capabilities(&self) -> Result<GraphqlCapabilities> {
         let capabilities = self
             .graphql_capability_cache()
-            .get_or_try_init(|| async { self.load_graphql_capabilities().await })
-            .await?;
-        Ok(capabilities.clone())
+            .get_or_init(|| async {
+                self.load_graphql_capabilities()
+                    .await
+                    .map_err(|err| format!("{err:#}"))
+            })
+            .await;
+        match capabilities {
+            Ok(capabilities) => Ok(capabilities.clone()),
+            Err(err) => Err(anyhow!(err.clone())),
+        }
     }
 
     async fn load_graphql_capabilities(&self) -> Result<GraphqlCapabilities> {
@@ -174,8 +181,9 @@ impl NetBoxClient {
     /// detail "bundle"), normalized into the REST wire models so the downstream
     /// `VrfDetail` build is byte-identical to the REST path. The caller resolves
     /// the VRF id and its header over REST first (identity stays canonical); this
-    /// fetches only the children. A real GraphQL/transport error propagates (fail
-    /// closed) rather than degrading to empty data.
+    /// fetches only the children. GraphQL/transport errors propagate to the detail
+    /// builder, which retries the same detail over REST rather than degrading to
+    /// empty data.
     pub(crate) async fn graphql_vrf_bundle(
         &self,
         vrf_id: u64,
@@ -184,20 +192,20 @@ impl NetBoxClient {
         let caps = self.graphql_capabilities().await?;
         let mut prefix_filters = Map::new();
         let mut ip_filters = Map::new();
-        gql_add_filter(
+        gql_add_required_filter(
             &caps,
             "prefix_list",
             &mut prefix_filters,
             "vrf_id",
             json!(vrf_id),
-        );
-        gql_add_filter(
+        )?;
+        gql_add_required_filter(
             &caps,
             "ip_address_list",
             &mut ip_filters,
             "vrf_id",
             json!(vrf_id),
-        );
+        )?;
         let prefix_type = caps
             .list("prefix_list")
             .and_then(|f| f.filter_type())
@@ -240,8 +248,8 @@ impl NetBoxClient {
     /// shape the REST path produces so the downstream `RouteTargetDetail` build is
     /// byte-identical. The caller resolves the route target's identity + header
     /// over REST first (identity stays canonical); this fetches only the relation
-    /// graph. A real GraphQL/transport error propagates (fail closed) rather than
-    /// degrading to empty data.
+    /// graph. GraphQL/transport errors propagate to the detail builder, which
+    /// retries the same detail over REST rather than degrading to empty data.
     ///
     /// A route target carries its VRF relations on both sides
     /// (`importing_vrfs`/`exporting_vrfs`), so one filtered `route_target_list`
@@ -252,13 +260,13 @@ impl NetBoxClient {
     ) -> Result<(Vec<VrfRef>, Vec<VrfRef>)> {
         let caps = self.graphql_capabilities().await?;
         let mut filters = Map::new();
-        gql_add_filter(
+        gql_add_required_filter(
             &caps,
             "route_target_list",
             &mut filters,
             "id",
             json!(route_target_id),
-        );
+        )?;
         let filter_type = caps
             .list("route_target_list")
             .and_then(|f| f.filter_type())
@@ -327,6 +335,25 @@ fn gql_add_filter(
     };
     filters.insert(key.into(), value);
     true
+}
+
+fn gql_add_required_filter(
+    caps: &GraphqlCapabilities,
+    list_name: &str,
+    filters: &mut Map<String, Value>,
+    key: &str,
+    value: Value,
+) -> Result<()> {
+    if gql_add_filter(caps, list_name, filters, key, value) {
+        return Ok(());
+    }
+    let Some(filter_type) = caps.list(list_name).and_then(|field| field.filter_type()) else {
+        bail!("GraphQL schema is missing the {list_name} filter type");
+    };
+    if caps.filter_shape(filter_type, key).is_none() {
+        bail!("GraphQL {filter_type} is missing required {key} filter");
+    }
+    bail!("GraphQL {filter_type}.{key} filter rejected the required value");
 }
 
 /// The combined VRF-bundle response. GraphQL ids are strings, `status` is a
@@ -767,6 +794,54 @@ mod tests {
         assert_eq!(
             caps.filter_value("DeviceFilter", "location_id", json!(7)),
             Some(json!({ "id": "7", "match_type": "EXACT" }))
+        );
+    }
+
+    #[test]
+    fn required_filter_errors_instead_of_querying_unscoped_data() {
+        let mut caps = GraphqlCapabilities::default();
+        caps.list_fields.insert(
+            "prefix_list".into(),
+            ListField {
+                filter_type: Some("PrefixFilter".into()),
+                pagination_arg: None,
+            },
+        );
+        caps.filters.insert("PrefixFilter".into(), HashMap::new());
+        let mut filters = Map::new();
+
+        let err = gql_add_required_filter(&caps, "prefix_list", &mut filters, "vrf_id", json!(42))
+            .expect_err("missing required filter should error");
+
+        assert!(
+            format!("{err:#}").contains("PrefixFilter is missing required vrf_id filter"),
+            "unexpected error: {err:#}"
+        );
+        assert!(filters.is_empty());
+    }
+
+    #[test]
+    fn pagination_clause_tracks_schema_support() {
+        let mut caps = GraphqlCapabilities::default();
+        caps.list_fields.insert(
+            "old_list".into(),
+            ListField {
+                filter_type: Some("OldFilter".into()),
+                pagination_arg: None,
+            },
+        );
+        caps.list_fields.insert(
+            "new_list".into(),
+            ListField {
+                filter_type: Some("NewFilter".into()),
+                pagination_arg: Some("pagination".into()),
+            },
+        );
+
+        assert_eq!(gql_pagination(&caps, "old_list", 200), "");
+        assert_eq!(
+            gql_pagination(&caps, "new_list", 200),
+            ", pagination: {offset: 0, limit: 200}"
         );
     }
 

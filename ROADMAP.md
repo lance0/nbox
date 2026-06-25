@@ -280,12 +280,12 @@ cover. All of these stay within the read-only product and the explicit non-goals
   non-NAT IPs). The device IP tab picks it up for free.
 - ☐ **Cable-profile / bundle-aware cable-path visualizer** _(4.5 cable profiles, 4.6 CableBundle)_.
   Breakout/lane cables otherwise trace inaccurately — keep the 0.9.0 visualizer correct on new NetBox.
-- ☐ **4.7 compatibility watch + GraphQL depth-cap defense.** Re-verify the matrix against 4.7
-  when it lands (~Aug 2026). 4.6's `GRAPHQL_MAX_QUERY_DEPTH` can fail nbox's GraphQL accelerators
-  on a low cap — already falls back to REST; surface the reason clearly. Docs: `docs/COMPATIBILITY.md`.
-- ☐ **4.6 pagination primitives (infra).** Optional, version-gated: evaluate the `start` cursor
-  param for constant-time deep pagination on large fan-outs, with clean fallback to the
-  REST `next` link. Do **not** plan HTTP cache revalidation until NetBox exposes a
+- ☐ **4.7 compatibility watch.** Re-verify the matrix against 4.7 when it lands (~Aug 2026).
+  GraphQL depth-cap defense for 4.6's `GRAPHQL_MAX_QUERY_DEPTH` is shipped: effective GraphQL
+  bundle failures warn and retry REST. Docs: `docs/COMPATIBILITY.md`.
+- ☐ **4.6 pagination primitives (infra).** Optional, version-gated: evaluate REST/GraphQL cursor
+  pagination (`start`/`limit`) for future large fan-outs, with clean fallback to the REST `next`
+  link or today's bounded GraphQL first page. Do **not** plan HTTP cache revalidation until NetBox exposes a
   read-validator path; nbox's current cache deliberately lives at the assembled
   view-model layer because NetBox's `ETag` is not a useful `304` read-cache signal.
 - ☑ **Credential preflight via `/api/authentication-check/` (4.5).** A dedicated token-validity probe
@@ -441,7 +441,7 @@ Consolidated future scope:
   interface`. Scoped to a **single connection's path**, NOT full network topology maps (those stay an
   explicit non-goal). Raised 2026-06-20.
 - ☑ **Full rack integration** — racks are now a first-class **searchable** `ObjectKind`: they appear in
-  the global search fan-out (REST + GraphQL), `/` + `nbox search`, MCP `nbox_search`, and a `rack`
+  the REST-canonical global search fan-out, `/` + `nbox search`, MCP `nbox_search`, and a `rack`
   palette lookup, honoring the site/region/site-group/location scope (like devices, via `*_id`). They
   were already openable + a cross-nav target in the TUI (`nbox rack <ref>`, device→rack). ☑ **Rack
   elevation** — the rack detail has an `e` (elevation) tab: a framed, U-by-U front view from NetBox's
@@ -468,16 +468,18 @@ Consolidated future scope:
   generic `KIND/DISPLAY/SITE` layout. (A richer multi-column layout — e.g. device name/site/role/status —
   would need `SearchResult` enriched with those fields; deferred.)
 - ☑ **VRF-pivoted navigation (a dedicated VRF view).** VRF is now a first-class `ObjectKind`:
-  searchable (REST + GraphQL), browsable from the Nav rail with a live count, `nbox vrf <name|rd|id>`,
+  searchable via REST-canonical search, browsable from the Nav rail with a live count, `nbox vrf <name|rd|id>`,
   palette `vrf`, `open`/`journal` resolvers, and MCP `nbox_get`/`nbox://vrf/<ref>`. The TUI detail is a
   routing context — a fixed header card (RD/tenant/RT/enforce) over the VRF's prefix tree (navigable
   summary slot) with navigable `addresses` and a `targets` tab. Built on the new navigable-detail-row
   mechanism (a `DetailRow { text, target }`; `Enter` opens, `b`/`Esc` returns).
-- ☑ **Per-surface API backends.** Replaced the coarse `backend` profile key with `[profiles.<name>.api]`
-  (`search`/`vrf` = `rest`|`graphql`). REST is canonical; a GraphQL surface is an opt-in accelerator
-  resolved against the live schema probe (`EffectiveBackend`, REST-fallback with reason). Surface-aware
-  capabilities + a per-surface `api` block in `nbox status`/MCP. VRF GraphQL fetches its prefix/address
-  bundle in one query; REST and GraphQL produce a byte-identical `VrfDetail`.
+- ☑ **Per-surface API backends.** Replaced the coarse `backend` profile key with
+  `[profiles.<name>.api]` (`vrf`/`route_target` = `rest`|`graphql`; `search` is accepted
+  but REST-canonical). REST is canonical; a GraphQL surface is an opt-in accelerator
+  resolved against the live schema probe (`EffectiveBackend`, REST-fallback with reason).
+  Surface-aware capabilities + a per-surface `api` block in `nbox status`/MCP. VRF GraphQL
+  fetches its prefix/address bundle in one query; route-target GraphQL fetches importing/exporting
+  VRFs in one query; REST and GraphQL produce byte-identical detail views.
 - ☑ **Search stays REST — GraphQL search dropped (decided 2026-06-19).** Investigated collapsing the
   per-kind GraphQL search fan-out into one bundled POST. NetBox 4.3+ GraphQL has **no `q` full-text
   filter** (filtering moved to per-field Strawberry lookups), so it can't reproduce canonical NetBox
@@ -547,9 +549,9 @@ Consolidated future scope:
   the `from_value(json!{})` row reshape (`Default` on the `Prefix`/`IpAddress` wire models lets the
   conversion set only the VRF-relevant fields). All GraphQL — capabilities probe + VRF bundle + helpers
   + tests — now lives in `netbox/graphql.rs`; `search.rs` is REST-only (2657 → ~1.2k lines).
-- ☐ GraphQL capability probing v2 if schema churn demands it: dynamic `*Filter` discovery and/or a
-  short TTL cache keyed by instance/profile to avoid re-probing when users bounce between profiles
-  pointing at the same NetBox.
+- ☐ GraphQL capability probing v2 if schema churn demands it: dynamic `*Filter` discovery, a
+  short TTL cache keyed by instance/profile, and `/graphql/v2` / `GRAPHQL_DEFAULT_VERSION`
+  handling if NetBox changes the default GraphQL API version.
 - ☑ **Local cache (2026-06-19).** A small, bounded **in-memory** view-model cache (keyed by
   profile+kind+ref) so a burst of identical reads doesn't re-hit NetBox. Single short TTL (default 30s,
   a *de-dupe* window, not a freshness window — nothing is served past TTL); `r`/auto-refresh/profile-

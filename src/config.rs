@@ -409,7 +409,8 @@ pub fn load(path: &Path) -> Result<Config> {
         if profile.backend.is_some() {
             anyhow::bail!(
                 "profile `{name}`: the `backend` key was removed — set the backend per surface under \
-                 `[profiles.{name}.api]` instead, e.g. `search = \"graphql\"` (and/or `vrf = \"graphql\"`)"
+                 `[profiles.{name}.api]` instead, e.g. `vrf = \"graphql\"` and/or \
+                 `route_target = \"graphql\"`"
             );
         }
     }

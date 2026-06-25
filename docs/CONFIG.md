@@ -131,7 +131,9 @@ Rules:
   values are config errors.
 - A `graphql` preference is honored only when the live schema probe confirms the
   surface is supported; otherwise nbox **falls back to REST** and `nbox status`
-  shows the reason. The output shape is identical either way.
+  shows the reason. If a supported GraphQL bundle fails at runtime, nbox retries
+  the same detail over REST and warns on stderr/logs. The output shape is
+  identical either way.
 - GraphQL posts to `/graphql/`, probes the schema, and shapes filters from the
   advertised input types, handling NetBox 4.2 (unpaginated lists), 4.3+ (offset
   pagination), and 4.5+ (equality lookups like `status: { exact: STATUS_ACTIVE }`).
@@ -139,7 +141,9 @@ Rules:
 > The coarse `backend = "rest"|"graphql"` profile key was **removed**. A config
 > that still sets it is rejected with a pointer to `[profiles.<name>.api]`.
 
-`nbox status` reports the configured vs effective backend per surface:
+Plain `nbox status` shows each surface's effective backend and any fallback
+reason. Use `nbox status --json` for `api.<surface>.configured`,
+`effective`, and `reason` fields:
 
 ```
 api search        rest (NetBox GraphQL exposes no REST-equivalent full-text (q) search)

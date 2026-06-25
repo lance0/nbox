@@ -74,19 +74,19 @@ group), so the two are separate filters; both are passed straight through as
 server matches by name). On releases that carry no owner data the filters are
 silently ignored (queried unfiltered, not dropped).
 
-Profiles opt the **VRF view** into NetBox GraphQL under `[profiles.<name>.api]` —
-`vrf` (the VRF view's prefix/address bundle) is `rest` (default) or `graphql`. A
-GraphQL surface returns the same normalized shape and keeps the same fail-closed/
-`--partial` behavior, and **falls back to REST** (with the reason shown by `nbox
-status`) when the live schema can't support it. nbox probes `/graphql/` at
-runtime and adapts to the schema: NetBox 4.2's unpaginated list fields, NetBox
-4.3+'s offset pagination, and NetBox 4.5+'s lookup-wrapper filters are all shaped
-from introspection rather than version strings. **Search is always REST** —
-NetBox's GraphQL API has no equivalent to REST's full-text `q`, so a `search =
-"graphql"` preference transparently falls back. REST stays canonical and powers
-search, identity resolution, detail lookups, raw reads, journals, and
-available-IP/prefix commands. (The old coarse `backend = …` profile key was
-removed.)
+Profiles opt GraphQL-capable views into NetBox GraphQL under
+`[profiles.<name>.api]`: `vrf = "graphql"` bundles the VRF prefix/address section,
+and `route_target = "graphql"` bundles importing/exporting VRFs. A GraphQL surface
+returns the same normalized shape, falls back to REST when the live schema can't
+support it, and retries REST if the runtime bundle fails (for example, a low
+GraphQL query-depth cap). nbox probes `/graphql/` at runtime and adapts to the
+schema: NetBox 4.2's unpaginated list fields, NetBox 4.3+'s offset pagination, and
+NetBox 4.5+'s lookup-wrapper filters are all shaped from introspection rather than
+version strings. **Search is always REST** — NetBox's GraphQL API has no equivalent
+to REST's full-text `q`, so a `search = "graphql"` preference transparently falls
+back. REST stays canonical and powers search, identity resolution, raw reads,
+journals, and available-IP/prefix commands. (The old coarse `backend = …` profile
+key was removed.)
 
 ## Output
 
