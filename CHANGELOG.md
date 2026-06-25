@@ -25,6 +25,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the supplied arguments. Zero live dependency — a prompt is a plan, not data;
   the agent runs the plan against the tools. `enable_prompts()` capability
   advertised.
+- **TUI copy over SSH/headless terminals.** On non-macOS Unix with no graphical
+  display, the `y` copy action now emits OSC 52 so the local terminal can write
+  the local clipboard through the terminal stream. macOS, Windows, and desktop
+  sessions still try `arboard`'s native clipboard first, with OSC 52 as a
+  fallback if that call fails.
 
 ### Changed
 

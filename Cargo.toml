@@ -56,6 +56,9 @@ serde = { version = "1", features = ["derive"] }
 # cycling follows the config file, not alphabetical). Already in the tree.
 indexmap = { version = "2", features = ["serde"] }
 serde_json = "1"
+# OSC 52 clipboard payloads are base64-encoded for terminal/SSH clipboard
+# integration.
+base64 = "0.22"
 # JSON Schema derivation for MCP tool output schemas. Pinned to the exact
 # version rmcp 1.7 depends on so `Json<T>` accepts our `JsonSchema` types
 # (the trait bound is satisfied only by that one schemars instance).
@@ -143,7 +146,6 @@ wiremock = "0.6"
 # `rand` 0.8 supplies the RNG for keygen (matches `rsa`'s `rand_core` 0.6).
 rsa = { version = "0.9", features = ["pem"] }
 rand = "0.8"
-base64 = "0.22"
 
 # Lints apply to every target of the package — lib, bin, AND the integration
 # test crates in tests/ (each its own crate). A `[lints]` table is the only way
