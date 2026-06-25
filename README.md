@@ -275,9 +275,9 @@ nbox tagged <tag>                 # objects carrying a tag, across kinds
 nbox journal <kind> <ref>         # recent journal entries for an object
                                   # kinds incl. interface as <device>/<name>
                                   # --journal folds recent entries into a detail lookup (cap 5)
+                                  # --journal-limit N overrides the cap (implies --journal)
 nbox history <kind> <ref>         # system audit log (create/update/delete, who + when)
                                   # /api/core/object-changes/ (NetBox 4.x); distinct from journal
-                                  # --journal-limit N overrides the cap (implies --journal)
 nbox open <kind>/<ref>            # device, ip, prefix, vlan, site, rack, rack-group, circuit, virtual-circuit, provider,
                                   # aggregate, asn, ip-range, tenant, contact, vm, vm-type, cluster, vrf, route-target,
                                   # and interface/<device>/<name> (the name may contain slashes,

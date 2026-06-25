@@ -115,9 +115,9 @@ impl HistoryView {
 }
 
 /// The top-level field names whose values differ between the pre- and post-change
-/// object state. For a `create`, prechange is null so all postchange keys are
-/// "changed"; for a `delete`, postchange is null so all prechange keys are listed.
-/// Sorted for stable output.
+/// object state. Both sides must be object-shaped snapshots; creates/deletes or
+/// absent payloads intentionally report no field list rather than treating the
+/// entire object as a changed field set. Sorted for stable output.
 fn changed_fields(
     pre: Option<&serde_json::Value>,
     post: Option<&serde_json::Value>,
