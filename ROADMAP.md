@@ -23,7 +23,7 @@ Legend: ☐ planned · ◐ in progress · ☑ done
 
 The read surface is broad and stable today (full history in `CHANGELOG.md`):
 
-- **CLI lookups — every NetBox object type:** `device`, `interface`, `ip`, `prefix`, `vlan`,
+- **CLI lookups — broad NetBox object coverage:** `device`, `interface`, `ip`, `prefix`, `vlan`,
   `site`, `rack`, `rack-group`, `circuit`, `virtual-circuit`, `provider`, `aggregate`, `asn`,
   `ip-range`, `tenant`, `contact`, `vm`, `vm-type`, `cluster`, `vrf`, `route-target`, `mac`,
   plus `search`, `journal`, `tags`, `tagged`, `status`, `open`, `raw GET`. NetBox 4.2+ polymorphic scope + VRF
@@ -80,7 +80,7 @@ Polish the read experience. No writes here.
   (devices/racks/sites/VLANs/VRFs/route-targets) filters that list **server-side** by name (`name__ic`)
   instead of opening global search — explicit (Enter to apply, not live typeahead), so it doesn't hammer
   NetBox while typing. The pane title shows the active filter + count (`Devices · name contains "edge" · 52`),
-  `1000+` signals the browse cap; `Esc` clears (Normal) / cancels the edit (BrowseFilter), `Ctrl+X`/empty-
+  a `<cap>+` count signals truncation; `Esc` clears (Normal) / cancels the edit (BrowseFilter), `Ctrl+X`/empty-
   Enter clear while editing. Prefix and IP-address now filter by network containment
   (the follow-up item below); aggregate keeps `/` as global search (it keys on a
   CIDR column but isn't a Nav-rail browse kind).
@@ -93,22 +93,15 @@ Polish the read experience. No writes here.
     `within "10.0.0.0/24"`. Every Nav-rail kind is now filterable; the router's
     `None` → search arm stays as a defensive fallback for a future non-filterable
     browse kind.
-- ☐ **Load-more on scroll (the browse/sub-resource cap fix).** A browse stops
-  at the cap (1000) and the device-interfaces / prefix-children detail tabs
-  stop at the detail-section cap (200, normalized from the prior 50/200/200 split
-  — see `DETAIL_SECTION_CAP`) — past that the only path is the
-  filter. Pull the next page on scroll by following the server's `next` cursor
-  (now the pagination mechanism in `list_all` — see 0.12.0) and raising those
-  caps on demand. The `offset += page_size` skip that motivated `next`-following
-  is already closed (a server capping `MAX_PAGE_SIZE` below the request no longer
-  drops rows); what remains is the TUI scroll trigger and lifting the `max`
-  ceilings, not the pagination itself. It's the real "browse everything" answer
-  the 1000 cap currently stands in for. NOTE: load-more was reconsidered and
-  largely **dropped** — browse-at-1000 is a feature not a bite (nobody scrolls
-  past 1000 unfiltered rows; they search/filter), and the one cap that genuinely
-  bit (prefix child IPs at 50) is fixed by the normalization. The only
-  residual is a full `/24` (254 hosts) still truncating at 200, which wants a
-  targeted `--all`/fetch-all toggle, not scroll-paging.
+- ☐ **Targeted fetch-all for capped sub-resources.** Browse intentionally stops
+  at `BROWSE_CAP` (currently 500) and expects server-side filtering, not scrolling
+  through thousands of rows. Detail tabs stop at `DETAIL_SECTION_CAP` (200). The
+  only proven remaining cap pain is bounded sub-resources that operators naturally
+  inspect as a whole, e.g. a full `/24`'s contained IPs (254 hosts) truncating at
+  200. Do **not** resurrect generic load-more-on-scroll for every browse; add an
+  explicit fetch-all / raise-cap action on the affected detail tabs, following
+  the server's `next` link through `list_all` (the old `offset += page_size` row
+  skip is already fixed in 0.12.0).
 - ☐ **Hierarchical scope filters (descendant expansion).** `--region`/`--site-group`/`--location` (and the
   TUI scope) match **exactly** today — a region matches only prefixes scoped to the region itself, not the
   sites inside it (`KNOWN_ISSUES.md`). NetBox's `PrefixFilter` has no `within`/descendant lookup (see the
@@ -217,8 +210,9 @@ Polish the read experience. No writes here.
   (devices/racks/sites/VLANs/VRFs/route-targets, circuits by `cid`) filters that list server-side by name
   (`name__ic`/`cid__ic`) instead of opening global search — explicit (Enter to apply), with a filter+count
   pane title; prefix/IP keep `/` as global search (CIDR/inet columns have no `__ic` lookup, so a name filter
-  there would silently match the whole table). The Nav-rail browse cap was raised 500 → 1000 (still one
-  round trip — NetBox's per-request ceiling). Shipped to crates.io / Homebrew tap / GHCR.
+  there would silently match the whole table). The Nav-rail browse cap was briefly raised 500 → 1000
+  (still one round trip — NetBox's per-request ceiling), then reverted to 500 once the render cost of
+  rebuilding idle lists was measured; filtering is the scale path. Shipped to crates.io / Homebrew tap / GHCR.
 - ☑ **Release `0.12.0`** — **NetBox 4.2–4.6 kind & field coverage + agent hardening.** New first-class
   kinds: `virtual-circuit` (4.2), `mac` reverse-lookup, `rack-group` + `vm-type` (4.6); the cross-cutting
   `owner` field + `--owner`/`--owner-group` search filters (4.5); NAT inside/outside on `nbox ip` and a
@@ -275,9 +269,11 @@ cover. All of these stay within the read-only product and the explicit non-goals
 - ☐ **4.7 compatibility watch + GraphQL depth-cap defense.** Re-verify the matrix against 4.7
   when it lands (~Aug 2026). 4.6's `GRAPHQL_MAX_QUERY_DEPTH` can fail nbox's GraphQL accelerators
   on a low cap — already falls back to REST; surface the reason clearly. Docs: `docs/COMPATIBILITY.md`.
-- ☐ **4.6 pagination/caching primitives (infra).** Optional, version-gated: the `start` cursor
-  param for constant-time deep pagination on large fan-outs, and `ETag`/`If-None-Match`
-  revalidation for the in-memory cache (cheap freshness without a full refetch). Falls back to offset.
+- ☐ **4.6 pagination primitives (infra).** Optional, version-gated: evaluate the `start` cursor
+  param for constant-time deep pagination on large fan-outs, with clean fallback to the
+  REST `next` link. Do **not** plan HTTP cache revalidation until NetBox exposes a
+  read-validator path; nbox's current cache deliberately lives at the assembled
+  view-model layer because NetBox's `ETag` is not a useful `304` read-cache signal.
 - ☑ **Credential preflight via `/api/authentication-check/` (4.5).** A dedicated token-validity probe
   (cleaner than inferring auth from `/api/status/`) surfaced in `nbox status` and MCP `nbox_status` as
   a `token` field (`valid`/`invalid`/`unverified`, the authenticated user on `valid`). Best-effort:
@@ -340,12 +336,12 @@ reviewable PRs that lock contracts and reduce future change cost.
   arrays, and the intentional “single objects are not CSV” usage error are all pinned in
   `tests/csv_contracts_tests.rs` (cols ordering, unknown cols, empty arrays, single-object
   rejection at render/emit/binary-exit-2, comma quoting).
-- ☑ **MCP response contracts** — stable JSON shapes for `nbox_status`, `nbox_search`, `nbox_get`
-  (every kind: device, ip, prefix, vlan, site, rack, circuit, aggregate, asn, ip_range, tenant,
-  contact, provider, vm, cluster, vrf, route_target, mac, interface), `nbox_get_interface`,
-  `nbox_journal`, `nbox_list_tags`, `nbox_tagged`, `nbox_next_ip`/`nbox_next_prefix`, resource
-  reads, and the MCP error mapping (`invalid_params` vs internal errors) are all pinned against
-  direct server/tool calls in `src/mcp/tests.rs::contracts` (not brittle protocol snapshots).
+- ☑ **MCP response contracts** — stable JSON shapes for `nbox_status`, `nbox_search`, every
+  `nbox_get` kind view, `nbox_get_interface`, `nbox_journal`, `nbox_list_tags`, `nbox_tagged`,
+  `nbox_next_ip`/`nbox_next_prefix`, resource reads, and the MCP error mapping
+  (`invalid_params` vs internal errors) are all pinned against direct server/tool calls in
+  `src/mcp/tests.rs::contracts` (not brittle protocol snapshots). Keep this number-free so new
+  kinds cannot stale the roadmap.
 - ☐ **Fixture migration pass** — move repeated inline NetBox JSON in `search_tests`, `query_tests`,
   `scope_tests`, MCP tests, and custom-field tests onto `tests/support` builders as those files are
   next touched.
@@ -368,8 +364,10 @@ reviewable PRs that lock contracts and reduce future change cost.
   versioned-migration matrix is not yet needed).
 - ☐ **Dependency and feature matrix** — CI or scripted local checks for default, `--no-default-features`,
   `http`, and release-musl-relevant feature combinations.
-- ☐ **Performance baseline, narrow** — bench or measured smoke for search fan-out and JSON rendering
-  on representative fixture sizes. Do not add a cache unless measurements justify it.
+- ☐ **Performance baseline, narrow** — bench or measured smoke for the known scale paths:
+  search fan-out row counts, TUI idle redraw cost, preview fetch count, rack/circuit detail fan-out,
+  MCP resource cache reuse, and JSON/CSV output streaming. Keep it small and contract-like: a few
+  representative fixture sizes plus "requests made" assertions, not a broad benchmark suite.
 
 ---
 
@@ -533,13 +531,15 @@ Consolidated future scope:
   cache** — it's one-shot (resolve→print→exit), so an in-memory cache has nothing to reuse, and "always
   fresh from source" is the right default for the scripting/automation surface; no `--no-cache` /
   `nbox cache clear` (nothing persistent to bypass or clear). The cache is a long-lived-process feature.
-  ☑ **MCP cache** — `nbox serve` reads (`nbox_get`) go through the cache (chatty agents re-reading the
+  ☑ **MCP cache** — `nbox serve` `nbox_get` reads go through the cache (chatty agents re-reading the
   same object graph de-dupe within the TTL), with an `nbox_cache_clear` tool so agents can force fresh
   reads after out-of-band changes. ☑ **Preview-pane caching** — the results preview shares the detail
   cache key, so scrolling back over seen rows is instant and a preview warms the cache for opening that
-  object (and vice versa). Cache is now complete across surfaces (TUI detail + preview, settings toggle,
-  MCP reads + clear; CLI intentionally none). Optional follow-up: ☐ MCP `cached_at`/age annotation
-  (short TTL + the clear tool already cover most of it).
+  object (and vice versa). Remaining cache work is performance polish, not correctness: ☐ route MCP
+  resource reads through the same `nbox_get` cache; ☐ alias ref-loaded detail views to their id key
+  after the resolved `DetailView { kind, id, .. }` is known; ☐ consider short-TTL caches for repeated
+  MCP search/tags/tagged/get-interface calls; ☐ optionally add MCP `cached_at`/age annotation. CLI
+  intentionally remains uncached — one-shot commands should read fresh from source.
 - ☑ **Single binary.** One canonical full-featured binary per platform: the default feature set
   carries every cross-platform user feature (`http`, `clipboard`, `updates`), no feature-variant
   artifacts. `--no-default-features` stays a dev-only lean build. Release builds derive the feature set
@@ -601,7 +601,8 @@ Consolidated future scope:
   VRF-by-RD, VRF-scoped prefix child/IP sections.
 - ☑ **TUI** — list/preview split + focus, scrolling + position cues, profile switcher, the in-app
   Config modal (profile editor + settings + first-run onboarding).
-- ☑ **Secrets** — OS keyring token storage with env fallback.
+- ☑ **Secrets** — OS keyring token storage with env fallback (historical; the keyring surface was
+  removed in 0.8.0 after proving too frictional).
 - ☑ **Hardening** — two review-driven rounds (OIDC/HTTP, scope resolution, installer, man-page
   quality, profile-switch races, allowed-host port validation, etc.).
 
@@ -671,85 +672,75 @@ Consolidated future scope:
   slice could panic mid-codepoint); `list_all` buffering up to `max` rows in memory (bounded by the caller's
   cap — fine for a one-shot read CLI; streaming would only matter for an unbounded export, which we don't do).
 
-### Performance candidates (evaluated 2026-06-21, agent + code verification)
+### Performance and scale candidates (updated 2026-06-24, agents + web + code)
 
-A batch of proposed perf wins, each verified against the code. Net: one quick win, one medium, one probe; the rest skip. The search path is **network-dominated** — CPU micro-opts there are noise.
+Principle: optimize the rows and round-trips nbox asks NetBox for before micro-optimizing
+CPU. NetBox REST lists are paginated and expose a `next` link; nbox already follows it
+where it intentionally pages. NetBox GraphQL offset pagination is not a general scale
+escape hatch, and GraphQL still cannot replace canonical REST `q` search.
 
-- ☑ **Concurrent scope+VRF resolution (quick win).** `search.rs` resolved `--scope` then `--vrf` as two
-  **independent sequential awaits** before the 17-way fan-out; now `tokio::try_join!`ed — saves 1-4 RTTs on
-  *filtered* searches, zero risk, byte-identical results. (No filter ⇒ both return `Ok(None)` with zero
-  network calls, so the win only applies when a scope/vrf filter is set.) NOTE:
-  the broader "fire the fan-out optimistically alongside resolution" idea is **unsound** — the fan-out's
-  filters need the resolved ids (`site_id`/`vrf_id`/scope content-type), so it can't start blind; a
-  cancellation token doesn't help when the input is the missing value.
-- ☐ **TUI render dirty-flag (idle-CPU win, medium).** The event loop `terminal.draw`s on every event, and
-  the 180ms `PreviewTick` always arrives → a full widget rebuild ≥5.5 Hz even when idle (a cap-full `Vec<Row>`
-  clones + `format!`; 500 rows post-revert, was 1000). ratatui diffs the *buffer* (I/O minimal) but not the
-  Rust-side rebuild. A render-dirty flag would skip the redraw when nothing changed — a battery/SSH win, not
-  latency. CARE: the tick also advances the spinner, status-TTL expiry, and the browse/preview debounce flush,
-  so the flag must key on *state mutation* (and still mark dirty on spinner ticks, status changes, async results) — not on "no
-  keypress," or it freezes the spinner / stalls TTL.
-
-  **Verified map (2026-06-24).** The draw-first loop is `app.rs:112` (`draw`, then `rx.recv`), so draw fires
-  once per event; `render_home_list` (`ui.rs:925-950`) builds the full `Vec<Row>` via `.map(...).collect()`
-  over `app.view` on *every draw* (not cached, not windowed). The 180ms `PreviewTick` (`events.rs:78`,
-  `state.rs:1048-1056`) mutates rendered state on three of four idle paths: (1) `spinner.tick()` *while
-  `pending > 0`* — frame advances; (2) `on_nav_browse_tick` *if `browse_dirty` + cursor settled* — emits a
-  `Browse` cmd (result redraws on arrival); (3) `on_preview_tick` *if `preview_dirty`* — emits a `LoadPreview`
-  cmd (same); (4) `tick_status_ttl` *if `status_ttl.is_some()`* — decrements/expires the footer notice.
-  `Resize` mutates nothing but the terminal size changed → must redraw; the async completions
-  (`SearchComplete`/`BrowseComplete`/`DetailLoaded`/`PreviewLoaded`/`NavCounts`/`Status`) mutate
-  results/preview/status and must redraw. A naive "redraw only on keypress" freezes the spinner (1), stalls
-  the status notice (4), and misses async arrivals.
-
-  **Two approaches (researched).**
-  - **A — thread an explicit `dirty: bool`** through every mutation site (~15-20: `handle_key`, spinner
-    tick, `tick_status_ttl`, the debounce flushes, each async-completion arm, `Resize`, switch-settle); set on
-    mutation, clear after a successful draw. Risk: miss a site → **frozen UI** (harmful). Reward: minimal
-    per-draw cost (one bool).
-  - **B — state-signature diff** (recommended). Compute a cheap signature of render-relevant state
-    (`screen`/`mode`/`focus`/`nav_selected`/`selected`/`results.len()`/`preview_for`/detail id/`status`+
-    `status_ttl`/`spinner.frame()` if loading/`browse_kind`+filter/`filters`/theme/`update_version`/terminal
-    size) before/after `handle_event`; redraw only if it changed. Risk: miss a field → **over-redraws**
-    (harmless — degrades to today's behavior). Reward: resilient to future field additions; the benign
-    failure mode is the safety property.
-  B is recommended because its failure mode is benign (over-redraw = status quo), A's is harmful (frozen UI).
-  The codebase already has the idiom (`preview_dirty`/`browse_dirty` debounce flags, set-mutation/
-    clear-on-flush) and the test scaffold (`TestBackend` + `buffer().content` assertions, `ui.rs:2340`).
-  Test matrix (extend the TestBackend pattern): idle-no-draw; spinner-draws-while-loading;
-  spinner-stops-on-settle; status-ttl-draws-then-stops; debounce-emits-cmd (no redraw on the tick itself);
-  async-arrival-draws; keypress-draws; resize-draws; **no-frozen-UI regression** (buffer content advances
-  across the spinner path — the safety assertion). Scope: ~80-150 lines impl (`app.rs` loop guard +
-  `render_signature()` in `state.rs`) + ~120 lines tests; one focused PR, no network/live dependency.
-
-  **Priority read.** Real but low-urgency — the 500 revert (0.12.1) already cut the idle rebuild in half and
-  encoded the principle ("filter is the escape hatch, not a bigger cap"). This is polish/efficiency, lower
-  value-per-effort than the fixture-migration pass (de-risks the writes track) or the MCP prompts catalog
-  (the differentiator). Schedule it as the dedicated "medium" it is; don't let it jump the queue unless the
-  SSH/jump-box idle-CPU win is soon-wanted.
-- ☐ **HTTP/2 multiplexing — probe DONE (2026-06-21), promising; implement+verify next.** reqwest's `http2`
-  feature is **off** (the `h2` in the lockfile is axum's MCP server, not the outbound client), so the client
-  can't negotiate h2 today — that's the one prerequisite. **Probe result:** the official `netboxcommunity/netbox`
-  image fronts the app with **nginx-unit, not gunicorn**, and unit **speaks HTTP/2** — `curl --http2-prior-knowledge`
-  against the demo returned `http_version=2` (cleartext h2c; a normal request stays h1.1 because ALPN needs
-  TLS). So over a real **https** instance, ALPN would negotiate h2 and all 17 fan-out requests could ride one
-  multiplexed connection — eliminating the connection churn AND sidestepping the half-close (one live
-  connection, concurrent streams; `pool_max_idle_per_host(0)` still prevents stale-idle reuse across bursts).
-  Caveats: needs the reqwest `http2` feature (+ musl/rustls ALPN build surface); **gunicorn sync** deployments
-  are HTTP/1.1-only and must **fall back cleanly** (no-op, safe). Next step is implementation + an h2-negotiation
-  capability check, not more probing. (NOTE: the demo being nginx-unit, not gunicorn, is a nuance vs
-  [[netbox-gunicorn-keepalive]] — the keep-alive fix targets gunicorn installs, which exist alongside unit ones.)
-- ✗ **Connection pooling `pool_max_idle_per_host(1)` — SKIP (dangerous).** Directly reverts the documented
-  fix at `client.rs:60-69` and reintroduces the half-closed-socket stall (sync gunicorn FINs right after each
-  response; a reused idle socket stalls to the 15s timeout). No client-side idle timeout reliably dodges a
-  server that closes per-response. The premise is also overstated — the 17 fan-out connections open
-  *concurrently* (~1 RTT of parallel handshake), not 2-3s serial. See [[netbox-gunicorn-keepalive]].
-- ✗ **Skipped micro-opts (verified negligible):** radix/patricia trie for the prefix tree (the O(n·d)
-  coverage scan runs **once at load**, off the render thread, n≤1000); cache-eviction O(n) oldest-scan (only
-  on a full-1024 insert, microseconds, and a new dep vs the hand-rolled cache); `nav_counts` array-vs-HashMap
-  (8 entries); `score_match` `to_lowercase()` allocations (on the network-return path, dwarfed by the
-  round-trips — and not a clean swap: `starts_with`/`contains` have no ASCII-case-insensitive stdlib form,
-  and names can be Unicode; if ever touched, lowercase the query *once* outside the per-result loop).
+- ☑ **Concurrent scope+VRF resolution.** `search.rs` resolved `--scope` then `--vrf` as two
+  independent sequential awaits before the fan-out; now `tokio::try_join!`ed — saves 1-4 RTTs on
+  filtered searches, zero risk, byte-identical results. Do **not** fire the fan-out before resolution:
+  the branches need resolved ids (`site_id`/`vrf_id`/scope content-type).
+- ☐ **Search per-endpoint row cap (highest backend win).** `SearchRequest.limit` may be 25/50, but each
+  branch currently fetches the profile `page_size` before the merged result is truncated. A broad search can
+  deserialize/rank ~20 endpoints × 100 rows to return 25. Add `list_limited` / a limit override and cap each
+  branch at `min(page_size, max(req.limit, floor))`, preserving the global merge/sort/dedupe/truncate behavior.
+  Add a request-count/`limit=` regression test so this does not drift.
+- ☐ **Cheap/cancellable TUI preview.** `LoadPreview` currently uses the same full detail path as `Enter`.
+  Scrolling over devices/prefixes/sites/racks/VRFs can fan out into multi-request details that are later
+  dropped as stale. Options, in order: summary-only preview; longer idle delay before warm-prefetch; abort
+  handles for superseded preview/search/browse generations. Opening a row should still use the full detail
+  cache and preserve the "preview warms open" behavior where possible.
+- ☐ **TUI render dirty-signature (idle CPU/SSH win).** The event loop redraws on the 180ms preview tick even
+  when nothing visible changed; `render_home_list` rebuilds/clones the full row set each draw. Use a
+  render-signature diff rather than hand-threading a fragile dirty bool. Signature should include visible
+  state (`screen`, `mode`, focus, selections, result/detail ids, status+TTL, spinner frame when loading,
+  browse/filter state, theme, update banner, terminal size). Failure mode should be over-redraw = status quo,
+  never frozen UI.
+- ☐ **Cache render products / viewport-only render.** Once redraw frequency is under control, cache derived
+  list data (`sub_w`, owned row cells) when `results/view` changes, and cache active detail-tab lines/counts
+  when `(detail id, tab, theme)` changes. For long tabs and prefix-tree views, render only the viewport slice
+  instead of every visible row.
+- ☐ **Backend fan-out cleanup.** Small, safe latency wins:
+  - rack detail: fetch rack devices once and share them between the devices tab and rack elevation instead of
+    one `DETAIL_SECTION_CAP` list plus a second 1000-row elevation list;
+  - VLAN detail: `vlan_prefixes` and `vlan_group_scope` are independent — `try_join!`;
+  - circuit path: memo a panel device's front-port list per detail load so A/Z walks or repeated hops through
+    the same patch panel do not page the same 1000 front ports more than once.
+- ☐ **Resolver fallback concurrency.** For non-numeric refs, run exact alternatives concurrently where the
+  endpoint supports them (slug/RD/name-exact), preserve precedence, and only issue broad `name__ic` fallback if
+  all exact probes miss. Keep numeric id as the fast path. Especially helpful for scope filters before search.
+- ☐ **Version-gated endpoint availability cache.** On NetBox <4.6, search repeatedly probes 4.6-only
+  `rack-groups` / `virtual-machine-types` and swallows 404 as empty. Cache that absence per client after the
+  first 404 or derive it once from status/capabilities, while keeping always-present endpoints fail-closed.
+- ☐ **MCP/resource cache expansion.** Route `nbox://{kind}/{ref}` resource reads through the same cache path
+  as `nbox_get`; after a ref load returns a `DetailView`, also populate the id cache key; consider short-TTL
+  normalized-arg caches for `nbox_search`, `nbox_get_interface`, tags/tagged, and journal. Keep
+  `nbox_cache_clear` clearing all read caches.
+- ☐ **Output streaming fast path.** JSON/CSV output currently materializes `serde_json::Value`/`String` before
+  writing. Fast-path no-shaping JSON (`no --fields`, no envelope changes) to `serde_json::to_writer(_pretty)`
+  on locked stdout; stream CSV rows instead of building a full string. This matters most for `raw GET`, tagged,
+  VRF/detail dumps, and large agent outputs.
+- ☐ **MCP/CLI startup and payload budgets.** Load config once for long-lived `serve` startup, skip async runtime
+  and update-check setup for pure local commands where practical, and add small size/request-count contracts:
+  search per-endpoint `limit`, resource-cache reuse, `tools/list` payload budget, and output streaming behavior.
+- ☐ **Counts strategy for large instances.** Nav counts (8 `limit=1` count probes) and dashboard status counts
+  (total + status buckets) are concurrent but still force NetBox count work. Keep them because they are useful,
+  but consider short TTL/lazy loading and a "counts unavailable / refresh" fallback if real large instances show
+  count probes contending with first search/browse.
+- ☐ **HTTP/2 / connection reuse probe, not raw HTTP/1 pooling.** Long-lived MCP sessions pay connection churn
+  because the client disables idle pooling to avoid stale half-closed HTTP/1 sockets. Do not simply set
+  `pool_max_idle_per_host(1)` globally; that reopens the prior gunicorn-style stall. Safer track: enable and
+  verify reqwest HTTP/2 where the deployment supports ALPN/multiplexing, or add a profile/server-mode knob with
+  conservative defaults and connection-error retry coverage.
+- ☐ **Prefix-tree scale pass if the cap rises.** Today the O(n²)-ish child-coverage scan runs once at load under
+  a small cap, so it is not urgent. If prefix-tree caps rise or full-tree caching lands, replace it with a stack
+  pass and cache visible indices on collapse/expand changes.
+- ✗ **Skipped micro-opts (verified negligible for now):** `nav_counts` array-vs-HashMap (8 entries),
+  cache-eviction O(n) oldest-scan (bounded, rare), `score_match` lowercase allocations (network-return path and
+  Unicode semantics make a "simple" ASCII swap risky). Revisit only with measurements.
 
 ### Dependency maintenance
 
