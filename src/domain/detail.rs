@@ -324,8 +324,10 @@ pub async fn vlan_view_by_ref(
             .await?
             .ok_or_else(|| not_found("VLAN", value))?
     };
-    let prefixes = client.vlan_prefixes(vlan.id, DETAIL_SECTION_CAP).await?;
-    let group = vlan_group_scope(client, &vlan).await?;
+    let (prefixes, group) = tokio::try_join!(
+        client.vlan_prefixes(vlan.id, DETAIL_SECTION_CAP),
+        vlan_group_scope(client, &vlan),
+    )?;
     Ok(VlanView::build(vlan, prefixes, group))
 }
 
@@ -1881,8 +1883,10 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
         ObjectKind::Vlan => {
             let vlan: Vlan = client.get(&format!("/api/ipam/vlans/{id}/"), &[]).await?;
             links = vlan_links(&vlan);
-            let prefixes = client.vlan_prefixes(vlan.id, DETAIL_SECTION_CAP).await?;
-            let group = vlan_group_scope(client, &vlan).await?;
+            let (prefixes, group) = tokio::try_join!(
+                client.vlan_prefixes(vlan.id, DETAIL_SECTION_CAP),
+                vlan_group_scope(client, &vlan),
+            )?;
             tabs = vec![vlan_prefixes_tab(&prefixes)];
             let v = VlanView::build(vlan, prefixes, group);
             (format!("vlan {}", v.vid), v.to_detail_header())
@@ -2139,8 +2143,10 @@ pub async fn load_detail_by_ref(
                 .with_context(|| format!("no VLAN matched \"{value}\""))?;
             let id = vlan.id;
             links = vlan_links(&vlan);
-            let prefixes = client.vlan_prefixes(vlan.id, DETAIL_SECTION_CAP).await?;
-            let group = vlan_group_scope(client, &vlan).await?;
+            let (prefixes, group) = tokio::try_join!(
+                client.vlan_prefixes(vlan.id, DETAIL_SECTION_CAP),
+                vlan_group_scope(client, &vlan),
+            )?;
             tabs = vec![vlan_prefixes_tab(&prefixes)];
             let v = VlanView::build(vlan, prefixes, group);
             (id, format!("vlan {}", v.vid), v.to_detail_header())

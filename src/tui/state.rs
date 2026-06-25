@@ -4,6 +4,8 @@
 //! they perform no I/O, so they're unit-testable without a terminal. Network
 //! work happens in spawned tasks (see `tui::app`), never in the render loop.
 
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -78,7 +80,7 @@ impl RelatedModal {
 }
 
 /// Which screen is in the body area.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Screen {
     Home,
     Detail,
@@ -90,7 +92,7 @@ pub enum Screen {
 }
 
 /// Input mode.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Mode {
     Normal,
     Search,
@@ -104,7 +106,7 @@ pub enum Mode {
 /// Which pane of the three-pane home screen has focus. Movement keys route to it:
 /// Nav moves the section cursor, the list moves the selection, the preview scrolls
 /// its body. `Tab`/`Shift+Tab` cycle left→right (Nav → List → Preview).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Focus {
     Nav,
     List,
@@ -114,7 +116,7 @@ pub enum Focus {
 /// A section in the home Navigation pane: a browse-by-kind entry, or `Recent`.
 /// Selecting a kind lists all of it into the Results pane; `Recent` shows the
 /// recently-opened items. Search stays on `/` (not a nav entry).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum NavSection {
     Devices,
     Prefixes,
@@ -953,6 +955,114 @@ impl App {
     /// Install the live read cache (called once by `run_tui` after connecting).
     pub fn set_cache(&mut self, cache: Cache) {
         self.cache = cache;
+    }
+
+    /// Conservative digest of everything the renderer can put on screen, plus the
+    /// terminal size. The event loop uses this as a redraw gate; over-inclusion is
+    /// intentional because an unnecessary redraw is harmless, while omitting a
+    /// visible field could freeze stale pixels.
+    pub(crate) fn render_digest(&self, terminal_size: (u16, u16)) -> u64 {
+        let mut h = DefaultHasher::new();
+        terminal_size.hash(&mut h);
+        self.theme.name().hash(&mut h);
+        self.theme.is_no_color().hash(&mut h);
+        self.profile_name.hash(&mut h);
+        self.base_url.hash(&mut h);
+        self.netbox_version.hash(&mut h);
+        self.pending_profile.hash(&mut h);
+        self.refresh_secs.hash(&mut h);
+        self.open_browser_command.hash(&mut h);
+        self.log_level.hash(&mut h);
+        self.log_file.hash(&mut h);
+        for profile in &self.profiles {
+            profile.name.hash(&mut h);
+            profile.config.url.hash(&mut h);
+        }
+        self.profile_index.hash(&mut h);
+
+        self.mode.hash(&mut h);
+        self.screen.hash(&mut h);
+        self.focus.hash(&mut h);
+        self.nav_selected.hash(&mut h);
+        self.browse_kind.hash(&mut h);
+        self.last_browsed.hash(&mut h);
+        self.last_query.hash(&mut h);
+        self.browse_filter.hash(&mut h);
+        hash_filters(&self.filters, &mut h);
+        self.search_input.hash_render_state(&mut h);
+        self.command_input.hash_render_state(&mut h);
+        self.filter_input.hash_render_state(&mut h);
+
+        self.status.hash(&mut h);
+        severity_key(self.status_severity).hash(&mut h);
+        // `status_ttl` is deliberately NOT hashed: it counts a transient status
+        // down but is never rendered (no on-screen countdown), so hashing it would
+        // force a redraw every tick of the status window with no visible change.
+        // The expiry redraw still fires — clearing the TTL empties `self.status`,
+        // which IS hashed above. If a future UI shows a TTL-derived value (a fade
+        // or countdown), hash that derived visible value here instead.
+        self.pending.hash(&mut h);
+        if self.loading() {
+            self.spinner.frame().hash(&mut h);
+        }
+        if let Some(f) = self.detail_freshness {
+            freshness_source_key(f.source).hash(&mut h);
+            f.age.hash(&mut h);
+        }
+        self.update_available.hash(&mut h);
+        self.update_command.hash(&mut h);
+
+        hash_nav_counts(&self.nav_counts, &mut h);
+        hash_results(&self.results, &mut h);
+        self.view.hash(&mut h);
+        self.selected.hash(&mut h);
+        hash_recents(&self.recent, &mut h);
+        self.pending_reselect.hash(&mut h);
+
+        hash_detail(self.detail.as_ref(), &mut h);
+        self.detail_tab.hash(&mut h);
+        self.detail_row.hash(&mut h);
+        self.detail_scroll.hash(&mut h);
+        self.detail_nav.hash(&mut h);
+        hash_detail(self.preview.as_ref(), &mut h);
+        self.preview_for.hash(&mut h);
+        self.preview_scroll.hash(&mut h);
+
+        hash_dashboard(self.dashboard.as_ref(), &mut h);
+        self.dashboard_error.hash(&mut h);
+        hash_prefix_tree(
+            self.prefix_tree.as_ref(),
+            &self.prefix_tree_collapsed,
+            &mut h,
+        );
+        self.prefix_tree_error.hash(&mut h);
+        self.prefix_tree_selected.hash(&mut h);
+
+        match &self.modal {
+            Some(Modal::Help) => "modal-help".hash(&mut h),
+            Some(Modal::Config(modal)) => {
+                "modal-config".hash(&mut h);
+                modal.hash_render_state(&mut h);
+            }
+            Some(Modal::Filter(modal)) => {
+                "modal-filter".hash(&mut h);
+                modal.hash_render_state(&mut h);
+            }
+            Some(Modal::Related(modal)) => {
+                "modal-related".hash(&mut h);
+                modal.selected.hash(&mut h);
+                for link in &modal.links {
+                    link.kind.hash(&mut h);
+                    link.id.hash(&mut h);
+                    link.relation.hash(&mut h);
+                    link.label.hash(&mut h);
+                }
+            }
+            None => "modal-none".hash(&mut h),
+        }
+
+        self.should_quit.hash(&mut h);
+        h.finish()
     }
 
     /// Apply an event, returning any commands to dispatch. The commands handed
@@ -4007,6 +4117,138 @@ fn object_web_url(base_url: &str, kind: ObjectKind, id: u64) -> String {
             |_| format!("{}/{path}", base_url.trim_end_matches('/')),
             |url| url.to_string(),
         )
+}
+
+fn severity_key(severity: Severity) -> &'static str {
+    match severity {
+        Severity::Info => "info",
+        Severity::Success => "success",
+        Severity::Warning => "warning",
+        Severity::Error => "error",
+    }
+}
+
+fn freshness_source_key(source: crate::cache::Source) -> &'static str {
+    match source {
+        crate::cache::Source::Origin => "origin",
+        crate::cache::Source::Cache => "cache",
+    }
+}
+
+fn hash_filters<H: Hasher>(filters: &SearchFilters, h: &mut H) {
+    filters.status.hash(h);
+    filters.site.hash(h);
+    filters.region.hash(h);
+    filters.site_group.hash(h);
+    filters.location.hash(h);
+    filters.tenant.hash(h);
+    filters.role.hash(h);
+    filters.tag.hash(h);
+    filters.vrf.hash(h);
+}
+
+fn hash_nav_counts<H: Hasher>(counts: &std::collections::HashMap<ObjectKind, u32>, h: &mut H) {
+    let mut pairs: Vec<_> = counts.iter().collect();
+    pairs.sort_by_key(|(kind, _)| kind.as_str());
+    for (kind, count) in pairs {
+        kind.hash(h);
+        count.hash(h);
+    }
+}
+
+fn hash_results<H: Hasher>(results: &[SearchResult], h: &mut H) {
+    results.len().hash(h);
+    for result in results {
+        result.kind.hash(h);
+        result.id.hash(h);
+        result.display.hash(h);
+        result.subtitle.hash(h);
+        result.url.hash(h);
+        result.score.hash(h);
+    }
+}
+
+fn hash_recents<H: Hasher>(recent: &[RecentItem], h: &mut H) {
+    recent.len().hash(h);
+    for item in recent {
+        item.kind.hash(h);
+        item.id.hash(h);
+        item.title.hash(h);
+    }
+}
+
+fn hash_detail<H: Hasher>(detail: Option<&DetailView>, h: &mut H) {
+    let Some(detail) = detail else {
+        "detail-none".hash(h);
+        return;
+    };
+    detail.kind.hash(h);
+    detail.id.hash(h);
+    detail.title.hash(h);
+    detail.body.hash(h);
+    detail.header.hash(h);
+    detail.summary_label.hash(h);
+    hash_detail_rows(&detail.summary_rows, h);
+    for tab in &detail.tabs {
+        tab.key.hash(h);
+        tab.label.hash(h);
+        tab.body.hash(h);
+        hash_detail_rows(&tab.rows, h);
+    }
+    for link in &detail.links {
+        link.kind.hash(h);
+        link.id.hash(h);
+        link.relation.hash(h);
+        link.label.hash(h);
+    }
+}
+
+fn hash_detail_rows<H: Hasher>(rows: &[DetailRow], h: &mut H) {
+    rows.len().hash(h);
+    for row in rows {
+        row.text.hash(h);
+        row.target.hash(h);
+    }
+}
+
+fn hash_dashboard<H: Hasher>(dashboard: Option<&DashboardData>, h: &mut H) {
+    let Some(dashboard) = dashboard else {
+        "dashboard-none".hash(h);
+        return;
+    };
+    dashboard.device_total.hash(h);
+    dashboard.device_status_counts.hash(h);
+    dashboard.top_prefixes.hash(h);
+    for row in &dashboard.recent {
+        row.created.hash(h);
+        row.kind.hash(h);
+        row.summary.hash(h);
+    }
+}
+
+fn hash_prefix_tree<H: Hasher>(
+    tree: Option<&PrefixTreeData>,
+    collapsed: &std::collections::HashSet<u64>,
+    h: &mut H,
+) {
+    let Some(tree) = tree else {
+        "prefix-tree-none".hash(h);
+        return;
+    };
+    tree.total.hash(h);
+    for node in &tree.nodes {
+        node.id.hash(h);
+        node.prefix.hash(h);
+        node.vrf.hash(h);
+        node.status.hash(h);
+        node.depth.hash(h);
+        node.children.hash(h);
+        node.utilization.hash(h);
+        node.description.hash(h);
+    }
+    let mut collapsed: Vec<_> = collapsed.iter().copied().collect();
+    collapsed.sort_unstable();
+    collapsed.hash(h);
 }
 
 /// Classify a free-form status message (typically pushed from an async task,

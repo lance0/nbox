@@ -482,7 +482,8 @@ async fn get_vlan_by_vid_returns_vlan_view_with_prefixes() {
             "results": [{
                 "id": 3, "url": "u", "vid": 208, "name": "users",
                 "status": {"value": "active", "label": "Active"},
-                "site": {"id": 1, "display": "iad1"}
+                "site": {"id": 1, "display": "iad1"},
+                "group": {"id": 9, "display": "campus"}
             }]
         })))
         .mount(&mock)
@@ -494,6 +495,16 @@ async fn get_vlan_by_vid_returns_vlan_view_with_prefixes() {
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "count": 1, "next": null, "previous": null,
             "results": [{"id": 9, "url": "u", "prefix": "10.44.208.0/24"}]
+        })))
+        .mount(&mock)
+        .await;
+    // vlan_group_scope: the independent follow-up that enriches group_scope.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/vlan-groups/9/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 9, "name": "campus", "slug": "campus",
+            "scope_type": "dcim.region",
+            "scope": {"id": 5, "display": "us-east"}
         })))
         .mount(&mock)
         .await;
@@ -513,6 +524,8 @@ async fn get_vlan_by_vid_returns_vlan_view_with_prefixes() {
         "vlan view has no site key: {value}"
     );
     assert_eq!(value["prefixes"][0], "10.44.208.0/24");
+    assert_eq!(value["group_scope"], "us-east");
+    assert_eq!(value["group_scope_type"], "region");
 }
 
 #[tokio::test]

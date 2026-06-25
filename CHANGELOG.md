@@ -28,6 +28,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **TUI idle redraw gate.** The 180ms preview tick still drives debounce, status
+  expiry, and the loading spinner, but the event loop now skips `terminal.draw`
+  when a conservative render signature has not changed. Idle ticks no longer
+  rebuild the Results table; spinner/status/async results/keypresses/resize still
+  redraw normally.
+- **VLAN detail fan-out.** VLAN detail now fetches referencing prefixes and the
+  VLAN group's scope concurrently, preserving the same JSON/plain view shape while
+  saving one round trip when a VLAN has both.
 - **Search per-endpoint row cap.** Each search branch now fetches at most
   `min(page_size, max(req.limit, SEARCH_BRANCH_FLOOR))` rows (floor 25), not the
   full `page_size` (100 by default). The merge truncates to `req.limit` anyway,
