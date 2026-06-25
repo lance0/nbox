@@ -1,6 +1,6 @@
 [package]
 name = "nbox"
-version = "0.12.0"
+version = "0.13.0"
 edition = "2024"
 rust-version = "1.88" # floor: `let`-chains, stable since 1.88, used throughout
 description = "Terminal UI and CLI for NetBox — fast search, IPAM lookups, and device context"
