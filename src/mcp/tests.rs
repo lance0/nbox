@@ -1456,6 +1456,7 @@ async fn history_returns_changes_for_device() {
             kind: GetKind::Device,
             reference: "edge01".to_string(),
             limit: None,
+            diff: None,
         }))
         .await
         .expect("history");
@@ -2484,6 +2485,7 @@ mod contracts {
                 kind: GetKind::Device,
                 reference: "edge01".to_string(),
                 limit: None,
+                diff: None,
             }))
             .await
             .expect("history");
@@ -2511,6 +2513,72 @@ mod contracts {
         // status (changed), site_id (added); name unchanged → not listed.
         assert_eq!(entry["fields_changed"], json!(["site_id", "status"]));
         assert_eq!(entry["request_id"], "bc44-0001");
+    }
+
+    /// `nbox_history` with `diff=true` includes the full `before`/`after` change
+    /// payloads (absent otherwise), so an agent can inspect one change in full.
+    #[tokio::test]
+    async fn history_diff_includes_before_after_payloads() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/dcim/devices/",
+            json!({"id": 1, "url": "u", "name": "edge01"}),
+        )
+        .await;
+        Mock::given(method("GET"))
+            .and(path("/api/core/object-changes/"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{
+                    "id": 10,
+                    "action": {"value": "update", "label": "Updated"},
+                    "time": "2025-12-08T23:56:49Z",
+                    "user_name": "neteng",
+                    "object_repr": "edge01",
+                    "message": "",
+                    "request_id": "bc44-0001",
+                    "prechange_data": {"name": "edge01", "status": "active"},
+                    "postchange_data": {"name": "edge01", "status": "decommissioned", "site_id": 2}
+                }]
+            })))
+            .mount(&mock)
+            .await;
+
+        // diff=false (default): compact row, no before/after keys.
+        let Json(compact) = server_for(&mock)
+            .nbox_history(Parameters(HistoryArgs {
+                kind: GetKind::Device,
+                reference: "edge01".to_string(),
+                limit: Some(1),
+                diff: Some(false),
+            }))
+            .await
+            .expect("compact history");
+        let compact_val = serde_json::to_value(&compact).expect("serialize");
+        assert!(compact_val["entries"][0].get("before").is_none());
+        assert!(compact_val["entries"][0].get("after").is_none());
+
+        // diff=true: the full pre/post payloads surface as before/after.
+        let Json(full) = server_for(&mock)
+            .nbox_history(Parameters(HistoryArgs {
+                kind: GetKind::Device,
+                reference: "edge01".to_string(),
+                limit: Some(1),
+                diff: Some(true),
+            }))
+            .await
+            .expect("diff history");
+        let full_val = serde_json::to_value(&full).expect("serialize");
+        let entry = &full_val["entries"][0];
+        assert_eq!(
+            entry["before"],
+            json!({"name": "edge01", "status": "active"})
+        );
+        assert_eq!(
+            entry["after"],
+            json!({"name": "edge01", "status": "decommissioned", "site_id": 2})
+        );
     }
 
     /// `nbox_list_tags` → `TagsView`: a top-level `tags` array of rows. `name`/

@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **`nbox history --diff`.** The audit-log view now has a `--diff` flag (MCP
+  `diff=true`) that includes the full `before`/`after` change payloads per row —
+  the full JSON for a single change (CLI `--diff` implies `--limit 1`). The
+  compact `fields_changed` list stays the default; `before`/`after` are omitted
+  unless `diff` is requested, so existing output is byte-identical.
 - **TUI idle redraw gate.** The 180ms preview tick still drives debounce, status
   expiry, and the loading spinner, but the event loop now skips `terminal.draw`
   when a conservative render signature has not changed. Idle ticks no longer
@@ -41,6 +46,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **TUI browse switching.** Browse-by-kind results are now cached in the TUI
   session by kind + active browse filter, so revisiting a Nav kind repaints the
   prior list immediately while a background browse refreshes it.
+- **TUI preview cancellation.** Scrolling the results list spawns a background
+  preview fetch per settle; a second settle while the first fetch is still in
+  flight now aborts the superseded task instead of letting it run to completion
+  and dropping its result on arrival — freeing the connection + CPU. Stale-
+  response suppression stays as a backstop; the detail cache ("preview warms
+  open") is unaffected.
 - **VLAN detail fan-out.** VLAN detail now fetches referencing prefixes and the
   VLAN group's scope concurrently, preserving the same JSON/plain view shape while
   saving one round trip when a VLAN has both.

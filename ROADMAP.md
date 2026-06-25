@@ -332,13 +332,16 @@ all read-only. (Market positioning itself stays out of the repo — see private 
   skills (e.g. search, IPAM, device/interface context, `serve`) in the standard agent-skills layout
   (`skills/<name>/SKILL.md`). Keep them flag-free — point at `nbox <cmd> --help` rather than enumerating
   flags, so they can't silently drift as the CLI evolves — and lint the shape in CI.
-- ☑ **Read-only history/changelog tool.** `nbox history <kind> <ref>` shows the
-  system-recorded create/update/delete timeline for an object (who, when, and
-  which fields changed) from `/api/core/object-changes/` (NetBox 4.x), distinct
+- ☑ **Read-only history/changelog tool + `--diff`.** `nbox history <kind> <ref>`
+  shows the system-recorded create/update/delete timeline for an object (who, when,
+  and which fields changed) from `/api/core/object-changes/` (NetBox 4.x), distinct
   from `journal` (operator notes). Each row carries `time`/`action`/`user`/
   `object`/`message`/`fields_changed`/`request_id` — the top-level fields whose
-  values differ pre vs post, not the full before/after JSON. MCP `nbox_history`
-  mirrors it. Answers agent "what happened to this prefix?" queries.
+  values differ pre vs post. MCP `nbox_history` mirrors it. `--diff` (CLI) /
+  `diff=true` (MCP) additionally includes the full `before`/`after` change payloads
+  per row — the full JSON for a single change (CLI `--diff` implies `--limit 1`),
+  closing the loop on the compact `fields_changed` summary. Answers agent "what
+  happened to this prefix?" queries.
 - ☐ **Structured read-only exports.** An export mode producing Prometheus targets / firewall
   address-lists / device inventories from live NetBox (the `netbox-lists` niche, as one fast binary).
 
@@ -714,11 +717,16 @@ escape hatch, and GraphQL still cannot replace canonical REST `q` search.
   deserialized/ranked ~20 endpoints × 100 rows to return 25. Done: a `list_limited` method caps each branch
   at `min(page_size, max(req.limit, SEARCH_BRANCH_FLOOR))` (floor 25), preserving the global
   merge/sort/dedupe/truncate behavior. A `limit=` regression test pins the cap.
-- ☐ **Cheap/cancellable TUI preview.** `LoadPreview` currently uses the same full detail path as `Enter`.
-  Scrolling over devices/prefixes/sites/racks/VRFs can fan out into multi-request details that are later
-  dropped as stale. Options, in order: summary-only preview; longer idle delay before warm-prefetch; abort
-  handles for superseded preview/search/browse generations. Opening a row should still use the full detail
-  cache and preserve the "preview warms open" behavior where possible.
+- ☑ **Cheap/cancellable TUI preview (abort handles).** `LoadPreview` uses the same full detail path as `Enter`; a
+  second scroll-settle can land while the first fetch is still in flight (NetBox detail fetches take hundreds
+  of ms to seconds), so the abandoned task ran to completion and was dropped on arrival. The event loop now
+  tracks the in-flight preview `JoinHandle` and aborts it when a new preview starts — freeing the connection
+  + CPU instead of letting the superseded fetch finish. Safe with the cache: `get_or_fetch`'s per-key async
+  mutex releases on future drop, so a concurrent open of the same object re-acquires and re-fetches (no
+  deadlock, no poisoned entry). The stale-response suppression (`PreviewLoaded` dropped if the cursor moved
+  on) stays as a backstop. Opening a row still uses the full detail cache ("preview warms open"); the debounce
+  + dedup still coalesce a burst of j/k into one load. The remaining options (summary-only preview; longer
+  idle delay) are deferred — abort handles is the targeted win for the real scroll scenario.
 - ☑ **TUI render dirty-signature (idle CPU/SSH win).** The event loop redraws on the 180ms preview tick even
   when nothing visible changed; `render_home_list` rebuilds/clones the full row set each draw. Use a
   render-signature diff rather than hand-threading a fragile dirty bool. Signature should include visible

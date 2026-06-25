@@ -452,9 +452,15 @@ pub enum Command {
         /// Object reference (name, address, CIDR, VID, slug, or ID).
         value: String,
 
-        /// Maximum number of entries (newest first).
-        #[arg(short, long, default_value_t = 20)]
-        limit: usize,
+        /// Maximum number of entries (newest first). Defaults to 20, or 1 with
+        /// `--diff` (which inspects a single change).
+        #[arg(short, long)]
+        limit: Option<usize>,
+
+        /// Show the full before/after change payload for the newest change
+        /// (implies `--limit 1` unless an explicit `--limit` is given).
+        #[arg(long)]
+        diff: bool,
     },
 
     /// Make a raw read-only API request (escape hatch for unmodeled endpoints).

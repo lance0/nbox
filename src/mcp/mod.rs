@@ -278,6 +278,10 @@ pub struct HistoryArgs {
     pub reference: String,
     /// Maximum number of entries (newest first). Defaults to 20.
     pub limit: Option<usize>,
+    /// Include the full before/after change payload on each row. The payloads
+    /// are kilobytes each, so pair with a small `limit` (e.g. 1) to inspect one
+    /// change in full; defaults to `false` (compact rows, no payloads).
+    pub diff: Option<bool>,
 }
 
 /// Arguments for `nbox_list_tags`.
@@ -688,7 +692,7 @@ impl NboxMcp {
     /// Change history (audit log) for an object.
     #[tool(
         name = "nbox_history",
-        description = "Return the change history (system audit log: create/update/delete, who and when) for an object, newest first. Distinct from nbox_journal (operator notes): this is the system-recorded audit trail from /api/core/object-changes/. `kind` and `ref` follow nbox_get; supported kinds are device, ip, prefix, vlan, site, rack, rack_group, circuit, virtual_circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, vm_type, cluster, vrf, route_target, interface (as `<device>/<name>`). Each row includes the top-level fields that changed (pre vs post), not the full before/after JSON.",
+        description = "Return the change history (system audit log: create/update/delete, who and when) for an object, newest first. Distinct from nbox_journal (operator notes): this is the system-recorded audit trail from /api/core/object-changes/. `kind` and `ref` follow nbox_get; supported kinds are device, ip, prefix, vlan, site, rack, rack_group, circuit, virtual_circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, vm_type, cluster, vrf, route_target, interface (as `<device>/<name>`). Each row includes the top-level fields that changed (pre vs post); pass `diff=true` (pair with a small `limit`, e.g. 1) to include the full before/after JSON payloads per row.",
         annotations(read_only_hint = true)
     )]
     async fn nbox_history(
@@ -696,6 +700,7 @@ impl NboxMcp {
         Parameters(args): Parameters<HistoryArgs>,
     ) -> Result<Json<HistoryView>, ErrorData> {
         let limit = args.limit.unwrap_or(20);
+        let diff = args.diff.unwrap_or(false);
         let (content_type, id) = self
             .resolve_content_type_id(args.kind, &args.reference)
             .await
@@ -705,7 +710,7 @@ impl NboxMcp {
             .object_changes(content_type, id, limit)
             .await
             .map_err(to_mcp_error)?;
-        Ok(Json(HistoryView::from_models(changes)))
+        Ok(Json(HistoryView::from_models(changes, diff)))
     }
 
     /// List the tags defined in NetBox.

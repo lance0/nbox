@@ -11,7 +11,9 @@ use crate::netbox::models::extras::ObjectChange;
 /// One audit-log entry, flattened for display. Surfaces *what changed* (the
 /// top-level field names whose values differ between `prechange_data` and
 /// `postchange_data`) without dumping the full before/after JSON (which can be
-/// kilobytes per row). The full diff is available via `--diff` (planned).
+/// kilobytes per row). The full before/after payloads are included only when
+/// `diff` is requested (`nbox history --diff` / `nbox_history` with `diff=true`),
+/// so the default list stays compact; they are omitted (not null) otherwise.
 #[derive(Debug, Clone, Serialize, JsonSchema)]
 pub struct HistoryRow {
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -38,6 +40,14 @@ pub struct HistoryRow {
     /// Groups changes from one atomic request (a shared UUID).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
+    /// The full pre-change object state (JSON). Only populated when `diff` is
+    /// requested; absent for a `create` (no prior state).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub before: Option<serde_json::Value>,
+    /// The full post-change object state (JSON). Only populated when `diff` is
+    /// requested; absent for a `delete` (no resulting state).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub after: Option<serde_json::Value>,
 }
 
 /// A list of object changes (audit-log entries) for one object, newest first.
@@ -47,24 +57,35 @@ pub struct HistoryView {
 }
 
 impl HistoryView {
-    /// Normalize wire [`ObjectChange`] records into display rows.
-    pub fn from_models(changes: Vec<ObjectChange>) -> Self {
+    /// Normalize wire [`ObjectChange`] records into display rows. When `diff`
+    /// is set, each row also carries the full `before`/`after` change payloads
+    /// (kilobytes each) so a single change can be inspected in full; otherwise
+    /// they are omitted to keep the list compact.
+    pub fn from_models(changes: Vec<ObjectChange>, diff: bool) -> Self {
         let entries = changes
             .into_iter()
-            .map(|c| HistoryRow {
-                time: c.time,
-                action: c.action.as_ref().map(|a| a.value.clone()),
-                action_label: c.action.as_ref().map(|a| a.label.clone()),
-                user: c
-                    .user_name
-                    .or_else(|| c.user.as_ref().map(BriefObject::label)),
-                object: c.object_repr,
-                message: c.message,
-                fields_changed: changed_fields(
-                    c.prechange_data.as_ref(),
-                    c.postchange_data.as_ref(),
-                ),
-                request_id: c.request_id,
+            .map(|c| {
+                // `fields_changed` is always derived from the change payloads
+                // (the compact list still surfaces it); only the heavy full
+                // before/after payloads are gated on `diff`.
+                let pre = c.prechange_data;
+                let post = c.postchange_data;
+                let fields_changed = changed_fields(pre.as_ref(), post.as_ref());
+                let (before, after) = if diff { (pre, post) } else { (None, None) };
+                HistoryRow {
+                    time: c.time,
+                    action: c.action.as_ref().map(|a| a.value.clone()),
+                    action_label: c.action.as_ref().map(|a| a.label.clone()),
+                    user: c
+                        .user_name
+                        .or_else(|| c.user.as_ref().map(BriefObject::label)),
+                    object: c.object_repr,
+                    message: c.message,
+                    fields_changed,
+                    request_id: c.request_id,
+                    before,
+                    after,
+                }
             })
             .collect();
         Self { entries }
@@ -98,6 +119,12 @@ impl HistoryView {
             let mut body = String::new();
             if !e.fields_changed.is_empty() {
                 let _ = writeln!(body, "  fields: {}", e.fields_changed.join(", "));
+            }
+            if let Some(before) = &e.before {
+                body.push_str(&render_payload("before", before));
+            }
+            if let Some(after) = &e.after {
+                body.push_str(&render_payload("after", after));
             }
             if !e.message.is_empty() {
                 for l in e.message.lines() {
@@ -149,6 +176,19 @@ fn skip_empty_str(s: &str) -> bool {
     s.is_empty()
 }
 
+/// Render a `before:`/`after:` change payload as an indented pretty-JSON block
+/// (the label on its own line, the JSON indented four spaces). Large payloads
+/// stay readable instead of one long line.
+fn render_payload(label: &str, v: &serde_json::Value) -> String {
+    let pretty = serde_json::to_string_pretty(v).unwrap_or_else(|_| v.to_string());
+    let indented = pretty
+        .lines()
+        .map(|l| format!("    {l}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!("  {label}:\n{indented}\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,7 +208,7 @@ mod tests {
             "prechange_data": {"name": "edge01", "status": "active", "site_id": 1},
             "postchange_data": {"name": "edge01", "status": "decommissioned", "site_id": 2, "comments": "retired"}
         })).unwrap()];
-        let view = HistoryView::from_models(changes);
+        let view = HistoryView::from_models(changes, false);
         let row = &view.entries[0];
         assert_eq!(row.action.as_deref(), Some("update"));
         assert_eq!(row.user.as_deref(), Some("neteng"));
@@ -187,7 +227,7 @@ mod tests {
 
     #[test]
     fn empty_history_is_explicit() {
-        let view = HistoryView::from_models(vec![]);
+        let view = HistoryView::from_models(vec![], false);
         assert_eq!(view.to_plain(), "no change history");
     }
 
@@ -206,7 +246,7 @@ mod tests {
             }))
             .unwrap(),
         ];
-        let view = HistoryView::from_models(changes);
+        let view = HistoryView::from_models(changes, false);
         // prechange is null → no diff (only both-present objects are compared).
         assert!(view.entries[0].fields_changed.is_empty());
     }
@@ -234,10 +274,93 @@ mod tests {
             prechange_data: None,
             postchange_data: None,
         }];
-        let view = HistoryView::from_models(changes);
+        let view = HistoryView::from_models(changes, false);
         assert_eq!(
             view.entries[0].user.as_deref(),
             Some("neteng (Network Engineering)")
+        );
+    }
+
+    /// `diff=true` populates the full `before`/`after` payloads (and still
+    /// derives `fields_changed` from them), while `diff=false` omits them so the
+    /// default list stays compact.
+    #[test]
+    fn diff_carries_full_before_after_payloads() {
+        let changes: Vec<ObjectChange> = vec![
+            serde_json::from_value(json!({
+                "id": 11,
+                "action": {"value": "update", "label": "Updated"},
+                "time": "2025-12-08T23:56:49Z",
+                "user_name": "neteng",
+                "object_repr": "edge01",
+                "message": "retired",
+                "request_id": "bc44-0002",
+                "prechange_data": {"name": "edge01", "status": "active"},
+                "postchange_data": {"name": "edge01", "status": "decommissioned", "site_id": 2}
+            }))
+            .unwrap(),
+        ];
+
+        let compact = HistoryView::from_models(changes.clone(), false);
+        assert!(compact.entries[0].before.is_none());
+        assert!(compact.entries[0].after.is_none());
+        assert_eq!(compact.entries[0].fields_changed, vec!["site_id", "status"]);
+
+        let full = HistoryView::from_models(changes, true);
+        assert_eq!(
+            full.entries[0].before,
+            Some(json!({"name": "edge01", "status": "active"}))
+        );
+        assert_eq!(
+            full.entries[0].after,
+            Some(json!({"name": "edge01", "status": "decommissioned", "site_id": 2}))
+        );
+        // fields_changed is still derived the same way.
+        assert_eq!(full.entries[0].fields_changed, vec!["site_id", "status"]);
+    }
+
+    /// The plain render includes a `before:`/`after:` indented JSON block only
+    /// when the payloads are present (diff mode); the compact list is unchanged.
+    #[test]
+    fn diff_plain_render_includes_before_after_blocks() {
+        let changes: Vec<ObjectChange> = vec![
+            serde_json::from_value(json!({
+                "id": 12,
+                "action": {"value": "update", "label": "Updated"},
+                "time": "2025-12-08T23:56:49Z",
+                "user_name": "neteng",
+                "object_repr": "edge01",
+                "message": "",
+                "request_id": "bc44-0003",
+                "prechange_data": {"status": "active"},
+                "postchange_data": {"status": "decommissioned"}
+            }))
+            .unwrap(),
+        ];
+
+        let compact_plain = HistoryView::from_models(changes.clone(), false).to_plain();
+        assert!(
+            !compact_plain.contains("before:"),
+            "compact render has no before block"
+        );
+        assert!(
+            !compact_plain.contains("after:"),
+            "compact render has no after block"
+        );
+
+        let diff_plain = HistoryView::from_models(changes, true).to_plain();
+        assert!(
+            diff_plain.contains("before:"),
+            "diff render has before block"
+        );
+        assert!(diff_plain.contains("after:"), "diff render has after block");
+        assert!(
+            diff_plain.contains("\"active\""),
+            "diff render shows the pre value"
+        );
+        assert!(
+            diff_plain.contains("\"decommissioned\""),
+            "diff render shows the post value"
         );
     }
 }

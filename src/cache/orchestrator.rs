@@ -469,4 +469,77 @@ mod tests {
             "two concurrent callers collapse to one origin fetch"
         );
     }
+
+    /// Aborting a `get_or_fetch` mid-fetch must release the per-key single-flight
+    /// lock (the `_guard` drops with the future) so a subsequent fetch for the
+    /// same key re-acquires and completes — no deadlock, no poisoned entry. This
+    /// is the safety contract the TUI's cancellable preview relies on: `spawn_preview`
+    /// aborts a superseded in-flight fetch while it holds this guard. (A std
+    /// `Mutex` would poison here; tokio's `AsyncMutex` guard releases on drop.)
+    #[tokio::test]
+    async fn aborted_get_or_fetch_releases_single_flight_lock() {
+        let (cache, _now) = test_cache();
+        // Hold the first fetch open forever (within the test): the fetch awaits a
+        // notify that is never signalled (the Arc stays alive, so it hangs rather
+        // than erroring). The abort must drop the awaiting future at the
+        // `fetch().await` point — after it has acquired the single-flight guard.
+        let hang = Arc::new(tokio::sync::Notify::new());
+        let hang1 = hang.clone();
+        let first = tokio::spawn({
+            let cache = cache.clone();
+            async move {
+                cache
+                    .get_or_fetch(&key(), || async move {
+                        hang1.notified().await;
+                        Ok::<_, anyhow::Error>("never".to_string())
+                    })
+                    .await
+            }
+        });
+        // Let the first task acquire the lock + reach the fetch await. The guard
+        // is now held — this is the hazardous window.
+        tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+        // Abort the in-flight fetch — exactly what `dispatch` does to a superseded
+        // preview (`JoinHandle::abort`). The guard drops with the future.
+        first.abort();
+        // The aborted handle resolves (cancelled), not hung on the notify.
+        let join = tokio::time::timeout(std::time::Duration::from_secs(1), first)
+            .await
+            .expect("aborted task resolves, it does not hang on the notify");
+        assert!(
+            join.is_err(),
+            "expected a cancelled JoinError, got {join:?}"
+        );
+
+        // A re-fetch for the SAME key must succeed promptly — the lock was
+        // released on drop, so this acquires it and runs. Under a poisoning
+        // mutex this would deadlock or return a poison error. The timeout makes
+        // a regression fail fast instead of hanging the test runner.
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls2 = calls.clone();
+        let second: Cached<String> = tokio::time::timeout(
+            std::time::Duration::from_secs(2),
+            cache.get_or_fetch(&key(), || async move {
+                calls2.fetch_add(1, Ordering::SeqCst);
+                Ok::<_, anyhow::Error>("fresh".to_string())
+            }),
+        )
+        .await
+        .expect("re-fetch after abort must not deadlock (timed out)")
+        .expect("re-fetch after abort must succeed");
+        assert_eq!(second.value, "fresh");
+        assert_eq!(second.freshness.source, Source::Origin);
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+
+        // No poisoned/empty entry was left behind: a hit serves the re-fetched
+        // value without another origin call.
+        let hit: Cached<String> = cache
+            .get_or_fetch(&key(), || async { panic!("must hit after re-fetch") })
+            .await
+            .unwrap();
+        assert_eq!(hit.value, "fresh");
+        assert_eq!(hit.freshness.source, Source::Cache);
+        assert_eq!(calls.load(Ordering::SeqCst), 1, "the hit did not fetch");
+    }
 }

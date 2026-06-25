@@ -88,12 +88,16 @@ async fn event_loop(
     }
 
     // Kick off the Nav-pane count probe once at startup (background, no spinner);
-    // a profile switch issues its own refresh via `LoadNavCounts`.
+    // a profile switch issues its own refresh via `LoadNavCounts`. The in-flight
+    // preview handle is tracked across dispatch calls so a superseded preview
+    // fetch can be aborted (see `LoadPreview`).
+    let mut preview_task: Option<tokio::task::JoinHandle<()>> = None;
     dispatch(
         AppCommand::LoadNavCounts,
         app.client.clone(),
         app.cache.clone(),
         tx.clone(),
+        &mut preview_task,
     );
 
     // If `[ui].last_browsed` restored a kind, preload its list at startup so the
@@ -109,6 +113,7 @@ async fn event_loop(
             app.client.clone(),
             app.cache.clone(),
             tx.clone(),
+            &mut preview_task,
         );
     }
 
@@ -135,7 +140,13 @@ async fn event_loop(
                 }
                 refresh_ticker = arm_refresh(&tx, secs);
             } else {
-                dispatch(command, app.client.clone(), app.cache.clone(), tx.clone());
+                dispatch(
+                    command,
+                    app.client.clone(),
+                    app.cache.clone(),
+                    tx.clone(),
+                    &mut preview_task,
+                );
             }
         }
     }
@@ -199,7 +210,13 @@ fn arm_refresh(
         .map(|secs| spawn_ticks(tx.clone(), secs))
 }
 
-fn dispatch(command: AppCommand, client: NetBoxClient, cache: Cache, tx: mpsc::Sender<AppEvent>) {
+fn dispatch(
+    command: AppCommand,
+    client: NetBoxClient,
+    cache: Cache,
+    tx: mpsc::Sender<AppEvent>,
+    preview_task: &mut Option<tokio::task::JoinHandle<()>>,
+) {
     match command {
         AppCommand::Search {
             query,
@@ -300,23 +317,19 @@ fn dispatch(command: AppCommand, client: NetBoxClient, cache: Cache, tx: mpsc::S
             });
         }
         AppCommand::LoadPreview { kind, id } => {
-            tokio::spawn(async move {
-                // Share the detail cache key: scrolling back over a seen row is an
-                // instant hit, and a preview warms the cache so opening that object
-                // (LoadDetail, same key) is instant too. Never force — a preview is
-                // always happy with a within-TTL copy.
-                let key = CacheKey::detail(kind, id);
-                let result = cache
-                    .get_or_fetch(&key, || {
-                        Box::pin(load_detail(&client, kind, id))
-                            as std::pin::Pin<Box<dyn std::future::Future<Output = _> + Send>>
-                    })
-                    .await
-                    .map(|c| c.value);
-                // Tag with (kind, id) so a stale response (cursor moved on) can
-                // be dropped by the pure handler.
-                let _ = tx.send(AppEvent::PreviewLoaded { kind, id, result }).await;
-            });
+            // Abort any superseded preview fetch before starting a new one. The
+            // debounce coalesces a burst of j/k into one load after the cursor
+            // settles, but a second settle can land while the first fetch is
+            // still in flight (NetBox detail fetches take hundreds of ms to
+            // seconds); aborting frees the connection + CPU instead of letting
+            // the abandoned task run to completion and be dropped on arrival.
+            // Safe with the cache: get_or_fetch's per-key async mutex releases on
+            // future drop, so a concurrent open of the same object re-acquires
+            // and re-fetches — no deadlock, no poisoned entry.
+            if let Some(h) = preview_task.take() {
+                h.abort();
+            }
+            *preview_task = Some(spawn_preview(kind, id, client, cache, tx));
         }
         AppCommand::LoadByRef {
             kind,
@@ -443,6 +456,33 @@ async fn reconnect(
     let client = NetBoxClient::new(profile, token)?;
     let status = client.verify_compatible().await?;
     Ok((client, status.netbox_version))
+}
+
+/// Spawn a background preview fetch for `(kind, id)`, returning its handle so the
+/// caller can [`tokio::task::JoinHandle::abort`] a superseded one. Shares the
+/// detail cache key with `LoadDetail` so scrolling back over a seen row is an
+/// instant hit and a preview warms the cache for opening that object; never
+/// forces (a preview is always happy with a within-TTL copy).
+fn spawn_preview(
+    kind: crate::netbox::search::ObjectKind,
+    id: u64,
+    client: NetBoxClient,
+    cache: Cache,
+    tx: mpsc::Sender<AppEvent>,
+) -> tokio::task::JoinHandle<()> {
+    tokio::spawn(async move {
+        let key = CacheKey::detail(kind, id);
+        let result = cache
+            .get_or_fetch(&key, || {
+                Box::pin(load_detail(&client, kind, id))
+                    as std::pin::Pin<Box<dyn std::future::Future<Output = _> + Send>>
+            })
+            .await
+            .map(|c| c.value);
+        // Tag with (kind, id) so a stale response (cursor moved on) is dropped
+        // by the pure handler — the abort here avoids even running it.
+        let _ = tx.send(AppEvent::PreviewLoaded { kind, id, result }).await;
+    })
 }
 
 #[cfg(feature = "clipboard")]
@@ -585,6 +625,10 @@ mod tests {
     use crate::netbox::search::{ObjectKind, SearchOutcome, SearchResult};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use ratatui::backend::TestBackend;
+    use serde_json::json;
+    use std::time::Duration;
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn app() -> App {
         let profile = ProfileConfig {
@@ -869,6 +913,101 @@ mod tests {
         assert_eq!(
             CopyMethod::Terminal.status_message("edge01"),
             "copied via terminal: edge01"
+        );
+    }
+
+    /// A superseded preview fetch is aborted, not run to completion. `Asn` is a
+    /// single GET with no fan-out, so the mock setup is deterministic: id=1 hangs
+    /// (a slow NetBox), id=2 answers fast. Aborting the id=1 task must resolve
+    /// its `JoinHandle` (with a cancelled error) instead of hanging, and its
+    /// `PreviewLoaded` event must never be delivered — the cursor moved on.
+    #[tokio::test]
+    async fn preview_supersede_aborts_in_flight_fetch() {
+        let server = MockServer::start().await;
+        // id=1: a response that never lands within the test (simulates a slow
+        // NetBox); the abort must drop the awaiting task before it can send.
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/asns/1/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"id": 1, "url": "u", "asn": 65001}))
+                    .set_delay(Duration::from_secs(30)),
+            )
+            .mount(&server)
+            .await;
+        // id=2: a fast valid Asn so the superseding preview completes.
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/asns/2/"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .set_body_json(json!({"id": 2, "url": "u", "asn": 65002})),
+            )
+            .mount(&server)
+            .await;
+
+        let profile = ProfileConfig {
+            url: server.uri(),
+            ..Default::default()
+        };
+        let client = NetBoxClient::new(&profile, None).unwrap();
+        let cache = Cache::disabled();
+        let (tx, mut rx) = mpsc::channel::<AppEvent>(8);
+
+        // Start the superseded preview and let it reach the network await.
+        let h1 = spawn_preview(
+            ObjectKind::Asn,
+            1,
+            client.clone(),
+            cache.clone(),
+            tx.clone(),
+        );
+        tokio::time::sleep(Duration::from_millis(80)).await;
+        h1.abort();
+
+        // The aborted handle resolves promptly with a cancelled error rather than
+        // hanging on the 30s response — proving the in-flight fetch was cancelled.
+        let join = tokio::time::timeout(Duration::from_secs(1), h1)
+            .await
+            .expect("aborted task resolves, it does not hang on the slow response");
+        assert!(
+            join.is_err(),
+            "expected a cancelled JoinError, got {join:?}"
+        );
+
+        // The superseding preview completes normally.
+        let _h2 = spawn_preview(ObjectKind::Asn, 2, client, cache, tx);
+        let ev = tokio::time::timeout(Duration::from_secs(2), rx.recv())
+            .await
+            .expect("the superseding preview should deliver its event")
+            .expect("channel open");
+        assert!(
+            matches!(
+                ev,
+                AppEvent::PreviewLoaded {
+                    kind: ObjectKind::Asn,
+                    id: 2,
+                    ..
+                }
+            ),
+            "expected PreviewLoaded for id=2"
+        );
+
+        // The aborted preview's event must never arrive — it was cancelled before
+        // `tx.send`. Bounded wait so a regression fails fast rather than hanging.
+        // Drain any further events for a short window: the aborted preview must
+        // not deliver, and the superseding one already did. A regression fails
+        // fast rather than hanging.
+        let mut extra = 0;
+        let drain = tokio::time::timeout(Duration::from_millis(300), async {
+            while rx.recv().await.is_some() {
+                extra += 1;
+            }
+        })
+        .await;
+        let _ = drain;
+        assert_eq!(
+            extra, 0,
+            "the aborted preview must not deliver its event (got {extra} extra)"
         );
     }
 }
