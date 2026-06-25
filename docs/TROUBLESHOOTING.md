@@ -156,6 +156,18 @@ usage error (exit 2) instead of blocking, and call an explicit subcommand:
 nbox --no-tui device edge01       # never drops into the TUI
 ```
 
+### TUI copy over SSH does not reach the clipboard
+
+On non-macOS Unix, when no graphical display is available
+(`DISPLAY`/`WAYLAND_DISPLAY` are unset), the TUI `y` copy action uses OSC 52 so
+the local terminal can write the local clipboard through the SSH stream. macOS
+and Windows still try their native desktop clipboards first. Some terminals
+disable OSC 52, and tmux needs clipboard passthrough enabled, for example:
+
+```tmux
+set -g set-clipboard on
+```
+
 ### `… is ambiguous — matches: …` (exit 5)
 
 The reference matched several objects. Disambiguate with the right scope flag —

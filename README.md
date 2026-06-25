@@ -202,7 +202,7 @@ are no feature-variant builds to choose between.
 
 | Feature | Default | Description |
 |---------|---------|-------------|
-| `clipboard` | Yes | Copy values with `y` in the TUI (via `arboard`) |
+| `clipboard` | Yes | Copy values with `y` in the TUI (desktop clipboard via `arboard`; SSH/headless fallback via OSC 52) |
 | `http` | Yes | `nbox serve --http` loopback MCP transport (+ OIDC) |
 | `updates` | Yes | GitHub update notifications |
 
@@ -335,7 +335,7 @@ auth/permission (401/403), `4` not found, `5` ambiguous reference. See
 | `PgUp` / `PgDn` | page up / down |
 | `Enter` | open selected object |
 | `o` | open in browser |
-| `y` | copy current item label |
+| `y` | copy current item label (desktop clipboard, or OSC 52 over SSH/headless terminals) |
 | `R` | related objects (jump between connected objects) |
 | `D` | overview dashboard |
 | `T` | prefix tree (`Space` / `←` / `→` collapse/expand) |

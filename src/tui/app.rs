@@ -1,8 +1,11 @@
 //! TUI entry point and event loop.
 
 use anyhow::Result;
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use ratatui::backend::Backend;
 use ratatui::{DefaultTerminal, Terminal};
+use std::io::Write;
 use tokio::sync::mpsc;
 
 use crate::cache::{Cache, CacheKey};
@@ -116,7 +119,13 @@ async fn event_loop(
         let Some(event) = rx.recv().await else { break };
         // Never await network here — dispatch each command on its own task,
         // which posts results back as AppEvents.
-        for command in app.handle_event(event) {
+        let commands = match event {
+            AppEvent::CopyViaTerminal(text) => {
+                app.handle_event(AppEvent::Status(copy_via_terminal_status(&text)))
+            }
+            event => app.handle_event(event),
+        };
+        for command in commands {
             // `ArmRefresh` re-arms the ticker in place (it owns no client/network):
             // abort the old task and spawn one at the new interval. Everything else
             // is side-effecting work spawned off the render thread.
@@ -362,13 +371,7 @@ fn dispatch(command: AppCommand, client: NetBoxClient, cache: Cache, tx: mpsc::S
             });
         }
         AppCommand::Copy(text) => {
-            tokio::spawn(async move {
-                let message = match copy_to_clipboard(&text) {
-                    Ok(()) => format!("copied: {text}"),
-                    Err(e) => format!("copy failed: {e}"),
-                };
-                let _ = tx.send(AppEvent::Status(message)).await;
-            });
+            dispatch_copy(text, tx);
         }
         AppCommand::SwitchProfile {
             id,
@@ -438,15 +441,136 @@ async fn reconnect(
 }
 
 #[cfg(feature = "clipboard")]
-fn copy_to_clipboard(text: &str) -> Result<()> {
-    let mut clipboard = arboard::Clipboard::new()?;
-    clipboard.set_text(text.to_string())?;
-    Ok(())
+fn dispatch_copy(text: String, tx: mpsc::Sender<AppEvent>) {
+    let env = ClipboardEnv::from_process();
+    if should_skip_desktop_clipboard(ClipboardPlatform::CURRENT, &env) {
+        send_status(&tx, copy_via_terminal_status(&text));
+        return;
+    }
+
+    tokio::spawn(async move {
+        let message = match copy_to_desktop_clipboard(&text) {
+            Ok(()) => CopyMethod::System.status_message(&text),
+            Err(e) => {
+                tracing::debug!("desktop clipboard failed; falling back to OSC 52: {e:#}");
+                let _ = tx.send(AppEvent::CopyViaTerminal(text)).await;
+                return;
+            }
+        };
+        let _ = tx.send(AppEvent::Status(message)).await;
+    });
 }
 
 #[cfg(not(feature = "clipboard"))]
-fn copy_to_clipboard(_text: &str) -> Result<()> {
-    anyhow::bail!("clipboard support was not built in (enable the `clipboard` feature)")
+fn dispatch_copy(text: String, tx: mpsc::Sender<AppEvent>) {
+    send_status(&tx, copy_via_terminal_status(&text));
+}
+
+#[cfg(feature = "clipboard")]
+fn copy_to_desktop_clipboard(text: &str) -> Result<()> {
+    arboard::Clipboard::new()
+        .and_then(|mut c| c.set_text(text.to_string()))
+        .map_err(Into::into)
+}
+
+fn send_status(tx: &mpsc::Sender<AppEvent>, message: String) {
+    if let Err(e) = tx.try_send(AppEvent::Status(message)) {
+        tracing::debug!("dropping clipboard status; event queue is full or closed: {e}");
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CopyMethod {
+    #[cfg(feature = "clipboard")]
+    System,
+    Terminal,
+}
+
+impl CopyMethod {
+    fn status_message(self, text: &str) -> String {
+        #[cfg(not(feature = "clipboard"))]
+        let _ = text;
+        match self {
+            #[cfg(feature = "clipboard")]
+            Self::System => format!("copied: {text}"),
+            Self::Terminal => format!("copied via terminal: {text}"),
+        }
+    }
+}
+
+#[cfg(any(feature = "clipboard", test))]
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ClipboardEnv {
+    display: Option<String>,
+    wayland_display: Option<String>,
+}
+
+#[cfg(any(feature = "clipboard", test))]
+impl ClipboardEnv {
+    #[cfg(feature = "clipboard")]
+    fn from_process() -> Self {
+        Self {
+            display: std::env::var("DISPLAY").ok().filter(|s| !s.is_empty()),
+            wayland_display: std::env::var("WAYLAND_DISPLAY")
+                .ok()
+                .filter(|s| !s.is_empty()),
+        }
+    }
+
+    fn has_graphical_display(&self) -> bool {
+        self.display.is_some() || self.wayland_display.is_some()
+    }
+}
+
+#[cfg(any(feature = "clipboard", test))]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ClipboardPlatform {
+    /// arboard needs an X11/Wayland display on Linux and other non-macOS Unix
+    /// backends; without one, skip the X11 timeout and use OSC 52.
+    #[cfg(any(test, all(unix, not(target_os = "macos"))))]
+    X11WaylandUnix,
+    /// macOS and Windows use native pasteboards and do not depend on DISPLAY.
+    #[cfg(any(test, not(all(unix, not(target_os = "macos")))))]
+    NativeDesktop,
+}
+
+#[cfg(feature = "clipboard")]
+impl ClipboardPlatform {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    const CURRENT: Self = Self::X11WaylandUnix;
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    const CURRENT: Self = Self::NativeDesktop;
+}
+
+#[cfg(any(feature = "clipboard", test))]
+fn should_skip_desktop_clipboard(platform: ClipboardPlatform, env: &ClipboardEnv) -> bool {
+    match platform {
+        #[cfg(any(test, all(unix, not(target_os = "macos"))))]
+        ClipboardPlatform::X11WaylandUnix => !env.has_graphical_display(),
+        #[cfg(any(test, not(all(unix, not(target_os = "macos")))))]
+        ClipboardPlatform::NativeDesktop => false,
+    }
+}
+
+fn copy_via_terminal(text: &str) -> Result<CopyMethod> {
+    write_osc52(text, &mut std::io::stdout())?;
+    Ok(CopyMethod::Terminal)
+}
+
+fn copy_via_terminal_status(text: &str) -> String {
+    match copy_via_terminal(text) {
+        Ok(method) => method.status_message(text),
+        Err(e) => format!("copy failed: {e}"),
+    }
+}
+
+fn write_osc52(text: &str, out: &mut impl Write) -> std::io::Result<()> {
+    out.write_all(osc52_sequence(text).as_bytes())?;
+    out.flush()
+}
+
+fn osc52_sequence(text: &str) -> String {
+    format!("\x1b]52;c;{}\x07", BASE64_STANDARD.encode(text.as_bytes()))
 }
 
 #[cfg(test)]
@@ -659,5 +783,87 @@ mod tests {
 
         term.backend_mut().resize(100, 30);
         assert!(draw_if_dirty(&mut term, &mut app, &mut gate).unwrap());
+    }
+
+    #[test]
+    fn clipboard_env_detects_graphical_display() {
+        assert!(
+            !ClipboardEnv {
+                display: None,
+                wayland_display: None,
+            }
+            .has_graphical_display()
+        );
+        assert!(
+            ClipboardEnv {
+                display: Some(":0".into()),
+                wayland_display: None,
+            }
+            .has_graphical_display()
+        );
+        assert!(
+            ClipboardEnv {
+                display: None,
+                wayland_display: Some("wayland-0".into()),
+            }
+            .has_graphical_display()
+        );
+    }
+
+    #[test]
+    fn desktop_clipboard_skip_is_linux_x11_wayland_only() {
+        let headless = ClipboardEnv {
+            display: None,
+            wayland_display: None,
+        };
+        let x11 = ClipboardEnv {
+            display: Some(":0".into()),
+            wayland_display: None,
+        };
+        let wayland = ClipboardEnv {
+            display: None,
+            wayland_display: Some("wayland-0".into()),
+        };
+
+        assert!(should_skip_desktop_clipboard(
+            ClipboardPlatform::X11WaylandUnix,
+            &headless
+        ));
+        assert!(!should_skip_desktop_clipboard(
+            ClipboardPlatform::X11WaylandUnix,
+            &x11
+        ));
+        assert!(!should_skip_desktop_clipboard(
+            ClipboardPlatform::X11WaylandUnix,
+            &wayland
+        ));
+        assert!(!should_skip_desktop_clipboard(
+            ClipboardPlatform::NativeDesktop,
+            &headless
+        ));
+    }
+
+    #[test]
+    fn osc52_sequence_encodes_clipboard_payload() {
+        assert_eq!(osc52_sequence("edge01"), "\u{1b}]52;c;ZWRnZTAx\u{7}");
+        assert_eq!(
+            osc52_sequence("device edge99"),
+            "\u{1b}]52;c;ZGV2aWNlIGVkZ2U5OQ==\u{7}"
+        );
+    }
+
+    #[test]
+    fn write_osc52_writes_and_flushes_the_sequence() {
+        let mut out = Vec::new();
+        write_osc52("edge01", &mut out).unwrap();
+        assert_eq!(String::from_utf8(out).unwrap(), osc52_sequence("edge01"));
+    }
+
+    #[test]
+    fn terminal_copy_status_is_honest() {
+        assert_eq!(
+            CopyMethod::Terminal.status_message("edge01"),
+            "copied via terminal: edge01"
+        );
     }
 }

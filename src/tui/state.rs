@@ -268,6 +268,9 @@ pub enum AppEvent {
     /// is available (drives the TUI banner), `None` when up to date or the check
     /// was skipped. Fired at most once per session.
     UpdateAvailable(Option<String>),
+    /// Internal event-loop request to write OSC 52 bytes on the same thread as
+    /// terminal draws, avoiding interleaved stdout writes from worker tasks.
+    CopyViaTerminal(String),
     Status(String),
 }
 
@@ -1439,6 +1442,7 @@ impl App {
                 self.nav_counts = counts.into_iter().collect();
                 Vec::new()
             }
+            AppEvent::CopyViaTerminal(_) => Vec::new(),
             AppEvent::Status(message) => {
                 // An async status push (e.g. "copied …"/"opened …"): classify it
                 // so confirmations and failures still get the right color.
