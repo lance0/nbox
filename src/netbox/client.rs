@@ -242,6 +242,30 @@ impl NetBoxClient {
         self.get(endpoint.path(), &params).await
     }
 
+    /// Like [`list`](Self::list) but caps the `limit` param at `max` (clamped to
+    /// `min(page_size, max)`). Used by the search fan-out so a `--limit 25` search
+    /// fetches at most 25 rows per endpoint instead of the full `page_size` (100
+    /// by default) — the merge truncates to `req.limit` anyway, so the extra rows
+    /// are deserialized and ranked only to be thrown away. A floor at the call
+    /// site (`max(req.limit, floor)`) keeps each branch wide enough to contribute
+    /// its share of the merged result.
+    pub async fn list_limited<T>(
+        &self,
+        endpoint: Endpoint,
+        mut params: Vec<(&str, String)>,
+        max: usize,
+    ) -> Result<Page<T>>
+    where
+        T: DeserializeOwned,
+    {
+        let limit = self.page_size.min(max);
+        params.push(("limit", limit.to_string()));
+        if self.exclude_config_context && endpoint.has_config_context() {
+            params.push(("exclude", "config_context".to_string()));
+        }
+        self.get(endpoint.path(), &params).await
+    }
+
     /// Perform an authenticated GraphQL POST and deserialize the `data` object.
     ///
     /// GraphQL rides the same NetBox base URL, auth header, TLS settings, timeout,

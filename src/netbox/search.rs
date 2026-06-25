@@ -226,6 +226,16 @@ impl SearchFilters {
     }
 }
 
+/// Floor for the per-endpoint search row cap. Each search branch fetches at
+/// most `min(page_size, max(req.limit, SEARCH_BRANCH_FLOOR))` rows — so a
+/// `--limit 25` search pulls 25 per endpoint (not the full `page_size`), while a
+/// tiny `--limit 5` still fetches `FLOOR` so the merge has enough candidates to
+/// rank across endpoints (nbox re-sorts by `score_match`, which is coarser than
+/// NetBox's own `q` relevance, so a narrow per-branch cap could miss a
+/// high-scoring row the server ranked lower). 25 matches the CLI/MCP default
+/// `--limit` and is wide enough that the top result set is stable in practice.
+pub(crate) const SEARCH_BRANCH_FLOOR: usize = 25;
+
 /// A search request.
 #[derive(Debug, Clone)]
 pub struct SearchRequest {
@@ -431,6 +441,16 @@ impl NetBoxClient {
         // neither filter set both return `Ok(None)` after zero network calls.)
         let (scope, vrf_id) = tokio::try_join!(self.resolve_scope(f), self.resolve_vrf(f))?;
 
+        // Cap each branch's per-endpoint fetch at `min(page_size, max(req.limit,
+        // SEARCH_BRANCH_FLOOR))` so a `--limit 25` search deserializes ~25 rows
+        // per endpoint (not the full `page_size` 100) — the merge truncates to
+        // `req.limit` anyway, so the extra rows are ranked only to be thrown away.
+        // The floor keeps each branch wide enough to contribute its share of the
+        // merged result (nbox's `score_match` is coarser than NetBox's `q`
+        // relevance, so a cap below the floor could miss a high-scoring row the
+        // server ranked lower). See [`SEARCH_BRANCH_FLOOR`].
+        let branch_limit = self.page_size().min(req.limit.max(SEARCH_BRANCH_FLOOR));
+
         let (
             devices,
             sites,
@@ -453,26 +473,26 @@ impl NetBoxClient {
             vrfs,
             route_targets,
         ) = tokio::join!(
-            self.search_devices(&q, f, scope.as_ref()),
-            self.search_sites(&q, f, scope.as_ref()),
-            self.search_ips(&q, f, scope.as_ref(), vrf_id),
-            self.search_prefixes(&q, f, scope.as_ref(), vrf_id),
-            self.search_vlans(&q, f, scope.as_ref()),
-            self.search_circuits(&q, f, scope.as_ref()),
-            self.search_virtual_circuits(&q, f, scope.as_ref()),
-            self.search_aggregates(&q, f, scope.as_ref()),
-            self.search_asns(&q, f, scope.as_ref()),
-            self.search_ip_ranges(&q, f, scope.as_ref()),
-            self.search_tenants(&q, f, scope.as_ref()),
-            self.search_contacts(&q, f, scope.as_ref()),
-            self.search_providers(&q, f, scope.as_ref()),
-            self.search_vms(&q, f, scope.as_ref()),
-            self.search_vm_types(&q, f, scope.as_ref()),
-            self.search_clusters(&q, f, scope.as_ref()),
-            self.search_racks(&q, f, scope.as_ref()),
-            self.search_rack_groups(&q, f, scope.as_ref()),
-            self.search_vrfs(&q, f, scope.as_ref()),
-            self.search_route_targets(&q, f, scope.as_ref()),
+            self.search_devices(&q, f, scope.as_ref(), branch_limit),
+            self.search_sites(&q, f, scope.as_ref(), branch_limit),
+            self.search_ips(&q, f, scope.as_ref(), vrf_id, branch_limit),
+            self.search_prefixes(&q, f, scope.as_ref(), vrf_id, branch_limit),
+            self.search_vlans(&q, f, scope.as_ref(), branch_limit),
+            self.search_circuits(&q, f, scope.as_ref(), branch_limit),
+            self.search_virtual_circuits(&q, f, scope.as_ref(), branch_limit),
+            self.search_aggregates(&q, f, scope.as_ref(), branch_limit),
+            self.search_asns(&q, f, scope.as_ref(), branch_limit),
+            self.search_ip_ranges(&q, f, scope.as_ref(), branch_limit),
+            self.search_tenants(&q, f, scope.as_ref(), branch_limit),
+            self.search_contacts(&q, f, scope.as_ref(), branch_limit),
+            self.search_providers(&q, f, scope.as_ref(), branch_limit),
+            self.search_vms(&q, f, scope.as_ref(), branch_limit),
+            self.search_vm_types(&q, f, scope.as_ref(), branch_limit),
+            self.search_clusters(&q, f, scope.as_ref(), branch_limit),
+            self.search_racks(&q, f, scope.as_ref(), branch_limit),
+            self.search_rack_groups(&q, f, scope.as_ref(), branch_limit),
+            self.search_vrfs(&q, f, scope.as_ref(), branch_limit),
+            self.search_route_targets(&q, f, scope.as_ref(), branch_limit),
         );
 
         let mut merged = Vec::new();
@@ -623,6 +643,7 @@ impl NetBoxClient {
         q: &str,
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
+        limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // Devices expose clean id filters for every scope kind
         // (`site_id`/`region_id`/`site_group_id`/`location_id`), so honor all four
@@ -642,7 +663,7 @@ impl NetBoxClient {
         if let Some((key, id)) = device_scope {
             params.push((key, id.to_string()));
         }
-        let page: Page<Device> = self.list(Endpoint::Devices, params).await?;
+        let page: Page<Device> = self.list_limited(Endpoint::Devices, params, limit).await?;
         Ok(page
             .results
             .into_iter()
@@ -665,6 +686,7 @@ impl NetBoxClient {
         q: &str,
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
+        limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // The site search itself carries no scope filter (a site has no parent
         // site/region/site-group/location filter on this endpoint that maps to our
@@ -676,7 +698,7 @@ impl NetBoxClient {
         let Some(params) = endpoint_params(q, f, search_supported(Endpoint::Sites)) else {
             return Ok(Vec::new());
         };
-        let page: Page<Site> = self.list(Endpoint::Sites, params).await?;
+        let page: Page<Site> = self.list_limited(Endpoint::Sites, params, limit).await?;
         Ok(page
             .results
             .into_iter()
@@ -697,6 +719,7 @@ impl NetBoxClient {
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
         vrf_id: Option<u64>,
+        limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // IPs carry no scope filter that maps to our flags — any active scope
         // (including `--site`) skips them.
@@ -711,7 +734,9 @@ impl NetBoxClient {
         if let Some(id) = vrf_id {
             params.push(("vrf_id", id.to_string()));
         }
-        let page: Page<IpAddress> = self.list(Endpoint::IpAddresses, params).await?;
+        let page: Page<IpAddress> = self
+            .list_limited(Endpoint::IpAddresses, params, limit)
+            .await?;
         Ok(page
             .results
             .into_iter()
@@ -732,6 +757,7 @@ impl NetBoxClient {
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
         vrf_id: Option<u64>,
+        limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // Scope is handled out-of-band, not through the allowlist: NetBox 4.2
         // dropped the prefix `site` FK for the polymorphic `scope`, so a plain
@@ -764,7 +790,7 @@ impl NetBoxClient {
         if let Some(id) = vrf_id {
             params.push(("vrf_id", id.to_string()));
         }
-        let page: Page<Prefix> = self.list(Endpoint::Prefixes, params).await?;
+        let page: Page<Prefix> = self.list_limited(Endpoint::Prefixes, params, limit).await?;
         Ok(page
             .results
             .into_iter()
@@ -787,6 +813,7 @@ impl NetBoxClient {
         q: &str,
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
+        limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // VLANs honor `--site` via the resolved `site_id`. NetBox's VLAN region/
         // site-group filters exist but aren't uniformly clean (no location scope),
@@ -803,7 +830,7 @@ impl NetBoxClient {
         if let Some(s) = scope {
             params.push(("site_id", s.id.to_string()));
         }
-        let page: Page<Vlan> = self.list(Endpoint::Vlans, params).await?;
+        let page: Page<Vlan> = self.list_limited(Endpoint::Vlans, params, limit).await?;
         Ok(page
             .results
             .into_iter()
@@ -830,6 +857,7 @@ impl NetBoxClient {
         q: &str,
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
+        limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // Circuits carry no scope filter that maps to our flags — any active scope
         // (including `--site`) skips them.
@@ -839,7 +867,7 @@ impl NetBoxClient {
         let Some(params) = endpoint_params(q, f, search_supported(Endpoint::Circuits)) else {
             return Ok(Vec::new());
         };
-        let page: Page<Circuit> = self.list(Endpoint::Circuits, params).await?;
+        let page: Page<Circuit> = self.list_limited(Endpoint::Circuits, params, limit).await?;
         Ok(page
             .results
             .into_iter()
@@ -862,6 +890,7 @@ impl NetBoxClient {
         q: &str,
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
+        limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // Virtual circuits carry no scope filter that maps to our flags — any
         // active scope (including `--site`) skips them.
@@ -872,7 +901,9 @@ impl NetBoxClient {
         else {
             return Ok(Vec::new());
         };
-        let page: Page<VirtualCircuit> = self.list(Endpoint::VirtualCircuits, params).await?;
+        let page: Page<VirtualCircuit> = self
+            .list_limited(Endpoint::VirtualCircuits, params, limit)
+            .await?;
         Ok(page
             .results
             .into_iter()
@@ -895,6 +926,7 @@ impl NetBoxClient {
         q: &str,
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
+        limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // Aggregates carry no scope filter that maps to our flags — any active
         // scope (including `--site`) skips them.
@@ -904,7 +936,9 @@ impl NetBoxClient {
         let Some(params) = endpoint_params(q, f, search_supported(Endpoint::Aggregates)) else {
             return Ok(Vec::new());
         };
-        let page: Page<Aggregate> = self.list(Endpoint::Aggregates, params).await?;
+        let page: Page<Aggregate> = self
+            .list_limited(Endpoint::Aggregates, params, limit)
+            .await?;
         Ok(page
             .results
             .into_iter()
@@ -927,6 +961,7 @@ impl NetBoxClient {
         q: &str,
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
+        limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // ASNs carry no scope filter that maps to our flags — any active scope
         // (including `--site`) skips them.
@@ -944,7 +979,7 @@ impl NetBoxClient {
             params.retain(|(k, _)| *k != "q");
             params.push(("asn", asn.to_string()));
         }
-        let page: Page<Asn> = self.list(Endpoint::Asns, params).await?;
+        let page: Page<Asn> = self.list_limited(Endpoint::Asns, params, limit).await?;
         Ok(page
             .results
             .into_iter()
@@ -970,6 +1005,7 @@ impl NetBoxClient {
         q: &str,
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
+        limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // IP ranges carry no scope filter that maps to our flags — any active
         // scope (including `--site`) skips them.
@@ -979,7 +1015,7 @@ impl NetBoxClient {
         let Some(params) = endpoint_params(q, f, search_supported(Endpoint::IpRanges)) else {
             return Ok(Vec::new());
         };
-        let page: Page<IpRange> = self.list(Endpoint::IpRanges, params).await?;
+        let page: Page<IpRange> = self.list_limited(Endpoint::IpRanges, params, limit).await?;
         Ok(page
             .results
             .into_iter()
@@ -1006,6 +1042,7 @@ impl NetBoxClient {
         q: &str,
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
+        limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // Tenants carry no scope filter (site/region/site-group/location) — skip
         // them for any active scope rather than return an unfiltered set.
@@ -1017,7 +1054,7 @@ impl NetBoxClient {
         let Some(params) = endpoint_params(q, f, search_supported(Endpoint::Tenants)) else {
             return Ok(Vec::new());
         };
-        let page: Page<Tenant> = self.list(Endpoint::Tenants, params).await?;
+        let page: Page<Tenant> = self.list_limited(Endpoint::Tenants, params, limit).await?;
         Ok(page
             .results
             .into_iter()
@@ -1041,6 +1078,7 @@ impl NetBoxClient {
         q: &str,
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
+        limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // Contacts carry no scope filter — skip them for any active scope.
         if skip_for_any_scope(scope) {
@@ -1050,7 +1088,7 @@ impl NetBoxClient {
         let Some(params) = endpoint_params(q, f, search_supported(Endpoint::Contacts)) else {
             return Ok(Vec::new());
         };
-        let page: Page<Contact> = self.list(Endpoint::Contacts, params).await?;
+        let page: Page<Contact> = self.list_limited(Endpoint::Contacts, params, limit).await?;
         Ok(page
             .results
             .into_iter()
@@ -1074,6 +1112,7 @@ impl NetBoxClient {
         q: &str,
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
+        limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // Providers carry no scope filter (site/region/site-group/location) — skip
         // them for any active scope rather than return an unfiltered set.
@@ -1084,7 +1123,9 @@ impl NetBoxClient {
         let Some(params) = endpoint_params(q, f, search_supported(Endpoint::Providers)) else {
             return Ok(Vec::new());
         };
-        let page: Page<Provider> = self.list(Endpoint::Providers, params).await?;
+        let page: Page<Provider> = self
+            .list_limited(Endpoint::Providers, params, limit)
+            .await?;
         Ok(page
             .results
             .into_iter()
@@ -1112,6 +1153,7 @@ impl NetBoxClient {
         q: &str,
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
+        limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // VMs honor `--site` via the resolved `site_id`; for the id-based scopes
         // (region/site-group/location) the VM filters aren't uniformly clean (no
@@ -1128,7 +1170,9 @@ impl NetBoxClient {
         if let Some(s) = scope {
             params.push(("site_id", s.id.to_string()));
         }
-        let page: Page<VirtualMachine> = self.list(Endpoint::VirtualMachines, params).await?;
+        let page: Page<VirtualMachine> = self
+            .list_limited(Endpoint::VirtualMachines, params, limit)
+            .await?;
         Ok(page
             .results
             .into_iter()
@@ -1152,6 +1196,7 @@ impl NetBoxClient {
         q: &str,
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
+        limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // VM types carry no scope filter (site/region/site-group/location) —
         // skip them for any active scope rather than return an unfiltered set.
@@ -1166,12 +1211,14 @@ impl NetBoxClient {
         // release it 404s — treat that as "this kind isn't available here" and
         // return empty, so the search fan-out stays green on 4.2–4.5 instead
         // of failing closed on a version-gated endpoint miss.
-        let page: Page<VirtualMachineType> =
-            match self.list(Endpoint::VirtualMachineTypes, params).await {
-                Ok(page) => page,
-                Err(e) if crate::error::is_not_found(&e) => return Ok(Vec::new()),
-                Err(e) => return Err(e),
-            };
+        let page: Page<VirtualMachineType> = match self
+            .list_limited(Endpoint::VirtualMachineTypes, params, limit)
+            .await
+        {
+            Ok(page) => page,
+            Err(e) if crate::error::is_not_found(&e) => return Ok(Vec::new()),
+            Err(e) => return Err(e),
+        };
         Ok(page
             .results
             .into_iter()
@@ -1194,6 +1241,7 @@ impl NetBoxClient {
         q: &str,
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
+        limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // NetBox 4.2+ scopes a cluster polymorphically (same `scope_type`/
         // `scope_id` filter as prefixes), so honor a region/site-group/location
@@ -1220,7 +1268,7 @@ impl NetBoxClient {
             params.push(("scope_type", s.content_type.to_string()));
             params.push(("scope_id", s.id.to_string()));
         }
-        let page: Page<Cluster> = self.list(Endpoint::Clusters, params).await?;
+        let page: Page<Cluster> = self.list_limited(Endpoint::Clusters, params, limit).await?;
         Ok(page
             .results
             .into_iter()
@@ -1244,6 +1292,7 @@ impl NetBoxClient {
         q: &str,
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
+        limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // Racks expose clean id filters for every scope kind
         // (`site_id`/`region_id`/`site_group_id`/`location_id`), like devices, so
@@ -1262,7 +1311,7 @@ impl NetBoxClient {
         if let Some((key, id)) = rack_scope {
             params.push((key, id.to_string()));
         }
-        let page: Page<Rack> = self.list(Endpoint::Racks, params).await?;
+        let page: Page<Rack> = self.list_limited(Endpoint::Racks, params, limit).await?;
         Ok(page
             .results
             .into_iter()
@@ -1285,6 +1334,7 @@ impl NetBoxClient {
         q: &str,
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
+        limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // Rack groups carry no scope filter that maps to our flags — any active
         // scope (including `--site`) skips them.
@@ -1298,11 +1348,12 @@ impl NetBoxClient {
         // Swallow that as an empty result so the search fan-out stays green on
         // 4.2–4.5 (the kind is simply absent), rather than fail closed on a
         // version-gated endpoint miss.
-        let page: Page<RackGroup> = match self.list(Endpoint::RackGroups, params).await {
-            Ok(page) => page,
-            Err(e) if crate::error::is_not_found(&e) => return Ok(Vec::new()),
-            Err(e) => return Err(e),
-        };
+        let page: Page<RackGroup> =
+            match self.list_limited(Endpoint::RackGroups, params, limit).await {
+                Ok(page) => page,
+                Err(e) if crate::error::is_not_found(&e) => return Ok(Vec::new()),
+                Err(e) => return Err(e),
+            };
         Ok(page
             .results
             .into_iter()
@@ -1325,6 +1376,7 @@ impl NetBoxClient {
         q: &str,
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
+        limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // VRFs carry no site scope (site/region/site-group/location) — skip them
         // for any active scope rather than return an unfiltered set.
@@ -1336,7 +1388,7 @@ impl NetBoxClient {
         let Some(params) = endpoint_params(q, f, search_supported(Endpoint::Vrfs)) else {
             return Ok(Vec::new());
         };
-        let page: Page<Vrf> = self.list(Endpoint::Vrfs, params).await?;
+        let page: Page<Vrf> = self.list_limited(Endpoint::Vrfs, params, limit).await?;
         Ok(page
             .results
             .into_iter()
@@ -1361,6 +1413,7 @@ impl NetBoxClient {
         q: &str,
         f: &SearchFilters,
         scope: Option<&ResolvedScope>,
+        limit: usize,
     ) -> Result<Vec<SearchResult>> {
         // Route targets carry no site scope — skip them for any active scope.
         if skip_for_any_scope(scope) {
@@ -1371,7 +1424,9 @@ impl NetBoxClient {
         let Some(params) = endpoint_params(q, f, search_supported(Endpoint::RouteTargets)) else {
             return Ok(Vec::new());
         };
-        let page: Page<RouteTarget> = self.list(Endpoint::RouteTargets, params).await?;
+        let page: Page<RouteTarget> = self
+            .list_limited(Endpoint::RouteTargets, params, limit)
+            .await?;
         Ok(page
             .results
             .into_iter()
