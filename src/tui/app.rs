@@ -570,14 +570,20 @@ mod tests {
         assert!(draw_if_dirty(&mut term, &mut app, &mut gate).unwrap());
         assert!(buffer_text(&term).contains("copied: edge01"));
 
+        // Intermediate TTL ticks only decrement the (unrendered) countdown — the
+        // status text is unchanged, so the gate must NOT redraw, yet the status
+        // stays on screen (the last drawn frame still holds it).
         for _ in 0..9 {
             assert!(app.handle_event(AppEvent::PreviewTick).is_empty());
             assert!(
-                draw_if_dirty(&mut term, &mut app, &mut gate).unwrap(),
-                "ttl countdown redraws"
+                !draw_if_dirty(&mut term, &mut app, &mut gate).unwrap(),
+                "intermediate ttl ticks do not redraw"
             );
+            assert!(buffer_text(&term).contains("copied: edge01"));
         }
 
+        // The expiry tick clears the status: `self.status` empties (which IS
+        // hashed), so this redraws exactly once to wipe the message.
         assert!(app.handle_event(AppEvent::PreviewTick).is_empty());
         assert!(
             draw_if_dirty(&mut term, &mut app, &mut gate).unwrap(),

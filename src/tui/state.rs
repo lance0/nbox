@@ -995,7 +995,12 @@ impl App {
 
         self.status.hash(&mut h);
         severity_key(self.status_severity).hash(&mut h);
-        self.status_ttl.hash(&mut h);
+        // `status_ttl` is deliberately NOT hashed: it counts a transient status
+        // down but is never rendered (no on-screen countdown), so hashing it would
+        // force a redraw every tick of the status window with no visible change.
+        // The expiry redraw still fires — clearing the TTL empties `self.status`,
+        // which IS hashed above. If a future UI shows a TTL-derived value (a fade
+        // or countdown), hash that derived visible value here instead.
         self.pending.hash(&mut h);
         if self.loading() {
             self.spinner.frame().hash(&mut h);
