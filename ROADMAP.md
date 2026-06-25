@@ -689,6 +689,44 @@ A batch of proposed perf wins, each verified against the code. Net: one quick wi
   latency. CARE: the tick also advances the spinner, status-TTL expiry, and the browse/preview debounce flush,
   so the flag must key on *state mutation* (and still mark dirty on spinner ticks, status changes, async results) — not on "no
   keypress," or it freezes the spinner / stalls TTL.
+
+  **Verified map (2026-06-24).** The draw-first loop is `app.rs:112` (`draw`, then `rx.recv`), so draw fires
+  once per event; `render_home_list` (`ui.rs:925-950`) builds the full `Vec<Row>` via `.map(...).collect()`
+  over `app.view` on *every draw* (not cached, not windowed). The 180ms `PreviewTick` (`events.rs:78`,
+  `state.rs:1048-1056`) mutates rendered state on three of four idle paths: (1) `spinner.tick()` *while
+  `pending > 0`* — frame advances; (2) `on_nav_browse_tick` *if `browse_dirty` + cursor settled* — emits a
+  `Browse` cmd (result redraws on arrival); (3) `on_preview_tick` *if `preview_dirty`* — emits a `LoadPreview`
+  cmd (same); (4) `tick_status_ttl` *if `status_ttl.is_some()`* — decrements/expires the footer notice.
+  `Resize` mutates nothing but the terminal size changed → must redraw; the async completions
+  (`SearchComplete`/`BrowseComplete`/`DetailLoaded`/`PreviewLoaded`/`NavCounts`/`Status`) mutate
+  results/preview/status and must redraw. A naive "redraw only on keypress" freezes the spinner (1), stalls
+  the status notice (4), and misses async arrivals.
+
+  **Two approaches (researched).**
+  - **A — thread an explicit `dirty: bool`** through every mutation site (~15-20: `handle_key`, spinner
+    tick, `tick_status_ttl`, the debounce flushes, each async-completion arm, `Resize`, switch-settle); set on
+    mutation, clear after a successful draw. Risk: miss a site → **frozen UI** (harmful). Reward: minimal
+    per-draw cost (one bool).
+  - **B — state-signature diff** (recommended). Compute a cheap signature of render-relevant state
+    (`screen`/`mode`/`focus`/`nav_selected`/`selected`/`results.len()`/`preview_for`/detail id/`status`+
+    `status_ttl`/`spinner.frame()` if loading/`browse_kind`+filter/`filters`/theme/`update_version`/terminal
+    size) before/after `handle_event`; redraw only if it changed. Risk: miss a field → **over-redraws**
+    (harmless — degrades to today's behavior). Reward: resilient to future field additions; the benign
+    failure mode is the safety property.
+  B is recommended because its failure mode is benign (over-redraw = status quo), A's is harmful (frozen UI).
+  The codebase already has the idiom (`preview_dirty`/`browse_dirty` debounce flags, set-mutation/
+    clear-on-flush) and the test scaffold (`TestBackend` + `buffer().content` assertions, `ui.rs:2340`).
+  Test matrix (extend the TestBackend pattern): idle-no-draw; spinner-draws-while-loading;
+  spinner-stops-on-settle; status-ttl-draws-then-stops; debounce-emits-cmd (no redraw on the tick itself);
+  async-arrival-draws; keypress-draws; resize-draws; **no-frozen-UI regression** (buffer content advances
+  across the spinner path — the safety assertion). Scope: ~80-150 lines impl (`app.rs` loop guard +
+  `render_signature()` in `state.rs`) + ~120 lines tests; one focused PR, no network/live dependency.
+
+  **Priority read.** Real but low-urgency — the 500 revert (0.12.1) already cut the idle rebuild in half and
+  encoded the principle ("filter is the escape hatch, not a bigger cap"). This is polish/efficiency, lower
+  value-per-effort than the fixture-migration pass (de-risks the writes track) or the MCP prompts catalog
+  (the differentiator). Schedule it as the dedicated "medium" it is; don't let it jump the queue unless the
+  SSH/jump-box idle-CPU win is soon-wanted.
 - ☐ **HTTP/2 multiplexing — probe DONE (2026-06-21), promising; implement+verify next.** reqwest's `http2`
   feature is **off** (the `h2` in the lockfile is axum's MCP server, not the outbound client), so the client
   can't negotiate h2 today — that's the one prerequisite. **Probe result:** the official `netboxcommunity/netbox`
