@@ -19,6 +19,14 @@ on:
   pull_request:
     paths-ignore:
       - '**.md'
+  schedule:
+    # Nightly compatibility drift check for the pinned NetBox lines below.
+    - cron: "17 9 * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -60,14 +68,26 @@ jobs:
       # Always surface NetBox logs on failure to debug a flaky boot/seed.
       - name: Dump NetBox logs on failure
         if: failure()
-        run: docker compose -f tests/integration/docker-compose.yml logs --no-color netbox
+        shell: bash
+        run: |
+          mkdir -p .ci-logs
+          docker compose -f tests/integration/docker-compose.yml logs --no-color netbox \
+            | tee .ci-logs/netbox-4.2.log
+
+      - name: Upload NetBox logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: netbox-4.2-logs
+          path: .ci-logs/*.log
+          if-no-files-found: ignore
 
       - name: Tear down
         if: always()
         run: docker compose -f tests/integration/docker-compose.yml down -v
 
   netbox-45-graphql:
-    name: live NetBox 4.5 GraphQL search
+    name: live NetBox 4.5 GraphQL backend
     runs-on: ubuntu-latest
     env:
       NETBOX_IMAGE: netboxcommunity/netbox:v4.5.10-4.0.2
@@ -103,7 +123,75 @@ jobs:
 
       - name: Dump NetBox logs on failure
         if: failure()
-        run: docker compose -f tests/integration/docker-compose.yml logs --no-color netbox
+        shell: bash
+        run: |
+          mkdir -p .ci-logs
+          docker compose -f tests/integration/docker-compose.yml logs --no-color netbox \
+            | tee .ci-logs/netbox-4.5.log
+
+      - name: Upload NetBox logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: netbox-4.5-logs
+          path: .ci-logs/*.log
+          if-no-files-found: ignore
+
+      - name: Tear down
+        if: always()
+        run: docker compose -f tests/integration/docker-compose.yml down -v
+
+  netbox-46-compat:
+    name: live NetBox 4.6 compatibility
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    env:
+      NETBOX_IMAGE: netboxcommunity/netbox:v4.6.2
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build nbox
+        run: cargo build --all-features --verbose
+
+      - name: Boot NetBox 4.6 fixture
+        run: docker compose -f tests/integration/docker-compose.yml up -d
+
+      - name: Wait for NetBox 4.6 to finish first boot
+        run: NETBOX_READY_HTTP_CODES=200,403 ./tests/integration/wait-for-ready.sh 420
+
+      - name: Resolve NetBox 4.6 API token
+        run: echo "NETBOX_TOKEN=$(./tests/integration/resolve-token.sh)" >> "$GITHUB_ENV"
+
+      - name: Wait for NetBox to be ready
+        run: ./tests/integration/wait-for-ready.sh 60
+
+      - name: Seed the fixture
+        run: ./tests/integration/seed.py
+
+      - name: Run gated compatibility tests
+        run: cargo test --test it_netbox -- --ignored --test-threads=1 --skip status_reports_netbox_4_2
+
+      - name: Dump NetBox logs on failure
+        if: failure()
+        shell: bash
+        run: |
+          mkdir -p .ci-logs
+          docker compose -f tests/integration/docker-compose.yml logs --no-color netbox \
+            | tee .ci-logs/netbox-4.6.log
+
+      - name: Upload NetBox logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: netbox-4.6-logs
+          path: .ci-logs/*.log
+          if-no-files-found: ignore
 
       - name: Tear down
         if: always()

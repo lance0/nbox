@@ -11,13 +11,17 @@ on:
     paths-ignore:
       - '**.md'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: "-D warnings"
 
 jobs:
-  check:
-    name: fmt · clippy · build · test
+  fmt:
+    name: fmt
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -25,34 +29,77 @@ jobs:
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
         with:
-          components: rustfmt, clippy
+          components: rustfmt
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+  clippy-all-features:
+    name: clippy-all-features
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
 
       - name: Cache cargo artifacts
         uses: Swatinem/rust-cache@v2
 
-      - name: Format
-        run: cargo fmt --all -- --check
+      - name: Clippy (all features)
+        run: cargo clippy --all-targets --all-features --locked -- -D warnings
 
-      - name: Clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+  clippy-no-default-features:
+    name: clippy-no-default-features
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
 
       - name: Clippy (no default features)
-        run: cargo clippy --all-targets --no-default-features -- -D warnings
+        run: cargo clippy --all-targets --no-default-features --locked -- -D warnings
 
-      - name: Build
-        run: cargo build --all-features --verbose
+  test-all-features:
+    name: test-all-features
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
 
-      - name: Build (no default features)
-        run: cargo build --no-default-features --verbose
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
 
-      - name: Test
-        run: cargo test --all-features --verbose
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Test (all features)
+        run: cargo test --all-features --locked --verbose
+
+  test-no-default-features:
+    name: test-no-default-features
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
 
       - name: Test (no default features)
-        run: cargo test --no-default-features --verbose
+        run: cargo test --no-default-features --locked --verbose
 
-  msrv:
-    name: MSRV (1.88)
+  msrv-check:
+    name: msrv-check
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -67,3 +114,92 @@ jobs:
 
       - name: Check (all features, locked)
         run: cargo check --all-features --locked
+
+  generated-artifacts:
+    name: generated-artifacts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build nbox
+        run: cargo build --all-features --locked --verbose
+
+      - name: Generate man pages and shell completions
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/generated"
+          mkdir -p "$out/completions" "$out/man"
+          ./target/debug/nbox man "$out/man"
+          ./target/debug/nbox completions bash > "$out/completions/nbox.bash"
+          ./target/debug/nbox completions zsh > "$out/completions/_nbox"
+          ./target/debug/nbox completions fish > "$out/completions/nbox.fish"
+          ./target/debug/nbox completions powershell > "$out/completions/_nbox.ps1"
+          ./target/debug/nbox completions elvish > "$out/completions/nbox.elv"
+          test -s "$out/man/nbox.1"
+          test -s "$out/completions/nbox.bash"
+
+  security-audit:
+    name: security-audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo-audit
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-audit
+          key: cargo-audit-0.21
+
+      - name: Install cargo-audit
+        run: command -v cargo-audit || cargo install cargo-audit --locked
+
+      - name: Run security audit
+        run: cargo audit
+
+  platform-build:
+    name: platform-build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            install_musl: true
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            install_musl: false
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            install_musl: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            install_musl: false
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install musl tools
+        if: matrix.install_musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build target
+        run: cargo build --all-features --locked --target ${{ matrix.target }} --verbose

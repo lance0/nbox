@@ -45,9 +45,10 @@ fn netbox_token() -> String {
 
 /// A throwaway config file holding one profile that points at the live NetBox.
 /// `page_size` is configurable so the pagination test can force multiple pages.
-/// REST is the canonical backend, so no `[profiles.ci.api]` table is needed.
-/// The `NamedTempFile` is returned so it lives as long as the test needs it.
-fn temp_config(page_size: usize) -> NamedTempFile {
+/// REST is the canonical backend; tests that need GraphQL pass an optional
+/// `[profiles.ci.api]` table. The `NamedTempFile` is returned so it lives as
+/// long as the test needs it.
+fn temp_config_with_api(page_size: usize, api_table: Option<&str>) -> NamedTempFile {
     let mut config = NamedTempFile::new().expect("create temp config");
     write!(
         config,
@@ -57,19 +58,24 @@ fn temp_config(page_size: usize) -> NamedTempFile {
          url = \"{url}\"\n\
          token_env = \"NETBOX_TOKEN_UNUSED\"\n\
          page_size = {page_size}\n\
-         verify_tls = false\n",
+         verify_tls = false\n\
+         {api_table}",
         url = netbox_url(),
+        api_table = api_table.unwrap_or(""),
     )
     .expect("write temp config");
     config.flush().expect("flush temp config");
     config
 }
 
+fn temp_config(page_size: usize) -> NamedTempFile {
+    temp_config_with_api(page_size, None)
+}
+
 /// Run `nbox <args>` against the live instance with the given page size, using a
 /// throwaway profile and `NBOX_TOKEN` for auth. Returns the captured output.
-fn run_nbox_with_page_size(page_size: usize, args: &[&str]) -> Output {
-    let config = temp_config(page_size);
-    let output = Command::new(env!("CARGO_BIN_EXE_nbox"))
+fn run_nbox_with_config(config: &NamedTempFile, args: &[&str]) -> Output {
+    Command::new(env!("CARGO_BIN_EXE_nbox"))
         .arg("--config")
         .arg(config.path())
         .args(args)
@@ -80,7 +86,12 @@ fn run_nbox_with_page_size(page_size: usize, args: &[&str]) -> Output {
         .env_remove("NBOX_LOG")
         .env_remove("RUST_LOG")
         .output()
-        .expect("spawn nbox");
+        .expect("spawn nbox")
+}
+
+fn run_nbox_with_page_size(page_size: usize, args: &[&str]) -> Output {
+    let config = temp_config(page_size);
+    let output = run_nbox_with_config(&config, args);
     // `config` (the temp file) drops here, after the child has fully run.
     output
 }
@@ -145,6 +156,38 @@ fn status_reports_netbox_4_2() {
         version.starts_with("4.2"),
         "expected NetBox 4.2.x, got {version:?}"
     );
+}
+
+/// Opting the VRF surface into GraphQL should both report an effective GraphQL
+/// backend and successfully render a real seeded VRF detail. The search surface
+/// remains REST by design even if a legacy config asks for GraphQL.
+#[test]
+#[ignore = "requires a live NetBox 4.5+ with GraphQL (netbox-integration workflow)"]
+fn graphql_backend_status_and_vrf_detail_work() {
+    let config = temp_config_with_api(
+        100,
+        Some(
+            "\n[profiles.ci.api]\n\
+             search = \"graphql\"\n\
+             vrf = \"graphql\"\n\
+             route_target = \"graphql\"\n",
+        ),
+    );
+
+    let status = run_nbox_with_config(&config, &["-o", "json", "status"]);
+    assert_ok(&status, "status");
+    let v = json_of(&status);
+    assert_eq!(v["api"]["vrf"]["configured"], "graphql", "got: {v}");
+    assert_eq!(v["api"]["vrf"]["effective"], "graphql", "got: {v}");
+    assert_eq!(
+        v["api"]["search"]["effective"], "rest",
+        "search must stay REST: {v}"
+    );
+
+    let vrf = run_nbox_with_config(&config, &["-o", "json", "vrf", "ci-vrf"]);
+    assert_ok(&vrf, "vrf ci-vrf");
+    let v = json_of(&vrf);
+    assert_eq!(v["summary"]["name"], "ci-vrf", "got: {v}");
 }
 
 // --- search ----------------------------------------------------------------
