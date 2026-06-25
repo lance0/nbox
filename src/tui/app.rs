@@ -228,7 +228,12 @@ fn dispatch(command: AppCommand, client: NetBoxClient, cache: Cache, tx: mpsc::S
                 )
                 .await;
                 let _ = tx
-                    .send(AppEvent::BrowseComplete { req, kind, result })
+                    .send(AppEvent::BrowseComplete {
+                        req,
+                        kind,
+                        filter,
+                        result,
+                    })
                     .await;
             });
         }

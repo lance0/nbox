@@ -38,6 +38,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   when a conservative render signature has not changed. Idle ticks no longer
   rebuild the Results table; spinner/status/async results/keypresses/resize still
   redraw normally.
+- **TUI browse switching.** Browse-by-kind results are now cached in the TUI
+  session by kind + active browse filter, so revisiting a Nav kind repaints the
+  prior list immediately while a background browse refreshes it.
 - **VLAN detail fan-out.** VLAN detail now fetches referencing prefixes and the
   VLAN group's scope concurrently, preserving the same JSON/plain view shape while
   saving one round trip when a VLAN has both.

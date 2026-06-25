@@ -4,7 +4,7 @@
 //! they perform no I/O, so they're unit-testable without a terminal. Network
 //! work happens in spawned tasks (see `tui::app`), never in the render loop.
 
-use std::collections::hash_map::DefaultHasher;
+use std::collections::{HashMap, hash_map::DefaultHasher};
 use std::hash::{Hash, Hasher};
 use std::path::PathBuf;
 
@@ -207,6 +207,7 @@ pub enum AppEvent {
     BrowseComplete {
         req: RequestId,
         kind: ObjectKind,
+        filter: Option<String>,
         result: anyhow::Result<Vec<SearchResult>>,
     },
     /// Per-kind object counts for the Nav pane labels (background; last write wins).
@@ -379,6 +380,24 @@ pub type RequestId = u64;
 
 /// A short footer-notice expiry, driven by the 180ms `PreviewTick`.
 const TRANSIENT_STATUS_TICKS: u8 = 10;
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct BrowseCacheKey {
+    kind: ObjectKind,
+    filter: Option<String>,
+}
+
+impl BrowseCacheKey {
+    fn new(kind: ObjectKind, filter: Option<String>) -> Self {
+        Self { kind, filter }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct BrowseCacheEntry {
+    items: Vec<SearchResult>,
+    selected: Option<(ObjectKind, u64)>,
+}
 
 /// Side-effecting work the loop should spawn off the render thread.
 #[derive(Debug, Clone)]
@@ -634,6 +653,12 @@ pub struct App {
     /// insensitive). `None` = unfiltered. Drives the pane title and is re-sent with
     /// each browse of that kind; cleared when the browse kind changes.
     pub browse_filter: Option<String>,
+    /// Session-local browse cache keyed by kind + active server-side filter. This
+    /// keeps Nav kind switches visually instant after the first load while a
+    /// background browse refreshes the list. Intentionally uncapped: practical
+    /// cardinality is small (Nav kinds × a few typed filters), and the cache is
+    /// dropped on profile switch.
+    browse_cache: HashMap<BrowseCacheKey, BrowseCacheEntry>,
     pub last_query: Option<String>,
     /// Active search filters (status / scope / tenant / role / tag / vrf), applied
     /// to every search. Set via the palette `filter k=v` verb (and, later, the
@@ -834,6 +859,7 @@ impl App {
             search_input: TextInput::new("search NetBox…"),
             filter_input: TextInput::new("filter by name…"),
             browse_filter: None,
+            browse_cache: HashMap::new(),
             command_input: TextInput::new("command (e.g. device edge01)"),
             last_query: None,
             filters: SearchFilters::default(),
@@ -1223,7 +1249,12 @@ impl App {
                 }
                 Vec::new()
             }
-            AppEvent::BrowseComplete { req, kind, result } => {
+            AppEvent::BrowseComplete {
+                req,
+                kind,
+                filter,
+                result,
+            } => {
                 // Settle the in-flight fetch (counted down even if dropped as
                 // stale, so the spinner can't hang), then drop a superseded browse.
                 self.end_request();
@@ -1233,12 +1264,7 @@ impl App {
                 match result {
                     Ok(items) => {
                         self.set_status(format!("{} result(s)", items.len()), Severity::Success);
-                        self.browse_kind = Some(kind);
-                        self.last_query = None; // these results came from browse, not search
-                        self.results = items;
-                        self.view = (0..self.results.len()).collect();
-                        self.selected = 0;
-                        self.mark_preview_dirty();
+                        self.adopt_fresh_browse(kind, filter, items);
                     }
                     Err(e) => self.set_status(format!("error: {e:#}"), Severity::Error),
                 }
@@ -2701,9 +2727,109 @@ impl App {
         Vec::new()
     }
 
+    fn selected_result_key(&self) -> Option<(ObjectKind, u64)> {
+        self.selected_result().map(|r| (r.kind, r.id))
+    }
+
+    fn current_browse_cache_key(&self) -> Option<BrowseCacheKey> {
+        if self.last_query.is_some() {
+            return None;
+        }
+        self.browse_kind
+            .map(|kind| BrowseCacheKey::new(kind, self.browse_filter.clone()))
+    }
+
+    fn remember_active_browse_selection(&mut self) {
+        let Some(key) = self.current_browse_cache_key() else {
+            return;
+        };
+        let selected = self.selected_result_key();
+        if let Some(entry) = self.browse_cache.get_mut(&key) {
+            entry.selected = selected;
+        }
+    }
+
+    fn select_cached_row(items: &[SearchResult], target: Option<(ObjectKind, u64)>) -> usize {
+        target
+            .and_then(|(kind, id)| items.iter().position(|r| r.kind == kind && r.id == id))
+            .unwrap_or(0)
+    }
+
+    fn apply_browse_results(
+        &mut self,
+        kind: ObjectKind,
+        filter: Option<String>,
+        items: Vec<SearchResult>,
+        selected: Option<(ObjectKind, u64)>,
+    ) {
+        self.browse_kind = Some(kind);
+        self.browse_filter = filter;
+        self.last_query = None;
+        self.results = items;
+        self.view = (0..self.results.len()).collect();
+        self.selected = Self::select_cached_row(&self.results, selected);
+        self.mark_preview_dirty();
+    }
+
+    fn apply_cached_browse(&mut self, kind: ObjectKind, filter: Option<String>) -> bool {
+        let key = BrowseCacheKey::new(kind, filter.clone());
+        let Some(entry) = self.browse_cache.get(&key).cloned() else {
+            return false;
+        };
+        self.apply_browse_results(kind, filter, entry.items, entry.selected);
+        true
+    }
+
+    fn browse_with_cache(&mut self, kind: ObjectKind, filter: Option<String>) -> Vec<AppCommand> {
+        self.remember_active_browse_selection();
+        if !self.apply_cached_browse(kind, filter.clone()) {
+            self.browse_kind = Some(kind);
+            self.browse_filter.clone_from(&filter);
+            self.last_query = None;
+        }
+        vec![AppCommand::Browse {
+            kind,
+            req: 0,
+            filter,
+        }]
+    }
+
+    fn adopt_fresh_browse(
+        &mut self,
+        kind: ObjectKind,
+        filter: Option<String>,
+        items: Vec<SearchResult>,
+    ) {
+        let key = BrowseCacheKey::new(kind, filter.clone());
+        let selected = self
+            .pending_reselect
+            .take()
+            .or_else(|| {
+                (self.browse_kind == Some(kind)
+                    && self.browse_filter == filter
+                    && self.last_query.is_none())
+                .then(|| self.selected_result_key())
+                .flatten()
+            })
+            .or_else(|| self.browse_cache.get(&key).and_then(|entry| entry.selected));
+        let cache_items = items.clone();
+        self.apply_browse_results(kind, filter, items, selected);
+        self.browse_cache.insert(
+            key,
+            BrowseCacheEntry {
+                items: cache_items,
+                selected: self.selected_result_key(),
+            },
+        );
+    }
+
+    fn invalidate_browse_requests(&mut self) {
+        self.request_seq = self.request_seq.max(self.browse_gen) + 1;
+        self.browse_gen = self.request_seq;
+    }
+
     /// The `Browse` command for the current `browse_kind` + active `browse_filter`,
-    /// with no status side effect — the shared re-fetch path (filter apply/clear,
-    /// and `r` refresh).
+    /// with no status side effect — the explicit re-fetch path (`r` refresh).
     fn browse_current_cmd(&self) -> Vec<AppCommand> {
         match self.browse_kind {
             Some(kind) => vec![AppCommand::Browse {
@@ -2718,14 +2844,14 @@ impl App {
     /// Re-browse the current `browse_kind` with the active `browse_filter` applied
     /// (the path the browse filter re-fetches through), with a status note.
     fn rebrowse_current(&mut self) -> Vec<AppCommand> {
-        if self.browse_kind.is_none() {
+        let Some(kind) = self.browse_kind else {
             return Vec::new();
-        }
+        };
         match self.browse_filter.as_deref() {
             Some(f) => self.set_status(format!("filtering by \"{f}\"…"), Severity::Info),
             None => self.set_status("clearing filter…", Severity::Info),
         }
-        self.browse_current_cmd()
+        self.browse_with_cache(kind, self.browse_filter.clone())
     }
 
     fn handle_command_key(&mut self, key: KeyEvent) -> Vec<AppCommand> {
@@ -3131,22 +3257,18 @@ impl App {
                 if self.fence_during_switch() {
                     return Vec::new();
                 }
-                self.browse_kind = Some(kind);
                 // A freshly picked kind starts unfiltered.
-                self.browse_filter = None;
                 self.filter_input.reset();
                 // Remember it for the exit-time persist → restored next launch.
                 self.last_browsed = Some(kind);
                 self.focus = Focus::List;
                 self.set_status(format!("browsing {}…", section.label()), Severity::Info);
-                vec![AppCommand::Browse {
-                    kind,
-                    req: 0,
-                    filter: None,
-                }]
+                self.browse_with_cache(kind, None)
             }
             None => {
                 // Recent: drop browse/search results so the recents fallback shows.
+                self.remember_active_browse_selection();
+                self.invalidate_browse_requests();
                 self.browse_kind = None;
                 self.last_query = None;
                 self.results.clear();
@@ -3250,18 +3372,11 @@ impl App {
                 if self.browse_kind == Some(kind) && self.last_query.is_none() {
                     return Vec::new();
                 }
-                self.browse_kind = Some(kind);
-                self.last_query = None;
                 // Moving to a different kind starts unfiltered.
-                self.browse_filter = None;
                 self.filter_input.reset();
                 // Hovering is browsing: remember it for the exit-time persist too.
                 self.last_browsed = Some(kind);
-                vec![AppCommand::Browse {
-                    kind,
-                    req: 0,
-                    filter: None,
-                }]
+                self.browse_with_cache(kind, None)
             }
             None => {
                 // Recent: drop browse/search results so the recents fallback shows.
@@ -3271,6 +3386,8 @@ impl App {
                 {
                     return Vec::new();
                 }
+                self.remember_active_browse_selection();
+                self.invalidate_browse_requests();
                 self.browse_kind = None;
                 self.last_query = None;
                 self.results.clear();
@@ -3509,6 +3626,7 @@ impl App {
         self.selected = 0;
         self.browse_kind = None;
         self.browse_filter = None;
+        self.browse_cache.clear();
         self.filter_input.reset();
         // Land on a clean results pane: cancel any pending auto-browse and re-anchor
         // the nav tick so the switch can't trip a spurious browse on the new instance.
@@ -4471,6 +4589,13 @@ mod tests {
     fn search_complete(a: &mut App, result: anyhow::Result<SearchOutcome>) {
         let req = a.search_gen;
         a.handle_event(AppEvent::SearchComplete { req, result });
+    }
+
+    fn only_browse_req(cmds: &[AppCommand]) -> RequestId {
+        match cmds {
+            [AppCommand::Browse { req, .. }] => *req,
+            _ => panic!("expected one Browse command, got {cmds:?}"),
+        }
     }
 
     /// Deliver a detail load tagged as the current request (passes the guard).
@@ -6724,11 +6849,109 @@ mod tests {
         a.handle_event(AppEvent::BrowseComplete {
             req: 1,
             kind: ObjectKind::Rack,
+            filter: None,
             result: Ok(vec![result_of(ObjectKind::Rack, 5, "ci-rack-1")]),
         });
         assert_eq!(a.browse_kind, Some(ObjectKind::Rack));
         assert_eq!(a.view.len(), 1);
         assert_eq!(a.results[0].display, "ci-rack-1");
+    }
+
+    #[test]
+    fn cached_browse_repaints_immediately_and_refreshes_in_background() {
+        let mut a = app();
+        a.focus = Focus::Nav;
+        a.nav_selected = 0; // Devices
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        let req = only_browse_req(&cmds);
+        a.handle_event(AppEvent::BrowseComplete {
+            req,
+            kind: ObjectKind::Device,
+            filter: None,
+            result: Ok(vec![
+                result_of(ObjectKind::Device, 1, "edge01"),
+                result_of(ObjectKind::Device, 2, "edge02"),
+            ]),
+        });
+        a.selected = 1;
+
+        a.focus = Focus::Nav;
+        a.nav_selected = 1; // Prefixes
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        let req = only_browse_req(&cmds);
+        a.handle_event(AppEvent::BrowseComplete {
+            req,
+            kind: ObjectKind::Prefix,
+            filter: None,
+            result: Ok(vec![result_of(ObjectKind::Prefix, 3, "10.0.0.0/24")]),
+        });
+        assert_eq!(a.results[0].display, "10.0.0.0/24");
+
+        a.focus = Focus::Nav;
+        a.nav_selected = 0; // Devices again
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(
+            matches!(
+                cmds.as_slice(),
+                [AppCommand::Browse {
+                    kind: ObjectKind::Device,
+                    filter: None,
+                    ..
+                }]
+            ),
+            "cached browse still dispatches a background refresh; got {cmds:?}"
+        );
+        assert_eq!(a.results[0].display, "edge01");
+        assert_eq!(a.selected, 1, "cached browse restores the prior row");
+        assert_eq!(a.selected_result().unwrap().display, "edge02");
+    }
+
+    #[test]
+    fn browse_cache_keeps_filtered_and_unfiltered_lists_separate() {
+        let mut a = app();
+        a.focus = Focus::Nav;
+        a.nav_selected = 0; // Devices
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        let req = only_browse_req(&cmds);
+        a.handle_event(AppEvent::BrowseComplete {
+            req,
+            kind: ObjectKind::Device,
+            filter: None,
+            result: Ok(vec![result_of(ObjectKind::Device, 1, "edge01")]),
+        });
+
+        a.handle_event(press(KeyCode::Char('/')));
+        for c in "core".chars() {
+            a.handle_event(press(KeyCode::Char(c)));
+        }
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        let req = only_browse_req(&cmds);
+        assert!(
+            matches!(
+                cmds.as_slice(),
+                [AppCommand::Browse {
+                    filter: Some(f), ..
+                }] if f == "core"
+            ),
+            "got {cmds:?}"
+        );
+        a.handle_event(AppEvent::BrowseComplete {
+            req,
+            kind: ObjectKind::Device,
+            filter: Some("core".into()),
+            result: Ok(vec![result_of(ObjectKind::Device, 2, "core01")]),
+        });
+        assert_eq!(a.results[0].display, "core01");
+
+        let cmds = a.handle_event(press(KeyCode::Esc));
+        assert!(
+            matches!(cmds.as_slice(), [AppCommand::Browse { filter: None, .. }]),
+            "clearing the filter still refreshes; got {cmds:?}"
+        );
+        assert_eq!(
+            a.results[0].display, "edge01",
+            "the unfiltered cache is restored immediately"
+        );
     }
 
     #[test]
@@ -6738,9 +6961,38 @@ mod tests {
         a.handle_event(AppEvent::BrowseComplete {
             req: 2, // older
             kind: ObjectKind::Device,
+            filter: None,
             result: Ok(vec![result_of(ObjectKind::Device, 1, "old")]),
         });
         assert!(a.results.is_empty(), "a superseded browse must be dropped");
+    }
+
+    #[test]
+    fn recent_invalidates_in_flight_browse() {
+        let mut a = app();
+        a.browse_gen = 1; // a browse is in flight
+        set_results(&mut a, results_n(2));
+        a.browse_kind = Some(ObjectKind::Device);
+        a.focus = Focus::Nav;
+        a.nav_selected = NAV_SECTIONS.len() - 1; // Recent
+
+        let cmds = a.handle_event(press(KeyCode::Enter));
+        assert!(cmds.is_empty());
+        assert!(
+            a.results.is_empty(),
+            "Recent clears the visible browse list"
+        );
+
+        a.handle_event(AppEvent::BrowseComplete {
+            req: 1,
+            kind: ObjectKind::Device,
+            filter: None,
+            result: Ok(vec![result_of(ObjectKind::Device, 1, "late")]),
+        });
+        assert!(
+            a.results.is_empty(),
+            "late browse responses should not repopulate Recent"
+        );
     }
 
     #[test]
@@ -7456,10 +7708,18 @@ mod tests {
         // reference the instance we're leaving.
         let mut a = app_with_profiles(&["alpha", "beta"]);
         set_results(&mut a, results_n(3));
+        a.browse_cache.insert(
+            BrowseCacheKey::new(ObjectKind::Device, None),
+            BrowseCacheEntry {
+                items: results_n(1),
+                selected: None,
+            },
+        );
         detail_loaded(&mut a, Ok(preview_view(1, "alpha body")));
         a.handle_event(press(KeyCode::Char('b'))); // back to home
         assert!(!a.results.is_empty());
         assert!(!a.recent.is_empty());
+        assert!(!a.browse_cache.is_empty());
 
         a.handle_event(press(KeyCode::Char('P'))); // switch to beta (pending)
         // The old instance's data is still shown while the switch is in flight (we
@@ -7474,6 +7734,7 @@ mod tests {
         assert!(a.view.is_empty());
         assert!(a.recent.is_empty(), "old recents dropped");
         assert!(a.detail.is_none(), "old detail dropped");
+        assert!(a.browse_cache.is_empty(), "old browse cache dropped");
         assert!(a.last_query.is_none());
         assert_eq!(a.screen, Screen::Home);
         assert_eq!(a.selected, 0);

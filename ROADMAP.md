@@ -115,6 +115,11 @@ Polish the read experience. No writes here.
   parent-prefix enrichment as a best-effort longest match, and name lookups resolving exact-then-contains
   — are **by design** (surfacing ambiguity over guessing), acknowledged here, not tracked for a fix._
 - ☐ **Demo recording** — an asciinema/VHS cast for the README.
+- ☑ **TUI browse kind-switch cache.** Browse-by-kind results are cached for the
+  current TUI session by `(kind, filter)`, so returning to a previously-loaded
+  Nav kind repaints instantly and restores the row selection while the normal
+  NetBox browse refresh still runs in the background. Profile switches drop the
+  cache to avoid cross-instance data bleed.
 - ☑ **Headless/SSH clipboard (OSC 52).** On Linux/Unix X11+Wayland sessions, `y`-copy uses `arboard`;
   over SSH with no display forwarding it waits out the X11 connection timeout, then fails with a
   cryptic error (the copy runs on a spawned task, so the UI doesn't freeze, but nothing reaches a
