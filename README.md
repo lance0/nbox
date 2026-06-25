@@ -575,13 +575,15 @@ raw escape-hatch tool come later.
 - Auto-detects **v2 API tokens** (NetBox 4.5+, `Authorization: Bearer nbt_…`) and
   legacy **v1 tokens** (`Authorization: Token …`); force one with `auth_scheme`.
 - Optional, read-only **GraphQL** (`/graphql/`) as a **per-surface accelerator**
-  for the VRF and route-target views (`[profiles.<name>.api]` `vrf`/`route_target = "graphql"`). nbox probes the
-  schema so NetBox 4.2, 4.3, and 4.5+ filter/pagination differences are handled
-  without hard-coding a version, and **falls back to REST** (with the reason in
-  `status`) when a surface isn't supported. **Search is always REST** — NetBox's
-  GraphQL API has no equivalent to REST's full-text `q`, so GraphQL never backs
-  the search surface. REST stays canonical and powers search, identity resolution,
-  detail lookups, raw, journals, and available-IP/prefix operations.
+  for the VRF and route-target views (`[profiles.<name>.api]`
+  `vrf`/`route_target = "graphql"`). nbox probes the schema so NetBox 4.2, 4.3,
+  and 4.5+ filter/pagination differences are handled without hard-coding a
+  version, and **falls back to REST** (with the reason in `status`) when a surface
+  isn't supported. If an effective GraphQL bundle fails at runtime, nbox warns and
+  retries the same detail over REST. **Search is always REST** — NetBox's GraphQL
+  API has no equivalent to REST's full-text `q`, so GraphQL never backs the search
+  surface. REST stays canonical and powers search, identity resolution, detail
+  lookups, raw, journals, and available-IP/prefix operations.
 
 ## Troubleshooting
 

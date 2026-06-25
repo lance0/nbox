@@ -21,6 +21,11 @@ nbox status
 
 If that connects, the MCP server will too — it uses the same path.
 
+Backend routing is identical to the CLI. `nbox_search` always uses REST.
+`nbox_get vrf` and `nbox_get route_target` may use GraphQL for their
+child/relation bundles when `nbox_status.api` reports an effective `graphql`
+backend; identity/header resolution remains REST.
+
 ## Connecting it to a host
 
 The host launches `nbox serve` and provides the NetBox token in the

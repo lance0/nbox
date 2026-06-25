@@ -1437,12 +1437,30 @@ fn prefix_sort_key(cidr: &str) -> (u8, u128, u8) {
     }
 }
 
+async fn rest_vrf_children(
+    client: &NetBoxClient,
+    vrf_id: u64,
+) -> Result<(Vec<Prefix>, Vec<IpAddress>)> {
+    // REST: fetch the two child collections concurrently - they're independent
+    // and this halves the detail's latency on a high-RTT link.
+    Ok(tokio::try_join!(
+        client.list_all(
+            Endpoint::Prefixes,
+            vec![("vrf_id", vrf_id.to_string())],
+            DETAIL_SECTION_CAP,
+        ),
+        client.list_all(
+            Endpoint::IpAddresses,
+            vec![("vrf_id", vrf_id.to_string())],
+            DETAIL_SECTION_CAP,
+        ),
+    )?)
+}
+
 /// Build the backend-neutral [`VrfDetail`]: the VRF summary plus its scoped
 /// prefixes (as a tree) and addresses. Children come from a single bundled
-/// GraphQL query when the VRF surface resolves to GraphQL, else canonical REST.
-/// A real GraphQL/transport error propagates (fail closed) rather than degrading
-/// to empty data — only a capability mismatch (handled by `effective_backend`)
-/// routes to REST.
+/// GraphQL query when the VRF surface resolves to GraphQL; unsupported schemas
+/// route to REST before runtime, and runtime GraphQL bundle failures retry REST.
 async fn build_vrf_detail(client: &NetBoxClient, vrf: Vrf) -> Result<VrfDetail> {
     let id = vrf.id;
     let summary = VrfView::from_model(vrf);
@@ -1452,22 +1470,24 @@ async fn build_vrf_detail(client: &NetBoxClient, vrf: Vrf) -> Result<VrfDetail> 
         .await
         .uses_graphql()
     {
-        client.graphql_vrf_bundle(id, DETAIL_SECTION_CAP).await?
+        match client.graphql_vrf_bundle(id, DETAIL_SECTION_CAP).await {
+            Ok(bundle) => bundle,
+            Err(err) => {
+                let graphql_error = format!("{err:#}");
+                tracing::warn!(
+                    vrf_id = id,
+                    error = %graphql_error,
+                    "GraphQL VRF bundle failed; retrying REST"
+                );
+                rest_vrf_children(client, id).await.with_context(|| {
+                    format!(
+                        "GraphQL VRF bundle failed ({graphql_error}); REST fallback also failed"
+                    )
+                })?
+            }
+        }
     } else {
-        // REST: fetch the two child collections concurrently — they're
-        // independent and this halves the detail's latency on a high-RTT link.
-        tokio::try_join!(
-            client.list_all(
-                Endpoint::Prefixes,
-                vec![("vrf_id", id.to_string())],
-                DETAIL_SECTION_CAP,
-            ),
-            client.list_all(
-                Endpoint::IpAddresses,
-                vec![("vrf_id", id.to_string())],
-                DETAIL_SECTION_CAP,
-            ),
-        )?
+        rest_vrf_children(client, id).await?
     };
 
     let prefix_total = summary.prefix_count.unwrap_or(prefixes.len() as u64);
@@ -1536,15 +1556,38 @@ fn sort_vrf_refs(refs: &mut [VrfRef]) {
     refs.sort_by(|a, b| a.name.cmp(&b.name).then_with(|| a.rd.cmp(&b.rd)));
 }
 
+async fn rest_route_target_relations(
+    client: &NetBoxClient,
+    route_target_id: u64,
+) -> Result<(Vec<VrfRef>, Vec<VrfRef>)> {
+    // REST: fetch the two VRF collections concurrently - they're independent and
+    // this halves the detail's latency on a high-RTT link.
+    let (importing, exporting): (Vec<Vrf>, Vec<Vrf>) = tokio::try_join!(
+        client.list_all(
+            Endpoint::Vrfs,
+            vec![("import_target_id", route_target_id.to_string())],
+            DETAIL_SECTION_CAP,
+        ),
+        client.list_all(
+            Endpoint::Vrfs,
+            vec![("export_target_id", route_target_id.to_string())],
+            DETAIL_SECTION_CAP,
+        ),
+    )?;
+    Ok((
+        importing.iter().map(VrfRef::from_model).collect(),
+        exporting.iter().map(VrfRef::from_model).collect(),
+    ))
+}
+
 /// Build a route target's relation graph: the target's header plus the VRFs that
 /// import and export it. A route target carries the relation on the VRF side, so
 /// when the route-target surface resolves to GraphQL one filtered
 /// `route_target_list` query returns both directions; otherwise canonical REST
-/// fans out two `/api/ipam/vrfs/` list calls concurrently (independent, so they
-/// run together). The resulting [`RouteTargetDetail`] is byte-identical between
-/// the two paths. A real GraphQL/transport error propagates (fail closed) rather
-/// than degrading to empty data — only a capability mismatch (handled by
-/// `effective_backend`) routes to REST.
+/// fans out two `/api/ipam/vrfs/` list calls concurrently. The resulting
+/// [`RouteTargetDetail`] is byte-identical between the two paths. Unsupported
+/// schemas route to REST before runtime, and runtime GraphQL bundle failures
+/// retry REST.
 async fn build_route_target_detail(
     client: &NetBoxClient,
     rt: RouteTarget,
@@ -1557,26 +1600,26 @@ async fn build_route_target_detail(
         .await
         .uses_graphql()
     {
-        client.graphql_route_target_bundle(id).await?
+        match client.graphql_route_target_bundle(id).await {
+            Ok(bundle) => bundle,
+            Err(err) => {
+                let graphql_error = format!("{err:#}");
+                tracing::warn!(
+                    route_target_id = id,
+                    error = %graphql_error,
+                    "GraphQL route-target bundle failed; retrying REST"
+                );
+                rest_route_target_relations(client, id)
+                    .await
+                    .with_context(|| {
+                        format!(
+                            "GraphQL route-target bundle failed ({graphql_error}); REST fallback also failed"
+                        )
+                    })?
+            }
+        }
     } else {
-        // REST: fetch the two VRF collections concurrently — they're independent
-        // and this halves the detail's latency on a high-RTT link.
-        let (importing, exporting): (Vec<Vrf>, Vec<Vrf>) = tokio::try_join!(
-            client.list_all(
-                Endpoint::Vrfs,
-                vec![("import_target_id", id.to_string())],
-                DETAIL_SECTION_CAP,
-            ),
-            client.list_all(
-                Endpoint::Vrfs,
-                vec![("export_target_id", id.to_string())],
-                DETAIL_SECTION_CAP,
-            ),
-        )?;
-        (
-            importing.iter().map(VrfRef::from_model).collect(),
-            exporting.iter().map(VrfRef::from_model).collect(),
-        )
+        rest_route_target_relations(client, id).await?
     };
 
     sort_vrf_refs(&mut importing_vrfs);
@@ -2774,6 +2817,320 @@ mod tests {
         assert_eq!(back.links[0].kind, ObjectKind::Site);
     }
 
+    // --- VRF detail: GraphQL accelerator vs REST ---
+
+    mod vrf_backends {
+        use super::super::*;
+        use crate::config::{ApiConfig, BackendPreference, ProfileConfig};
+        use serde_json::json;
+        use wiremock::matchers::{body_string_contains, method, path, query_param};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn not_found(noun: &str, value: &str) -> anyhow::Error {
+            NboxError::NotFound(format!("no {noun} matched \"{value}\"")).into()
+        }
+
+        async fn mount_vrf_identity(server: &MockServer) {
+            Mock::given(method("GET"))
+                .and(path("/api/ipam/vrfs/42/"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "id": 42, "url": "http://nb/api/ipam/vrfs/42/",
+                    "name": "customer-prod", "rd": "65000:42",
+                    "tenant": {"id": 1, "display": "Acme"},
+                    "prefix_count": 2,
+                    "ipaddress_count": 1
+                })))
+                .mount(server)
+                .await;
+        }
+
+        async fn mount_rest_children(server: &MockServer) {
+            Mock::given(method("GET"))
+                .and(path("/api/ipam/prefixes/"))
+                .and(query_param("vrf_id", "42"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "count": 2, "next": null, "previous": null,
+                    "results": [
+                        {
+                            "id": 1, "url": "u", "prefix": "10.50.0.0/16",
+                            "_depth": 0,
+                            "status": {"value": "container", "label": "container"},
+                            "description": "supernet"
+                        },
+                        {
+                            "id": 2, "url": "u", "prefix": "10.50.1.0/24",
+                            "_depth": 1,
+                            "status": {"value": "active", "label": "active"},
+                            "description": ""
+                        }
+                    ]
+                })))
+                .mount(server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/api/ipam/ip-addresses/"))
+                .and(query_param("vrf_id", "42"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "count": 1, "next": null, "previous": null,
+                    "results": [
+                        {
+                            "id": 9, "url": "u", "address": "10.50.1.1/24",
+                            "status": {"value": "active", "label": "active"},
+                            "dns_name": "gw.customer",
+                            "description": ""
+                        }
+                    ]
+                })))
+                .mount(server)
+                .await;
+        }
+
+        fn rest_client(server: &MockServer) -> NetBoxClient {
+            NetBoxClient::new(
+                &ProfileConfig {
+                    url: server.uri(),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+        }
+
+        fn graphql_client(server: &MockServer) -> NetBoxClient {
+            NetBoxClient::new(
+                &ProfileConfig {
+                    url: server.uri(),
+                    api: Some(ApiConfig {
+                        search: None,
+                        vrf: Some(BackendPreference::Graphql),
+                        route_target: None,
+                    }),
+                    ..Default::default()
+                },
+                None,
+            )
+            .unwrap()
+        }
+
+        async fn mount_graphql_probe(server: &MockServer) {
+            let list_field = |name: &str, filter: &str| {
+                json!({
+                    "name": name,
+                    "args": [
+                        {"name": "filters", "type": {"kind": "INPUT_OBJECT", "name": filter}},
+                        {"name": "pagination", "type": {"kind": "INPUT_OBJECT", "name": "PaginationInput"}}
+                    ]
+                })
+            };
+            Mock::given(method("POST"))
+                .and(path("/graphql/"))
+                .and(body_string_contains("__schema"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "data": {"__schema": {"queryType": {"fields": [
+                        list_field("prefix_list", "PrefixFilter"),
+                        list_field("ip_address_list", "IPAddressFilter"),
+                    ]}}}
+                })))
+                .mount(server)
+                .await;
+            let vrf_id_field = json!({"name": "vrf_id", "type": {"kind": "INPUT_OBJECT", "name": "IntegerLookup"}});
+            Mock::given(method("POST"))
+                .and(path("/graphql/"))
+                .and(body_string_contains("DeviceFilter"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "data": {
+                        "prefix": {"inputFields": [vrf_id_field.clone()]},
+                        "ip": {"inputFields": [vrf_id_field]}
+                    }
+                })))
+                .mount(server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/graphql/"))
+                .and(body_string_contains("ASNFilter"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {}})))
+                .mount(server)
+                .await;
+        }
+
+        async fn mount_graphql_bundle(server: &MockServer, response: ResponseTemplate) {
+            Mock::given(method("POST"))
+                .and(path("/graphql/"))
+                .and(body_string_contains("ip_address_list(filters"))
+                .respond_with(response)
+                .mount(server)
+                .await;
+        }
+
+        fn graphql_bundle_body() -> serde_json::Value {
+            json!({
+                "data": {
+                    "prefix_list": [
+                        {"id": "1", "prefix": "10.50.0.0/16", "_depth": 0, "status": "container", "description": "supernet"},
+                        {"id": "2", "prefix": "10.50.1.0/24", "_depth": 1, "status": "active", "description": ""}
+                    ],
+                    "ip_address_list": [
+                        {"id": "9", "address": "10.50.1.1/24", "status": "active", "dns_name": "gw.customer", "description": ""}
+                    ]
+                }
+            })
+        }
+
+        #[tokio::test]
+        async fn rest_and_graphql_vrf_detail_are_byte_identical() {
+            let rest = MockServer::start().await;
+            mount_vrf_identity(&rest).await;
+            mount_rest_children(&rest).await;
+
+            let gql = MockServer::start().await;
+            mount_vrf_identity(&gql).await;
+            mount_graphql_probe(&gql).await;
+            mount_graphql_bundle(
+                &gql,
+                ResponseTemplate::new(200).set_body_json(graphql_bundle_body()),
+            )
+            .await;
+
+            let rest_detail = vrf_detail_by_ref(&rest_client(&rest), "42", &not_found)
+                .await
+                .expect("rest detail");
+            let gql_detail = vrf_detail_by_ref(&graphql_client(&gql), "42", &not_found)
+                .await
+                .expect("graphql detail");
+
+            assert_eq!(
+                rest_detail.to_plain(),
+                gql_detail.to_plain(),
+                "plain output must be byte-identical across backends"
+            );
+            assert_eq!(
+                serde_json::to_string(&rest_detail).unwrap(),
+                serde_json::to_string(&gql_detail).unwrap(),
+                "serialized JSON must be byte-identical across backends"
+            );
+        }
+
+        #[tokio::test]
+        async fn graphql_preference_with_support_uses_graphql_path() {
+            let server = MockServer::start().await;
+            mount_vrf_identity(&server).await;
+            mount_graphql_probe(&server).await;
+            mount_graphql_bundle(
+                &server,
+                ResponseTemplate::new(200).set_body_json(graphql_bundle_body()),
+            )
+            .await;
+            Mock::given(method("GET"))
+                .and(path("/api/ipam/prefixes/"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "count": 0, "next": null, "previous": null, "results": []
+                })))
+                .expect(0)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/api/ipam/ip-addresses/"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "count": 0, "next": null, "previous": null, "results": []
+                })))
+                .expect(0)
+                .mount(&server)
+                .await;
+
+            let client = graphql_client(&server);
+            assert!(
+                client
+                    .effective_backend(ApiSurface::Vrf)
+                    .await
+                    .uses_graphql()
+            );
+            let detail = vrf_detail_by_ref(&client, "42", &not_found)
+                .await
+                .expect("graphql detail");
+            assert_eq!(detail.prefixes.len(), 2);
+            assert_eq!(detail.addresses.len(), 1);
+        }
+
+        #[tokio::test]
+        async fn graphql_preference_without_support_falls_back_to_rest() {
+            let server = MockServer::start().await;
+            mount_vrf_identity(&server).await;
+            Mock::given(method("POST"))
+                .and(path("/graphql/"))
+                .and(body_string_contains("__schema"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "data": {"__schema": {"queryType": {"fields": []}}}
+                })))
+                .mount(&server)
+                .await;
+            Mock::given(method("POST"))
+                .and(path("/graphql/"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({"data": {}})))
+                .mount(&server)
+                .await;
+            mount_rest_children(&server).await;
+
+            let client = graphql_client(&server);
+            let effective = client.effective_backend(ApiSurface::Vrf).await;
+            assert!(!effective.uses_graphql(), "missing schema -> REST fallback");
+            assert!(
+                effective
+                    .reason()
+                    .is_some_and(|r| r.contains("prefix_list.vrf_id")),
+                "fallback reason names the missing schema piece"
+            );
+
+            let detail = vrf_detail_by_ref(&client, "42", &not_found)
+                .await
+                .expect("rest fallback detail");
+            assert_eq!(detail.summary.name, "customer-prod");
+
+            let requests = server.received_requests().await.unwrap();
+            assert!(
+                !requests
+                    .iter()
+                    .any(|r| String::from_utf8_lossy(&r.body).contains("ip_address_list(filters")),
+                "a capability fallback must not issue the GraphQL bundle query"
+            );
+        }
+
+        #[tokio::test]
+        async fn runtime_graphql_bundle_failure_retries_rest() {
+            let server = MockServer::start().await;
+            mount_vrf_identity(&server).await;
+            mount_graphql_probe(&server).await;
+            mount_graphql_bundle(
+                &server,
+                ResponseTemplate::new(200).set_body_json(json!({
+                    "errors": [{"message": "maximum query depth exceeded"}]
+                })),
+            )
+            .await;
+            mount_rest_children(&server).await;
+
+            let detail = vrf_detail_by_ref(&graphql_client(&server), "42", &not_found)
+                .await
+                .expect("REST fallback detail");
+            assert_eq!(detail.summary.name, "customer-prod");
+            assert_eq!(detail.prefixes.len(), 2);
+            assert_eq!(detail.addresses.len(), 1);
+
+            let requests = server.received_requests().await.unwrap();
+            assert!(
+                requests
+                    .iter()
+                    .any(|r| String::from_utf8_lossy(&r.body).contains("ip_address_list(filters")),
+                "runtime fallback first attempts the GraphQL bundle"
+            );
+            assert!(
+                requests
+                    .iter()
+                    .any(|r| r.url.path() == "/api/ipam/prefixes/"),
+                "runtime GraphQL failure retries REST children"
+            );
+        }
+    }
+
     // --- Route-target relation graph: GraphQL accelerator vs REST ---
 
     mod route_target_backends {
@@ -3015,6 +3372,59 @@ mod tests {
                 .expect("graphql detail");
             assert!(detail.importing_vrfs.is_empty());
             assert!(detail.exporting_vrfs.is_empty());
+        }
+
+        #[tokio::test]
+        async fn runtime_graphql_bundle_failure_retries_rest() {
+            let server = MockServer::start().await;
+            mount_rt_identity(&server).await;
+            mount_graphql_probe(&server).await;
+            Mock::given(method("POST"))
+                .and(path("/graphql/"))
+                .and(body_string_contains("route_target_list(filters"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "errors": [{"message": "maximum query depth exceeded"}]
+                })))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/api/ipam/vrfs/"))
+                .and(query_param("import_target_id", "5"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "count": 1, "next": null, "previous": null,
+                    "results": [
+                        {"id": 1, "url": "u", "name": "customer-prod", "rd": "65000:100"}
+                    ]
+                })))
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/api/ipam/vrfs/"))
+                .and(query_param("export_target_id", "5"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "count": 0, "next": null, "previous": null, "results": []
+                })))
+                .mount(&server)
+                .await;
+
+            let detail = route_target_detail_by_ref(&graphql_client(&server), "5", &not_found)
+                .await
+                .expect("REST fallback detail");
+            assert_eq!(detail.importing_vrfs.len(), 1);
+            assert_eq!(detail.importing_vrfs[0].name, "customer-prod");
+            assert!(detail.exporting_vrfs.is_empty());
+
+            let requests = server.received_requests().await.unwrap();
+            assert!(
+                requests
+                    .iter()
+                    .any(|r| String::from_utf8_lossy(&r.body).contains("route_target_list(filters")),
+                "runtime fallback first attempts the GraphQL bundle"
+            );
+            assert!(
+                requests.iter().any(|r| r.url.path() == "/api/ipam/vrfs/"),
+                "runtime GraphQL failure retries REST relations"
+            );
         }
 
         /// Capability gating: `route_target = "graphql"` but the schema lacks

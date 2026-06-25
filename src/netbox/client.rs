@@ -31,6 +31,8 @@ const DEFAULT_PAGE_SIZE: usize = 100;
 /// `limit`/`offset` matching (see `list_all`).
 pub(crate) const MAX_PAGE_SIZE: usize = 1000;
 
+pub(crate) type GraphqlProbeResult = std::result::Result<GraphqlCapabilities, String>;
+
 /// An HTTP client bound to a single NetBox instance/profile.
 #[derive(Clone)]
 pub struct NetBoxClient {
@@ -41,7 +43,7 @@ pub struct NetBoxClient {
     page_size: usize,
     exclude_config_context: bool,
     api: ApiConfig,
-    graphql_capabilities: Arc<tokio::sync::OnceCell<GraphqlCapabilities>>,
+    graphql_capabilities: Arc<tokio::sync::OnceCell<GraphqlProbeResult>>,
 }
 
 impl NetBoxClient {
@@ -128,7 +130,7 @@ impl NetBoxClient {
             || self.api.route_target == Some(BackendPreference::Graphql)
     }
 
-    pub(crate) fn graphql_capability_cache(&self) -> &tokio::sync::OnceCell<GraphqlCapabilities> {
+    pub(crate) fn graphql_capability_cache(&self) -> &tokio::sync::OnceCell<GraphqlProbeResult> {
         &self.graphql_capabilities
     }
 

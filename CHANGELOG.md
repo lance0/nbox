@@ -33,6 +33,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **GraphQL accelerator fallback is more resilient.** If an effective GraphQL
+  `vrf` or `route_target` bundle fails at runtime (for example, a low NetBox
+  `GRAPHQL_MAX_QUERY_DEPTH`), nbox now warns and retries the same detail over
+  REST. Schema/probe fallback remains visible in `nbox status`, and stdout output
+  remains the same REST-shaped view.
 - **`nbox history --diff`.** The audit-log view now has a `--diff` flag (MCP
   `diff=true`) that includes the full `before`/`after` change payloads per row —
   the full JSON for a single change (CLI `--diff` implies `--limit 1`). The
@@ -596,7 +601,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   Documented the in-memory read cache (`[cache]`) and the `nbox_cache_clear` MCP
   tool. Corrected the MSRV (1.88), the MCP tool count (nine), the searchable-kind
   lists (racks, VRFs, route targets), and the GraphQL/REST split (search is always
-  REST; GraphQL backs the VRF view only) across every doc. Expanded `SECURITY.md`
+  REST; at that point GraphQL only backed the VRF detail accelerator) across every
+  doc. Expanded `SECURITY.md`
   (the `nbox serve` network surface, supported-versions) and `CONTRIBUTING.md`
   (module map, an "adding a feature" recipe), and added GitHub issue/PR templates.
 
@@ -619,8 +625,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   full-text `q` quick-search (filtering moved to per-field Strawberry lookups in
   4.3), so GraphQL can't reproduce canonical NetBox search. `nbox search` now
   always runs over REST; a `search = "graphql"` preference is accepted but
-  transparently falls back to REST, with the reason in `nbox status`. The VRF view
-  is currently the only GraphQL-capable surface. (The per-kind GraphQL search
+  transparently falls back to REST, with the reason in `nbox status`. At 0.4.0 the
+  VRF view was the only GraphQL-capable surface. (The per-kind GraphQL search
   fan-out — which silently returned unfiltered results on 4.3+ — was removed.)
 
 ### Fixed
@@ -666,7 +672,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   full routing context (summary + prefix tree + addresses), and MCP `nbox_get vrf`
   returns the same bundle.
 - **VRFs are now a first-class object.** A VRF can be looked up (`nbox vrf <name|rd|id>`),
-  found in search (`nbox search` / TUI `/` / MCP `nbox_search`, REST and GraphQL —
+  found in search (`nbox search` / TUI `/` / MCP `nbox_search`; search is REST-canonical —
   subtitle = its RD, falling back to the tenant), browsed from the TUI Nav rail
   (a **VRFs** section with a live count), opened from the palette (`vrf <ref>`),
   resolved by `nbox open vrf/<ref>`, journalled (`nbox journal vrf/<ref>`), and

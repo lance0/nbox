@@ -180,14 +180,12 @@ fn list_has_filter(caps: &GraphqlCapabilities, list_name: &str, key: &str) -> bo
     caps.filter_shape(filter_type, key).is_some()
 }
 
-/// GraphQL VRF support requires the VRF list plus `vrf_id` filtering on prefixes
-/// and IP addresses (the children bundle). All-or-nothing — a partial schema
-/// falls back to REST with the missing pieces named.
+/// GraphQL VRF support requires `vrf_id` filtering on prefixes and IP addresses
+/// (the children bundle). Identity/header resolution stays REST, so `vrf_list`
+/// is not required. All-or-nothing - a partial schema falls back to REST with the
+/// missing pieces named.
 fn vrf_support(caps: &GraphqlCapabilities) -> SurfaceSupport {
     let mut missing = Vec::new();
-    if caps.list("vrf_list").is_none() {
-        missing.push("vrf_list".to_string());
-    }
     if !list_has_filter(caps, "prefix_list", "vrf_id") {
         missing.push("prefix_list.vrf_id".to_string());
     }
@@ -344,7 +342,7 @@ mod tests {
     use crate::config::{ApiConfig, ProfileConfig};
     use crate::netbox::client::NetBoxClient;
     use crate::netbox::status::Status;
-    use wiremock::matchers::{method, path};
+    use wiremock::matchers::{body_string_contains, method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     fn status() -> Status {
@@ -353,6 +351,83 @@ mod tests {
             django_version: None,
             python_version: None,
         }
+    }
+
+    fn graphql_profile(server: &MockServer) -> NetBoxClient {
+        NetBoxClient::new(
+            &ProfileConfig {
+                url: server.uri(),
+                api: Some(ApiConfig {
+                    search: Some(BackendPreference::Graphql),
+                    vrf: Some(BackendPreference::Graphql),
+                    route_target: Some(BackendPreference::Graphql),
+                }),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap()
+    }
+
+    async fn mount_graphql_probe(
+        server: &MockServer,
+        prefix_filter: serde_json::Value,
+        ip_filter: serde_json::Value,
+        route_target_filter: serde_json::Value,
+    ) {
+        let list_field = |name: &str, filter: &str| {
+            serde_json::json!({
+                "name": name,
+                "args": [
+                    {"name": "filters", "type": {"kind": "INPUT_OBJECT", "name": filter}}
+                ]
+            })
+        };
+        Mock::given(method("POST"))
+            .and(path("/graphql/"))
+            .and(body_string_contains("__schema"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {"__schema": {"queryType": {"fields": [
+                    list_field("prefix_list", "PrefixFilter"),
+                    list_field("ip_address_list", "IPAddressFilter"),
+                    list_field("route_target_list", "RouteTargetFilter"),
+                ]}}}
+            })))
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql/"))
+            .and(body_string_contains("DeviceFilter"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "prefix": prefix_filter,
+                    "ip": ip_filter
+                }
+            })))
+            .mount(server)
+            .await;
+        Mock::given(method("POST"))
+            .and(path("/graphql/"))
+            .and(body_string_contains("ASNFilter"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": {
+                    "routeTarget": route_target_filter
+                }
+            })))
+            .mount(server)
+            .await;
+    }
+
+    fn input_with_field(name: &str) -> serde_json::Value {
+        serde_json::json!({
+            "inputFields": [
+                {"name": name, "type": {"kind": "INPUT_OBJECT", "name": "IntegerLookup"}}
+            ]
+        })
+    }
+
+    fn input_without_fields() -> serde_json::Value {
+        serde_json::json!({"inputFields": []})
     }
 
     #[tokio::test]
@@ -390,19 +465,7 @@ mod tests {
             .mount(&server)
             .await;
 
-        let client = NetBoxClient::new(
-            &ProfileConfig {
-                url: server.uri(),
-                api: Some(ApiConfig {
-                    search: Some(BackendPreference::Graphql),
-                    vrf: Some(BackendPreference::Graphql),
-                    route_target: Some(BackendPreference::Graphql),
-                }),
-                ..Default::default()
-            },
-            None,
-        )
-        .unwrap();
+        let client = graphql_profile(&server);
         let caps = client.capabilities(&status()).await;
 
         assert!(caps.graphql.probed);
@@ -425,6 +488,90 @@ mod tests {
                 .effective_backend(ApiSurface::Search)
                 .await
                 .uses_graphql()
+        );
+
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(
+            requests.len(),
+            1,
+            "failed GraphQL probe should be cached for this client"
+        );
+    }
+
+    #[tokio::test]
+    async fn graphql_profile_reports_supported_surfaces() {
+        let server = MockServer::start().await;
+        mount_graphql_probe(
+            &server,
+            input_with_field("vrf_id"),
+            input_with_field("vrf_id"),
+            input_with_field("id"),
+        )
+        .await;
+
+        let client = graphql_profile(&server);
+        let caps = client.capabilities(&status()).await;
+        let surfaces = caps.graphql.surfaces.expect("surface support");
+        assert!(surfaces.vrf.supported);
+        assert!(surfaces.vrf.recommended);
+        assert!(surfaces.route_target.supported);
+        assert!(surfaces.route_target.recommended);
+        assert!(!surfaces.search.supported);
+
+        let routing = client.api_routing().await;
+        assert_eq!(routing.vrf.effective, "graphql");
+        assert_eq!(routing.route_target.effective, "graphql");
+    }
+
+    #[tokio::test]
+    async fn graphql_profile_names_missing_vrf_filters() {
+        let server = MockServer::start().await;
+        mount_graphql_probe(
+            &server,
+            input_without_fields(),
+            input_with_field("vrf_id"),
+            input_with_field("id"),
+        )
+        .await;
+
+        let client = graphql_profile(&server);
+        let caps = client.capabilities(&status()).await;
+        let surfaces = caps.graphql.surfaces.expect("surface support");
+        assert!(!surfaces.vrf.supported);
+        assert_eq!(surfaces.vrf.missing, vec!["prefix_list.vrf_id"]);
+
+        let effective = client.effective_backend(ApiSurface::Vrf).await;
+        assert!(!effective.uses_graphql());
+        assert!(
+            effective
+                .reason()
+                .is_some_and(|reason| reason.contains("prefix_list.vrf_id"))
+        );
+    }
+
+    #[tokio::test]
+    async fn graphql_profile_names_missing_route_target_filter() {
+        let server = MockServer::start().await;
+        mount_graphql_probe(
+            &server,
+            input_with_field("vrf_id"),
+            input_with_field("vrf_id"),
+            input_without_fields(),
+        )
+        .await;
+
+        let client = graphql_profile(&server);
+        let caps = client.capabilities(&status()).await;
+        let surfaces = caps.graphql.surfaces.expect("surface support");
+        assert!(!surfaces.route_target.supported);
+        assert_eq!(surfaces.route_target.missing, vec!["route_target_list.id"]);
+
+        let effective = client.effective_backend(ApiSurface::RouteTarget).await;
+        assert!(!effective.uses_graphql());
+        assert!(
+            effective
+                .reason()
+                .is_some_and(|reason| reason.contains("route_target_list.id"))
         );
     }
 }
