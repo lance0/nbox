@@ -562,6 +562,7 @@ impl ClipboardEnv {
         }
     }
 
+    #[cfg(any(test, all(unix, not(target_os = "macos"))))]
     fn has_graphical_display(&self) -> bool {
         self.display.is_some() || self.wayland_display.is_some()
     }
@@ -593,7 +594,10 @@ fn should_skip_desktop_clipboard(platform: ClipboardPlatform, env: &ClipboardEnv
         #[cfg(any(test, all(unix, not(target_os = "macos"))))]
         ClipboardPlatform::X11WaylandUnix => !env.has_graphical_display(),
         #[cfg(any(test, not(all(unix, not(target_os = "macos")))))]
-        ClipboardPlatform::NativeDesktop => false,
+        ClipboardPlatform::NativeDesktop => {
+            let _ = env;
+            false
+        }
     }
 }
 
