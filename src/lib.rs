@@ -338,10 +338,11 @@ pub async fn run(cli: Cli) -> Result<()> {
                 confirm,
                 allow_writes,
             }) => {
+                let effective_vrf = ip_reserve_vrf_scope(vrf.as_deref(), reserve_vrf.as_deref())?;
                 Box::pin(run_ip_reserve(
                     &ctx,
                     &prefix,
-                    reserve_vrf.as_deref(),
+                    effective_vrf,
                     description.as_deref(),
                     dns_name.as_deref(),
                     message.as_deref(),
@@ -513,6 +514,30 @@ pub async fn run(cli: Cli) -> Result<()> {
             )
             .await
         }
+    }
+}
+
+/// `nbox ip` has a read-path `--vrf`, and `ip reserve` repeats it so the write
+/// reads naturally as `nbox ip reserve <prefix> --vrf <name>`. Clap accepts the
+/// parent spelling too (`nbox ip --vrf <name> reserve <prefix>`), so fold both
+/// placements into one effective scope and reject conflicting duplicate input
+/// before any network/write work.
+fn ip_reserve_vrf_scope<'a>(
+    parent_vrf: Option<&'a str>,
+    reserve_vrf: Option<&'a str>,
+) -> Result<Option<&'a str>> {
+    match (parent_vrf, reserve_vrf) {
+        (Some(parent), Some(reserve)) if !parent.eq_ignore_ascii_case(reserve) => {
+            Err(error::NboxError::Usage(
+                "conflicting --vrf values for `ip reserve`; pass --vrf once, either before or \
+                 after `reserve`"
+                    .to_string(),
+            )
+            .into())
+        }
+        (Some(parent), Some(_) | None) => Ok(Some(parent)),
+        (None, Some(reserve)) => Ok(Some(reserve)),
+        (None, None) => Ok(None),
     }
 }
 
@@ -2490,9 +2515,9 @@ fn not_found(noun: &str, value: &str) -> anyhow::Error {
 mod tests {
     use super::{
         Cli, CommandFactory, WriteAction, audit_origin, build_mcp_config, check_raw_method, error,
-        first_subnet_of_length, init_logging, message_audit_len, no_tui_refusal,
-        normalize_raw_path, not_found, parse_object_ref, resolve_content_type_id, resolve_logging,
-        run_man, tui_startup_status, wants_journal, write_action,
+        first_subnet_of_length, init_logging, ip_reserve_vrf_scope, message_audit_len,
+        no_tui_refusal, normalize_raw_path, not_found, parse_object_ref, resolve_content_type_id,
+        resolve_logging, run_man, tui_startup_status, wants_journal, write_action,
     };
     use crate::domain::detail::resolve_unique;
     use crate::netbox::models::ipam::AvailablePrefix;
@@ -3342,6 +3367,27 @@ mod tests {
             write_action(false, false, true, false),
             WriteAction::RefuseNeedsConfirm
         );
+    }
+
+    #[test]
+    fn ip_reserve_vrf_scope_accepts_either_cli_placement_and_rejects_conflict() {
+        assert_eq!(
+            ip_reserve_vrf_scope(Some("blue"), None).unwrap(),
+            Some("blue")
+        );
+        assert_eq!(
+            ip_reserve_vrf_scope(None, Some("blue")).unwrap(),
+            Some("blue")
+        );
+        assert_eq!(
+            ip_reserve_vrf_scope(Some("blue"), Some("BLUE")).unwrap(),
+            Some("blue")
+        );
+        assert!(ip_reserve_vrf_scope(None, None).unwrap().is_none());
+
+        let err = ip_reserve_vrf_scope(Some("blue"), Some("red")).unwrap_err();
+        let nbox = err.downcast_ref::<error::NboxError>().expect("usage error");
+        assert!(matches!(nbox, error::NboxError::Usage(msg) if msg.contains("conflicting --vrf")));
     }
 
     // --- write audit host origin (scheme + host [+ port], no path) ---------
