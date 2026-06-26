@@ -445,10 +445,11 @@ pub enum Command {
         limit: usize,
     },
 
-    /// Add a tag to an object (a write — ADR-0001 safe-write foundation).
-    /// `nbox tag add <type> <name> <tag>` resolves the object and the tag,
-    /// then sends a minimal `PATCH` to add the tag. Behind `--allow-writes` +
-    /// confirmation. Adding a tag the object already carries is a no-op.
+    /// Add or remove a tag on an object (a write — ADR-0001 safe-write
+    /// foundation). `nbox tag add <type> <name> <tag>` / `nbox tag remove
+    /// <type> <name> <tag>` resolve the object and the tag, then send a
+    /// minimal `PATCH` to update the tags array. Behind `--allow-writes` +
+    /// confirmation. A no-op (tag already present/absent) sends no `PATCH`.
     Tag {
         #[command(subcommand)]
         action: TagAction,
@@ -609,10 +610,9 @@ pub enum Command {
     },
 }
 
-/// `nbox tag` write actions (ADR-0001 safe-write foundation). The v1 surface
-/// is intentionally narrow: one operation (`add`). No generic `set`/`remove`
-/// — broader writes come later on the same planner/diff/confirm/concurrency/
-/// audit contracts.
+/// `nbox tag` write actions (ADR-0001 safe-write foundation). Add and remove
+/// share one planner/diff/confirm/concurrency/audit path; broader tag writes
+/// (bulk add/remove, set) come later on the same contracts.
 #[derive(Debug, Subcommand)]
 pub enum TagAction {
     /// Add a tag to an object. A write: requires the `--allow-writes` gate AND
@@ -620,6 +620,49 @@ pub enum TagAction {
     /// output). `--dry-run` previews with no mutation and needs neither. Adding
     /// a tag the object already carries is a no-op: apply sends no `PATCH`.
     Add {
+        /// Object kind (e.g. `device`, `prefix`, `ip`, `vlan`, `site`, `rack`,
+        /// `circuit`, `tenant`, `vrf`, `vm`, `cluster`, `interface`, …). Any
+        /// kind `nbox <kind> <ref>` resolves.
+        object_type: String,
+
+        /// Object reference (name, slug, id, CIDR, VID, … — kind-dependent).
+        /// For an interface use `<device>/<name>`.
+        object_name: String,
+
+        /// Tag reference: id, exact name (e.g. `prod:us-east`), or exact slug.
+        tag: String,
+
+        /// Record this message in NetBox's object-change entry (a write-only
+        /// request field, never stored on the object). Validated to NetBox's
+        /// 200-character limit before applying. Optional.
+        #[arg(long, value_name = "MESSAGE")]
+        message: Option<String>,
+
+        /// Preview the plan + diff and perform no mutation. Needs neither
+        /// `--allow-writes` nor confirmation. With `--json`, returns the stable
+        /// `MutationPlan` JSON.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+
+        /// Apply the reviewed plan without an interactive prompt. Does NOT
+        /// enable writes on its own — `--confirm` without `--allow-writes` is a
+        /// usage error (exit 2). With `--json`, returns the stable
+        /// `MutationReceipt` JSON.
+        #[arg(long)]
+        confirm: bool,
+
+        /// The write-enable gate: required to apply ANY mutation. Kept separate
+        /// from `--confirm` so a read-only invocation can never be silently
+        /// turned into a write (ADR-0001 §4).
+        #[arg(long = "allow-writes")]
+        allow_writes: bool,
+    },
+
+    /// Remove a tag from an object. A write: requires the `--allow-writes` gate
+    /// AND confirmation (`--confirm`, or an interactive prompt on a TTY in plain
+    /// output). `--dry-run` previews with no mutation and needs neither. Removing
+    /// a tag the object doesn't carry is a no-op: apply sends no `PATCH`.
+    Remove {
         /// Object kind (e.g. `device`, `prefix`, `ip`, `vlan`, `site`, `rack`,
         /// `circuit`, `tenant`, `vrf`, `vm`, `cluster`, `interface`, …). Any
         /// kind `nbox <kind> <ref>` resolves.
@@ -1462,5 +1505,42 @@ mod tests {
         assert_eq!(object_type, "device");
         assert_eq!(object_name, "edge01");
         assert_eq!(tag, "prod");
+    }
+
+    #[test]
+    fn tag_remove_parses_flags() {
+        let rm = Cli::try_parse_from([
+            "nbox",
+            "--no-tui",
+            "tag",
+            "remove",
+            "device",
+            "edge01",
+            "prod",
+            "--allow-writes",
+            "--confirm",
+            "--message",
+            "untagging",
+        ])
+        .unwrap();
+        let Some(Command::Tag {
+            action:
+                TagAction::Remove {
+                    object_type,
+                    object_name,
+                    tag,
+                    message: Some(msg),
+                    dry_run: false,
+                    confirm: true,
+                    allow_writes: true,
+                },
+        }) = rm.command
+        else {
+            panic!("expected tag remove");
+        };
+        assert_eq!(object_type, "device");
+        assert_eq!(object_name, "edge01");
+        assert_eq!(tag, "prod");
+        assert_eq!(msg, "untagging");
     }
 }

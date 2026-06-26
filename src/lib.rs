@@ -466,8 +466,31 @@ pub async fn run(cli: Cli) -> Result<()> {
                 confirm,
                 allow_writes,
             } => {
-                Box::pin(run_tag_add(
+                Box::pin(run_tag_write(
                     &ctx,
+                    detail::TagOperation::Add,
+                    &object_type,
+                    &object_name,
+                    &tag,
+                    message.as_deref(),
+                    dry_run,
+                    confirm,
+                    allow_writes,
+                ))
+                .await
+            }
+            crate::cli::TagAction::Remove {
+                object_type,
+                object_name,
+                tag,
+                message,
+                dry_run,
+                confirm,
+                allow_writes,
+            } => {
+                Box::pin(run_tag_write(
+                    &ctx,
+                    detail::TagOperation::Remove,
                     &object_type,
                     &object_name,
                     &tag,
@@ -1650,15 +1673,15 @@ async fn run_ip_reserve(
     .await
 }
 
-/// `nbox tag add <type> <name> <tag>` — the fourth safe write (ADR-0001
-/// follow-on), reusing the same gate/planner/lifecycle/audit path as the
-/// interface/device pilots. Resolves the tag and the target object, reads the
-/// current tags, and builds a plan that appends the tag's slug to the tags
-/// array (a `PATCH` that replaces the whole array — NetBox semantics). Adding
-/// a tag the object already carries is a no-op (no `PATCH`).
+/// `nbox tag add|remove <type> <name> <tag>` — tag writes on the ADR-0001
+/// foundation. Resolves the tag and the target object, reads the current tags,
+/// and builds a plan that adds or removes the tag's slug from the tags array
+/// (a `PATCH` that replaces the whole array — NetBox semantics). A no-op (tag
+/// already present for add, already absent for remove) sends no `PATCH`.
 #[allow(clippy::too_many_arguments)] // the CLI flag set; collapsing loses clarity
-async fn run_tag_add(
+async fn run_tag_write(
     ctx: &Ctx,
+    operation: detail::TagOperation,
     object_type: &str,
     object_name: &str,
     tag: &str,
@@ -1675,8 +1698,9 @@ async fn run_tag_add(
     let host = audit_origin(client.base_url());
 
     // 2–4) resolve the tag + target object + build the plan.
-    let plan = detail::plan_tag_add(
+    let plan = detail::plan_tag_update(
         &client,
+        operation,
         object_type,
         object_name,
         tag,
@@ -1688,7 +1712,7 @@ async fn run_tag_add(
 
     // The shared dry-run/prompt/apply/audit lifecycle — one write path.
     apply_or_preview(ctx, &client, &plan, action, &profile, &host, |c, p| {
-        Box::pin(detail::apply_tag_add(c, p))
+        Box::pin(detail::apply_tag_update(c, p))
     })
     .await
 }

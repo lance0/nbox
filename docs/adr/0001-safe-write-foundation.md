@@ -266,6 +266,12 @@ Shipped on this foundation, in order:
   for this write. Adding a tag the object already carries is a no-op (empty
   patch, no `PATCH`). `ETag`+`If-Match` on 4.6+, `last_updated`+before-hash on
   pre-4.6, same as the interface/device pilots.
+- `tag remove <type> <name> <tag>` — the fifth write (`update` / `PATCH`), the
+  inverse of `tag add`. Shares one planner/applier with `tag add`
+  (`TagOperation::Add`/`Remove`), proving the foundation extends to the inverse
+  operation without new machinery. A no-op (tag already absent) produces an empty
+  patch, no `PATCH`. Same `ETag`+`If-Match` / `last_updated`+before-hash
+  concurrency contracts.
 
 Still deferred per Decision 6: choosing a specific address, multi-IP / range /
 next-prefix allocation, interface/VM assignment, status/tags on reserve, generic

@@ -74,6 +74,7 @@ nbox tagged <tag>               # objects carrying a tag, across kinds (NetBox 4
                                   # `/api/extras/tagged-objects/`); tag = id|name|slug
 nbox tag add <type> <name> <tag>  # write: add a tag to any object (PATCH tags array); --dry-run | --allow-writes --confirm [--message]
                                   # <type> = any read kind (device, ip, prefix, vlan, …); <tag> = id|name|slug; no-op if already present
+nbox tag remove <type> <name> <tag>  # write: remove a tag from any object (PATCH tags array); same gate as tag add; no-op if already absent
 nbox journal <kind> <ref>         # kinds: device, ip, prefix, vlan, site, rack, rack-group, circuit,
                                   # virtual-circuit, aggregate, asn, ip-range, tenant, contact, provider, vm,
                                   # vm-type, cluster, vrf, route-target, mac, interface (<device>/<name>)

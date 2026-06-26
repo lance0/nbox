@@ -282,6 +282,7 @@ nbox tags                         # list tags (slug, name, count)
 nbox tagged <tag>                 # objects carrying a tag, across kinds
                                   # (NetBox 4.3+; tag = id|name|slug)
 nbox tag add <type> <name> <tag>   # write: add a tag to any object (PATCH tags array)
+nbox tag remove <type> <name> <tag>  # write: remove a tag from any object (PATCH tags array)
 nbox journal <kind> <ref>         # recent journal entries for an object
                                   # kinds incl. interface as <device>/<name>
                                   # --journal folds recent entries into a detail lookup (cap 5)
