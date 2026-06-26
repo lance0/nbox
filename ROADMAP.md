@@ -340,10 +340,15 @@ all read-only. (Market positioning itself stays out of the repo — see private 
   `nbox serve --print-config` helper. (SKILL.md + the README "Add it to Claude" block are the start.)
   `--print-config` now prints the paste-ready `mcpServers` JSON (absolute binary path, echoed
   `--profile`/`--config`, placeholder token) and exits; docs/MCP.md lists the per-host config-file path.
-- ☐ **Per-domain agent-skills catalog.** Grow the single root `SKILL.md` into a small catalog of focused
-  skills (e.g. search, IPAM, device/interface context, `serve`) in the standard agent-skills layout
-  (`skills/<name>/SKILL.md`). Keep them flag-free — point at `nbox <cmd> --help` rather than enumerating
-  flags, so they can't silently drift as the CLI evolves — and lint the shape in CI.
+- ☑ **Per-domain agent-skills catalog (write domain).** The first skill files
+  landed for the write surface, in the standard agent-skills layout
+  (`skills/<domain>/SKILL.md`): `skills/writes/` (the universal lifecycle),
+  `skills/ipam-allocate/`, `skills/tag-writes/`, `skills/patch-writes/`.
+  Flag-free by design — each points at `nbox <cmd> --help` so it can't silently
+  drift; `scripts/lint_skills.sh` + a `skills-lint` CI workflow check the
+  frontmatter shape. The root `SKILL.md` indexes the catalog and now mentions
+  the write surface. ☐ Read-domain skills (search, IPAM read, device/interface
+  context, `serve`) remain — grow the catalog incrementally.
 - ☑ **Read-only history/changelog tool + `--diff`.** `nbox history <kind> <ref>`
   shows the system-recorded create/update/delete timeline for an object (who, when,
   and which fields changed) from `/api/core/object-changes/` (NetBox 4.x), distinct
@@ -481,8 +486,14 @@ the read tool proves out in practice. Consolidated future scope:
 - ☐ TUI edit mode (`e` / `d` / confirm).
 - ☐ `nbox raw POST|PATCH|DELETE`; OPTIONS write-capability discovery (optional `schema` command; would
   also enable value-level filter validation beyond today's typed allowlist, netbox#6489).
-- ☐ **Agent write ergonomics** — a `--dry-run` convention and per-command skill files, landing with
-  writes (`AGENTS.md` is the read-side foundation today).
+- ☑ **Agent write ergonomics** — per-domain skill files for the write
+  surface, in the standard agent-skills layout (`skills/<domain>/SKILL.md`):
+  `skills/writes/` (the universal dry-run/confirm/audit lifecycle), `skills/
+  ipam-allocate/` (`ip`/`prefix`/`ip-range reserve`), `skills/tag-writes/`
+  (`tag add`/`remove`), and `skills/patch-writes/` (`interface set
+  description` / `device set status`). Flag-free by design — each points at
+  `nbox <cmd> --help` so it can't silently drift. A `scripts/lint_skills.sh`
+  CI lint checks the frontmatter shape (`name` + `description`).
 
 ---
 
