@@ -78,23 +78,27 @@ pub enum Command {
         #[arg(long)]
         status: Option<String>,
 
-        /// Filter by site (slug, name, or id). Prefixes are matched on site
-        /// scope. Mutually exclusive with --region/--site-group/--location.
+        /// Filter by site (slug, name, or id). Scoped prefixes/clusters match
+        /// exact site scope. Mutually exclusive with --region/--site-group/
+        /// --location.
         #[arg(long)]
         site: Option<String>,
 
-        /// Filter by region (slug, name, or id). Prefixes are matched on region
-        /// scope. Mutually exclusive with --site/--site-group/--location.
+        /// Filter by region (slug, name, or id). Scoped prefixes/clusters include
+        /// descendants through NetBox's region_id filter. Mutually exclusive
+        /// with --site/--site-group/--location.
         #[arg(long)]
         region: Option<String>,
 
-        /// Filter by site group (slug, name, or id). Prefixes are matched on
-        /// site-group scope. Mutually exclusive with --site/--region/--location.
+        /// Filter by site group (slug, name, or id). Scoped prefixes/clusters include
+        /// descendants through NetBox's site_group_id filter. Mutually exclusive
+        /// with --site/--region/--location.
         #[arg(long = "site-group")]
         site_group: Option<String>,
 
-        /// Filter by location (slug, name, or id). Prefixes are matched on
-        /// location scope. Mutually exclusive with --site/--region/--site-group.
+        /// Filter by location (slug, name, or id). Scoped prefixes/clusters include
+        /// descendants through NetBox's location_id filter. Mutually exclusive
+        /// with --site/--region/--site-group.
         #[arg(long)]
         location: Option<String>,
 

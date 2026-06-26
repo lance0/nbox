@@ -50,6 +50,9 @@ export NETBOX_TOKEN="$(./tests/integration/resolve-token.sh)"
 - site `ci-site`
 - VRF `ci-vrf`
 - prefix `10.10.0.0/16` scoped to the site (`scope_type=dcim.site`)
+- prefixes `10.20.0.0/16`, `10.30.0.0/16`, `10.40.0.0/16`, and
+  `10.41.0.0/16` scoped to region/site-group/location/child-location fixtures
+  for hierarchical search-scope checks
 - duplicate prefix `10.0.0.0/24` in **two** tables: VRF `ci-vrf` and global
   (exercises `--vrf` disambiguation / ambiguity)
 - VLAN vid `1234` (`ci-vlan`) at `ci-site`

@@ -34,11 +34,13 @@ flag, and the per-surface backend routing.
 ## How nbox adapts
 
 - **Scope (4.2).** Prefixes/VLANs/clusters use the polymorphic `scope`, so a plain
-  `?site=` slug filter is dead on those endpoints. `--site`/`--region`/`--group`/
-  `--location` resolve to a numeric id once, then go out-of-band per endpoint: the
-  polymorphic endpoints (prefixes, clusters) get `scope_type=dcim.<kind>` +
-  `scope_id=<id>`; the rest get `site_id`/`region_id`/… An endpoint with no clean
-  filter for the active scope skips itself rather than return an unfiltered set.
+  `?site=` slug filter is dead on those endpoints. `--site`/`--region`/
+  `--site-group`/`--location` resolve to a numeric id once, then go out-of-band
+  per endpoint: the scoped endpoints (prefixes, clusters) keep exact `--site`
+  with `scope_type=dcim.site` + `scope_id=<id>` and use NetBox's tree-aware
+  `region_id`/`site_group_id`/`location_id` filters for hierarchical scopes; the
+  rest get `site_id`/`region_id`/… An endpoint with no clean filter for the active
+  scope skips itself rather than return an unfiltered set.
 
 - **Search is always REST.** NetBox 4.3 reworked GraphQL filtering into advanced
   per-field lookups (AND/OR, custom fields — NetBox #7598). GraphQL has no

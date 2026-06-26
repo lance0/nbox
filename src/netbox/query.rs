@@ -401,8 +401,8 @@ impl NetBoxClient {
 
     /// Resolve a region by numeric id, then slug, then exact name, then
     /// name-contains. Mirrors [`site_by_ref`](Self::site_by_ref); used to
-    /// translate `--region` into a numeric id for prefix `scope_type=dcim.region`
-    /// filtering. The id fast-path hits the detail endpoint; a hit returns
+    /// translate `--region` into the numeric id that search scope filters apply
+    /// per endpoint. The id fast-path hits the detail endpoint; a hit returns
     /// immediately (so `--region 5` resolves), but a 404 FALLS THROUGH to the
     /// slug/name lookups (a numeric slug/name still resolves).
     pub async fn region_by_ref(&self, value: &str) -> Result<Option<Region>> {
@@ -433,11 +433,10 @@ impl NetBoxClient {
 
     /// Resolve a site group by numeric id, then slug, then exact name, then
     /// name-contains. Mirrors [`site_by_ref`](Self::site_by_ref); used to
-    /// translate `--site-group` into a numeric id for prefix
-    /// `scope_type=dcim.sitegroup` filtering. The id fast-path hits the detail
-    /// endpoint; a hit returns immediately (so `--site-group 5` resolves), but a
-    /// 404 FALLS THROUGH to the slug/name lookups (a numeric slug/name still
-    /// resolves).
+    /// translate `--site-group` into the numeric id that search scope filters
+    /// apply per endpoint. The id fast-path hits the detail endpoint; a hit
+    /// returns immediately (so `--site-group 5` resolves), but a 404 FALLS
+    /// THROUGH to the slug/name lookups (a numeric slug/name still resolves).
     pub async fn site_group_by_ref(&self, value: &str) -> Result<Option<SiteGroup>> {
         if let Ok(id) = value.parse::<u64>()
             && let Some(g) = self
@@ -466,10 +465,10 @@ impl NetBoxClient {
 
     /// Resolve a location by numeric id, then slug, then exact name, then
     /// name-contains. Mirrors [`site_by_ref`](Self::site_by_ref); used to
-    /// translate `--location` into a numeric id for prefix
-    /// `scope_type=dcim.location` filtering. The id fast-path hits the detail
-    /// endpoint; a hit returns immediately (so `--location 5` resolves), but a 404
-    /// FALLS THROUGH to the slug/name lookups (a numeric slug/name still resolves).
+    /// translate `--location` into the numeric id that search scope filters apply
+    /// per endpoint. The id fast-path hits the detail endpoint; a hit returns
+    /// immediately (so `--location 5` resolves), but a 404 FALLS THROUGH to the
+    /// slug/name lookups (a numeric slug/name still resolves).
     pub async fn location_by_ref(&self, value: &str) -> Result<Option<Location>> {
         if let Ok(id) = value.parse::<u64>()
             && let Some(l) = self

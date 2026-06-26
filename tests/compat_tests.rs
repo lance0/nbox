@@ -5,7 +5,9 @@
 //! can't pass silently. The matrix it mirrors lives in `docs/COMPATIBILITY.md`.
 //!
 //!   - **4.2** introduced the polymorphic `scope` (`scope_type` + `scope_id`),
-//!     dropping the prefix `site` FK → scope filtering sends `scope_type=dcim.<kind>`.
+//!     dropping the prefix `site` FK. Exact `--site` filtering uses that
+//!     polymorphic scope; hierarchical non-site search uses scoped id filters
+//!     where NetBox exposes them.
 //!   - **4.3** moved GraphQL filtering to per-field lookups and dropped the
 //!     full-text `q` filter → `nbox search` is always REST.
 //!   - **4.5** dropped the prefix `utilization` field → nbox computes container

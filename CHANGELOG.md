@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   contained IP rows while child prefixes and other detail sections stay at the
   shared 200-row cap. This covers a full IPv4 `/24` (254 hosts) in CLI, MCP, and
   TUI prefix detail without adding a new flag or changing the output shape.
+- `nbox search --region`/`--site-group`/`--location` now uses NetBox's native
+  tree-aware `region_id`/`site_group_id`/`location_id` filters on scoped prefix
+  and cluster search, so those scope filters include descendants server-side.
+  `--site` remains an exact `scope_type=dcim.site` + `scope_id=<id>` match, and
+  `--vrf` continues to combine with prefix scope filters.
 
 ## [0.13.0] - 2026-06-25
 

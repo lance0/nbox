@@ -153,11 +153,13 @@ impl ObjectKind {
 /// `site`/`region`/`site_group`/`location` are *scope* filters: NetBox 4.2's
 /// prefix `scope` is a single polymorphic type+id, so at most one of them may be
 /// set at a time (enforced in [`NetBoxClient::search`]). All four are resolved to
-/// a numeric id up front and handled out-of-band per endpoint — as `scope_type`+
-/// `scope_id` on the polymorphic endpoints (prefixes, clusters) and as
-/// `site_id`/`region_id`/`site_group_id`/`location_id` on the rest — never through
-/// the plain-value allowlist below (the plain `?site=` param wants a slug, so an
-/// id or display name would silently match nothing).
+/// a numeric id up front and handled out-of-band per endpoint. Prefixes/clusters
+/// use exact `scope_type=dcim.site` + `scope_id=<id>` for `--site`, and NetBox's
+/// tree-aware `region_id`/`site_group_id`/`location_id` filters for the non-site
+/// scopes. Other endpoints use the clean `site_id`/`region_id`/… filter when
+/// available. Scope filters never flow through the plain-value allowlist below
+/// (the plain `?site=` param wants a slug, so an id or display name would
+/// silently match nothing).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SearchFilters {
     pub status: Option<String>,
@@ -201,9 +203,11 @@ impl SearchFilters {
     ///
     /// Scope filters (`site`/`region`/`site_group`/`location`) are *not* included
     /// here — they're resolved to a numeric id once and applied out-of-band per
-    /// endpoint (as `site_id`/`region_id`/… or `scope_type`+`scope_id`). The plain
-    /// `?site=` param expects a *slug*, so a `--site` given as an id or display
-    /// name would silently match nothing; the resolved id avoids that.
+    /// endpoint (`scope_type`+`scope_id` for exact `--site` on scoped models,
+    /// tree-aware `region_id`/`site_group_id`/`location_id` for non-site scopes,
+    /// or `site_id`/`region_id`/… on other endpoints). The plain `?site=` param
+    /// expects a *slug*, so a `--site` given as an id or display name would
+    /// silently match nothing; the resolved id avoids that.
     fn params_for(&self, supported: &[&str]) -> Option<Vec<(&'static str, String)>> {
         let active: [(&'static str, &Option<String>); 6] = [
             ("status", &self.status),
@@ -313,6 +317,27 @@ fn skip_for_any_scope(scope: Option<&ResolvedScope>) -> bool {
     scope.is_some()
 }
 
+fn scoped_model_params(scope: Option<&ResolvedScope>) -> Vec<(&'static str, String)> {
+    let Some(s) = scope else {
+        return Vec::new();
+    };
+    match s.content_type {
+        // Preserve exact site semantics. The polymorphic `scope` exact match is
+        // deliberately narrower than NetBox's `_site` helper and avoids widening
+        // `--site` if scoped models ever grow indirect site inheritance.
+        "dcim.site" => vec![
+            ("scope_type", s.content_type.to_string()),
+            ("scope_id", s.id.to_string()),
+        ],
+        // NetBox's ScopedFilterSet backs these with TreeNodeMultipleChoiceFilter,
+        // so the selected node and its descendants are matched server-side.
+        "dcim.region" => vec![("region_id", s.id.to_string())],
+        "dcim.sitegroup" => vec![("site_group_id", s.id.to_string())],
+        "dcim.location" => vec![("location_id", s.id.to_string())],
+        _ => Vec::new(),
+    }
+}
+
 /// A typed not-found error for an unresolved scope reference, e.g. a `--region`
 /// that matches nothing. Exit 4, with an actionable hint — mirrors the original
 /// `--site` not-found message.
@@ -347,8 +372,10 @@ fn vlan_subtitle(v: &Vlan) -> Option<String> {
 /// the schema canary (``mod schema_canary`` below) validates against a pinned
 /// NetBox OpenAPI snapshot. The scope filters (`site`/`region`/`site_group`/
 /// `location`) are *not* here — they're resolved to an id once and applied
-/// out-of-band per endpoint (`site_id`/`region_id`/… or `scope_type`+`scope_id`)
-/// by each branch, never as the raw `?site=` slug.
+/// out-of-band per endpoint (`scope_type`+`scope_id` for exact `--site` on
+/// scoped models, native scoped id filters for non-site scopes, or
+/// `site_id`/`region_id`/… elsewhere) by each branch, never as the raw `?site=`
+/// slug.
 ///
 /// `tag`/`owner`/`owner_group` are common to most kinds; `status`/`tenant`/
 /// `role` vary. Returns an empty slice for endpoints that aren't part of the
@@ -375,9 +402,9 @@ fn search_supported(ep: Endpoint) -> &'static [&'static str] {
         // a `tenant=` NetBox silently ignores, returning the kind *unfiltered* —
         // a silent over-broad result. The schema canary pins this.
         Endpoint::RackGroups | Endpoint::VirtualMachineTypes => &["tag", "owner", "owner_group"],
-        // Prefixes and clusters apply scope out-of-band (scope_type+scope_id),
-        // so they pass a scope-stripped filters variant and a smaller in-band
-        // set (no owner/role — those aren't sent in-band on these branches).
+        // Prefixes and clusters apply scope out-of-band, so they pass a
+        // scope-stripped filters variant and a smaller in-band set (no
+        // owner/role — those aren't sent in-band on these branches).
         Endpoint::Prefixes => &["status", "tenant", "role", "tag"],
         Endpoint::Clusters => &["status", "tenant", "tag"],
         _ => &[],
@@ -422,12 +449,10 @@ impl NetBoxClient {
         let f = &req.filters;
 
         // Resolve the (single) scope filter to a content type + numeric id once,
-        // up front. NetBox 4.2 replaced the prefix `site` FK with a polymorphic
-        // `scope` (a single type+id), so a plain `?site=`/`?region=`/… is a dead
-        // filter on prefixes — they need `scope_type=<ct>` + `scope_id=<id>`. An
-        // unknown ref is a hard not-found error (exit 4) so search fails loudly
-        // rather than quietly returning nothing. Scope is an *exact* match: each
-        // flag filters by its own scope only — no hierarchy/descendant semantics.
+        // up front. Prefixes/clusters keep exact `--site` semantics via
+        // `scope_type`+`scope_id`, while non-site scopes use NetBox's native
+        // tree-aware scoped id filters. An unknown ref is a hard not-found error
+        // (exit 4) so search fails loudly rather than quietly returning nothing.
         // Resolve the (optional) `--vrf` reference (id | rd | name) to a numeric
         // id once, up front. An unknown VRF is a hard not-found error (exit 4) so
         // search fails loudly rather than quietly returning nothing — matching the
@@ -759,15 +784,13 @@ impl NetBoxClient {
         vrf_id: Option<u64>,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        // Scope is handled out-of-band, not through the allowlist: NetBox 4.2
-        // dropped the prefix `site` FK for the polymorphic `scope`, so a plain
-        // `?site=`/`?region=`/… is a dead filter. The caller resolves the single
-        // active scope flag to an id up front; we translate it to
-        // `scope_type=<ct>` + `scope_id=<id>` (e.g. `dcim.region`), which the 4.2+
-        // API honors as an EXACT match (no hierarchy/descendant expansion). The
-        // scope refs are cleared from the filters before the allowlist check
-        // (otherwise `params_for` would skip the endpoint on `site`) and
-        // re-expressed as scope params below.
+        // Scope is handled out-of-band, not through the allowlist. NetBox 4.2
+        // dropped the prefix `site` FK for the polymorphic `scope`, so scope refs
+        // are resolved to ids up front, cleared before the allowlist check, and
+        // re-expressed below. `--site` stays exact via `scope_type`+`scope_id`;
+        // region/site-group/location use NetBox's tree-aware scoped id filters
+        // (`region_id`, `site_group_id`, `location_id`) so descendants are
+        // included by the server without a client-side hierarchy crawl.
         let without_scope = SearchFilters {
             site: None,
             region: None,
@@ -780,10 +803,7 @@ impl NetBoxClient {
         else {
             return Ok(Vec::new());
         };
-        if let Some(s) = scope {
-            params.push(("scope_type", s.content_type.to_string()));
-            params.push(("scope_id", s.id.to_string()));
-        }
+        params.extend(scoped_model_params(scope));
         // Prefixes carry a VRF: apply the resolved `--vrf` id as `vrf_id=`. This
         // is orthogonal to scope — NetBox ANDs them, so a vrf+scope combo narrows
         // to prefixes matching both.
@@ -1243,13 +1263,9 @@ impl NetBoxClient {
         scope: Option<&ResolvedScope>,
         limit: usize,
     ) -> Result<Vec<SearchResult>> {
-        // NetBox 4.2+ scopes a cluster polymorphically (same `scope_type`/
-        // `scope_id` filter as prefixes), so honor a region/site-group/location
-        // scope the way `search_prefixes` does: clear the scope refs from the
-        // allowlist (so `--site` doesn't skip the endpoint) and re-express the
-        // single active scope as `scope_type`+`scope_id`. `--site` flows through
-        // here too (as `dcim.site`), since clusters honor it via the polymorphic
-        // scope as well.
+        // NetBox 4.2+ scopes a cluster polymorphically, like prefixes. Clear the
+        // scope refs before the allowlist check, then apply the same exact-site /
+        // descendant-aware non-site scope params as `search_prefixes`.
         let without_scope = SearchFilters {
             site: None,
             region: None,
@@ -1264,10 +1280,7 @@ impl NetBoxClient {
         else {
             return Ok(Vec::new());
         };
-        if let Some(s) = scope {
-            params.push(("scope_type", s.content_type.to_string()));
-            params.push(("scope_id", s.id.to_string()));
-        }
+        params.extend(scoped_model_params(scope));
         let page: Page<Cluster> = self.list_limited(Endpoint::Clusters, params, limit).await?;
         Ok(page
             .results
@@ -1537,6 +1550,27 @@ mod tests {
                      snapshot has no such GET param on this endpoint — the server would \
                      silently ignore it (over-broad results). Fix search_supported or \
                      refresh the snapshot."
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn schema_canary_scoped_models_keep_tree_scope_filters() {
+        let snapshot: serde_json::Value =
+            serde_json::from_str(include_str!("../../tests/schema/netbox-4.6.2.json"))
+                .expect("pinned snapshot is valid JSON");
+        for path in ["/api/ipam/prefixes/", "/api/virtualization/clusters/"] {
+            let params = snapshot[path]
+                .as_array()
+                .unwrap_or_else(|| panic!("{path}: snapshot entry is not a param list"));
+            let param_set: std::collections::HashSet<&str> =
+                params.iter().filter_map(|v| v.as_str()).collect();
+            for filter in ["region_id", "site_group_id", "site_id", "location_id"] {
+                assert!(
+                    param_set.contains(filter),
+                    "{path}: missing `{filter}` in the pinned NetBox snapshot; \
+                     search scope filtering relies on ScopedFilterSet's tree-aware id filters"
                 );
             }
         }

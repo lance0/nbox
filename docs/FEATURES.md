@@ -44,20 +44,21 @@ several sites) exit `5` and list the candidates; scope with `--vrf`/`--site`/`--
 `search --site/--region/--site-group/--location <ref>` resolves the reference
 once (by slug, name, or **id**) to a numeric id and filters prefixes by that
 scope — NetBox 4.2 replaced the prefix `site` field with the polymorphic `scope`,
-so prefixes are matched on `scope_type=dcim.site`/`dcim.region`/`dcim.sitegroup`/
-`dcim.location` + `scope_id`, not the dead `?site=` filter. The match is
-**exact**: each flag filters by its own scope only (no hierarchy/descendant
-expansion — `--region` does not pull in prefixes scoped to sites inside that
-region). At most **one** scope flag may be set (the prefix `scope` is a single
-type+id); passing more than one is a usage error (exit `2`). An unknown reference
-is a not-found error (exit `4`), not a silent empty result. Non-prefix endpoints
-filter by the **resolved id**, never a raw value (the plain `?site=` param wants a
-slug, so a `--site` given as an id or display name would silently match nothing):
-clusters carry the same polymorphic scope, so they honor all four scopes via
-`scope_type`+`scope_id`; devices honor every scope via `site_id`/`region_id`/
-`site_group_id`/`location_id`; VLANs and VMs honor `--site` via `site_id`;
-endpoints that can't filter by a given scope are skipped rather than sent a dead
-param.
+so scoped endpoints are filtered out-of-band rather than through the dead
+`?site=` prefix filter. `--site` is exact (`scope_type=dcim.site` +
+`scope_id=<id>` on prefixes/clusters; `site_id=<id>` where available). The
+hierarchical scopes use NetBox's tree-aware id filters where the endpoint
+supports them: `region_id`, `site_group_id`, and `location_id` include the
+selected node and its descendants. At most **one** scope flag may be set (the
+prefix `scope` is a single type+id); passing more than one is a usage error
+(exit `2`). An unknown reference is a not-found error (exit `4`), not a silent
+empty result. Non-prefix endpoints filter by the **resolved id**, never a raw
+value (the plain `?site=` param wants a slug, so a `--site` given as an id or
+display name would silently match nothing): clusters carry the same scoped model
+filters as prefixes; devices and racks honor every scope via
+`site_id`/`region_id`/`site_group_id`/`location_id`; VLANs and VMs honor `--site`
+via `site_id`; endpoints that can't filter by a given scope are skipped rather
+than sent a dead param.
 
 `search --vrf <id|rd|name>` resolves the VRF once (numeric id, then RD, then
 name — VRFs have no slug) and filters the VRF-capable endpoints (IPs, prefixes)
