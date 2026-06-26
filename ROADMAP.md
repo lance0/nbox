@@ -566,8 +566,9 @@ Consolidated future scope:
   same object graph de-dupe within the TTL), with an `nbox_cache_clear` tool so agents can force fresh
   reads after out-of-band changes. ☑ **Preview-pane caching** — the results preview shares the detail
   cache key, so scrolling back over seen rows is instant and a preview warms the cache for opening that
-  object (and vice versa). Remaining cache work is performance polish, not correctness: ☐ route MCP
-  resource reads through the same `nbox_get` cache; ☐ alias ref-loaded detail views to their id key
+  object (and vice versa). ☑ MCP resource reads route through the same `nbox_get` cache, so attached
+  resources and direct `nbox_get` calls share the within-TTL view. Remaining cache work is performance
+  polish, not correctness: ☐ alias ref-loaded detail views to their id key
   after the resolved `DetailView { kind, id, .. }` is known; ☐ consider short-TTL caches for repeated
   MCP search/tags/tagged/get-interface calls; ☐ optionally add MCP `cached_at`/age annotation. CLI
   intentionally remains uncached — one-shot commands should read fresh from source.
@@ -762,10 +763,11 @@ escape hatch, and GraphQL still cannot replace canonical REST `q` search.
 - ☐ **Version-gated endpoint availability cache.** On NetBox <4.6, search repeatedly probes 4.6-only
   `rack-groups` / `virtual-machine-types` and swallows 404 as empty. Cache that absence per client after the
   first 404 or derive it once from status/capabilities, while keeping always-present endpoints fail-closed.
-- ☐ **MCP/resource cache expansion.** Route `nbox://{kind}/{ref}` resource reads through the same cache path
-  as `nbox_get`; after a ref load returns a `DetailView`, also populate the id cache key; consider short-TTL
-  normalized-arg caches for `nbox_search`, `nbox_get_interface`, tags/tagged, and journal. Keep
-  `nbox_cache_clear` clearing all read caches.
+- ☑ **MCP resource cache reuse.** `nbox://{kind}/{ref}` resource reads now route through the same cache
+  path as `nbox_get`, and `nbox_cache_clear` clears both.
+- ☐ **MCP/cache follow-ups.** After a ref load returns a `DetailView`, also populate the id cache key where
+  resolver semantics make that safe; consider short-TTL normalized-arg caches for `nbox_search`,
+  `nbox_get_interface`, tags/tagged, and journal.
 - ☐ **Output streaming fast path.** JSON/CSV output currently materializes `serde_json::Value`/`String` before
   writing. Fast-path no-shaping JSON (`no --fields`, no envelope changes) to `serde_json::to_writer(_pretty)`
   on locked stdout; stream CSV rows instead of building a full string. This matters most for `raw GET`, tagged,
