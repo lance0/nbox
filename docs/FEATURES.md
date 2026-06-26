@@ -1,10 +1,11 @@
 # Features
 
 nbox is a NetBox client — a CLI and a TUI over the same core. Reads are the
-default; a narrow safe-write foundation (ADR-0001) adds three plan-first commands
+default; a narrow safe-write foundation (ADR-0001) adds four plan-first commands
 behind `--allow-writes` + confirmation — `interface … set description` and
-`device … set status` (`PATCH`), and `ip reserve <prefix>` (the next-IP
-allocation, a `POST`). The MCP server stays read-only.
+`device … set status` (`PATCH`), `ip reserve <prefix>` (the next-IP
+allocation, a `POST`), and `tag add <type> <name> <tag>` (a `PATCH` to the
+`tags` array on any object). The MCP server stays read-only.
 
 ## Lookups
 
@@ -31,6 +32,7 @@ allocation, a `POST`). The MCP server stays read-only.
 | `nbox mac <addr>` | Reverse-resolve a MAC to the interface(s)/device(s) that carry it (NetBox 4.2+). Any common form is normalized (`aa:bb:cc:dd:ee:ff`, `AABB.CCDD.EEFF`, `aa-bb-…`, `aabbccddeeff`); a non-MAC is a usage error, several carrying interfaces are ambiguous. |
 | `nbox tags` | List tags. |
 | `nbox tagged <tag>` | Objects carrying a tag, across kinds (NetBox 4.3+ `/api/extras/tagged-objects/`); tag = id/name/slug. |
+| `nbox tag add <type> <name> <tag>` | Add a tag to any taggable object — a safe write (ADR-0001): `PATCH` to the `tags` array, behind `--allow-writes` + confirm. Tag resolves by id/name/slug; target resolves like `nbox <kind> <ref>`. No-op if already present. |
 | `nbox journal <kind> <ref>` | Recent journal entries for an object. Kinds: device, ip, prefix, vlan, site, rack, rack-group, circuit, virtual-circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, vm-type, cluster, vrf, route-target, interface (`<device>/<name>`). `--journal` on a detail lookup folds the most recent entries inline (default 5); `--journal-limit <N>` overrides the cap and implies `--journal`. (`tenant`/`contact`/`provider`/`vm`/`vm-type`/`cluster`/`vrf`/`route-target`/`interface`/`virtual-circuit` have no inline `--journal` flag — use `nbox journal`.) |
 | `nbox history <kind> <ref>` | Change history (system audit log: create/update/delete, who + when) for an object, newest first. Same kind set as `journal`. `/api/core/object-changes/` (NetBox 4.x) — distinct from `journal` (operator notes). Each row includes the top-level fields that changed (pre vs post), not the full before/after JSON. |
 | `nbox status` | Connection + per-surface `api` routing (configured/effective) + capabilities + NetBox/Django/Python versions + a token-validity preflight (`token`: `valid`/`invalid`/`unverified`; NetBox 4.5+). |

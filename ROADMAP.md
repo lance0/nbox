@@ -3,9 +3,10 @@
 nbox is a **read-first** NetBox CLI, TUI, and MCP server. The near-term goal is the **best
 possible read experience** — fast, correct, and pleasant both in the terminal and to agents.
 A narrow **safe-write foundation** has now landed (ADR-0001): a gated, opt-in, before/after-previewed
-write engine, with three commands landed — `interface <device> <iface> set description` and
-`device <name> set status <value>` (`PATCH`), and `ip reserve <prefix>` (the first `allocate`, a
-`POST` to `available-ips`). Reads stay
+write engine, with four commands landed — `interface <device> <iface> set description` and
+`device <name> set status <value>` (`PATCH`), `ip reserve <prefix>` (the first `allocate`, a
+`POST` to `available-ips`), and `tag add <type> <name> <tag>` (a `PATCH` to the `tags` array on
+any object kind). Reads stay
 the default everywhere and the write surface widens only as the read tool proves out in practice
 (see [Writes](#writes--deferred-later-track)).
 
@@ -422,10 +423,8 @@ the read tool proves out in practice. Consolidated future scope:
   read-only default. The ADR-0001 foundation landed: a shared `MutationPlan` /
   `MutationReceipt` engine + the `nbox interface <device> <iface> set description
   "…"` pilot (`--allow-writes` + `--confirm`/`--dry-run`, `ETag`/`If-Match` on
-  4.6+, `last_updated`+before-hash fallback, `--message`, local write audit).
 - ☑ `nbox interface <device> <iface> set description "…"` — the first write
-  command (on the ADR-0001 foundation). `nbox tag add <type> <name> <tag>` remains
-  open, reusing the same planner/diff/confirm/concurrency/audit contracts.
+  command (on the ADR-0001 foundation).
 - ☑ `nbox device <name> set status <value>` — the second write command,
   reusing the ADR-0001 foundation. Allowed `status` values are enumerated live
   from NetBox (read-only `OPTIONS`) and the operator's input is normalized to
@@ -448,8 +447,12 @@ the read tool proves out in practice. Consolidated future scope:
   (`POST` to `available-prefixes` / a range's `available-ips`); the read half
   (`next-ip` / `next-prefix`, range lookup) already ships, and the next-IP
   allocation (`ip reserve`) landed above.
-- ☐ `nbox tag add <type> <name> <tag>` — a further write command, reusing the
-  same foundation.
+- ☑ `nbox tag add <type> <name> <tag>` — a further write command, reusing the
+  same foundation. Adds a tag to any taggable object via a minimal `PATCH` that
+  replaces the full `tags` array; a no-op if the tag is already present. The
+  first **list-valued** writable field and the first write that works on **any
+  object kind** (the planner reads the object as a raw value, since every
+  NetBox object carries the same `tags` array shape — no per-kind model).
 - ☐ **Write-capable MCP tools** — opt-in, return the diff for the agent to confirm; read-only stays the
   default — plus the **per-user credential vault (Pattern 2)** for real per-user NetBox RBAC over MCP.
 - ☐ TUI edit mode (`e` / `d` / confirm).

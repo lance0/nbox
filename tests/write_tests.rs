@@ -1950,3 +1950,414 @@ async fn ip_bare_without_address_is_a_usage_error() {
     ]);
     assert_error_contract(&out, 2, "missing IP address");
 }
+
+// ===== tag add (ADR-0001 follow-on) =====================================
+//
+// The fourth write command reuses the same planner/diff/confirm/concurrency/
+// audit contracts. Tags are a list field: the plan carries the full
+// replacement `{"tags": [slugs]}` (NetBox PATCH replaces the whole array).
+
+/// Mount a tag resolution: `GET /api/extras/tags/?name=…` returning one tag.
+async fn mount_tag_by_name(server: &MockServer, tag_id: u64, name: &str, slug: &str) {
+    Mock::given(method("GET"))
+        .and(path("/api/extras/tags/"))
+        .and(wiremock::matchers::query_param("name", name))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": tag_id, "name": name, "slug": slug}]
+        })))
+        .mount(server)
+        .await;
+}
+
+/// Mount a device detail with a `tags` array, optional ETag.
+async fn mount_device_detail_with_tags(
+    server: &MockServer,
+    device_id: u64,
+    etag: Option<&str>,
+    tags: &[(&str, &str)],
+    last_updated: &str,
+) {
+    let tag_json: Vec<Value> = tags
+        .iter()
+        .map(|(name, slug)| json!({"id": 1, "name": name, "slug": slug}))
+        .collect();
+    let mut resp = ResponseTemplate::new(200).set_body_json(json!({
+        "id": device_id,
+        "url": format!("{}/api/dcim/devices/{}/", server.uri(), device_id),
+        "name": "edge01",
+        "display": "edge01",
+        "last_updated": last_updated,
+        "tags": tag_json
+    }));
+    if let Some(e) = etag {
+        resp = resp.insert_header("ETag", e);
+    }
+    Mock::given(method("GET"))
+        .and(path(format!("/api/dcim/devices/{device_id}/")))
+        .respond_with(resp)
+        .mount(server)
+        .await;
+}
+
+fn run_tag_add<'a>(config: &NamedTempFile, extra: &'a [&'a str]) -> CommandOutput {
+    let mut args: Vec<&str> = vec!["--config", config.path().to_str().unwrap()];
+    args.push("--no-tui");
+    args.extend_from_slice(&["tag", "add", "device", "edge01", "prod"]);
+    args.extend_from_slice(extra);
+    run_nbox(args)
+}
+
+#[tokio::test]
+async fn tag_add_dry_run_sends_no_patch_and_shows_tags_before_after() {
+    let server = MockServer::start().await;
+    mount_tag_by_name(&server, 5, "prod", "prod").await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    mount_device_detail_with_tags(
+        &server,
+        7,
+        None,
+        &[("legacy", "legacy")],
+        "2026-06-26T10:00:00Z",
+    )
+    .await;
+
+    let config = write_config(&server.uri());
+    let out = run_tag_add(&config, &["--dry-run", "--json"]);
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(patch_count(&server).await, 0, "dry-run must not PATCH");
+    let plan: Value = serde_json::from_str(&out.stdout).expect("plan JSON");
+    assert_eq!(plan["schema_version"], json!(1));
+    assert_eq!(plan["target"]["kind"], json!("device"));
+    assert_eq!(plan["target"]["id"], json!(7));
+    assert_eq!(plan["target"]["endpoint"], json!("/api/dcim/devices/7/"));
+    // The patch replaces the full tags array: existing + new.
+    assert_eq!(plan["patch"], json!({"tags": ["legacy", "prod"]}));
+    assert_eq!(plan["fields"].as_array().unwrap().len(), 1);
+    assert_eq!(plan["fields"][0]["field"], json!("tags"));
+    assert_eq!(plan["fields"][0]["before"], json!(["legacy"]));
+    assert_eq!(plan["fields"][0]["after"], json!(["legacy", "prod"]));
+    assert_eq!(plan["no_op"], json!(false));
+    // No ETag → pre-4.6 precondition.
+    assert_eq!(plan["precondition"]["type"], json!("last_updated"));
+}
+
+#[tokio::test]
+async fn tag_add_confirm_sends_one_patch_with_full_tags_array() {
+    let server = MockServer::start().await;
+    mount_tag_by_name(&server, 5, "prod", "prod").await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    mount_device_detail_with_tags(
+        &server,
+        7,
+        None,
+        &[("legacy", "legacy")],
+        "2026-06-26T10:00:00Z",
+    )
+    .await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/dcim/devices/7/"))
+        .and(body_partial_json(json!({"tags": ["legacy", "prod"]})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7, "url": "u", "name": "edge01",
+            "tags": [{"id": 1, "name": "legacy", "slug": "legacy"},
+                     {"id": 5, "name": "prod", "slug": "prod"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_tag_add(&config, &["--allow-writes", "--confirm", "--json"]);
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(patch_count(&server).await, 1, "exactly one PATCH");
+    let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
+    assert_eq!(receipt["applied"], json!(true));
+    assert_eq!(receipt["no_op"], json!(false));
+    assert_eq!(receipt["status"], json!(200));
+    assert_eq!(receipt["fields"][0]["after"], json!(["legacy", "prod"]));
+    assert!(
+        receipt["message"]
+            .as_str()
+            .unwrap()
+            .contains("applied: device"),
+        "receipt message: {}",
+        receipt["message"]
+    );
+}
+
+#[tokio::test]
+async fn tag_add_noop_when_tag_already_present_sends_no_patch() {
+    let server = MockServer::start().await;
+    mount_tag_by_name(&server, 5, "prod", "prod").await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    // Device already carries the "prod" tag → no-op. No PATCH mock mounted.
+    mount_device_detail_with_tags(
+        &server,
+        7,
+        None,
+        &[("legacy", "legacy"), ("prod", "prod")],
+        "2026-06-26T10:00:00Z",
+    )
+    .await;
+
+    let config = write_config(&server.uri());
+    let out = run_tag_add(&config, &["--allow-writes", "--confirm", "--json"]);
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(patch_count(&server).await, 0, "no-op sends no PATCH");
+    let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
+    assert_eq!(receipt["applied"], json!(false));
+    assert_eq!(receipt["no_op"], json!(true));
+    assert_eq!(receipt["status"], json!(0));
+    assert!(receipt["message"].as_str().unwrap().contains("no change"));
+}
+
+#[tokio::test]
+async fn tag_add_unknown_tag_is_not_found_exit_4() {
+    let server = MockServer::start().await;
+    // Tag resolution returns empty — no tag matches "nonexistent".
+    Mock::given(method("GET"))
+        .and(path("/api/extras/tags/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 0, "next": null, "previous": null, "results": []
+        })))
+        .up_to_n_times(2)
+        .mount(&server)
+        .await;
+    mount_device_resolution(&server, 7, "edge01").await;
+
+    let config = write_config(&server.uri());
+    let out = run_tag_add(&config, &["--dry-run", "--json"]);
+
+    assert_error_contract(&out, 4, "no tag matched");
+    assert_eq!(patch_count(&server).await, 0);
+}
+
+#[tokio::test]
+async fn tag_add_ambiguous_ip_refuses_instead_of_first_picking() {
+    let server = MockServer::start().await;
+    mount_tag_by_name(&server, 5, "prod", "prod").await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/ip-addresses/"))
+        .and(wiremock::matchers::query_param("address", "192.0.2.10"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [
+                {
+                    "id": 101,
+                    "url": format!("{}/api/ipam/ip-addresses/101/", server.uri()),
+                    "address": "192.0.2.10/24",
+                    "vrf": {"id": 1, "name": "blue", "display": "blue"}
+                },
+                {
+                    "id": 102,
+                    "url": format!("{}/api/ipam/ip-addresses/102/", server.uri()),
+                    "address": "192.0.2.10/24",
+                    "vrf": {"id": 2, "name": "red", "display": "red"}
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_nbox([
+        "--config",
+        config.path().to_str().unwrap(),
+        "--no-tui",
+        "tag",
+        "add",
+        "ip",
+        "192.0.2.10",
+        "prod",
+        "--dry-run",
+        "--json",
+    ]);
+
+    assert_error_contract(&out, 5, "IP address");
+    assert!(out.stderr.contains("ambiguous"), "stderr: {}", out.stderr);
+    assert_eq!(patch_count(&server).await, 0);
+    assert_eq!(
+        server.received_requests().await.unwrap_or_default().len(),
+        2,
+        "ambiguous IP should stop after tag lookup + candidate lookup"
+    );
+}
+
+#[tokio::test]
+async fn tag_add_confirm_without_allow_writes_is_a_usage_error() {
+    let server = MockServer::start().await;
+    let config = write_config(&server.uri());
+    let out = run_tag_add(&config, &["--confirm", "--json"]);
+    assert_error_contract(&out, 2, "writes are not enabled");
+    assert!(
+        out.stderr.contains("--allow-writes"),
+        "stderr: {}",
+        out.stderr
+    );
+    assert_eq!(patch_count(&server).await, 0);
+}
+
+#[tokio::test]
+async fn tag_add_allow_writes_without_confirm_is_usage_in_non_tty() {
+    let server = MockServer::start().await;
+    let config = write_config(&server.uri());
+    let out = run_tag_add(&config, &["--allow-writes", "--json"]);
+    assert_error_contract(&out, 2, "non-interactive write requires confirmation");
+    assert!(out.stderr.contains("--confirm"), "stderr: {}", out.stderr);
+    assert_eq!(patch_count(&server).await, 0);
+}
+
+#[tokio::test]
+async fn tag_add_etag_sends_if_match_on_apply() {
+    let server = MockServer::start().await;
+    mount_tag_by_name(&server, 5, "prod", "prod").await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    mount_device_detail_with_tags(
+        &server,
+        7,
+        Some("\"etag-v1\""),
+        &[("legacy", "legacy")],
+        "2026-06-26T10:00:00Z",
+    )
+    .await;
+    // The PATCH mock ONLY matches when If-Match is sent.
+    Mock::given(method("PATCH"))
+        .and(path("/api/dcim/devices/7/"))
+        .and(header("if-match", "\"etag-v1\""))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7, "url": "u", "name": "edge01",
+            "tags": [{"id": 1, "name": "legacy", "slug": "legacy"},
+                     {"id": 5, "name": "prod", "slug": "prod"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_tag_add(&config, &["--allow-writes", "--confirm", "--json"]);
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(patch_count(&server).await, 1);
+    let patch_reqs: Vec<_> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.method.as_str() == "PATCH")
+        .collect();
+    assert_eq!(
+        patch_reqs[0].headers.get("if-match").unwrap(),
+        "\"etag-v1\""
+    );
+}
+
+#[tokio::test]
+async fn tag_add_stale_412_is_a_stale_precondition_refusal() {
+    let server = MockServer::start().await;
+    mount_tag_by_name(&server, 5, "prod", "prod").await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    mount_device_detail_with_tags(
+        &server,
+        7,
+        Some("\"etag-v1\""),
+        &[("legacy", "legacy")],
+        "2026-06-26T10:00:00Z",
+    )
+    .await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/dcim/devices/7/"))
+        .respond_with(ResponseTemplate::new(412).set_body_string("Precondition Failed"))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_tag_add(&config, &["--allow-writes", "--confirm", "--json"]);
+
+    assert_error_contract(&out, 1, "object changed in NetBox");
+    assert!(
+        out.stderr.contains("re-run dry-run"),
+        "stderr: {}",
+        out.stderr
+    );
+}
+
+#[tokio::test]
+async fn tag_add_audit_logs_field_name_only_never_values_or_token() {
+    let server = MockServer::start().await;
+    mount_tag_by_name(&server, 5, "prod", "prod").await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    mount_device_detail_with_tags(
+        &server,
+        7,
+        None,
+        &[("legacy", "legacy")],
+        "2026-06-26T10:00:00Z",
+    )
+    .await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/dcim/devices/7/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7, "url": "u", "name": "edge01",
+            "tags": [{"id": 1, "name": "legacy", "slug": "legacy"},
+                     {"id": 5, "name": "prod", "slug": "prod"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let log_path =
+        std::env::temp_dir().join(format!("nbox-tag-add-audit-{}.log", std::process::id()));
+    let _ = std::fs::remove_file(&log_path);
+
+    let config = write_config(&server.uri());
+    let out = Command::new(env!("CARGO_BIN_EXE_nbox"))
+        .args([
+            "--config",
+            config.path().to_str().unwrap(),
+            "--no-tui",
+            "tag",
+            "add",
+            "device",
+            "edge01",
+            "prod",
+            "--allow-writes",
+            "--confirm",
+            "--json",
+            "--log-file",
+            log_path.to_str().unwrap(),
+        ])
+        .env("NBOX_TOKEN", "secret-nbox-token-12345")
+        .env("NBOX_LOG", "nbox::write_audit=info")
+        .env_remove("RUST_LOG")
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn nbox");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let log_text = std::fs::read_to_string(&log_path).expect("read log file");
+    assert!(log_text.contains("nbox::write_audit"), "log: {log_text}");
+    // The audit carries the field NAME "tags", the operation, and the outcome.
+    assert!(
+        log_text.contains("fields=\"tags\"") || log_text.contains("fields=tags"),
+        "field NAME recorded: {log_text}"
+    );
+    assert!(
+        log_text.contains("operation=\"update\"") || log_text.contains("operation=update"),
+        "operation recorded: {log_text}"
+    );
+    assert!(
+        log_text.contains("outcome=\"applied\"") || log_text.contains("outcome=applied"),
+        "outcome recorded: {log_text}"
+    );
+    // Redaction: the tag slug value and the token never leak.
+    assert!(
+        !log_text.contains("secret-nbox-token-12345"),
+        "token leaked: {log_text}"
+    );
+}

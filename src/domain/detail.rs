@@ -317,7 +317,14 @@ pub(crate) async fn plan_interface_description_update(
     }];
 
     let expires_epoch = mutation::plan_expiry_epoch(SystemTime::now());
-    let confirm_token = mutation::confirm_token(&target, &precondition, &patch, expires_epoch);
+    let confirm_token = mutation::confirm_token(
+        &target,
+        Operation::Update,
+        &precondition,
+        &patch,
+        &message,
+        expires_epoch,
+    );
 
     Ok(MutationPlan {
         schema_version: PLAN_SCHEMA_VERSION,
@@ -549,7 +556,14 @@ pub(crate) async fn plan_device_status_update(
     }];
 
     let expires_epoch = mutation::plan_expiry_epoch(SystemTime::now());
-    let confirm_token = mutation::confirm_token(&target, &precondition, &patch, expires_epoch);
+    let confirm_token = mutation::confirm_token(
+        &target,
+        Operation::Update,
+        &precondition,
+        &patch,
+        &message,
+        expires_epoch,
+    );
 
     Ok(MutationPlan {
         schema_version: PLAN_SCHEMA_VERSION,
@@ -737,7 +751,14 @@ pub(crate) async fn plan_ip_reserve(
     }
 
     let expires_epoch = mutation::plan_expiry_epoch(SystemTime::now());
-    let confirm_token = mutation::confirm_token(&target, &precondition, &patch, expires_epoch);
+    let confirm_token = mutation::confirm_token(
+        &target,
+        Operation::Allocate,
+        &precondition,
+        &patch,
+        &message,
+        expires_epoch,
+    );
 
     Ok(MutationPlan {
         schema_version: PLAN_SCHEMA_VERSION,
@@ -793,6 +814,307 @@ pub(crate) async fn apply_ip_reserve(
         object,
         message: format!("reserved: {} in {}", address, plan.target.display),
     })
+}
+
+// ===== Safe write follow-on: tag add (ADR-0001) ===========================
+//
+// The fourth write command reuses the same planner/diff/confirm/concurrency/
+// audit contracts as the interface/device pilots. Tags are a list field: the
+// plan carries the full replacement `{"tags": [slugs]}` (NetBox's PATCH
+// semantics replace the whole array), so the before/after diff shows the tag
+// names. Adding a tag the object already carries is a no-op (no PATCH).
+
+/// The writable field on any object for `tag add` (ADR-0001 §6).
+pub(crate) const TAG_WRITABLE_FIELD: &str = "tags";
+
+/// One entry in the object's current tags array, as NetBox serializes it on a
+/// detail response: `{id, name, slug}`. Used to read the current tag set and
+/// build the replacement slug list.
+#[derive(Debug, Deserialize)]
+struct ObjectTag {
+    #[serde(default)]
+    #[allow(dead_code)]
+    id: Option<u64>,
+    #[allow(dead_code)]
+    name: Option<String>,
+    slug: Option<String>,
+}
+
+/// The raw object detail as a `Value`, so the planner can read the `tags`
+/// array, `display`, and `last_updated` from any object kind in one path —
+/// every NetBox object carries the same `tags` array shape, so no per-kind
+/// model is needed for this write.
+#[derive(Debug, Deserialize)]
+struct TagTargetObject {
+    #[serde(default)]
+    display: Option<String>,
+    #[serde(default)]
+    last_updated: Option<String>,
+    #[serde(default)]
+    tags: Vec<ObjectTag>,
+}
+
+/// Resolve a `<kind> <ref>` to the object's REST detail endpoint path (relative
+/// to the client base URL) and numeric id. Reuses the same per-kind resolvers
+/// as `resolve_object_url`, except for IP addresses: `open ip/<addr>` historically
+/// first-picked a candidate, but a write must fail closed when the same address
+/// exists in multiple VRFs. Returns the endpoint path (e.g.
+/// `/api/dcim/devices/42/`) and the id.
+pub(crate) async fn resolve_tag_target_endpoint(
+    client: &NetBoxClient,
+    kind: &str,
+    value: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<(String, u64)> {
+    let url = match kind {
+        "ip" | "ip-address" | "address" => {
+            let candidates = client.ip_candidates(value).await?;
+            resolve_unique(
+                "IP address",
+                value,
+                candidates,
+                query::ip_scope_label,
+                not_found,
+            )?
+            .url
+        }
+        _ => crate::resolve_object_url(client, kind, value)
+            .await?
+            .ok_or_else(|| not_found(kind, value))?,
+    };
+    let parsed = reqwest::Url::parse(&url).context("parsing resolved object URL")?;
+    // The object URL is the full REST detail endpoint (e.g.
+    // `http://h/netbox/api/dcim/devices/42/`). Strip the client's base URL to
+    // get the relative path the PATCH expects. `make_relative` strips scheme +
+    // host + the base path; on a plain `http://h/` base it leaves
+    // `/api/dcim/devices/42/`.
+    let relative = client
+        .base_url()
+        .make_relative(&parsed)
+        .context("stripping base URL from resolved object URL")?;
+    // The relative path may carry a leading `./` when the base has a subpath;
+    // normalize to the `/api/...` form the client's `url_for` expects.
+    let endpoint = relative
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .to_string();
+    // Ensure a leading slash so the endpoint matches the canonical `/api/...`
+    // form every other planner emits (e.g. `/api/dcim/devices/42/`).
+    let endpoint = if endpoint.starts_with('/') {
+        endpoint
+    } else {
+        format!("/{endpoint}")
+    };
+    // The id is the last path segment before the trailing slash.
+    let id = parsed
+        .path()
+        .trim_end_matches('/')
+        .rsplit('/')
+        .next()
+        .and_then(|s| s.parse::<u64>().ok())
+        .context("extracting object id from resolved URL")?;
+    Ok((endpoint, id))
+}
+
+/// Plan a `tag add` update (ADR-0001 §5 steps 1–4): resolve the tag, resolve
+/// the target object, read its current tags with the `ETag` (4.6+) or
+/// `last_updated` (pre-4.6 fallback), and build an `Update` plan whose patch
+/// replaces the `tags` array with the current slugs plus the new tag's slug.
+/// Adding a tag the object already carries is a no-op (empty patch).
+/// `changelog_message` is validated against NetBox's length limit here, before
+/// any network write.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn plan_tag_add(
+    client: &NetBoxClient,
+    object_type: &str,
+    object_name: &str,
+    tag_ref: &str,
+    changelog_message: Option<&str>,
+    profile: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<MutationPlan> {
+    // Message length is pure input validation — check first, before any network.
+    let message = match changelog_message {
+        Some(m) if !m.is_empty() => Some(m.to_string()),
+        _ => None,
+    };
+    mutation::validate_changelog_message(&message)?;
+
+    // Resolve the tag by id, exact name, or exact slug (reuse the `nbox tagged`
+    // resolver). A missing tag is a not-found (exit 4), not a usage error.
+    let tag = client
+        .tag_by_ref(tag_ref)
+        .await?
+        .ok_or_else(|| not_found("tag", tag_ref))?;
+
+    // Resolve the target object to its detail endpoint + id.
+    let (endpoint, id) =
+        resolve_tag_target_endpoint(client, object_type, object_name, not_found).await?;
+
+    // Read the authoritative current state with its `ETag` header (4.6+) or
+    // `last_updated` (pre-4.6 fallback). Reading as a raw value gives us the
+    // `tags` array, `display`, and `last_updated` in one fetch for any kind.
+    let (current, etag): (TagTargetObject, Option<String>) =
+        client.get_with_etag(&endpoint, &[]).await?;
+
+    let display = current
+        .display
+        .clone()
+        .unwrap_or_else(|| object_name.to_string());
+    let target = PlanTarget {
+        kind: object_type.to_string(),
+        r#ref: object_name.to_string(),
+        id,
+        display,
+        endpoint,
+        profile: profile.to_string(),
+    };
+
+    let precondition = match etag {
+        Some(e) => Precondition::Etag { etag: e },
+        None => Precondition::LastUpdated {
+            last_updated: current.last_updated.clone(),
+            before_hash: tags_before_hash(&current.tags),
+        },
+    };
+
+    // The current tag slugs (in order) plus the new tag's slug, deduped. NetBox
+    // PATCH replaces the whole `tags` array, so the patch carries the full
+    // replacement list. A tag already present is a no-op (no PATCH).
+    let current_slugs: Vec<String> = current.tags.iter().filter_map(|t| t.slug.clone()).collect();
+    let no_op = current_slugs.iter().any(|s| s == &tag.slug);
+    let after_slugs: Vec<String> = if no_op {
+        current_slugs.clone()
+    } else {
+        let mut v = current_slugs.clone();
+        v.push(tag.slug.clone());
+        v
+    };
+
+    let before = serde_json::to_value(
+        current
+            .tags
+            .iter()
+            .filter_map(|t| t.slug.clone())
+            .collect::<Vec<_>>(),
+    )
+    .unwrap_or(Value::Null);
+    let after = serde_json::to_value(&after_slugs).unwrap_or(Value::Null);
+    let patch = if no_op {
+        serde_json::json!({})
+    } else {
+        serde_json::json!({ TAG_WRITABLE_FIELD: after_slugs })
+    };
+    let fields = vec![FieldChange {
+        field: TAG_WRITABLE_FIELD.to_string(),
+        before: before.clone(),
+        after: after.clone(),
+    }];
+
+    let expires_epoch = mutation::plan_expiry_epoch(SystemTime::now());
+    let confirm_token = mutation::confirm_token(
+        &target,
+        Operation::Update,
+        &precondition,
+        &patch,
+        &message,
+        expires_epoch,
+    );
+
+    Ok(MutationPlan {
+        schema_version: PLAN_SCHEMA_VERSION,
+        operation: Operation::Update,
+        target,
+        precondition,
+        fields,
+        patch,
+        no_op,
+        warnings: Vec::new(),
+        errors: Vec::new(),
+        changelog_message: message,
+        confirm_token,
+        expires_at: mutation::format_iso_utc(expires_epoch),
+    })
+}
+
+/// Apply a planned `tag add` update (ADR-0001 §5 steps 5–7): verify the plan's
+/// confirmation token + expiry, short-circuit a no-op, then send the minimal
+/// `PATCH` (`{"tags": [slugs]}`) with the recorded precondition. Returns a
+/// [`MutationReceipt`] from the PATCH response.
+pub(crate) async fn apply_tag_add(
+    client: &NetBoxClient,
+    plan: &MutationPlan,
+) -> Result<MutationReceipt> {
+    plan.verify()?;
+
+    if plan.no_op {
+        return Ok(no_op_receipt(plan));
+    }
+
+    // The wire body is the tags replacement plus the opt-in changelog_message.
+    let mut body = plan.patch.clone();
+    if let Some(msg) = &plan.changelog_message {
+        body["changelog_message"] = serde_json::json!(msg);
+    }
+
+    let (_updated, new_etag, status): (Value, Option<String>, u16) = match &plan.precondition {
+        Precondition::Etag { etag } => {
+            client
+                .patch(&plan.target.endpoint, &body, Some(etag))
+                .await?
+        }
+        Precondition::LastUpdated {
+            last_updated,
+            before_hash,
+        } => {
+            // Read-before-write (pre-4.6 fallback): re-fetch and refuse if
+            // the object moved. `last_updated` ticking is the primary
+            // signal; the before-hash is a belt-and-suspenders guard.
+            let (current, _): (TagTargetObject, Option<String>) =
+                client.get_with_etag(&plan.target.endpoint, &[]).await?;
+            if current.last_updated != *last_updated
+                || tags_before_hash(&current.tags) != *before_hash
+            {
+                return Err(NboxError::StalePrecondition(String::new()).into());
+            }
+            client.patch(&plan.target.endpoint, &body, None).await?
+        }
+        Precondition::None => {
+            anyhow::bail!("internal error: a tag add plan carried a None precondition")
+        }
+    };
+
+    Ok(MutationReceipt {
+        schema_version: PLAN_SCHEMA_VERSION,
+        operation: plan.operation,
+        target: plan.target.clone(),
+        fields: plan.fields.clone(),
+        applied: true,
+        no_op: false,
+        status,
+        etag: new_etag,
+        request_id: None,
+        object: None,
+        message: format!(
+            "applied: {} {} ({})",
+            plan.target.kind,
+            plan.target.display,
+            plan.changed_field_names().join(", ")
+        ),
+    })
+}
+
+/// Normalized before-hash over the object's current tags (sorted slugs). The
+/// apply re-reads and recomputes this; a mismatch vs the plan's recorded
+/// `before_hash` means the object's tags changed in NetBox.
+fn tags_before_hash(tags: &[ObjectTag]) -> String {
+    let mut slugs: BTreeMap<String, Value> = BTreeMap::new();
+    for t in tags {
+        if let Some(slug) = &t.slug {
+            slugs.insert(slug.clone(), Value::String(slug.clone()));
+        }
+    }
+    mutation::before_hash(&slugs)
 }
 
 /// `ip <address>`: resolve an IP (scoped by `vrf`, ambiguity-checked) and

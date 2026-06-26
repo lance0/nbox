@@ -74,6 +74,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A bare reserve `POST`s an empty body; an exhausted prefix (`409`) and a NetBox
     validation rejection (`400`) surface as clean errors (exit 1, empty stdout).
     The audit logs `operation=allocate`, `http_method=POST`, and field names only.
+- **`nbox tag add <type> <name> <tag>` — the fourth safe write.** Adds a tag to
+  any taggable object (device, IP, prefix, VLAN, site, rack, circuit, VM, …) via
+  a minimal `PATCH` that replaces the full `tags` array, on the same ADR-0001
+  gate/confirm/audit lifecycle as the interface/device pilots (`--dry-run` /
+  `--allow-writes --confirm` / `--message`). The tag is resolved by id, exact
+  name, or exact slug (same resolver as `nbox tagged`); the target object is
+  resolved the same way as `nbox <kind> <ref>`. Adding a tag the object already
+  carries is a no-op (no `PATCH`).
+  - **List field.** Tags are the first multi-valued writable field: the plan
+    carries the full replacement `{"tags": [slugs]}` (NetBox `PATCH` replaces the
+    whole array), so the before/after diff shows the tag slugs. `ETag`+`If-Match`
+    on 4.6+, `last_updated`+before-hash on pre-4.6.
+  - **Any object kind.** The planner reads the object as a raw value (every
+    NetBox object carries the same `tags` array shape), so no per-kind model is
+    needed for this write.
 
 ### Changed
 

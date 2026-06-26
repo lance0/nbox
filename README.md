@@ -16,10 +16,11 @@ this device, what owns this prefix?* — from the shell, a k9s-style TUI, or an 
 server for AI agents.
 
 **Status: pre-1.0.** Reads are the default; a narrow safe-write foundation
-(ADR-0001) has landed behind `--allow-writes` + confirmation — three commands
+(ADR-0001) has landed behind `--allow-writes` + confirmation — four commands
 today (`nbox interface <device> <interface> set description "…"`,
-`nbox device <name> set status <value>`, and `nbox ip reserve <prefix>` to
-allocate the next available IP). Broader writes are on the [ROADMAP](ROADMAP.md).
+`nbox device <name> set status <value>`, `nbox ip reserve <prefix>` to
+allocate the next available IP, and `nbox tag add <type> <name> <tag>` to
+add a tag to any object). Broader writes are on the [ROADMAP](ROADMAP.md).
 
 ## Quick Start
 
@@ -280,6 +281,7 @@ nbox interface <device> <interface>
 nbox tags                         # list tags (slug, name, count)
 nbox tagged <tag>                 # objects carrying a tag, across kinds
                                   # (NetBox 4.3+; tag = id|name|slug)
+nbox tag add <type> <name> <tag>   # write: add a tag to any object (PATCH tags array)
 nbox journal <kind> <ref>         # recent journal entries for an object
                                   # kinds incl. interface as <device>/<name>
                                   # --journal folds recent entries into a detail lookup (cap 5)

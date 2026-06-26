@@ -201,7 +201,14 @@ impl MutationPlan {
                 " (the plan expired)".to_string(),
             ));
         }
-        let expected = confirm_token(&self.target, &self.precondition, &self.patch, epoch);
+        let expected = confirm_token(
+            &self.target,
+            self.operation,
+            &self.precondition,
+            &self.patch,
+            &self.changelog_message,
+            epoch,
+        );
         if expected != self.confirm_token {
             return Err(NboxError::Usage(
                 "plan confirmation token does not match its contents; re-run dry-run".to_string(),
@@ -255,16 +262,24 @@ pub struct MutationReceipt {
 // --- confirmation token -----------------------------------------------------
 
 /// Derive the opaque confirmation token for a plan. Bound to the target,
-/// precondition, minimal patch, profile, and the plan's expiry epoch so the
-/// same plan reapplied within its window verifies, but a different plan (or one
-/// past expiry) does not. SHA-256 over canonical (sorted-key) JSON. This is a
-/// guard, not a MAC: it carries no secret — the bound inputs are all already
-/// visible in the plan (ADR-0001 §5).
+/// operation, precondition, minimal patch, changelog message, profile, and the
+/// plan's expiry epoch so the same plan reapplied within its window verifies,
+/// but a different plan (or one past expiry) does not. SHA-256 over canonical
+/// (sorted-key) JSON. This is a guard, not a MAC: it carries no secret — the
+/// bound inputs are all already visible in the plan (ADR-0001 §5).
+///
+/// `operation` and `changelog_message` are bound so a future multi-step flow
+/// (TUI/MCP) that carries a plan across a boundary cannot apply a plan whose
+/// reviewed message or operation was altered between review and apply. In the
+/// one-shot `--confirm` CLI flow plan and apply share one process, so this is
+/// defense-in-depth, not a live fix.
 #[must_use]
 pub fn confirm_token(
     target: &PlanTarget,
+    operation: Operation,
     precondition: &Precondition,
     patch: &Value,
+    changelog_message: &Option<String>,
     expires_epoch: u64,
 ) -> String {
     let mut map = BTreeMap::new();
@@ -275,8 +290,13 @@ pub fn confirm_token(
         Value::String(target.endpoint.clone()),
     );
     map.insert("profile".to_string(), Value::String(target.profile.clone()));
+    map.insert("operation".to_string(), serde_json::json!(operation));
     map.insert("precondition".to_string(), precondition.to_canonical());
     map.insert("patch".to_string(), patch.clone());
+    map.insert(
+        "changelog_message".to_string(),
+        serde_json::to_value(changelog_message).unwrap_or(Value::Null),
+    );
     map.insert(
         "expires_epoch".to_string(),
         serde_json::json!(expires_epoch),
@@ -410,8 +430,8 @@ mod tests {
             etag: "\"abc\"".into(),
         };
         let patch = json!({"description": "up"});
-        let a = confirm_token(&t, &p, &patch, 1_000);
-        let b = confirm_token(&t, &p, &patch, 1_000);
+        let a = confirm_token(&t, Operation::Update, &p, &patch, &None, 1_000);
+        let b = confirm_token(&t, Operation::Update, &p, &patch, &None, 1_000);
         assert_eq!(a, b, "same inputs → same token");
         assert_eq!(a.len(), 64, "full SHA-256 hex");
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
@@ -424,34 +444,69 @@ mod tests {
             etag: "\"abc\"".into(),
         };
         let patch = json!({"description": "up"});
-        let base = confirm_token(&t, &p, &patch, 1_000);
+        let base = confirm_token(&t, Operation::Update, &p, &patch, &None, 1_000);
         // Different patch → different token.
         assert_ne!(
             base,
-            confirm_token(&t, &p, &json!({"description": "down"}), 1_000)
+            confirm_token(
+                &t,
+                Operation::Update,
+                &p,
+                &json!({"description": "down"}),
+                &None,
+                1_000
+            )
         );
         // Different id (target) → different token.
         let mut t2 = t.clone();
         t2.id = 43;
-        assert_ne!(base, confirm_token(&t2, &p, &patch, 1_000));
+        assert_ne!(
+            base,
+            confirm_token(&t2, Operation::Update, &p, &patch, &None, 1_000)
+        );
         // Different precondition → different token.
         assert_ne!(
             base,
             confirm_token(
                 &t,
+                Operation::Update,
                 &Precondition::Etag {
                     etag: "\"xyz\"".into()
                 },
                 &patch,
+                &None,
                 1_000
             )
         );
         // Different expiry → different token.
-        assert_ne!(base, confirm_token(&t, &p, &patch, 2_000));
+        assert_ne!(
+            base,
+            confirm_token(&t, Operation::Update, &p, &patch, &None, 2_000)
+        );
         // Different profile → different token.
         let mut t3 = t.clone();
         t3.profile = "work".into();
-        assert_ne!(base, confirm_token(&t3, &p, &patch, 1_000));
+        assert_ne!(
+            base,
+            confirm_token(&t3, Operation::Update, &p, &patch, &None, 1_000)
+        );
+        // Different operation → different token.
+        assert_ne!(
+            base,
+            confirm_token(&t, Operation::Allocate, &p, &patch, &None, 1_000)
+        );
+        // Different changelog message → different token.
+        assert_ne!(
+            base,
+            confirm_token(
+                &t,
+                Operation::Update,
+                &p,
+                &patch,
+                &Some("reviewed change".into()),
+                1_000
+            )
+        );
     }
 
     #[test]
@@ -509,20 +564,36 @@ mod tests {
         // so an allocate plan's token can't collide with an update plan's.
         let t = target();
         let patch = json!({});
-        let none_tok = confirm_token(&t, &Precondition::None, &patch, 1_000);
+        let none_tok = confirm_token(
+            &t,
+            Operation::Update,
+            &Precondition::None,
+            &patch,
+            &None,
+            1_000,
+        );
         let etag_tok = confirm_token(
             &t,
+            Operation::Update,
             &Precondition::Etag {
                 etag: "\"abc\"".into(),
             },
             &patch,
+            &None,
             1_000,
         );
         assert_ne!(none_tok, etag_tok);
         // Stable for the same inputs.
         assert_eq!(
             none_tok,
-            confirm_token(&t, &Precondition::None, &patch, 1_000)
+            confirm_token(
+                &t,
+                Operation::Update,
+                &Precondition::None,
+                &patch,
+                &None,
+                1_000
+            )
         );
     }
 
@@ -637,7 +708,14 @@ mod tests {
             confirm_token: String::new(), // filled below
             expires_at: format_iso_utc(exp),
         };
-        let token = confirm_token(&plan.target, &plan.precondition, &plan.patch, exp);
+        let token = confirm_token(
+            &plan.target,
+            Operation::Update,
+            &plan.precondition,
+            &plan.patch,
+            &None,
+            exp,
+        );
         let mut plan = plan;
         plan.confirm_token = token;
         plan.verify().expect("fresh consistent plan verifies");
@@ -656,7 +734,14 @@ mod tests {
     fn plan_verify_rejects_an_expired_plan() {
         // Expiry in the past (epoch 1 → 1970).
         let mut plan = plan_for_verify_with_epoch(1);
-        plan.confirm_token = confirm_token(&plan.target, &plan.precondition, &plan.patch, 1);
+        plan.confirm_token = confirm_token(
+            &plan.target,
+            Operation::Update,
+            &plan.precondition,
+            &plan.patch,
+            &None,
+            1,
+        );
         let err = plan.verify().unwrap_err();
         assert_eq!(
             err.exit_code(),
@@ -698,10 +783,12 @@ mod tests {
             changelog_message: None,
             confirm_token: confirm_token(
                 &target(),
+                Operation::Update,
                 &Precondition::Etag {
                     etag: "\"abc\"".into(),
                 },
                 &json!({"description": "up"}),
+                &None,
                 epoch,
             ),
             expires_at: format_iso_utc(epoch),
