@@ -478,14 +478,25 @@ fn pagination_spans_multiple_pages() {
 #[test]
 #[ignore = "requires a live NetBox (netbox-integration workflow)"]
 fn search_scope_filters_include_descendant_prefixes() {
-    for (flag, ref_, expected) in [
-        ("--region", "ci-region", ["10.20.0.0/16", "10.10.0.0/16"]),
+    for (flag, ref_, expected, absent) in [
+        (
+            "--region",
+            "ci-region",
+            ["10.20.0.0/16", "10.10.0.0/16"],
+            &["10.30.0.0/16"][..],
+        ),
         (
             "--site-group",
             "ci-sitegroup",
             ["10.30.0.0/16", "10.10.0.0/16"],
+            &["10.20.0.0/16"][..],
         ),
-        ("--location", "ci-loc", ["10.40.0.0/16", "10.41.0.0/16"]),
+        (
+            "--location",
+            "ci-loc",
+            ["10.40.0.0/16", "10.41.0.0/16"],
+            &["10.20.0.0/16", "10.30.0.0/16"][..],
+        ),
     ] {
         let what = format!("search 10. {flag} {ref_}");
         let out = run_nbox(&["-o", "json", "search", "10.", flag, ref_]);
@@ -497,6 +508,13 @@ fn search_scope_filters_include_descendant_prefixes() {
                 arr.iter()
                     .any(|r| r["kind"] == "prefix" && r["display"] == expected_prefix),
                 "{flag} {ref_} should surface {expected_prefix}: {results}"
+            );
+        }
+        for absent_prefix in absent {
+            assert!(
+                !arr.iter()
+                    .any(|r| r["kind"] == "prefix" && r["display"] == *absent_prefix),
+                "{flag} {ref_} leaked sibling scope prefix {absent_prefix}: {results}"
             );
         }
     }

@@ -317,24 +317,26 @@ fn skip_for_any_scope(scope: Option<&ResolvedScope>) -> bool {
     scope.is_some()
 }
 
-fn scoped_model_params(scope: Option<&ResolvedScope>) -> Vec<(&'static str, String)> {
+fn scoped_model_params(scope: Option<&ResolvedScope>) -> Result<Vec<(&'static str, String)>> {
     let Some(s) = scope else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
     match s.content_type {
         // Preserve exact site semantics. The polymorphic `scope` exact match is
         // deliberately narrower than NetBox's `_site` helper and avoids widening
         // `--site` if scoped models ever grow indirect site inheritance.
-        "dcim.site" => vec![
+        "dcim.site" => Ok(vec![
             ("scope_type", s.content_type.to_string()),
             ("scope_id", s.id.to_string()),
-        ],
+        ]),
         // NetBox's ScopedFilterSet backs these with TreeNodeMultipleChoiceFilter,
         // so the selected node and its descendants are matched server-side.
-        "dcim.region" => vec![("region_id", s.id.to_string())],
-        "dcim.sitegroup" => vec![("site_group_id", s.id.to_string())],
-        "dcim.location" => vec![("location_id", s.id.to_string())],
-        _ => Vec::new(),
+        "dcim.region" => Ok(vec![("region_id", s.id.to_string())]),
+        "dcim.sitegroup" => Ok(vec![("site_group_id", s.id.to_string())]),
+        "dcim.location" => Ok(vec![("location_id", s.id.to_string())]),
+        other => anyhow::bail!(
+            "unsupported scoped-model search scope {other}; refusing an unscoped query"
+        ),
     }
 }
 
@@ -803,7 +805,7 @@ impl NetBoxClient {
         else {
             return Ok(Vec::new());
         };
-        params.extend(scoped_model_params(scope));
+        params.extend(scoped_model_params(scope)?);
         // Prefixes carry a VRF: apply the resolved `--vrf` id as `vrf_id=`. This
         // is orthogonal to scope — NetBox ANDs them, so a vrf+scope combo narrows
         // to prefixes matching both.
@@ -1280,7 +1282,7 @@ impl NetBoxClient {
         else {
             return Ok(Vec::new());
         };
-        params.extend(scoped_model_params(scope));
+        params.extend(scoped_model_params(scope)?);
         let page: Page<Cluster> = self.list_limited(Endpoint::Clusters, params, limit).await?;
         Ok(page
             .results
@@ -1714,6 +1716,32 @@ mod tests {
         let f = SearchFilters::default();
         let p = endpoint_params("edge", &f, &["status"]).unwrap();
         assert_eq!(p, vec![("q", "edge".to_string())]);
+    }
+
+    #[test]
+    fn scoped_model_params_fail_closed_for_unknown_scope_type() {
+        assert_eq!(
+            scoped_model_params(None).unwrap(),
+            Vec::<(&'static str, String)>::new()
+        );
+        assert_eq!(
+            scoped_model_params(Some(&ResolvedScope {
+                content_type: "dcim.region",
+                id: 3,
+            }))
+            .unwrap(),
+            vec![("region_id", "3".to_string())]
+        );
+
+        let err = scoped_model_params(Some(&ResolvedScope {
+            content_type: "extras.gadget",
+            id: 99,
+        }))
+        .expect_err("unsupported scopes must not become unscoped queries");
+        assert!(
+            format!("{err:#}").contains("refusing an unscoped query"),
+            "got: {err:#}"
+        );
     }
 
     #[test]
