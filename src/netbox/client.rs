@@ -252,7 +252,7 @@ impl NetBoxClient {
         path: &str,
         body: &serde_json::Value,
         if_match: Option<&str>,
-    ) -> Result<(T, Option<String>)>
+    ) -> Result<(T, Option<String>, u16)>
     where
         T: DeserializeOwned,
     {
@@ -295,7 +295,7 @@ impl NetBoxClient {
                 return Err(write_status_error(status, &text).into());
             }
             let body: T = res.json().await.context("decoding PATCH response")?;
-            return Ok((body, etag));
+            return Ok((body, etag, status.as_u16()));
         }
     }
 

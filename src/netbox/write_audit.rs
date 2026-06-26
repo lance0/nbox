@@ -20,7 +20,7 @@
 //! Off by default under the `warn` filter; opt in with
 //! `NBOX_LOG=…,nbox::write_audit=info` (or `--log-level`).
 
-use std::time::{Instant, SystemTime};
+use std::time::Instant;
 
 use crate::netbox::mutation::Operation;
 
@@ -156,12 +156,9 @@ impl Started {
 
     #[must_use]
     pub fn elapsed_ms(&self) -> u128 {
-        // Wall-clock since start; saturating so a clock skew never panics.
-        SystemTime::now()
-            .duration_since(SystemTime::UNIX_EPOCH)
-            .ok()
-            .zip(Some(()))
-            .map_or(0, |_| self.0.elapsed().as_millis())
+        // Monotonic elapsed since start — `Instant` never goes backwards, so no
+        // clock-skew guard is needed.
+        self.0.elapsed().as_millis()
     }
 }
 

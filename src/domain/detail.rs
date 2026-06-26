@@ -358,7 +358,7 @@ pub(crate) async fn apply_interface_description_update(
         body["changelog_message"] = serde_json::json!(msg);
     }
 
-    let (_updated, new_etag): (Interface, Option<String>) = match &plan.precondition {
+    let (_updated, new_etag, status): (Interface, Option<String>, u16) = match &plan.precondition {
         Precondition::Etag { etag } => {
             client
                 .patch(&plan.target.endpoint, &body, Some(etag))
@@ -390,7 +390,7 @@ pub(crate) async fn apply_interface_description_update(
         fields: plan.fields.clone(),
         applied: true,
         no_op: false,
-        status: 200,
+        status,
         etag: new_etag,
         request_id: None,
         message: format!(

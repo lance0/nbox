@@ -173,7 +173,12 @@ impl MutationPlan {
             .duration_since(UNIX_EPOCH)
             .map_or(0, |d| d.as_secs());
         if now > epoch {
-            return Err(NboxError::StalePrecondition(String::new()));
+            // Past the validity window: the plan aged out before apply (only
+            // reachable for a future multi-step flow that carries a plan across
+            // a boundary — a one-shot `--confirm` plans and applies in one go).
+            return Err(NboxError::StalePrecondition(
+                " (the plan expired)".to_string(),
+            ));
         }
         let expected = confirm_token(&self.target, &self.precondition, &self.patch, epoch);
         if expected != self.confirm_token {
