@@ -453,6 +453,9 @@ the read tool proves out in practice. Consolidated future scope:
   first **list-valued** writable field and the first write that works on **any
   object kind** (the planner reads the object as a raw value, since every
   NetBox object carries the same `tags` array shape — no per-kind model).
+- ☑ `nbox tag remove <type> <name> <tag>` — the inverse of `tag add`, sharing
+  one planner/applier (`TagOperation::Add`/`Remove`). A no-op if the tag is
+  already absent.
 - ☐ **Write-capable MCP tools** — opt-in, return the diff for the agent to confirm; read-only stays the
   default — plus the **per-user credential vault (Pattern 2)** for real per-user NetBox RBAC over MCP.
 - ☐ TUI edit mode (`e` / `d` / confirm).

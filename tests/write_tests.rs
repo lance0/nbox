@@ -2361,3 +2361,208 @@ async fn tag_add_audit_logs_field_name_only_never_values_or_token() {
         "token leaked: {log_text}"
     );
 }
+
+// ===== tag remove (ADR-0001 follow-on) ===================================
+//
+// `tag remove` mirrors `tag add`: same planner/diff/confirm/concurrency/audit
+// contracts, same PATCH-replaces-whole-array semantics. The only difference is
+// the slug is filtered *out* instead of *in*; a no-op (tag absent) sends no
+// PATCH.
+
+fn run_tag_remove<'a>(config: &NamedTempFile, extra: &'a [&'a str]) -> CommandOutput {
+    let mut args: Vec<&str> = vec!["--config", config.path().to_str().unwrap()];
+    args.push("--no-tui");
+    args.extend_from_slice(&["tag", "remove", "device", "edge01", "prod"]);
+    args.extend_from_slice(extra);
+    run_nbox(args)
+}
+
+#[tokio::test]
+async fn tag_remove_dry_run_sends_no_patch_and_shows_tags_before_after() {
+    let server = MockServer::start().await;
+    mount_tag_by_name(&server, 5, "prod", "prod").await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    mount_device_detail_with_tags(
+        &server,
+        7,
+        None,
+        &[("legacy", "legacy"), ("prod", "prod")],
+        "2026-06-26T10:00:00Z",
+    )
+    .await;
+
+    let config = write_config(&server.uri());
+    let out = run_tag_remove(&config, &["--dry-run", "--json"]);
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(patch_count(&server).await, 0, "dry-run must not PATCH");
+    let plan: Value = serde_json::from_str(&out.stdout).expect("plan JSON");
+    assert_eq!(plan["patch"], json!({"tags": ["legacy"]}));
+    assert_eq!(plan["fields"][0]["before"], json!(["legacy", "prod"]));
+    assert_eq!(plan["fields"][0]["after"], json!(["legacy"]));
+    assert_eq!(plan["no_op"], json!(false));
+}
+
+#[tokio::test]
+async fn tag_remove_confirm_sends_one_patch_with_filtered_tags_array() {
+    let server = MockServer::start().await;
+    mount_tag_by_name(&server, 5, "prod", "prod").await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    mount_device_detail_with_tags(
+        &server,
+        7,
+        None,
+        &[("legacy", "legacy"), ("prod", "prod")],
+        "2026-06-26T10:00:00Z",
+    )
+    .await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/dcim/devices/7/"))
+        .and(body_partial_json(json!({"tags": ["legacy"]})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7, "url": "u", "name": "edge01",
+            "tags": [{"id": 1, "name": "legacy", "slug": "legacy"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_tag_remove(&config, &["--allow-writes", "--confirm", "--json"]);
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(patch_count(&server).await, 1, "exactly one PATCH");
+    let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
+    assert_eq!(receipt["applied"], json!(true));
+    assert_eq!(receipt["no_op"], json!(false));
+    assert_eq!(receipt["status"], json!(200));
+    assert_eq!(receipt["fields"][0]["after"], json!(["legacy"]));
+}
+
+#[tokio::test]
+async fn tag_remove_noop_when_tag_absent_sends_no_patch() {
+    let server = MockServer::start().await;
+    mount_tag_by_name(&server, 5, "prod", "prod").await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    // Device does NOT carry the "prod" tag → no-op. No PATCH mock mounted.
+    mount_device_detail_with_tags(
+        &server,
+        7,
+        None,
+        &[("legacy", "legacy")],
+        "2026-06-26T10:00:00Z",
+    )
+    .await;
+
+    let config = write_config(&server.uri());
+    let out = run_tag_remove(&config, &["--allow-writes", "--confirm", "--json"]);
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(patch_count(&server).await, 0, "no-op sends no PATCH");
+    let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
+    assert_eq!(receipt["applied"], json!(false));
+    assert_eq!(receipt["no_op"], json!(true));
+    assert_eq!(receipt["status"], json!(0));
+    assert!(receipt["message"].as_str().unwrap().contains("no change"));
+}
+
+#[tokio::test]
+async fn tag_remove_unknown_tag_is_not_found_exit_4() {
+    let server = MockServer::start().await;
+    // Tag resolution returns empty — no tag matches "nonexistent".
+    Mock::given(method("GET"))
+        .and(path("/api/extras/tags/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 0, "next": null, "previous": null, "results": []
+        })))
+        .up_to_n_times(2)
+        .mount(&server)
+        .await;
+    mount_device_resolution(&server, 7, "edge01").await;
+
+    let config = write_config(&server.uri());
+    let out = run_tag_remove(&config, &["--dry-run", "--json"]);
+
+    assert_error_contract(&out, 4, "no tag matched");
+    assert_eq!(patch_count(&server).await, 0);
+}
+
+#[tokio::test]
+async fn tag_remove_confirm_without_allow_writes_is_a_usage_error() {
+    let server = MockServer::start().await;
+    let config = write_config(&server.uri());
+    let out = run_tag_remove(&config, &["--confirm", "--json"]);
+    assert_error_contract(&out, 2, "writes are not enabled");
+    assert_eq!(patch_count(&server).await, 0);
+}
+
+#[tokio::test]
+async fn tag_remove_etag_sends_if_match_on_apply() {
+    let server = MockServer::start().await;
+    mount_tag_by_name(&server, 5, "prod", "prod").await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    mount_device_detail_with_tags(
+        &server,
+        7,
+        Some("\"etag-v1\""),
+        &[("legacy", "legacy"), ("prod", "prod")],
+        "2026-06-26T10:00:00Z",
+    )
+    .await;
+    // The PATCH mock ONLY matches when If-Match is sent.
+    Mock::given(method("PATCH"))
+        .and(path("/api/dcim/devices/7/"))
+        .and(header("if-match", "\"etag-v1\""))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7, "url": "u", "name": "edge01",
+            "tags": [{"id": 1, "name": "legacy", "slug": "legacy"}]
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_tag_remove(&config, &["--allow-writes", "--confirm", "--json"]);
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(patch_count(&server).await, 1);
+    let patch_reqs: Vec<_> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.method.as_str() == "PATCH")
+        .collect();
+    assert_eq!(
+        patch_reqs[0].headers.get("if-match").unwrap(),
+        "\"etag-v1\""
+    );
+}
+
+#[tokio::test]
+async fn tag_remove_stale_412_is_a_stale_precondition_refusal() {
+    let server = MockServer::start().await;
+    mount_tag_by_name(&server, 5, "prod", "prod").await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    mount_device_detail_with_tags(
+        &server,
+        7,
+        Some("\"etag-v1\""),
+        &[("legacy", "legacy"), ("prod", "prod")],
+        "2026-06-26T10:00:00Z",
+    )
+    .await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/dcim/devices/7/"))
+        .respond_with(ResponseTemplate::new(412).set_body_string("Precondition Failed"))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_tag_remove(&config, &["--allow-writes", "--confirm", "--json"]);
+
+    assert_error_contract(&out, 1, "object changed in NetBox");
+    assert!(
+        out.stderr.contains("re-run dry-run"),
+        "stderr: {}",
+        out.stderr
+    );
+}

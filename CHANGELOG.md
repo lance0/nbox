@@ -89,6 +89,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **Any object kind.** The planner reads the object as a raw value (every
     NetBox object carries the same `tags` array shape), so no per-kind model is
     needed for this write.
+- **`nbox tag remove <type> <name> <tag>` — the fifth safe write.** Removes a
+  tag from any taggable object, mirroring `tag add`: same `PATCH`-replaces-
+  whole-array semantics, same gate/confirm/audit lifecycle. Removing a tag the
+  object doesn't carry is a no-op (no `PATCH`). Shares one planner/applier with
+  `tag add` (`TagOperation::Add`/`Remove`), proving the foundation extends to
+  the inverse operation without new machinery.
 
 ### Changed
 

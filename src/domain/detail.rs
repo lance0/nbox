@@ -816,16 +816,26 @@ pub(crate) async fn apply_ip_reserve(
     })
 }
 
-// ===== Safe write follow-on: tag add (ADR-0001) ===========================
+// ===== Safe write follow-on: tag add/remove (ADR-0001) ===================
 //
-// The fourth write command reuses the same planner/diff/confirm/concurrency/
-// audit contracts as the interface/device pilots. Tags are a list field: the
-// plan carries the full replacement `{"tags": [slugs]}` (NetBox's PATCH
-// semantics replace the whole array), so the before/after diff shows the tag
-// names. Adding a tag the object already carries is a no-op (no PATCH).
+// Tag writes reuse the same planner/diff/confirm/concurrency/audit contracts
+// as the interface/device pilots. Tags are a list field: the plan carries the
+// full replacement `{"tags": [slugs]}` (NetBox's PATCH semantics replace the
+// whole array), so the before/after diff shows the tag slugs. A no-op (tag
+// already present for add, or already absent for remove) sends no PATCH.
 
-/// The writable field on any object for `tag add` (ADR-0001 §6).
+/// The writable field on any object for tag writes (ADR-0001 §6).
 pub(crate) const TAG_WRITABLE_FIELD: &str = "tags";
+
+/// Whether a tag write adds or removes the tag from the target object's tags
+/// array. The planner uses this to compute the replacement slug list and the
+/// no-op condition (add: no-op if already present; remove: no-op if already
+/// absent).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TagOperation {
+    Add,
+    Remove,
+}
 
 /// One entry in the object's current tags array, as NetBox serializes it on a
 /// detail response: `{id, name, slug}`. Used to read the current tag set and
@@ -916,16 +926,17 @@ pub(crate) async fn resolve_tag_target_endpoint(
     Ok((endpoint, id))
 }
 
-/// Plan a `tag add` update (ADR-0001 §5 steps 1–4): resolve the tag, resolve
-/// the target object, read its current tags with the `ETag` (4.6+) or
+/// Plan a tag write (ADR-0001 §5 steps 1–4): resolve the tag, resolve the
+/// target object, read its current tags with the `ETag` (4.6+) or
 /// `last_updated` (pre-4.6 fallback), and build an `Update` plan whose patch
-/// replaces the `tags` array with the current slugs plus the new tag's slug.
-/// Adding a tag the object already carries is a no-op (empty patch).
+/// replaces the `tags` array with the computed slug list. A no-op (tag already
+/// present for add, or already absent for remove) produces an empty patch.
 /// `changelog_message` is validated against NetBox's length limit here, before
 /// any network write.
 #[allow(clippy::too_many_arguments)]
-pub(crate) async fn plan_tag_add(
+pub(crate) async fn plan_tag_update(
     client: &NetBoxClient,
+    operation: TagOperation,
     object_type: &str,
     object_name: &str,
     tag_ref: &str,
@@ -978,17 +989,31 @@ pub(crate) async fn plan_tag_add(
         },
     };
 
-    // The current tag slugs (in order) plus the new tag's slug, deduped. NetBox
-    // PATCH replaces the whole `tags` array, so the patch carries the full
-    // replacement list. A tag already present is a no-op (no PATCH).
+    // Compute the replacement slug list. NetBox PATCH replaces the whole
+    // `tags` array, so the patch carries the full replacement list. A no-op
+    // (tag already present for add, or already absent for remove) produces an
+    // empty patch (no PATCH).
     let current_slugs: Vec<String> = current.tags.iter().filter_map(|t| t.slug.clone()).collect();
-    let no_op = current_slugs.iter().any(|s| s == &tag.slug);
+    let tag_present = current_slugs.iter().any(|s| s == &tag.slug);
+    let no_op = match operation {
+        TagOperation::Add => tag_present,
+        TagOperation::Remove => !tag_present,
+    };
     let after_slugs: Vec<String> = if no_op {
         current_slugs.clone()
     } else {
-        let mut v = current_slugs.clone();
-        v.push(tag.slug.clone());
-        v
+        match operation {
+            TagOperation::Add => {
+                let mut v = current_slugs.clone();
+                v.push(tag.slug.clone());
+                v
+            }
+            TagOperation::Remove => current_slugs
+                .iter()
+                .filter(|s| *s != &tag.slug)
+                .cloned()
+                .collect(),
+        }
     };
 
     let before = serde_json::to_value(
@@ -1037,11 +1062,11 @@ pub(crate) async fn plan_tag_add(
     })
 }
 
-/// Apply a planned `tag add` update (ADR-0001 §5 steps 5–7): verify the plan's
+/// Apply a planned tag write (ADR-0001 §5 steps 5–7): verify the plan's
 /// confirmation token + expiry, short-circuit a no-op, then send the minimal
 /// `PATCH` (`{"tags": [slugs]}`) with the recorded precondition. Returns a
-/// [`MutationReceipt`] from the PATCH response.
-pub(crate) async fn apply_tag_add(
+/// [`MutationReceipt`] from the PATCH response. Shared by add and remove.
+pub(crate) async fn apply_tag_update(
     client: &NetBoxClient,
     plan: &MutationPlan,
 ) -> Result<MutationReceipt> {
@@ -1080,7 +1105,7 @@ pub(crate) async fn apply_tag_add(
             client.patch(&plan.target.endpoint, &body, None).await?
         }
         Precondition::None => {
-            anyhow::bail!("internal error: a tag add plan carried a None precondition")
+            anyhow::bail!("internal error: a tag plan carried a None precondition")
         }
     };
 
