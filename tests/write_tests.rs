@@ -1445,6 +1445,44 @@ async fn mount_prefix_resolution(server: &MockServer, prefix_id: u64, cidr: &str
         .await;
 }
 
+/// Prefix-by-CIDR resolution with the same CIDR in two VRFs. Used to pin that
+/// every accepted `ip reserve --vrf` spelling actually reaches the resolver.
+async fn mount_prefix_resolution_in_two_vrfs(server: &MockServer, cidr: &str) {
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [
+                {
+                    "id": 1,
+                    "url": format!("{}/api/ipam/prefixes/1/", server.uri()),
+                    "prefix": cidr,
+                    "vrf": {
+                        "id": 11,
+                        "url": format!("{}/api/ipam/vrfs/11/", server.uri()),
+                        "display": "red (65000:11)",
+                        "name": "red",
+                        "rd": "65000:11"
+                    }
+                },
+                {
+                    "id": 2,
+                    "url": format!("{}/api/ipam/prefixes/2/", server.uri()),
+                    "prefix": cidr,
+                    "vrf": {
+                        "id": 12,
+                        "url": format!("{}/api/ipam/vrfs/12/", server.uri()),
+                        "display": "blue (65000:12)",
+                        "name": "blue",
+                        "rd": "65000:12"
+                    }
+                }
+            ]
+        })))
+        .mount(server)
+        .await;
+}
+
 /// The read-only candidate GET the planner uses for the dry-run advisory:
 /// GET `/api/ipam/prefixes/{id}/available-ips/` → a bare JSON array.
 async fn mount_available_ips_get(server: &MockServer, prefix_id: u64, addr: &str) {
@@ -1522,6 +1560,63 @@ async fn ip_reserve_dry_run_plain_renders_candidate_note() {
         out.stdout
     );
     assert!(out.stderr.contains("planned, no changes sent"));
+}
+
+#[tokio::test]
+async fn ip_reserve_parent_vrf_before_subcommand_scopes_the_write() {
+    let server = MockServer::start().await;
+    mount_prefix_resolution_in_two_vrfs(&server, "203.0.113.0/24").await;
+    mount_available_ips_get(&server, 2, "203.0.113.5/24").await;
+
+    let config = write_config(&server.uri());
+    let out = run_nbox([
+        "--config",
+        config.path().to_str().unwrap(),
+        "--no-tui",
+        "ip",
+        "--vrf",
+        "blue",
+        "reserve",
+        "203.0.113.0/24",
+        "--dry-run",
+        "--json",
+    ]);
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    let plan: Value = serde_json::from_str(&out.stdout).expect("plan JSON");
+    assert_eq!(plan["target"]["id"], json!(2), "blue VRF prefix selected");
+    assert_eq!(
+        plan["target"]["endpoint"],
+        json!("/api/ipam/prefixes/2/available-ips/")
+    );
+}
+
+#[tokio::test]
+async fn ip_reserve_conflicting_parent_and_subcommand_vrfs_refuse_before_network() {
+    let server = MockServer::start().await;
+    let config = write_config(&server.uri());
+
+    let out = run_nbox([
+        "--config",
+        config.path().to_str().unwrap(),
+        "--no-tui",
+        "ip",
+        "--vrf",
+        "blue",
+        "reserve",
+        "203.0.113.0/24",
+        "--vrf",
+        "red",
+        "--dry-run",
+        "--json",
+    ]);
+
+    assert_error_contract(&out, 2, "conflicting --vrf values");
+    assert_eq!(
+        server.received_requests().await.unwrap_or_default().len(),
+        0,
+        "conflicting scope should fail before any NetBox request"
+    );
 }
 
 #[tokio::test]
