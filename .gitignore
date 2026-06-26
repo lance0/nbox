@@ -11,6 +11,7 @@
 # Editor / OS noise
 *.swp
 .DS_Store
+.last_review_sha
 
 # Python bytecode (e.g. from the integration seed script)
 __pycache__/

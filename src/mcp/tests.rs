@@ -78,6 +78,24 @@ fn cached_server_for(mock: &MockServer) -> NboxMcp {
     NboxMcp::new(NetBoxClient::new(&profile, None).unwrap(), cache)
 }
 
+/// A cached server whose entries expire immediately. This keeps TTL-expiry tests
+/// deterministic without sleeping for the production minimum TTL.
+fn zero_ttl_cached_server_for(mock: &MockServer) -> NboxMcp {
+    let profile = ProfileConfig {
+        url: mock.uri(),
+        ..Default::default()
+    };
+    let cache = crate::cache::Cache::new(
+        std::sync::Arc::new(crate::cache::MemoryStore::new()),
+        "t".into(),
+        crate::cache::CacheConfig {
+            enabled: true,
+            ttl_secs: 0,
+        },
+    );
+    NboxMcp::new(NetBoxClient::new(&profile, None).unwrap(), cache)
+}
+
 #[tokio::test]
 async fn nbox_get_consults_cache_and_clear_busts_it() {
     // No reachable NetBox: a cache HIT must answer with no network, and after a
@@ -212,6 +230,38 @@ async fn cache_clear_busts_resource_cache_entries() {
         .read_resource_impl("nbox://site/iad1")
         .await
         .expect("second resource read refetches after clear");
+    assert_eq!(one_text(&second, "nbox://site/iad1")["name"], json!("IAD1"));
+    mock.verify().await;
+}
+
+#[tokio::test]
+async fn resource_cache_refetches_after_ttl_expiry() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/sites/"))
+        .and(query_param("slug", "iad1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 1, "url": "u", "name": "IAD1", "slug": "iad1",
+                "status": {"value": "active", "label": "Active"}
+            }]
+        })))
+        .expect(2)
+        .mount(&mock)
+        .await;
+
+    let server = zero_ttl_cached_server_for(&mock);
+    let first = server
+        .read_resource_impl("nbox://site/iad1")
+        .await
+        .expect("first resource read fills cache");
+    assert_eq!(one_text(&first, "nbox://site/iad1")["name"], json!("IAD1"));
+
+    let second = server
+        .read_resource_impl("nbox://site/iad1")
+        .await
+        .expect("second resource read refetches after immediate expiry");
     assert_eq!(one_text(&second, "nbox://site/iad1")["name"], json!("IAD1"));
     mock.verify().await;
 }
@@ -2353,6 +2403,67 @@ mod contracts {
         // A member IP row is itself an object with a stable key set.
         assert_keys(&value["ip_addresses"][0], &["address"]);
         assert_eq!(value["ip_addresses"][0]["address"], "10.44.208.1/24");
+    }
+
+    #[tokio::test]
+    async fn prefix_contained_ip_section_stops_at_dedicated_cap() {
+        let mock = MockServer::start().await;
+        let addresses: Vec<_> = (0..512)
+            .map(|i| {
+                json!({
+                    "id": i + 1,
+                    "url": "u",
+                    "address": format!("10.44.{}.{}/22", i / 256, i % 256),
+                })
+            })
+            .collect();
+
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/prefixes/"))
+            .and(query_param("prefix", "10.44.0.0/22"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{
+                    "id": 5, "url": "u", "prefix": "10.44.0.0/22",
+                    "status": {"value": "active", "label": "Active"}
+                }]
+            })))
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/prefixes/"))
+            .and(query_param("within", "10.44.0.0/22"))
+            .and(query_param("limit", "200"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
+            .mount(&mock)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/ipam/ip-addresses/"))
+            .and(query_param("parent", "10.44.0.0/22"))
+            .and(query_param("limit", "512"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 513,
+                "next": "http://nb/api/ipam/ip-addresses/?offset=512",
+                "previous": null,
+                "results": addresses
+            })))
+            .mount(&mock)
+            .await;
+
+        let Json(value) = server_for(&mock)
+            .nbox_get(Parameters(get_args(GetKind::Prefix, "10.44.0.0/22")))
+            .await
+            .expect("prefix lookup");
+
+        let ips = value["ip_addresses"]
+            .as_array()
+            .expect("ip_addresses is an array");
+        assert_eq!(ips.len(), 512, "contained-IP section cap drifted");
+        assert_eq!(ips.last().unwrap()["address"], "10.44.1.255/22");
+        assert!(
+            !ips.iter().any(|ip| ip["address"] == "10.44.2.0/22"),
+            "row 513 should remain outside the capped detail section"
+        );
     }
 
     /// Contract item: a resource read of `nbox://{kind}/{ref}` returns byte-for-

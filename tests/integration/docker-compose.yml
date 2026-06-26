@@ -77,7 +77,15 @@ services:
       SUPERUSER_NAME: admin
       SUPERUSER_EMAIL: admin@example.com
       SUPERUSER_PASSWORD: admin
+      # Token SECRET. NetBox 4.6's netbox-docker entrypoint (`super_user.py`)
+      # provisions the superuser token only when BOTH this secret AND the v2
+      # public key (`SUPERUSER_API_KEY` below) are set; older images (4.2 v1,
+      # 4.5) created it from this secret alone and ignore the key var.
       SUPERUSER_API_TOKEN: "0123456789abcdef0123456789abcdef0fedcba9"
+      # v2 token PUBLIC key (12 chars; the `nbt_<key>.<secret>` format NetBox
+      # 4.5+ uses). Required by the 4.6 entrypoint; `resolve-token.sh` reads it
+      # back from the DB and emits `nbt_<key>.<secret>`. Harmless on 4.2/4.5.
+      SUPERUSER_API_KEY: "citoken12345"
       # NetBox 4.5+ requires at least one pepper to create/use v2 API tokens.
       # netbox-docker maps API_TOKEN_PEPPER_1 into NetBox's API_TOKEN_PEPPERS
       # config dict. Static is fine here: this is an ephemeral CI fixture.

@@ -102,6 +102,12 @@ Polish the read experience. No writes here.
   every browse; only add targeted higher caps/load-more on detail tabs when a
   real operator workflow proves the need. The old `offset += page_size` row skip
   is already fixed in 0.12.0.
+- ☐ **Capped detail-section truncation cues.** Prefix contained IPs now have a
+  boundary test proving the 512-row cap, but larger prefixes can still be
+  silently clipped at that detail-section budget. Add a shared view/model cue for
+  capped sections (`<cap>+` in the TUI/plain views, and an additive JSON field if
+  needed) once we want to make truncation explicit across detail tabs rather than
+  only increasing one cap.
 - ☑ **Hierarchical scope filters.** `search --region`/`--site-group`/`--location`
   now uses NetBox's native tree-aware scoped id filters (`region_id`,
   `site_group_id`, `location_id`) on prefixes and clusters, so the selected node
