@@ -1,17 +1,19 @@
 # Roadmap
 
-nbox is a **read-only** NetBox CLI, TUI, and MCP server. The near-term goal is the **best
+nbox is a **read-first** NetBox CLI, TUI, and MCP server. The near-term goal is the **best
 possible read experience** — fast, correct, and pleasant both in the terminal and to agents.
-Write support is a deliberate *later* track (see [Writes — deferred](#writes--deferred-later-track));
-it lands only once the read tool is proven in practice.
+A narrow **safe-write foundation** has now landed (ADR-0001): a gated, opt-in, before/after-previewed
+`PATCH` engine, with the first pilot being `interface <device> <iface> set description`. Reads stay
+the default everywhere and the write surface widens only as the read tool proves out in practice
+(see [Writes](#writes--deferred-later-track)).
 
 Legend: ☐ planned · ◐ in progress · ☑ done
 
 ## Principles
 
-- **Read-only is the product (for now).** Reads ship and get polished before any write surface.
-  When writes come they'll be `PATCH`-based, minimal-diff, before/after-previewed, confirmable,
-  and opt-in — never the default.
+- **Read-first; writes are narrow and opt-in.** Reads are the bulk of the product and get polished
+  first. The first writes have landed as a gated `PATCH`-based foundation (ADR-0001): minimal-diff,
+  before/after-previewed, confirmable, behind `--allow-writes` + confirmation — never the default.
 - **Agent-first.** CLI, TUI, and `nbox serve` (MCP) run off one command core; `--json`/`--envelope`/
   `--fields`/`--raw` + `AGENTS.md` make every read scriptable, and the same views back the MCP tools.
 - **Correctness over breadth.** Typed errors, real-NetBox integration CI, and ambiguity surfaced
@@ -408,11 +410,11 @@ reviewable PRs that lock contracts and reduce future change cost.
 
 ## Writes — deferred (later track)
 
-Writes are intentionally **not** near-term. They land after the read tool is proven in practice, behind
-explicit opt-in (a write profile / `--allow-writes`, with `confirm_writes` already groundwork),
-`PATCH`-based with a before/after diff + confirmation, and read-only staying the default everywhere.
-The foundation contract is drafted in [ADR-0001](docs/adr/0001-safe-write-foundation.md).
-Consolidated future scope:
+The safe-write **foundation** has landed ([ADR-0001](docs/adr/0001-safe-write-foundation.md)): the
+shared `MutationPlan`/`MutationReceipt` engine plus the narrow `interface … set description` pilot,
+gated behind `--allow-writes` + confirmation, `PATCH`-based with a before/after diff, read staying the
+default everywhere. The **broader** write surface stays a deliberate later track — it widens only as
+the read tool proves out in practice. Consolidated future scope:
 
 - ☑ **Safe `PATCH` engine** — minimal diff, before/after preview, confirmation; agent-safe
   read-only default. The ADR-0001 foundation landed: a shared `MutationPlan` /
