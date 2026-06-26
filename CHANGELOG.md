@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Prefix contained IP detail cap.** Prefix detail now fetches up to 512
+  contained IP rows while child prefixes and other detail sections stay at the
+  shared 200-row cap. This covers a full IPv4 `/24` (254 hosts) in CLI, MCP, and
+  TUI prefix detail without adding a new flag or changing the output shape.
+
 ## [0.13.0] - 2026-06-25
 
 ### Added

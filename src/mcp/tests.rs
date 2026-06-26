@@ -425,6 +425,15 @@ async fn get_ip_returns_ip_view_with_parent_context() {
 #[tokio::test]
 async fn get_prefix_returns_children_and_ips() {
     let mock = MockServer::start().await;
+    let ip_results: Vec<_> = (1u16..=254u16)
+        .map(|host| {
+            json!({
+                "id": u64::from(1000 + host),
+                "url": "u",
+                "address": format!("10.44.208.{host}/24")
+            })
+        })
+        .collect();
     // prefix_candidates: exact CIDR match.
     Mock::given(method("GET"))
         .and(path("/api/ipam/prefixes/"))
@@ -442,6 +451,8 @@ async fn get_prefix_returns_children_and_ips() {
     Mock::given(method("GET"))
         .and(path("/api/ipam/prefixes/"))
         .and(query_param("within", "10.44.208.0/24"))
+        .and(query_param("vrf_id", "null"))
+        .and(query_param("limit", "200"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "count": 1, "next": null, "previous": null,
             "results": [{"id": 6, "url": "u", "prefix": "10.44.208.0/26"}]
@@ -452,9 +463,11 @@ async fn get_prefix_returns_children_and_ips() {
     Mock::given(method("GET"))
         .and(path("/api/ipam/ip-addresses/"))
         .and(query_param("parent", "10.44.208.0/24"))
+        .and(query_param("vrf_id", "null"))
+        .and(query_param("limit", "512"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{"id": 7, "url": "u", "address": "10.44.208.1/24"}]
+            "count": 254, "next": null, "previous": null,
+            "results": ip_results
         })))
         .mount(&mock)
         .await;
@@ -468,6 +481,9 @@ async fn get_prefix_returns_children_and_ips() {
     assert_eq!(value["status"], "active");
     assert_eq!(value["child_prefixes"][0], "10.44.208.0/26");
     assert_eq!(value["ip_addresses"][0]["address"], "10.44.208.1/24");
+    let addresses = value["ip_addresses"].as_array().expect("ip addresses");
+    assert_eq!(addresses.len(), 254);
+    assert_eq!(addresses[253]["address"], "10.44.208.254/24");
 }
 
 #[tokio::test]
