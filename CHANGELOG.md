@@ -56,6 +56,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     audit lifecycle are factored into shared helpers (`gate_write`,
     `apply_or_preview`) now used by both write commands, so there is one write
     path, not two.
+- **`nbox ip reserve <prefix>` — the first `allocate` write.** Reserves the next
+  available IP in a prefix via a `POST` to `…/prefixes/{id}/available-ips/`, on
+  the same ADR-0001 gate/confirm/audit lifecycle as the `PATCH` pilots
+  (`--dry-run` / `--allow-writes --confirm` / `--message`). Optional
+  `--vrf <name|rd|id>` scopes the prefix; `--description` and `--dns-name` set
+  those fields on the new IP (the v1 allow-list — no status/role/tags/assignment).
+  Proves the foundation generalizes past in-place `update`:
+  - **Server-allocated, race-safe.** NetBox picks the address and never hands out
+    the same one twice, so the plan carries no client precondition (no `ETag` /
+    `last_updated`). The dry-run shows the *currently* next address as an advisory
+    note — the applied address may differ, since NetBox allocates at apply time.
+  - **Receipt returns the created object.** `--json` apply returns a
+    `MutationReceipt` whose new `object` field is the reserved IP's view (address,
+    status, …), so scripts get the assigned address without a follow-up read. The
+    field is additive and omitted for `update`, so `schema_version` stays `1`.
+  - A bare reserve `POST`s an empty body; an exhausted prefix (`409`) and a NetBox
+    validation rejection (`400`) surface as clean errors (exit 1, empty stdout).
+    The audit logs `operation=allocate`, `http_method=POST`, and field names only.
 
 ### Changed
 

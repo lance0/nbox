@@ -316,7 +316,42 @@ pub async fn run(cli: Cli) -> Result<()> {
             vrf,
             journal,
             journal_limit,
-        }) => run_ip(&ctx, &address, vrf.as_deref(), journal, journal_limit).await,
+            action,
+        }) => match action {
+            None => {
+                run_ip(
+                    &ctx,
+                    address.as_deref(),
+                    vrf.as_deref(),
+                    journal,
+                    journal_limit,
+                )
+                .await
+            }
+            Some(crate::cli::IpAction::Reserve {
+                prefix,
+                vrf: reserve_vrf,
+                description,
+                dns_name,
+                message,
+                dry_run,
+                confirm,
+                allow_writes,
+            }) => {
+                Box::pin(run_ip_reserve(
+                    &ctx,
+                    &prefix,
+                    reserve_vrf.as_deref(),
+                    description.as_deref(),
+                    dns_name.as_deref(),
+                    message.as_deref(),
+                    dry_run,
+                    confirm,
+                    allow_writes,
+                ))
+                .await
+            }
+        },
         Some(Command::Prefix {
             cidr,
             vrf,
@@ -1378,7 +1413,7 @@ async fn apply_or_preview(
                 plan,
                 &field_names,
                 outcome,
-                "PATCH",
+                plan.operation.http_method(),
                 &plan.target.endpoint,
                 receipt.status,
                 sw.elapsed_ms(),
@@ -1403,7 +1438,7 @@ async fn apply_or_preview(
                 plan,
                 &field_names,
                 outcome,
-                "PATCH",
+                plan.operation.http_method(),
                 &plan.target.endpoint,
                 0,
                 sw.elapsed_ms(),
@@ -1521,6 +1556,52 @@ async fn run_device_set(
     .await
 }
 
+/// `nbox ip reserve <prefix>` — the first Allocate write (ADR-0001 follow-on):
+/// reserve the next available IP in a prefix via a POST to its `available-ips`
+/// endpoint, on the same gate/lifecycle/audit path as the PATCH pilots. NetBox
+/// allocates the address server-side and race-safe (no client precondition), so
+/// the receipt carries the created IP object. Only `description` / `dns_name`
+/// may be set in v1 (the narrow allow-list — no status/role/tags/assignment).
+#[allow(clippy::too_many_arguments)] // the CLI flag set; collapsing loses clarity
+async fn run_ip_reserve(
+    ctx: &Ctx,
+    prefix: &str,
+    vrf: Option<&str>,
+    description: Option<&str>,
+    dns_name: Option<&str>,
+    message: Option<&str>,
+    dry_run: bool,
+    confirm: bool,
+    allow_writes: bool,
+) -> Result<()> {
+    // Gate decision BEFORE any plan/network (shared with the PATCH pilots): a
+    // read-only invocation can never become a write (ADR-0001 §4/§5).
+    let action = gate_write(ctx, dry_run, confirm, allow_writes)?;
+
+    let (client, profile) = connect_named(ctx)?;
+    let host = audit_origin(client.base_url());
+
+    // 2–4) resolve the prefix + build the Allocate plan. (The read-only candidate
+    // GET for the dry-run advisory happens inside the planner.)
+    let plan = detail::plan_ip_reserve(
+        &client,
+        prefix,
+        vrf,
+        description,
+        dns_name,
+        message,
+        &profile,
+        &not_found,
+    )
+    .await?;
+
+    // The shared dry-run/prompt/apply/audit lifecycle — one write path.
+    apply_or_preview(ctx, &client, &plan, action, &profile, &host, |c, p| {
+        Box::pin(detail::apply_ip_reserve(c, p))
+    })
+    .await
+}
+
 /// Classify an apply error into the coarse audit outcome. A stale precondition
 /// (412 or pre-4.6 before-hash mismatch) is a recoverable refusal; a 400 is a
 /// NetBox validation rejection; anything else (network, auth, 5xx) is a plain
@@ -1619,8 +1700,12 @@ fn render_plan_plain(plan: &MutationPlan) {
     let pre = match &plan.precondition {
         crate::netbox::mutation::Precondition::Etag { .. } => "etag",
         crate::netbox::mutation::Precondition::LastUpdated { .. } => "last_updated",
+        crate::netbox::mutation::Precondition::None => "none",
     };
     println!("precondition: {pre}");
+    for w in &plan.warnings {
+        println!("note: {w}");
+    }
     if plan.no_op {
         println!("(no change: current value already matches)");
     }
@@ -1638,6 +1723,13 @@ fn render_receipt_plain(receipt: &MutationReceipt) {
             value_or_empty(&f.after)
         );
     }
+    // Allocate receipts carry the created object (an `IpView`); render its
+    // key/values so the operator sees the address NetBox actually assigned.
+    if let Some(serde_json::Value::Object(map)) = &receipt.object {
+        for (k, v) in map {
+            println!("  {}: {}", k, value_or_empty(v));
+        }
+    }
 }
 
 /// Render a JSON `Value` for plain text: a quoted string as its contents, null
@@ -1654,11 +1746,20 @@ fn value_or_empty(v: &serde_json::Value) -> String {
 /// `nbox ip <address>` — resolve an IP (scoped by `--vrf`) and its parent prefix.
 async fn run_ip(
     ctx: &Ctx,
-    address: &str,
+    address: Option<&str>,
     vrf: Option<&str>,
     journal: bool,
     journal_limit: Option<usize>,
 ) -> Result<()> {
+    // The read positional is now optional (a subcommand like `reserve` takes its
+    // place), so a bare `nbox ip` with neither is a usage error (exit 2).
+    let address = address.ok_or_else(|| {
+        error::NboxError::Usage(
+            "missing IP address. Usage: `nbox ip <address>` to read, or \
+             `nbox ip reserve <prefix>` to reserve the next available IP."
+                .to_string(),
+        )
+    })?;
     let client = connect(ctx)?;
     let view = detail::ip_view_by_ref(&client, address, vrf, &not_found).await?;
     if wants_journal(journal, journal_limit) {

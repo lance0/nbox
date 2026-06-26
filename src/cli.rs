@@ -158,10 +158,11 @@ pub enum Command {
         action: Option<DeviceAction>,
     },
 
-    /// Look up an IP address.
+    /// Look up an IP address, or reserve the next one in a prefix.
     Ip {
-        /// IP address, optionally with a mask.
-        address: String,
+        /// IP address, optionally with a mask. Omit when using a subcommand
+        /// (e.g. `nbox ip reserve <prefix>`).
+        address: Option<String>,
 
         /// Disambiguate by VRF (name, slug, or RD) when the address exists in several.
         #[arg(long)]
@@ -174,6 +175,12 @@ pub enum Command {
         /// Max inline journal entries to fold in (implies --journal; default 5).
         #[arg(long, value_name = "N")]
         journal_limit: Option<usize>,
+
+        /// Optional write action. Omit to read an IP (`nbox ip <address>`); pass
+        /// `reserve` to allocate the next available IP in a prefix (a write,
+        /// behind `--allow-writes` + confirmation — ADR-0001).
+        #[command(subcommand)]
+        action: Option<IpAction>,
     },
 
     /// Show prefix details and children.
@@ -678,6 +685,57 @@ pub enum DeviceAction {
         /// enable writes on its own — `--confirm` without `--allow-writes` is a
         /// usage error (exit 2). With `--json`, returns the stable
         /// `MutationReceipt` JSON.
+        #[arg(long)]
+        confirm: bool,
+
+        /// The write-enable gate: required to apply ANY mutation. Kept separate
+        /// from `--confirm` so a read-only invocation can never be silently
+        /// turned into a write (ADR-0001 §4).
+        #[arg(long = "allow-writes")]
+        allow_writes: bool,
+    },
+}
+
+/// `nbox ip` write actions (read is the bare `nbox ip <address>`).
+#[derive(Debug, Subcommand)]
+pub enum IpAction {
+    /// Reserve (allocate) the next available IP address in a prefix. A write:
+    /// requires the `--allow-writes` gate AND confirmation (`--confirm`, or an
+    /// interactive prompt on a TTY in plain output). `--dry-run` previews with no
+    /// mutation and needs neither. NetBox allocates the address server-side and
+    /// race-safe, so the applied address may differ from any previewed candidate.
+    Reserve {
+        /// Prefix in CIDR notation to allocate the next available address from.
+        prefix: String,
+
+        /// Disambiguate the prefix by VRF (name, slug, or RD).
+        #[arg(long)]
+        vrf: Option<String>,
+
+        /// Set the new IP's description. Optional.
+        #[arg(long, value_name = "TEXT")]
+        description: Option<String>,
+
+        /// Set the new IP's DNS name. Optional.
+        #[arg(long = "dns-name", value_name = "NAME")]
+        dns_name: Option<String>,
+
+        /// Record this message in NetBox's object-change entry (a write-only
+        /// request field, never stored on the object). Validated to NetBox's
+        /// 200-character limit before applying. Optional.
+        #[arg(long, value_name = "MESSAGE")]
+        message: Option<String>,
+
+        /// Preview the plan + the candidate address and perform no mutation.
+        /// Needs neither `--allow-writes` nor confirmation. With `--json`,
+        /// returns the stable `MutationPlan` JSON.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+
+        /// Apply the reviewed plan without an interactive prompt. Does NOT enable
+        /// writes on its own — `--confirm` without `--allow-writes` is a usage
+        /// error (exit 2). With `--json`, returns the stable `MutationReceipt`
+        /// JSON.
         #[arg(long)]
         confirm: bool,
 

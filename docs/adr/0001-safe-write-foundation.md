@@ -227,6 +227,41 @@ Current nbox constraints also matter:
 - NetBox 4.6+ gets stronger race protection through `If-Match`; NetBox 4.2-4.5
   remains supported with a conservative re-read check.
 
+## Implementation status
+
+Shipped on this foundation, in order:
+
+- `interface <device> <iface> set description "…"` — the first write (`update` /
+  `PATCH`).
+- `device <device> set status <value>` — second write (`update` / `PATCH`), with
+  the status value validated live against NetBox `OPTIONS` choices before any
+  `PATCH`.
+- `ip reserve <prefix> [--vrf] [--description] [--dns-name]` — the first
+  **`allocate`** write: a `POST` to `…/prefixes/{id}/available-ips/` that reserves
+  the next free address. It proves the foundation generalizes past `update`:
+
+  - **`Operation::Allocate` drives a `POST`.** The operation kind selects the
+    HTTP verb (`update` → `PATCH`, `allocate` → `POST`) and the audited
+    `http_method`. Decision 2's "`PATCH` is the v1 write transport" is for
+    in-place edits; a server allocation endpoint is a `POST` by NetBox's own
+    design, not arbitrary creation.
+  - **`Precondition::None`.** The allocation endpoint is server-side race-safe —
+    NetBox never hands out the same address twice — and there is no prior object,
+    `ETag`, or `last_updated` to bind, so an allocate carries no client
+    precondition. It still folds into the confirmation token distinctly, so an
+    allocate plan's token cannot collide with an update plan's. (Decision 3
+    applies to in-place edits, where a concurrent writer is the hazard.)
+  - **The receipt carries the created object.** `MutationReceipt` gained an
+    optional `object` (the reserved IP's view) so scripts get the assigned
+    address/id/status without a follow-up read. It is additive and omitted for
+    `update`, so existing receipts are byte-identical and `schema_version` stays
+    `1`. The dry-run shows the *currently* next address as an advisory warning,
+    never as a guaranteed field — the applied address may differ.
+
+Still deferred per Decision 6: choosing a specific address, multi-IP / range /
+next-prefix allocation, interface/VM assignment, status/tags on reserve, generic
+create/delete, and `nbox raw` write verbs.
+
 ## References
 
 - [NetBox REST API overview](https://netboxlabs.com/docs/netbox/integrations/rest-api/)

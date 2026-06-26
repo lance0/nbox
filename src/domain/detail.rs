@@ -381,6 +381,11 @@ pub(crate) async fn apply_interface_description_update(
             }
             client.patch(&plan.target.endpoint, &body, None).await?
         }
+        // An update plan always carries an Etag or LastUpdated precondition;
+        // `None` is the allocate path, which never reaches an update apply.
+        Precondition::None => {
+            anyhow::bail!("internal error: an update plan carried a None precondition")
+        }
     };
 
     Ok(MutationReceipt {
@@ -393,6 +398,7 @@ pub(crate) async fn apply_interface_description_update(
         status,
         etag: new_etag,
         request_id: None,
+        object: None,
         message: format!(
             "applied: {} {} ({})",
             plan.target.kind,
@@ -415,6 +421,7 @@ fn no_op_receipt(plan: &MutationPlan) -> MutationReceipt {
         status: 0,
         etag: None,
         request_id: None,
+        object: None,
         message: "no change: current value already matches".to_string(),
     }
 }
@@ -604,6 +611,9 @@ pub(crate) async fn apply_device_status_update(
             }
             client.patch(&plan.target.endpoint, &body, None).await?
         }
+        Precondition::None => {
+            anyhow::bail!("internal error: an update plan carried a None precondition")
+        }
     };
 
     Ok(MutationReceipt {
@@ -616,6 +626,7 @@ pub(crate) async fn apply_device_status_update(
         status,
         etag: new_etag,
         request_id: None,
+        object: None,
         message: format!(
             "applied: {} {} ({})",
             plan.target.kind,
@@ -635,6 +646,153 @@ fn device_before_hash(dev: &Device) -> String {
         serde_json::to_value(dev.status.as_ref().map(|c| c.value.clone())).unwrap_or(Value::Null),
     );
     mutation::before_hash(&m)
+}
+
+/// Plan an `ip reserve <prefix>` allocation (ADR-0001 §5 steps 1–4): validate the
+/// optional changelog message, resolve the prefix (scoped by `vrf`), and build an
+/// `Allocate` plan whose body POSTs to the prefix's `available-ips` endpoint.
+///
+/// The endpoint is server-side race-safe (NetBox never hands out the same address
+/// twice), so the plan carries [`Precondition::None`] — there is no prior object,
+/// ETag, or `last_updated` to bind. A dry-run surfaces the *currently* next
+/// address as an advisory warning: NetBox allocates at apply time, so the applied
+/// address may differ. Only `description` / `dns_name` may be set (the v1 narrow
+/// allow-list — no status/role/tags/assignment).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn plan_ip_reserve(
+    client: &NetBoxClient,
+    prefix: &str,
+    vrf: Option<&str>,
+    description: Option<&str>,
+    dns_name: Option<&str>,
+    changelog_message: Option<&str>,
+    profile: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<MutationPlan> {
+    // Message length is pure input validation — check first, before any network.
+    let message = match changelog_message {
+        Some(m) if !m.is_empty() => Some(m.to_string()),
+        _ => None,
+    };
+    mutation::validate_changelog_message(&message)?;
+
+    // Resolve the prefix by CIDR (reuses the read path so ambiguity / not-found /
+    // VRF scoping behave exactly like `nbox prefix` / `nbox next-ip`).
+    let prefix_obj = resolve_prefix(client, prefix, vrf, not_found).await?;
+    let endpoint = format!("/api/ipam/prefixes/{}/available-ips/", prefix_obj.id);
+
+    let target = PlanTarget {
+        kind: "ip".to_string(),
+        r#ref: prefix.to_string(),
+        id: prefix_obj.id,
+        display: prefix_obj.prefix.clone(),
+        endpoint,
+        profile: profile.to_string(),
+    };
+
+    // The minimal POST body: only the fields the operator actually set. A bare
+    // reserve sends `{}` and takes NetBox's defaults. `fields` is the create diff
+    // (`null → value`) for each set field, never a synthetic address.
+    let mut body = serde_json::Map::new();
+    let mut fields = Vec::new();
+    if let Some(d) = description.filter(|s| !s.is_empty()) {
+        body.insert("description".to_string(), serde_json::json!(d));
+        fields.push(FieldChange {
+            field: "description".to_string(),
+            before: Value::Null,
+            after: serde_json::json!(d),
+        });
+    }
+    if let Some(d) = dns_name.filter(|s| !s.is_empty()) {
+        body.insert("dns_name".to_string(), serde_json::json!(d));
+        fields.push(FieldChange {
+            field: "dns_name".to_string(),
+            before: Value::Null,
+            after: serde_json::json!(d),
+        });
+    }
+    let patch = Value::Object(body);
+    let precondition = Precondition::None;
+
+    // Dry-run advisory: the address NetBox would currently hand out. Read-only,
+    // and never part of the body — another client could allocate between this
+    // read and the apply POST, so the applied address may differ.
+    let mut warnings = Vec::new();
+    match client.prefix_available_ips(prefix_obj.id, 1).await {
+        Ok(list) => match list.first() {
+            Some(next) => warnings.push(format!(
+                "currently next: {} — NetBox allocates at apply; the applied address may differ",
+                next.address
+            )),
+            None => warnings.push(
+                "no available addresses in this prefix — the reserve will fail at apply"
+                    .to_string(),
+            ),
+        },
+        // A failed advisory read must not block planning; the apply POST is the
+        // authoritative attempt. Note it and carry on.
+        Err(_) => {
+            warnings.push("could not read the next available address (advisory only)".to_string());
+        }
+    }
+
+    let expires_epoch = mutation::plan_expiry_epoch(SystemTime::now());
+    let confirm_token = mutation::confirm_token(&target, &precondition, &patch, expires_epoch);
+
+    Ok(MutationPlan {
+        schema_version: PLAN_SCHEMA_VERSION,
+        operation: Operation::Allocate,
+        target,
+        precondition,
+        fields,
+        patch,
+        no_op: false,
+        warnings,
+        errors: Vec::new(),
+        changelog_message: message,
+        confirm_token,
+        expires_at: mutation::format_iso_utc(expires_epoch),
+    })
+}
+
+/// Apply a planned IP reservation (ADR-0001 §5 steps 5–7): verify the plan's
+/// confirmation token + expiry, then POST the minimal body to the prefix's
+/// `available-ips` endpoint. NetBox allocates the next free address and returns
+/// the created IP object (`201`), which becomes the receipt's `object`.
+pub(crate) async fn apply_ip_reserve(
+    client: &NetBoxClient,
+    plan: &MutationPlan,
+) -> Result<MutationReceipt> {
+    plan.verify()?;
+
+    // The wire body is the minimal create patch plus the opt-in changelog_message
+    // (a NetBox write-only request field, recorded in the object-change entry,
+    // never stored on the object).
+    let mut body = plan.patch.clone();
+    if let Some(msg) = &plan.changelog_message {
+        body["changelog_message"] = serde_json::json!(msg);
+    }
+
+    let (created, status): (IpAddress, u16) = client.post(&plan.target.endpoint, &body).await?;
+    let address = created.address.clone();
+    // Build the created IP's view (no parent-prefix enrichment on the write path —
+    // the reserve returns the bare object) and stash it as the receipt's `object`.
+    let view = IpView::build(created, None);
+    let object = serde_json::to_value(&view).ok();
+
+    Ok(MutationReceipt {
+        schema_version: PLAN_SCHEMA_VERSION,
+        operation: plan.operation,
+        target: plan.target.clone(),
+        fields: plan.fields.clone(),
+        applied: true,
+        no_op: false,
+        status,
+        etag: None,
+        request_id: None,
+        object,
+        message: format!("reserved: {} in {}", address, plan.target.display),
+    })
 }
 
 /// `ip <address>`: resolve an IP (scoped by `vrf`, ambiguity-checked) and

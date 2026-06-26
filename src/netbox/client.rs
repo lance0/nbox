@@ -347,6 +347,54 @@ impl NetBoxClient {
         }
     }
 
+    /// Perform an authenticated `POST` and deserialize the created object plus the
+    /// HTTP status. The `allocate` write transport (ADR-0001 §6): server
+    /// allocation endpoints (e.g. a prefix's `available-ips`) hand out the next
+    /// free resource, so there is no `If-Match`/ETag — the endpoint is race-safe.
+    /// Reuses the read path's auth, timeout, 429 retry, URL scoping, and token
+    /// redaction. A `400` maps to [`NboxError::WriteValidation`]; other non-2xx
+    /// (incl. `409 Conflict` when the prefix is exhausted) map through
+    /// [`status_error`] so the caller can name the condition without polluting
+    /// stdout. `201`/`2xx` returns the created object + its status code.
+    pub(crate) async fn post<T>(&self, path: &str, body: &serde_json::Value) -> Result<(T, u16)>
+    where
+        T: DeserializeOwned,
+    {
+        let url = self.url_for(path)?;
+
+        match self.masked_authorization() {
+            Some(auth) => tracing::debug!(url = %url, auth = %auth, "POST"),
+            None => tracing::debug!(url = %url, "POST (unauthenticated)"),
+        }
+
+        let mut attempt = 0;
+        loop {
+            let mut req = self
+                .http
+                .post(url.clone())
+                .header(ACCEPT, "application/json")
+                .header(CONTENT_TYPE, "application/json")
+                .json(body);
+            if let Some(token) = &self.token {
+                req = req.header(AUTHORIZATION, self.auth_scheme.header_value(token));
+            }
+
+            let res = req.send().await.context("sending POST to NetBox")?;
+            if retry_on_rate_limit(&res, attempt, "NetBox POST").await {
+                attempt += 1;
+                continue;
+            }
+
+            let status = res.status();
+            if !status.is_success() {
+                let text = res.text().await.unwrap_or_default();
+                return Err(write_status_error(status, &text).into());
+            }
+            let body: T = res.json().await.context("decoding POST response")?;
+            return Ok((body, status.as_u16()));
+        }
+    }
+
     /// Like [`get`](Self::get), but maps HTTP 404 to `Ok(None)` (so a missing
     /// object by ID is "not found", not an error).
     pub async fn get_optional<T>(&self, path: &str, params: &[(&str, String)]) -> Result<Option<T>>
@@ -761,6 +809,153 @@ mod tests {
             server.received_requests().await.unwrap().len(),
             2,
             "a 429 is retried once, then the request succeeds"
+        );
+    }
+
+    #[tokio::test]
+    async fn post_returns_created_object_and_status() {
+        use serde_json::json;
+        use wiremock::matchers::{body_json, method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // The allocation endpoint returns the created object with a 201.
+        Mock::given(method("POST"))
+            .and(path("/api/ipam/prefixes/1/available-ips/"))
+            .and(body_json(json!({"description": "edge uplink"})))
+            .respond_with(
+                ResponseTemplate::new(201)
+                    .set_body_json(json!({"id": 7, "address": "203.0.113.7/24"})),
+            )
+            .mount(&server)
+            .await;
+
+        let client = NetBoxClient::new(
+            &ProfileConfig {
+                url: server.uri(),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        let (body, status): (serde_json::Value, u16) = client
+            .post(
+                "/api/ipam/prefixes/1/available-ips/",
+                &json!({"description": "edge uplink"}),
+            )
+            .await
+            .expect("201 returns the created object");
+        assert_eq!(status, 201);
+        assert_eq!(body["address"], json!("203.0.113.7/24"));
+    }
+
+    #[tokio::test]
+    async fn post_400_maps_to_write_validation() {
+        use serde_json::json;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/ipam/prefixes/1/available-ips/"))
+            .respond_with(
+                ResponseTemplate::new(400).set_body_json(json!({"dns_name": ["Invalid."]})),
+            )
+            .mount(&server)
+            .await;
+        let client = NetBoxClient::new(
+            &ProfileConfig {
+                url: server.uri(),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        let err = client
+            .post::<serde_json::Value>("/api/ipam/prefixes/1/available-ips/", &json!({}))
+            .await
+            .unwrap_err();
+        let nb = err.downcast::<NboxError>().expect("typed NboxError");
+        assert_eq!(nb.exit_code(), 1, "validation rejection is exit 1");
+        assert!(matches!(nb, NboxError::WriteValidation(_)));
+    }
+
+    #[tokio::test]
+    async fn post_409_exhaustion_maps_to_api_error() {
+        use serde_json::json;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        // NetBox answers a 409 when the prefix has no free addresses.
+        Mock::given(method("POST"))
+            .and(path("/api/ipam/prefixes/1/available-ips/"))
+            .respond_with(
+                ResponseTemplate::new(409)
+                    .set_body_string("The requested number of IP addresses is not available"),
+            )
+            .mount(&server)
+            .await;
+        let client = NetBoxClient::new(
+            &ProfileConfig {
+                url: server.uri(),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        let err = client
+            .post::<serde_json::Value>("/api/ipam/prefixes/1/available-ips/", &json!({}))
+            .await
+            .unwrap_err();
+        let nb = err.downcast::<NboxError>().expect("typed NboxError");
+        assert_eq!(nb.exit_code(), 1);
+        assert!(matches!(nb, NboxError::Api { status: 409, .. }));
+    }
+
+    #[tokio::test]
+    async fn post_retries_a_429_then_succeeds() {
+        use serde_json::json;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/api/ipam/prefixes/1/available-ips/"))
+            .respond_with(
+                ResponseTemplate::new(201).set_body_json(json!({"address": "203.0.113.7/24"})),
+            )
+            .mount(&server)
+            .await;
+        // One immediate 429 (Retry-After: 0) at higher priority, then the 201.
+        Mock::given(method("POST"))
+            .and(path("/api/ipam/prefixes/1/available-ips/"))
+            .respond_with(ResponseTemplate::new(429).insert_header("Retry-After", "0"))
+            .up_to_n_times(1)
+            .with_priority(1)
+            .mount(&server)
+            .await;
+        let client = NetBoxClient::new(
+            &ProfileConfig {
+                url: server.uri(),
+                ..Default::default()
+            },
+            None,
+        )
+        .unwrap();
+
+        let (_body, status): (serde_json::Value, u16) = client
+            .post("/api/ipam/prefixes/1/available-ips/", &json!({}))
+            .await
+            .expect("retry then 201");
+        assert_eq!(status, 201);
+        assert_eq!(
+            server.received_requests().await.unwrap().len(),
+            2,
+            "a 429 is retried once, then the POST succeeds"
         );
     }
 

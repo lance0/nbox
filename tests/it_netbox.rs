@@ -393,6 +393,40 @@ fn next_prefix_returns_available_block() {
     );
 }
 
+/// `nbox ip reserve <prefix> --allow-writes --confirm` POSTs to the prefix's
+/// `available-ips` endpoint and returns the created IP. Exercises the real
+/// Allocate write path end-to-end (POST → 201, receipt carries the created
+/// object) against a live API. No cleanup: the tmpfs DB is discarded on
+/// `down -v`, so the reserved address need not be released.
+#[test]
+#[ignore = "requires a live NetBox (netbox-integration workflow)"]
+fn ip_reserve_allocates_within_prefix() {
+    let out = run_nbox(&[
+        "-o",
+        "json",
+        "ip",
+        "reserve",
+        "10.10.0.0/16",
+        "--description",
+        "nbox-it-reserve",
+        "--allow-writes",
+        "--confirm",
+    ]);
+    assert_ok(&out, "ip reserve 10.10.0.0/16");
+    let v = json_of(&out);
+    assert_eq!(v["operation"], "allocate", "got: {v}");
+    assert_eq!(v["applied"], true, "got: {v}");
+    // NetBox returns 201 Created on a successful allocation.
+    assert_eq!(v["status"], 201, "expected a 201 from available-ips: {v}");
+    let addr = v["object"]["address"]
+        .as_str()
+        .unwrap_or_else(|| panic!("receipt carries the created address: {v}"));
+    assert!(
+        addr.starts_with("10.10."),
+        "reserved address should be within the /16: {v}"
+    );
+}
+
 // --- tags ------------------------------------------------------------------
 
 /// `nbox tags` lists the seeded tag.

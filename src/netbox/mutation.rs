@@ -49,13 +49,18 @@ pub const DEFAULT_PLAN_TTL: Duration = Duration::from_secs(5 * 60);
 /// (exit 2), not a rejected write (exit 1). ADR-0001 §8.
 pub const CHANGELOG_MESSAGE_MAX: usize = 200;
 
-/// The operation a plan performs. `update` (`PATCH`) is the v1 verb; create /
-/// delete / allocate are reserved for later releases (ADR-0001 §1, §6).
+/// The operation a plan performs. `update` (`PATCH`) and `allocate` (`POST` to a
+/// server allocation endpoint, e.g. a prefix's `available-ips`) are the v1 verbs;
+/// create/delete are reserved for later releases (ADR-0001 §1, §6).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Operation {
     /// A partial update (`PATCH` against the object detail endpoint).
     Update,
+    /// A server-side allocation (`POST` to an allocation endpoint that hands out
+    /// the next free resource, e.g. `…/prefixes/{id}/available-ips/`). Creates a
+    /// new object; the server picks the value and guards against races.
+    Allocate,
 }
 
 impl Operation {
@@ -64,6 +69,17 @@ impl Operation {
     pub fn as_str(self) -> &'static str {
         match self {
             Operation::Update => "update",
+            Operation::Allocate => "allocate",
+        }
+    }
+
+    /// The HTTP method the apply uses for this operation — recorded in the audit
+    /// event (`PATCH` for an update, `POST` for an allocation).
+    #[must_use]
+    pub fn http_method(self) -> &'static str {
+        match self {
+            Operation::Update => "PATCH",
+            Operation::Allocate => "POST",
         }
     }
 }
@@ -88,10 +104,11 @@ pub struct PlanTarget {
 }
 
 /// The optimistic-concurrency precondition recorded at plan time and checked at
-/// apply (ADR-0001 §3). 4.6+ carries an `ETag` (sent as `If-Match`; a stale
-/// object yields `412`); older releases fall back to `last_updated` plus a
-/// normalized before-hash, checked by a read-before-write at apply time.
-/// Exactly one variant is populated.
+/// apply (ADR-0001 §3). An update on 4.6+ carries an `ETag` (sent as `If-Match`;
+/// a stale object yields `412`); older releases fall back to `last_updated` plus
+/// a normalized before-hash, checked by a read-before-write at apply time. An
+/// allocation has no client precondition — the server endpoint is race-safe.
+/// Exactly one variant is populated; it is folded into the confirmation token.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Precondition {
@@ -105,6 +122,10 @@ pub enum Precondition {
         last_updated: Option<String>,
         before_hash: String,
     },
+    /// No client-side precondition. Used by `allocate`: the server allocation
+    /// endpoint (e.g. `available-ips`) is inherently race-safe — NetBox never
+    /// hands out the same resource twice — so there is no prior object to guard.
+    None,
 }
 
 /// One field in scope for the change, with its before/after values for review.
@@ -220,6 +241,13 @@ pub struct MutationReceipt {
     /// (deferred in v1 — the field exists per the audit allow-list).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub request_id: Option<String>,
+    /// The affected object's JSON view, when the operation produced one to return
+    /// — i.e. an `allocate` carries the **created** object (the reserved IP's
+    /// view) so scripts get its address/id/status without a follow-up read. An
+    /// `update` omits it (the field diff is the result), so existing update
+    /// receipts are byte-identical and `schema_version` stays 1.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub object: Option<Value>,
     /// The human-readable outcome line per ADR-0001 §8.
     pub message: String,
 }
@@ -449,6 +477,88 @@ mod tests {
         let err = validate_changelog_message(&Some(over)).unwrap_err();
         assert_eq!(err.exit_code(), 2, "over-length is a usage error");
         assert!(format!("{err}").contains("200-character limit"));
+    }
+
+    #[test]
+    fn operation_allocate_strings_and_http_method() {
+        assert_eq!(Operation::Allocate.as_str(), "allocate");
+        assert_eq!(Operation::Update.as_str(), "update");
+        assert_eq!(Operation::Allocate.http_method(), "POST");
+        assert_eq!(Operation::Update.http_method(), "PATCH");
+        // The wire form (the stable JSON in plans/receipts) is lowercase.
+        assert_eq!(
+            serde_json::to_value(Operation::Allocate).unwrap(),
+            json!("allocate")
+        );
+        assert_eq!(
+            serde_json::from_value::<Operation>(json!("allocate")).unwrap(),
+            Operation::Allocate
+        );
+    }
+
+    #[test]
+    fn precondition_none_round_trips_and_binds_token() {
+        // `none` serializes as a tagged variant and reads back.
+        let v = serde_json::to_value(Precondition::None).unwrap();
+        assert_eq!(v, json!({"type": "none"}));
+        assert!(matches!(
+            serde_json::from_value::<Precondition>(json!({"type": "none"})).unwrap(),
+            Precondition::None
+        ));
+        // It folds into the confirmation token distinctly from the other variants,
+        // so an allocate plan's token can't collide with an update plan's.
+        let t = target();
+        let patch = json!({});
+        let none_tok = confirm_token(&t, &Precondition::None, &patch, 1_000);
+        let etag_tok = confirm_token(
+            &t,
+            &Precondition::Etag {
+                etag: "\"abc\"".into(),
+            },
+            &patch,
+            1_000,
+        );
+        assert_ne!(none_tok, etag_tok);
+        // Stable for the same inputs.
+        assert_eq!(
+            none_tok,
+            confirm_token(&t, &Precondition::None, &patch, 1_000)
+        );
+    }
+
+    #[test]
+    fn receipt_object_is_omitted_for_update_present_for_allocate() {
+        let base = MutationReceipt {
+            schema_version: PLAN_SCHEMA_VERSION,
+            operation: Operation::Update,
+            target: target(),
+            fields: vec![],
+            applied: true,
+            no_op: false,
+            status: 200,
+            etag: None,
+            request_id: None,
+            object: None,
+            message: "applied".into(),
+        };
+        // An update receipt has no `object` key (byte-identical to pre-allocate).
+        let v = serde_json::to_value(&base).unwrap();
+        assert!(
+            v.get("object").is_none(),
+            "update receipt omits `object`: {v}"
+        );
+        // An allocate receipt carries the created object.
+        let alloc = MutationReceipt {
+            operation: Operation::Allocate,
+            status: 201,
+            object: Some(json!({"address": "203.0.113.7/24", "status": "active"})),
+            message: "reserved".into(),
+            ..base
+        };
+        let v = serde_json::to_value(&alloc).unwrap();
+        assert_eq!(v["object"]["address"], json!("203.0.113.7/24"));
+        // `schema_version` stays 1 across both shapes (purely additive field).
+        assert_eq!(v["schema_version"], json!(1));
     }
 
     #[test]
