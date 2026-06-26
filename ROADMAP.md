@@ -411,11 +411,13 @@ reviewable PRs that lock contracts and reduce future change cost.
 Writes are intentionally **not** near-term. They land after the read tool is proven in practice, behind
 explicit opt-in (a write profile / `--allow-writes`, with `confirm_writes` already groundwork),
 `PATCH`-based with a before/after diff + confirmation, and read-only staying the default everywhere.
+The foundation contract is drafted in [ADR-0001](docs/adr/0001-safe-write-foundation.md).
 Consolidated future scope:
 
 - ☐ **Safe `PATCH` engine** — minimal diff, before/after preview, confirmation modal; agent-safe
-  read-only default. Settle write rules first (choice fields `{value,label}`→string, brief relations
-  by slug/id/name, confirmation semantics in non-TTY / `--json` / MCP).
+  read-only default. Implement the ADR-0001 write rules first (choice fields
+  `{value,label}`→string, brief relations by slug/id/name, confirmation semantics
+  in non-TTY / `--json` / MCP).
 - ☐ `nbox device <name> set status <value>` · `nbox interface <device> <iface> set description "…"` ·
   `nbox ip <addr> reserve --description "…"` · `nbox tag add <type> <name> <tag>`.
 - ☐ **IPAM allocate** — claim the next IP/prefix, plus IP-range `available-ips` (POST to

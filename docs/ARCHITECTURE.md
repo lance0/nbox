@@ -4,6 +4,9 @@ nbox keeps a hard line between the **wire layer** (what NetBox returns) and the
 **view models** (what nbox renders). The same view models feed the CLI and the
 TUI, so output is consistent across both.
 
+Architecture Decision Records live in [docs/adr](adr/). New cross-cutting
+behavior should get an ADR before it becomes a public contract.
+
 ## Layers
 
 - **`netbox/`** — NetBox clients and wire types. REST is canonical and powers
