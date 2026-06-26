@@ -905,17 +905,19 @@ async fn search_skips_non_site_endpoints_unchanged_with_active_site() {
         })))
         .mount(&server)
         .await;
-    // Endpoints that DO honor `--site` (directly or via scope) are reached.
-    mount_empty(&server, "/api/dcim/devices/").await; // accepts `site`
-    mount_empty(&server, "/api/ipam/vlans/").await; // accepts `site`
-    mount_empty(&server, "/api/ipam/prefixes/").await; // scope-filtered
-    mount_empty(&server, "/api/virtualization/virtual-machines/").await; // accepts `site`
-    mount_empty(&server, "/api/virtualization/virtual-machine-types/").await; // accepts `site`
-    mount_empty(&server, "/api/virtualization/clusters/").await; // accepts `site`
-    mount_empty(&server, "/api/dcim/racks/").await;
+    // Endpoints that honor `--site` (directly or via scope) are reached.
+    mount_empty(&server, "/api/dcim/devices/").await; // site_id-filtered
+    mount_empty(&server, "/api/ipam/vlans/").await; // site_id-filtered
+    mount_empty(&server, "/api/ipam/prefixes/").await; // exact site scope
+    mount_empty(&server, "/api/virtualization/virtual-machines/").await; // site_id-filtered
+    mount_empty(&server, "/api/virtualization/clusters/").await; // exact site scope
+    mount_empty(&server, "/api/dcim/racks/").await; // site_id-filtered
+    // Defensive catch-alls for endpoints that are skipped under active scope;
+    // if they are accidentally reached, `outcome.errors` below catches it.
+    mount_empty(&server, "/api/virtualization/virtual-machine-types/").await;
     mount_empty(&server, "/api/dcim/rack-groups/").await;
     mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await; // accepts `site` (site_id)
+    mount_empty(&server, "/api/ipam/route-targets/").await;
     // The site-search branch (`q=` lookup) is reached too; fall through to a
     // catch-all empty page for `/api/dcim/sites/` so it doesn't 404.
     Mock::given(method("GET"))
@@ -946,10 +948,16 @@ async fn search_skips_non_site_endpoints_unchanged_with_active_site() {
     );
 }
 
-/// Shared helper: a scope flag resolves its ref to an id and the prefix request
-/// carries `scope_type=<content_type>` + `scope_id`. `endpoint`/`content_type`
-/// vary per scope kind; `filters` selects which flag is set.
-async fn assert_scope_filters_prefixes(endpoint: &str, content_type: &str, filters: SearchFilters) {
+/// Shared helper: a non-site scope flag resolves its ref to an id and the prefix
+/// request carries NetBox's native tree-aware id filter (`region_id`,
+/// `site_group_id`, or `location_id`). `endpoint`/`expected_filter` vary per
+/// scope kind; `filters` selects which flag is set.
+async fn assert_scope_filters_prefixes(
+    endpoint: &str,
+    expected_filter: &'static str,
+    content_type: &str,
+    filters: SearchFilters,
+) {
     let server = MockServer::start().await;
 
     // Scope resolution: `*_by_ref` looks the slug up first; return id 7.
@@ -967,12 +975,13 @@ async fn assert_scope_filters_prefixes(endpoint: &str, content_type: &str, filte
     // Catch-all for the scope endpoint so other lookups don't 404.
     mount_empty(&server, endpoint).await;
 
-    // The prefix endpoint must carry the translated scope params, and a matching
-    // prefix comes back (proving it's queried, not skipped).
+    // The prefix endpoint must carry the native scoped id filter, and a matching
+    // prefix comes back (proving it's queried, not skipped). NetBox backs these
+    // filters with TreeNodeMultipleChoiceFilter, so descendants are included
+    // server-side.
     Mock::given(method("GET"))
         .and(path("/api/ipam/prefixes/"))
-        .and(query_param("scope_type", content_type))
-        .and(query_param("scope_id", "7"))
+        .and(query_param(expected_filter, "7"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "count": 1, "next": null, "previous": null,
             "results": [{
@@ -1011,9 +1020,10 @@ async fn assert_scope_filters_prefixes(endpoint: &str, content_type: &str, filte
 }
 
 #[tokio::test]
-async fn search_with_region_scopes_prefixes_by_scope_type_and_id() {
+async fn search_with_region_scopes_prefixes_by_tree_filter() {
     assert_scope_filters_prefixes(
         "/api/dcim/regions/",
+        "region_id",
         "dcim.region",
         SearchFilters {
             region: Some("scope-ref".into()),
@@ -1024,9 +1034,10 @@ async fn search_with_region_scopes_prefixes_by_scope_type_and_id() {
 }
 
 #[tokio::test]
-async fn search_with_site_group_scopes_prefixes_by_scope_type_and_id() {
+async fn search_with_site_group_scopes_prefixes_by_tree_filter() {
     assert_scope_filters_prefixes(
         "/api/dcim/site-groups/",
+        "site_group_id",
         "dcim.sitegroup",
         SearchFilters {
             site_group: Some("scope-ref".into()),
@@ -1037,9 +1048,10 @@ async fn search_with_site_group_scopes_prefixes_by_scope_type_and_id() {
 }
 
 #[tokio::test]
-async fn search_with_location_scopes_prefixes_by_scope_type_and_id() {
+async fn search_with_location_scopes_prefixes_by_tree_filter() {
     assert_scope_filters_prefixes(
         "/api/dcim/locations/",
+        "location_id",
         "dcim.location",
         SearchFilters {
             location: Some("scope-ref".into()),
@@ -1112,9 +1124,14 @@ async fn search_with_unknown_location_errors_not_found() {
     .await;
 }
 
-/// Shared helper: a scope flag also filters CLUSTERS by `scope_type`+`scope_id`
-/// (NetBox 4.2+ scopes a cluster polymorphically, same as a prefix).
-async fn assert_scope_filters_clusters(endpoint: &str, content_type: &str, filters: SearchFilters) {
+/// Shared helper: a non-site scope flag also filters CLUSTERS by NetBox's native
+/// tree-aware scoped id filters, same as prefixes.
+async fn assert_scope_filters_clusters(
+    endpoint: &str,
+    expected_filter: &'static str,
+    content_type: &str,
+    filters: SearchFilters,
+) {
     let server = MockServer::start().await;
 
     // Scope resolution: `*_by_ref` looks the slug up first; return id 7.
@@ -1131,12 +1148,11 @@ async fn assert_scope_filters_clusters(endpoint: &str, content_type: &str, filte
         .await;
     mount_empty(&server, endpoint).await;
 
-    // The cluster endpoint must carry the translated scope params, and a matching
+    // The cluster endpoint must carry the native scoped id filter, and a matching
     // cluster comes back (proving it's queried, not skipped).
     Mock::given(method("GET"))
         .and(path("/api/virtualization/clusters/"))
-        .and(query_param("scope_type", content_type))
-        .and(query_param("scope_id", "7"))
+        .and(query_param(expected_filter, "7"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "count": 1, "next": null, "previous": null,
             "results": [{
@@ -1175,9 +1191,10 @@ async fn assert_scope_filters_clusters(endpoint: &str, content_type: &str, filte
 }
 
 #[tokio::test]
-async fn search_with_region_scopes_clusters_by_scope_type_and_id() {
+async fn search_with_region_scopes_clusters_by_tree_filter() {
     assert_scope_filters_clusters(
         "/api/dcim/regions/",
+        "region_id",
         "dcim.region",
         SearchFilters {
             region: Some("scope-ref".into()),
@@ -1188,9 +1205,10 @@ async fn search_with_region_scopes_clusters_by_scope_type_and_id() {
 }
 
 #[tokio::test]
-async fn search_with_site_group_scopes_clusters_by_scope_type_and_id() {
+async fn search_with_site_group_scopes_clusters_by_tree_filter() {
     assert_scope_filters_clusters(
         "/api/dcim/site-groups/",
+        "site_group_id",
         "dcim.sitegroup",
         SearchFilters {
             site_group: Some("scope-ref".into()),
@@ -1201,9 +1219,10 @@ async fn search_with_site_group_scopes_clusters_by_scope_type_and_id() {
 }
 
 #[tokio::test]
-async fn search_with_location_scopes_clusters_by_scope_type_and_id() {
+async fn search_with_location_scopes_clusters_by_tree_filter() {
     assert_scope_filters_clusters(
         "/api/dcim/locations/",
+        "location_id",
         "dcim.location",
         SearchFilters {
             location: Some("scope-ref".into()),
@@ -1612,6 +1631,87 @@ async fn search_combines_vrf_and_site_scope_on_prefixes() {
 }
 
 #[tokio::test]
+async fn search_with_scope_and_vrf_filters_prefixes() {
+    // Non-site scopes use NetBox's native tree-aware id filters on prefixes, and
+    // `--vrf` remains orthogonal: NetBox ANDs `region_id` and `vrf_id`.
+    let server = MockServer::start().await;
+
+    // Region resolution → id 3.
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/regions/"))
+        .and(query_param("slug", "us-east"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 3, "url": "http://nb/api/dcim/regions/3/", "name": "US East", "slug": "us-east"}]
+        })))
+        .mount(&server)
+        .await;
+    // VRF resolution (by id) → id 7.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/vrfs/7/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7, "url": "http://nb/api/ipam/vrfs/7/", "name": "blue"
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .and(query_param("region_id", "3"))
+        .and(query_param("vrf_id", "7"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 31, "url": "http://nb/api/ipam/prefixes/31/", "prefix": "10.0.0.0/24",
+                "scope_type": "dcim.site", "scope": {"id": 9, "display": "iad1"},
+                "vrf": {"id": 7, "display": "blue"}
+            }]
+        })))
+        .mount(&server)
+        .await;
+
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/"))
+        .and(query_param("region_id", "3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/virtualization/clusters/"))
+        .and(query_param("region_id", "3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/racks/"))
+        .and(query_param("region_id", "3"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .mount(&server)
+        .await;
+
+    let outcome = client(&server)
+        .search(SearchRequest {
+            query: "10.0".into(),
+            limit: 25,
+            filters: SearchFilters {
+                region: Some("us-east".into()),
+                vrf: Some("7".into()),
+                ..Default::default()
+            },
+        })
+        .await
+        .unwrap();
+
+    assert!(outcome.errors.is_empty(), "errors: {:?}", outcome.errors);
+    let prefix = outcome
+        .results
+        .iter()
+        .find(|r| r.kind == ObjectKind::Prefix)
+        .expect("vrf+region-scoped prefix surfaced");
+    assert_eq!(prefix.display, "10.0.0.0/24");
+}
+
+#[tokio::test]
 async fn search_region_scope_skips_non_prefix_non_device_non_cluster_endpoints() {
     // An id-based scope (region) has no clean filter on IPs/sites/circuits/…, so
     // those endpoints are skipped (never hit). Only the region lookup and the
@@ -1634,9 +1734,11 @@ async fn search_region_scope_skips_non_prefix_non_device_non_cluster_endpoints()
     mount_empty(&server, "/api/ipam/prefixes/").await; // scope-filtered
     mount_empty(&server, "/api/dcim/devices/").await; // region_id-filtered
     mount_empty(&server, "/api/dcim/racks/").await;
+    // Defensive catch-alls for skipped endpoints; `outcome.errors` catches any
+    // accidental request to them.
     mount_empty(&server, "/api/dcim/rack-groups/").await;
     mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await; // region_id-filtered
+    mount_empty(&server, "/api/ipam/route-targets/").await;
     mount_empty(&server, "/api/virtualization/clusters/").await; // scope-filtered
 
     let outcome = client(&server)

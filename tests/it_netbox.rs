@@ -228,6 +228,17 @@ fn search_site_returns_scope_filtered_prefix() {
             .any(|r| r["kind"] == "prefix" && r["display"] == "10.10.0.0/16"),
         "site-scoped prefix 10.10.0.0/16 not returned for --site ci-site: {results}"
     );
+
+    let exact = run_nbox(&["-o", "json", "search", "10.20", "--site", "ci-site"]);
+    assert_ok(&exact, "search 10.20 --site ci-site");
+    let exact_results = json_of(&exact);
+    let exact_arr = exact_results.as_array().expect("search JSON is an array");
+    assert!(
+        !exact_arr
+            .iter()
+            .any(|r| r["kind"] == "prefix" && r["display"] == "10.20.0.0/16"),
+        "--site must stay exact and not include region-scoped prefixes: {exact_results}"
+    );
 }
 
 // --- prefix ----------------------------------------------------------------
@@ -461,40 +472,32 @@ fn pagination_spans_multiple_pages() {
 // --- scope filters: region / site-group / location -------------------------
 
 /// Each of `--region` / `--site-group` / `--location` resolves the ref to an id
-/// and applies the prefix `scope_type=<ct>` + `scope_id=<id>` filter against the
-/// real 4.2 API. The seed gives each scope type its OWN prefix (10.20/10.30/
-/// 10.40.0.0/16), so a query for the shared "10." stem under each scope returns
-/// exactly that scope's prefix — proving the polymorphic content-type mapping
-/// (`dcim.region`/`dcim.sitegroup`/`dcim.location`) end to end, which wiremock
-/// can't validate against the live serializer.
+/// and uses NetBox's native tree-aware scoped id filters against the real API.
+/// The seed includes both selected-scope prefixes and descendant-scope prefixes,
+/// proving the server-side hierarchy path that wiremock can't validate.
 #[test]
 #[ignore = "requires a live NetBox (netbox-integration workflow)"]
-fn search_region_scope_returns_region_scoped_prefix() {
+fn search_scope_filters_include_descendant_prefixes() {
     for (flag, ref_, expected) in [
-        ("--region", "ci-region", "10.20.0.0/16"),
-        ("--site-group", "ci-sitegroup", "10.30.0.0/16"),
-        ("--location", "ci-loc", "10.40.0.0/16"),
+        ("--region", "ci-region", ["10.20.0.0/16", "10.10.0.0/16"]),
+        (
+            "--site-group",
+            "ci-sitegroup",
+            ["10.30.0.0/16", "10.10.0.0/16"],
+        ),
+        ("--location", "ci-loc", ["10.40.0.0/16", "10.41.0.0/16"]),
     ] {
         let what = format!("search 10. {flag} {ref_}");
         let out = run_nbox(&["-o", "json", "search", "10.", flag, ref_]);
         assert_ok(&out, &what);
         let results = json_of(&out);
         let arr = results.as_array().expect("search JSON is an array");
-        // The scope's own prefix is present.
-        assert!(
-            arr.iter()
-                .any(|r| r["kind"] == "prefix" && r["display"] == expected),
-            "{flag} {ref_} should surface {expected}: {results}"
-        );
-        // Scope is an EXACT match (no hierarchy expansion): the OTHER scopes'
-        // prefixes must NOT leak in.
-        for other in ["10.20.0.0/16", "10.30.0.0/16", "10.40.0.0/16"] {
-            if other != expected {
-                assert!(
-                    !arr.iter().any(|r| r["display"] == other),
-                    "{flag} {ref_} leaked another scope's prefix {other}: {results}"
-                );
-            }
+        for expected_prefix in expected {
+            assert!(
+                arr.iter()
+                    .any(|r| r["kind"] == "prefix" && r["display"] == expected_prefix),
+                "{flag} {ref_} should surface {expected_prefix}: {results}"
+            );
         }
     }
 }

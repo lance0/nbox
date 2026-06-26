@@ -11,12 +11,12 @@ Objects created, in dependency order:
   - a region                      (slug: ci-region)
   - a site-group                  (slug: ci-sitegroup)
   - a site                        (slug: ci-site, in ci-region AND ci-sitegroup)
-  - a location                    (slug: ci-loc, inside ci-site)
+  - a location + child location   (slugs: ci-loc, ci-loc-child; inside ci-site)
   - a VRF                         (name: ci-vrf)
   - a site-scoped prefix          (10.10.0.0/16, scope_type=dcim.site)
-  - region/site-group/location    (10.20/10.30/10.40.0.0/16 — one per scope type
-    scoped prefixes                so each --region/--site-group/--location hit
-                                   is unambiguous)
+  - region/site-group/location    (10.20/10.30/10.40.0.0/16 scoped to the
+    scoped prefixes                selected scopes, plus 10.41.0.0/16 scoped to
+                                   ci-loc-child)
   - a duplicate prefix            (10.0.0.0/24 in ci-vrf AND in the global table)
   - a VLAN                        (vid 1234 "ci-vlan" at ci-site)
   - a duplicate VLAN              (vid 1234 "ci-vlan2" at ci-site2 — exit-5 case)
@@ -104,6 +104,13 @@ def ensure(endpoint, lookup, body):
     return post(endpoint, body)
 
 
+def brief_id(value):
+    """Return an id from either a nested NetBox brief object or a raw id."""
+    if isinstance(value, dict):
+        return value.get("id")
+    return value
+
+
 def main():
     print(f"Seeding {NBOX_URL} ...")
 
@@ -116,10 +123,10 @@ def main():
     print(f"tag: {tag['slug']} (id {tag['id']})")
 
     # --- region / site-group (the site's polymorphic-scope parents) ----------
-    # NetBox 4.2 scope is one (type, id) pair, so to exercise --region /
-    # --site-group / --location independently each gets its OWN scoped prefix
-    # below. The region and site-group both contain ci-site; the location lives
-    # inside ci-site. Region/site-group only need name+slug.
+    # The region and site-group both contain ci-site; the location lives inside
+    # ci-site. Search scope filters use NetBox's tree-aware region_id /
+    # site_group_id / location_id filters for non-site scopes, so the live tests
+    # assert both selected-scope hits and descendant hits.
     region = ensure(
         "/dcim/regions/",
         {"slug": "ci-region"},
@@ -165,6 +172,29 @@ def main():
     )
     print(f"location: {location['slug']} (id {location['id']}) at ci-site")
 
+    child_location = ensure(
+        "/dcim/locations/",
+        {"slug": "ci-loc-child"},
+        {
+            "name": "ci-loc-child",
+            "slug": "ci-loc-child",
+            "site": site["id"],
+            "parent": location["id"],
+            "status": "active",
+        },
+    )
+    if brief_id(child_location.get("parent")) != location["id"] or brief_id(
+        child_location.get("site")
+    ) != site["id"]:
+        child_location = patch(
+            f"/dcim/locations/{child_location['id']}/",
+            {"site": site["id"], "parent": location["id"]},
+        )
+    print(
+        f"child location: {child_location['slug']} "
+        f"(id {child_location['id']}) under ci-loc"
+    )
+
     # --- VRF -----------------------------------------------------------------
     vrf = ensure("/ipam/vrfs/", {"name": "ci-vrf"}, {"name": "ci-vrf"})
     print(f"vrf: {vrf['name']} (id {vrf['id']})")
@@ -184,14 +214,15 @@ def main():
     print(f"scoped prefix: {scoped_prefix['prefix']} (scope=dcim.site:{site['id']})")
 
     # --- region / site-group / location scoped prefixes ----------------------
-    # One prefix per scope TYPE so each `nbox search --region|--site-group|
-    # --location` filter has exactly one expected hit, proving the polymorphic
-    # scope_type=<ct>&scope_id=<id> filter against the real 4.2 API (an EXACT
-    # match — no hierarchy expansion). Distinct CIDRs keep them unambiguous.
+    # Prefixes scoped to the selected non-site scopes plus a child location. The
+    # live tests assert that NetBox's native tree filters include descendants:
+    # region/site-group find the site-scoped 10.10/16, and location finds the
+    # child-location-scoped 10.41/16.
     for cidr, ct, obj, label in [
         ("10.20.0.0/16", "dcim.region", region, "region"),
         ("10.30.0.0/16", "dcim.sitegroup", site_group, "site-group"),
         ("10.40.0.0/16", "dcim.location", location, "location"),
+        ("10.41.0.0/16", "dcim.location", child_location, "child-location"),
     ]:
         p = ensure(
             "/ipam/prefixes/",

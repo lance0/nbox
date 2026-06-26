@@ -102,15 +102,15 @@ Polish the read experience. No writes here.
   explicit fetch-all / raise-cap action on the affected detail tabs, following
   the server's `next` link through `list_all` (the old `offset += page_size` row
   skip is already fixed in 0.12.0).
-- ☐ **Hierarchical scope filters (descendant expansion).** `--region`/`--site-group`/`--location` (and the
-  TUI scope) match **exactly** today — a region matches only prefixes scoped to the region itself, not the
-  sites inside it (`KNOWN_ISSUES.md`). NetBox's `PrefixFilter` has no `within`/descendant lookup (see the
-  Performance-candidates skip note below), so the fix is client-side: resolve the scope to its descendant
-  sites, then filter by those ids. Not a one-liner — it needs the region→site expansion path.
+- ☑ **Hierarchical scope filters.** `search --region`/`--site-group`/`--location`
+  now uses NetBox's native tree-aware scoped id filters (`region_id`,
+  `site_group_id`, `location_id`) on prefixes and clusters, so the selected node
+  and its descendants are included server-side. `--site` stays exact via the
+  polymorphic `scope_type=dcim.site` + `scope_id=<id>` match.
 - _Tracked vs by-design (`KNOWN_ISSUES.md` cross-reference, so the two docs stop drifting): the
   browse/sub-resource caps are covered by load-more above; the `offset += page_size` skip is **fixed**
-  (0.12.0, `list_all` now follows `next`); hierarchical scope by the item above; read-only by **Writes
-  — deferred** and CSV shape by **CSV/output-mode contracts**; device-by-name-vs-display is documented
+  (0.12.0, `list_all` now follows `next`); hierarchical scope is **fixed** by the item above; read-only
+  by **Writes — deferred** and CSV shape by **CSV/output-mode contracts**; device-by-name-vs-display is documented
   (a `device_by_ref` suffix-strip fallback is a candidate fix), not yet scheduled. The remaining two —
   parent-prefix enrichment as a best-effort longest match, and name lookups resolving exact-then-contains
   — are **by design** (surfacing ambiguity over guessing), acknowledged here, not tracked for a fix._
@@ -628,8 +628,9 @@ Consolidated future scope:
   limit, 11 read tools, `nbox://{kind}/{ref}` resources.
 - ☑ **Read coverage** — circuits, providers, aggregates, ASNs, IP ranges, tenants, contacts, VMs,
   clusters; journal command + inline `--journal`; services on device detail; cable/interface trace.
-- ☑ **Scope/VRF** — `search --vrf`, scope filters (`--region`/`--site-group`/`--location`), exact
-  VRF-by-RD, VRF-scoped prefix child/IP sections.
+- ☑ **Scope/VRF** — `search --vrf`, hierarchical scope filters
+  (`--region`/`--site-group`/`--location`), exact VRF-by-RD, VRF-scoped prefix
+  child/IP sections.
 - ☑ **TUI** — list/preview split + focus, scrolling + position cues, profile switcher, the in-app
   Config modal (profile editor + settings + first-run onboarding).
 - ☑ **Secrets** — OS keyring token storage with env fallback (historical; the keyring surface was

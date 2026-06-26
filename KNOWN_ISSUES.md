@@ -14,24 +14,6 @@ claim them; `tags`/`journal` are list-only.
 
 ---
 
-### Search scope/VRF filters are exact, not hierarchical
-
-**Issue:** `nbox search` takes `--vrf` (resolves id/RD/name, filters IP/prefix by
-`vrf_id=`) and the scope flags `--site/--region/--site-group/--location` (resolve
-the ref once, filter prefixes by `scope_type`+`scope_id`). The scope match is
-**exact**: `--region` filters by that region's own scope only — it does not pull
-in prefixes scoped to sites *inside* the region. At most one scope flag may be set
-at a time.
-
-**Impact:** A hierarchical question ("everything under region X") needs more than
-one query, or an id-based filter on an endpoint that supports it.
-
-**Mitigation:** Filter at the level the object is scoped, combine with `--vrf`, or
-use `nbox raw GET` with explicit params. Descendant/hierarchy expansion is not
-implemented.
-
----
-
 ### Parent-prefix enrichment is a best-effort longest match
 
 **Issue:** `nbox ip` computes the parent prefix locally (longest match) from the
