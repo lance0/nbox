@@ -417,7 +417,7 @@ pub(crate) async fn apply_interface_description_update(
 
 /// Build a no-op receipt: the current value already matches, so no `PATCH` is
 /// sent. ADR-0001 §8 wording: "no change: current value already matches".
-fn no_op_receipt(plan: &MutationPlan) -> MutationReceipt {
+pub(crate) fn no_op_receipt(plan: &MutationPlan) -> MutationReceipt {
     MutationReceipt {
         schema_version: PLAN_SCHEMA_VERSION,
         operation: plan.operation,

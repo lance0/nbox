@@ -105,6 +105,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the same short-lived `nbox_get` cache entry, so an attached resource and the
   matching tool call do not re-fetch the same object graph within the cache TTL.
   `nbox_cache_clear` clears both paths.
+- **Write audit records the real HTTP status on apply errors.** The write
+  audit (target `nbox::write_audit`) now records the actual HTTP status code
+  on apply failures — `412` for a stale precondition, `400` for a NetBox
+  validation rejection, or the `Api` status for other HTTP failures — instead
+  of the placeholder `0`. Non-HTTP errors (network, pre-4.6 re-read refusal)
+  still record `0` since no HTTP response was received. `NboxError::http_status`
+  is the new accessor (ADR-0001 §8).
+- **TTY no-op short-circuit.** When a write plan is a no-op (e.g. adding a tag
+  the object already carries, or setting a status to its current value) and the
+  operator is on a TTY without `--confirm`, the plan now short-circuits to a
+  "no change — nothing to apply" receipt without prompting for confirmation.
 
 ## [0.13.0] - 2026-06-25
 

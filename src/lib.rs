@@ -1404,13 +1404,34 @@ async fn apply_or_preview(
     }
 
     // 5) confirm. On a plain TTY without `--confirm`, show the diff then prompt.
+    //    A no-op short-circuits before the prompt — nothing to confirm.
     if action == WriteAction::Prompt {
+        if plan.no_op {
+            // A no-op sends no PATCH and needs no confirmation. Emit the
+            // no-op receipt directly (same as the apply path's short-circuit).
+            render_plan_plain(plan);
+            eprintln!("\nno change — nothing to apply.");
+            let receipt = detail::no_op_receipt(plan);
+            audit_event(
+                Surface::Cli,
+                profile,
+                host,
+                plan,
+                &field_names,
+                Outcome::NoOp,
+                plan.operation.http_method(),
+                &plan.target.endpoint,
+                0,
+                0, // no network round-trip — short-circuited before apply
+                message_present,
+                message_len,
+            )
+            .emit();
+            let _ = emit(ctx, &receipt, || render_receipt_plain(&receipt));
+            return Ok(());
+        }
         // The diff goes to stdout (the operator's review); the prompt to stderr.
         render_plan_plain(plan);
-        if plan.no_op {
-            // A no-op needs no confirmation — nothing would change. Still emit
-            // the dry-plan-style line and let the apply path short-circuit.
-        }
         eprintln!();
         eprint!("Apply this change to NetBox? [y/N] ");
         let _ = std::io::stderr().flush();
@@ -1474,11 +1495,13 @@ async fn apply_or_preview(
         Err(e) => {
             // Classify the error for the audit outcome (ADR §8), then return the
             // error so the stable exit code + stderr message reach the process.
-            let outcome = classify_apply_error(&e);
+            let (outcome, http_status) = classify_apply_error(&e);
             // For the pre-4.6 stale path the refusal happens on the re-read
-            // (no PATCH sent); the 4.6+ 412 happens on the PATCH. Either way the
-            // attempt targeted the PATCH endpoint — record it, status 0 since
-            // the error variants don't surface the HTTP status.
+            // (no PATCH sent); the 4.6+ 412 happens on the PATCH. Either way
+            // the attempt targeted the PATCH endpoint. `http_status` carries
+            // the real HTTP status when it can be determined (412 for stale,
+            // 400 for validation, the Api status for other HTTP failures);
+            // 0 when the error has no HTTP status (network, pre-4.6 re-read).
             audit_event(
                 Surface::Cli,
                 profile,
@@ -1488,7 +1511,7 @@ async fn apply_or_preview(
                 outcome,
                 plan.operation.http_method(),
                 &plan.target.endpoint,
-                0,
+                http_status,
                 sw.elapsed_ms(),
                 message_present,
                 message_len,
@@ -1697,21 +1720,24 @@ async fn run_tag_add(
 /// (412 or pre-4.6 before-hash mismatch) is a recoverable refusal; a 400 is a
 /// NetBox validation rejection; anything else (network, auth, 5xx) is a plain
 /// error. Walks the chain so a `.context(...)`-wrapped typed error still maps.
-fn classify_apply_error(e: &anyhow::Error) -> write_audit::Outcome {
+fn classify_apply_error(e: &anyhow::Error) -> (write_audit::Outcome, u16) {
     use crate::netbox::write_audit::Outcome;
-    if e.chain().any(|c| {
-        c.downcast_ref::<error::NboxError>()
-            .is_some_and(|n| matches!(n, error::NboxError::StalePrecondition(_)))
-    }) {
-        Outcome::Stale
-    } else if e.chain().any(|c| {
-        c.downcast_ref::<error::NboxError>()
-            .is_some_and(|n| matches!(n, error::NboxError::WriteValidation(_)))
-    }) {
-        Outcome::Validation
-    } else {
-        Outcome::Error
+    // Walk the chain for the most specific typed error. The first NboxError
+    // that maps to an outcome wins; its HTTP status (if any) is recorded in
+    // the audit so a 400 validation rejection or a 412 stale precondition
+    // logs the real status, not the placeholder 0 (ADR-0001 §8, P3 fix).
+    for cause in e.chain() {
+        if let Some(n) = cause.downcast_ref::<error::NboxError>() {
+            let status = n.http_status().unwrap_or(0);
+            let outcome = match n {
+                error::NboxError::StalePrecondition(_) => Outcome::Stale,
+                error::NboxError::WriteValidation(_) => Outcome::Validation,
+                _ => Outcome::Error,
+            };
+            return (outcome, status);
+        }
     }
+    (Outcome::Error, 0)
 }
 
 /// Build a [`WriteAuditEvent`] from a plan's target + the resolved outcome.
