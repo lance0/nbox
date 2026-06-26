@@ -490,6 +490,23 @@ mod tests {
             base,
             confirm_token(&t3, Operation::Update, &p, &patch, &None, 1_000)
         );
+        // Different operation → different token.
+        assert_ne!(
+            base,
+            confirm_token(&t, Operation::Allocate, &p, &patch, &None, 1_000)
+        );
+        // Different changelog message → different token.
+        assert_ne!(
+            base,
+            confirm_token(
+                &t,
+                Operation::Update,
+                &p,
+                &patch,
+                &Some("reviewed change".into()),
+                1_000
+            )
+        );
     }
 
     #[test]

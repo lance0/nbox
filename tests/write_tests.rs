@@ -2136,6 +2136,57 @@ async fn tag_add_unknown_tag_is_not_found_exit_4() {
 }
 
 #[tokio::test]
+async fn tag_add_ambiguous_ip_refuses_instead_of_first_picking() {
+    let server = MockServer::start().await;
+    mount_tag_by_name(&server, 5, "prod", "prod").await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/ip-addresses/"))
+        .and(wiremock::matchers::query_param("address", "192.0.2.10"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 2, "next": null, "previous": null,
+            "results": [
+                {
+                    "id": 101,
+                    "url": format!("{}/api/ipam/ip-addresses/101/", server.uri()),
+                    "address": "192.0.2.10/24",
+                    "vrf": {"id": 1, "name": "blue", "display": "blue"}
+                },
+                {
+                    "id": 102,
+                    "url": format!("{}/api/ipam/ip-addresses/102/", server.uri()),
+                    "address": "192.0.2.10/24",
+                    "vrf": {"id": 2, "name": "red", "display": "red"}
+                }
+            ]
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_nbox([
+        "--config",
+        config.path().to_str().unwrap(),
+        "--no-tui",
+        "tag",
+        "add",
+        "ip",
+        "192.0.2.10",
+        "prod",
+        "--dry-run",
+        "--json",
+    ]);
+
+    assert_error_contract(&out, 5, "IP address");
+    assert!(out.stderr.contains("ambiguous"), "stderr: {}", out.stderr);
+    assert_eq!(patch_count(&server).await, 0);
+    assert_eq!(
+        server.received_requests().await.unwrap_or_default().len(),
+        2,
+        "ambiguous IP should stop after tag lookup + candidate lookup"
+    );
+}
+
+#[tokio::test]
 async fn tag_add_confirm_without_allow_writes_is_a_usage_error() {
     let server = MockServer::start().await;
     let config = write_config(&server.uri());

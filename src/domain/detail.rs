@@ -856,18 +856,32 @@ struct TagTargetObject {
 
 /// Resolve a `<kind> <ref>` to the object's REST detail endpoint path (relative
 /// to the client base URL) and numeric id. Reuses the same per-kind resolvers
-/// as `resolve_object_url`, so ambiguity / not-found / case-insensitive
-/// fallback behave exactly like `nbox <kind> <ref>`. Returns the endpoint path
-/// (e.g. `/api/dcim/devices/42/`) and the id.
+/// as `resolve_object_url`, except for IP addresses: `open ip/<addr>` historically
+/// first-picked a candidate, but a write must fail closed when the same address
+/// exists in multiple VRFs. Returns the endpoint path (e.g.
+/// `/api/dcim/devices/42/`) and the id.
 pub(crate) async fn resolve_tag_target_endpoint(
     client: &NetBoxClient,
     kind: &str,
     value: &str,
     not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
 ) -> Result<(String, u64)> {
-    let url = crate::resolve_object_url(client, kind, value)
-        .await?
-        .ok_or_else(|| not_found(kind, value))?;
+    let url = match kind {
+        "ip" | "ip-address" | "address" => {
+            let candidates = client.ip_candidates(value).await?;
+            resolve_unique(
+                "IP address",
+                value,
+                candidates,
+                query::ip_scope_label,
+                not_found,
+            )?
+            .url
+        }
+        _ => crate::resolve_object_url(client, kind, value)
+            .await?
+            .ok_or_else(|| not_found(kind, value))?,
+    };
     let parsed = reqwest::Url::parse(&url).context("parsing resolved object URL")?;
     // The object URL is the full REST detail endpoint (e.g.
     // `http://h/netbox/api/dcim/devices/42/`). Strip the client's base URL to
