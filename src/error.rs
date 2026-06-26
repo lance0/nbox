@@ -77,6 +77,21 @@ impl NboxError {
         }
     }
 
+    /// The HTTP status code for a write-apply error, if it can be determined.
+    /// `StalePrecondition` → 412, `WriteValidation` → 400, `Api { status, .. }`
+    /// → that status. Other variants (usage, not-found, network) return `None`.
+    /// Used by the write audit to record the real HTTP status on apply errors
+    /// instead of the placeholder `0` (ADR-0001 §8).
+    #[must_use]
+    pub fn http_status(&self) -> Option<u16> {
+        match self {
+            NboxError::StalePrecondition(_) => Some(412),
+            NboxError::WriteValidation(_) => Some(400),
+            NboxError::Api { status, .. } => Some(*status),
+            _ => None,
+        }
+    }
+
     /// The exit code for any error: the most specific [`NboxError`] in the chain,
     /// else `1`.
     pub fn exit_code_for(err: &anyhow::Error) -> i32 {
