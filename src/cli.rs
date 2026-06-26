@@ -183,7 +183,7 @@ pub enum Command {
         action: Option<IpAction>,
     },
 
-    /// Show prefix details and children.
+    /// Show prefix details and children, or reserve a child prefix.
     Prefix {
         /// Prefix in CIDR notation.
         cidr: String,
@@ -199,6 +199,12 @@ pub enum Command {
         /// Max inline journal entries to fold in (implies --journal; default 5).
         #[arg(long, value_name = "N")]
         journal_limit: Option<usize>,
+
+        /// Optional write action. Omit to read a prefix (`nbox prefix <cidr>`);
+        /// pass `reserve` to allocate the next available child prefix (a write,
+        /// behind `--allow-writes` + confirmation — ADR-0001).
+        #[command(subcommand)]
+        action: Option<PrefixAction>,
     },
 
     /// Show the next available IP address(es) in a prefix.
@@ -838,6 +844,57 @@ pub enum IpAction {
         /// writes on its own — `--confirm` without `--allow-writes` is a usage
         /// error (exit 2). With `--json`, returns the stable `MutationReceipt`
         /// JSON.
+        #[arg(long)]
+        confirm: bool,
+
+        /// The write-enable gate: required to apply ANY mutation. Kept separate
+        /// from `--confirm` so a read-only invocation can never be silently
+        /// turned into a write (ADR-0001 §4).
+        #[arg(long = "allow-writes")]
+        allow_writes: bool,
+    },
+}
+
+/// `nbox prefix` write actions (read is the bare `nbox prefix <cidr>`).
+#[derive(Debug, Subcommand)]
+pub enum PrefixAction {
+    /// Reserve (allocate) the next available child prefix. A write: requires
+    /// the `--allow-writes` gate AND confirmation (`--confirm`, or an
+    /// interactive prompt on a TTY in plain output). `--dry-run` previews with
+    /// no mutation and needs neither. NetBox allocates the prefix server-side
+    /// and race-safe, so the applied prefix may differ from any previewed
+    /// candidate.
+    Reserve {
+        /// The prefix length for the new child prefix (e.g. `26` for a /26
+        /// inside a /24). If omitted, NetBox allocates the next available block
+        /// of any size (the parent's prefix length + 1 by default).
+        #[arg(long, value_name = "LEN")]
+        length: Option<u8>,
+
+        /// Disambiguate the parent prefix by VRF (name, slug, or RD).
+        #[arg(long)]
+        vrf: Option<String>,
+
+        /// Set the new prefix's description. Optional.
+        #[arg(long, value_name = "TEXT")]
+        description: Option<String>,
+
+        /// Record this message in NetBox's object-change entry (a write-only
+        /// request field, never stored on the object). Validated to NetBox's
+        /// 200-character limit before applying. Optional.
+        #[arg(long, value_name = "MESSAGE")]
+        message: Option<String>,
+
+        /// Preview the plan + the candidate prefix and perform no mutation.
+        /// Needs neither `--allow-writes` nor confirmation. With `--json`,
+        /// returns the stable `MutationPlan` JSON.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+
+        /// Apply the reviewed plan without an interactive prompt. Does NOT
+        /// enable writes on its own — `--confirm` without `--allow-writes` is a
+        /// usage error (exit 2). With `--json`, returns the stable
+        /// `MutationReceipt` JSON.
         #[arg(long)]
         confirm: bool,
 
@@ -1542,5 +1599,42 @@ mod tests {
         assert_eq!(object_name, "edge01");
         assert_eq!(tag, "prod");
         assert_eq!(msg, "untagging");
+    }
+
+    #[test]
+    fn prefix_reserve_parses_flags() {
+        let cmd = Cli::try_parse_from([
+            "nbox",
+            "--no-tui",
+            "prefix",
+            "10.0.0.0/24",
+            "reserve",
+            "--length",
+            "26",
+            "--description",
+            "dmz",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Some(Command::Prefix {
+            cidr,
+            action:
+                Some(PrefixAction::Reserve {
+                    length: Some(len),
+                    description: Some(desc),
+                    vrf: None,
+                    message: None,
+                    dry_run: true,
+                    confirm: false,
+                    allow_writes: false,
+                }),
+            ..
+        }) = cmd.command
+        else {
+            panic!("expected prefix reserve");
+        };
+        assert_eq!(cidr, "10.0.0.0/24");
+        assert_eq!(len, 26);
+        assert_eq!(desc, "dmz");
     }
 }

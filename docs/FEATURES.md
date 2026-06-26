@@ -1,11 +1,12 @@
 # Features
 
 nbox is a NetBox client — a CLI and a TUI over the same core. Reads are the
-default; a narrow safe-write foundation (ADR-0001) adds four plan-first commands
+default; a narrow safe-write foundation (ADR-0001) adds six plan-first commands
 behind `--allow-writes` + confirmation — `interface … set description` and
 `device … set status` (`PATCH`), `ip reserve <prefix>` (the next-IP
-allocation, a `POST`), and `tag add <type> <name> <tag>` (a `PATCH` to the
-`tags` array on any object). The MCP server stays read-only.
+allocation, a `POST`), `prefix reserve <cidr>` (the next-prefix allocation,
+a `POST` to `available-prefixes`), and `tag add`/`remove <type> <name> <tag>`
+(a `PATCH` to the `tags` array on any object). The MCP server stays read-only.
 
 ## Lookups
 
@@ -15,8 +16,7 @@ allocation, a `POST`), and `tag add <type> <name> <tag>` (a `PATCH` to the
 | `nbox device <name\|slug\|id> [--journal]` | Device + interfaces, IPs, cables, VLANs, services. `set status <value>` is a safe write (ADR-0001): status validated live via OPTIONS, behind `--allow-writes` + confirm. |
 | `nbox interface <device> <iface>` | One interface: type, MTU, MAC, mode, VLANs, cable, **cable path** (an A↔Z trace diagram naming the device at each end), addresses. `set description "…"` is a safe write (ADR-0001), behind `--allow-writes` + confirm. |
 | `nbox ip <addr> [--vrf] [--journal]` | IP + most-specific parent prefix (VRF-scoped) and its VLAN plus the prefix's `scope`/`scope_type` (site, location, region, …); surfaces `nat_inside`/`nat_outside` (NetBox 4.6) when set. |
-| `nbox ip reserve <cidr> [--vrf] [--description] [--dns-name]` | Reserve the next available IP in a prefix — a safe write (ADR-0001): `POST` to `available-ips`, behind `--allow-writes` + confirm. `--dry-run` previews the candidate; the receipt's `object` is the created IP. |
-| `nbox prefix <cidr> [--vrf] [--journal]` | Prefix with utilization, children, and contained IPs. |
+| `nbox prefix <cidr> [--vrf] [--journal]` | Prefix with utilization, children, and contained IPs. `prefix reserve [--length N] [--description]` is a safe write (ADR-0001): `POST` to `available-prefixes`, behind `--allow-writes` + confirm. `--dry-run` previews the candidate; the receipt's `object` is the created prefix. |
 | `nbox next-ip <cidr> [--count] [--vrf]` | Next available address(es) (read-only preview). |
 | `nbox next-prefix <cidr> [--length] [--vrf]` | Available free block(s). |
 | `nbox vlan <vid\|name> [--site] [--group] [--journal]` | VLAN + referencing prefixes, plus the VLAN's own `scope`/`scope_type` and, when it belongs to a scoped VLAN group, the group's `group_scope`/`group_scope_type`. |

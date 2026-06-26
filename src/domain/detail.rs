@@ -816,6 +816,183 @@ pub(crate) async fn apply_ip_reserve(
     })
 }
 
+/// Plan a `prefix reserve <cidr>` allocation (ADR-0001 §5 steps 1–4): validate
+/// the optional changelog message, resolve the parent prefix (scoped by
+/// `vrf`), and build an `Allocate` plan whose body POSTs to the parent's
+/// `available-prefixes` endpoint.
+///
+/// The endpoint is server-side race-safe (NetBox never hands out the same
+/// block twice), so the plan carries [`Precondition::None`] — there is no prior
+/// object, ETag, or `last_updated` to bind. A dry-run surfaces the *currently*
+/// next available block as an advisory warning: NetBox allocates at apply time,
+/// so the applied block may differ. Only `description` may be set (the v1
+/// narrow allow-list — no status/role/tags/vlan).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn plan_prefix_reserve(
+    client: &NetBoxClient,
+    prefix: &str,
+    vrf: Option<&str>,
+    length: Option<u8>,
+    description: Option<&str>,
+    changelog_message: Option<&str>,
+    profile: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<MutationPlan> {
+    // Message length is pure input validation — check first, before any network.
+    let message = match changelog_message {
+        Some(m) if !m.is_empty() => Some(m.to_string()),
+        _ => None,
+    };
+    mutation::validate_changelog_message(&message)?;
+
+    // Resolve the parent prefix by CIDR (same resolver as `nbox prefix` /
+    // `nbox next-prefix`).
+    let prefix_obj = resolve_prefix(client, prefix, vrf, not_found).await?;
+    let endpoint = format!("/api/ipam/prefixes/{}/available-prefixes/", prefix_obj.id);
+
+    let target = PlanTarget {
+        kind: "prefix".to_string(),
+        r#ref: prefix.to_string(),
+        id: prefix_obj.id,
+        display: prefix_obj.prefix.clone(),
+        endpoint,
+        profile: profile.to_string(),
+    };
+
+    // The minimal POST body: only the fields the operator actually set. A bare
+    // reserve sends `{}` and takes NetBox's defaults. `prefix_length` is the
+    // NetBox field for the desired child block size.
+    let mut body = serde_json::Map::new();
+    let mut fields = Vec::new();
+    if let Some(len) = length {
+        body.insert("prefix_length".to_string(), serde_json::json!(len));
+        fields.push(FieldChange {
+            field: "prefix_length".to_string(),
+            before: Value::Null,
+            after: serde_json::json!(len),
+        });
+    }
+    if let Some(d) = description.filter(|s| !s.is_empty()) {
+        body.insert("description".to_string(), serde_json::json!(d));
+        fields.push(FieldChange {
+            field: "description".to_string(),
+            before: Value::Null,
+            after: serde_json::json!(d),
+        });
+    }
+    let patch = Value::Object(body);
+    let precondition = Precondition::None;
+
+    // Dry-run advisory: the block NetBox would currently hand out. Read-only,
+    // and never part of the body — another client could allocate between this
+    // read and the apply POST, so the applied block may differ.
+    let mut warnings = Vec::new();
+    match client.prefix_available_prefixes(prefix_obj.id).await {
+        Ok(list) if list.is_empty() => {
+            warnings.push(
+                "no available prefixes in this prefix — the reserve will fail at apply".to_string(),
+            );
+        }
+        Ok(list) => {
+            // If a length was requested, filter for the first block that
+            // satisfies it (client-side, matching `next-prefix --length`).
+            let candidate = if let Some(len) = length {
+                list.iter()
+                    .find(|p| prefix_satisfies_length(&p.prefix, len))
+            } else {
+                list.first()
+            };
+            match candidate {
+                Some(c) => warnings.push(format!(
+                    "currently next: {} — NetBox allocates at apply; the applied prefix may differ",
+                    c.prefix
+                )),
+                None => {
+                    let requested = length.map_or("any".to_string(), |l| format!("/{l}"));
+                    warnings.push(format!(
+                        "no available block of length {requested} in this prefix — the reserve will fail at apply"
+                    ));
+                }
+            }
+        }
+        // A failed advisory read must not block planning; the apply POST is the
+        // authoritative attempt. Note it and carry on.
+        Err(_) => {
+            warnings.push("could not read the next available prefix (advisory only)".to_string());
+        }
+    }
+
+    let expires_epoch = mutation::plan_expiry_epoch(SystemTime::now());
+    let confirm_token = mutation::confirm_token(
+        &target,
+        Operation::Allocate,
+        &precondition,
+        &patch,
+        &message,
+        expires_epoch,
+    );
+
+    Ok(MutationPlan {
+        schema_version: PLAN_SCHEMA_VERSION,
+        operation: Operation::Allocate,
+        target,
+        precondition,
+        fields,
+        patch,
+        no_op: false,
+        warnings,
+        errors: Vec::new(),
+        changelog_message: message,
+        confirm_token,
+        expires_at: mutation::format_iso_utc(expires_epoch),
+    })
+}
+
+/// Apply a planned prefix reservation (ADR-0001 §5 steps 5–7): verify the
+/// plan's confirmation token + expiry, then POST the minimal body to the
+/// parent's `available-prefixes` endpoint. NetBox allocates the next free
+/// block and returns the created prefix object (`201`), which becomes the
+/// receipt's `object`.
+pub(crate) async fn apply_prefix_reserve(
+    client: &NetBoxClient,
+    plan: &MutationPlan,
+) -> Result<MutationReceipt> {
+    plan.verify()?;
+
+    // The wire body is the minimal create patch plus the opt-in changelog_message.
+    let mut body = plan.patch.clone();
+    if let Some(msg) = &plan.changelog_message {
+        body["changelog_message"] = serde_json::json!(msg);
+    }
+
+    let (created, status): (Prefix, u16) = client.post(&plan.target.endpoint, &body).await?;
+    let created_prefix = created.prefix.clone();
+    let object = serde_json::to_value(&created).ok();
+
+    Ok(MutationReceipt {
+        schema_version: PLAN_SCHEMA_VERSION,
+        operation: plan.operation,
+        target: plan.target.clone(),
+        fields: plan.fields.clone(),
+        applied: true,
+        no_op: false,
+        status,
+        etag: None,
+        request_id: None,
+        object,
+        message: format!("reserved: {} in {}", created_prefix, plan.target.display),
+    })
+}
+
+/// True if `cidr` (e.g. `10.0.0.0/26`) has a prefix length ≤ `target` — a
+/// block of size /26 can carve a /28 but not a /24. NetBox's `available-
+/// prefixes` returns blocks of any size; the dry-run advisory filters for the
+/// first block that can satisfy the requested length.
+fn prefix_satisfies_length(cidr: &str, target: u8) -> bool {
+    cidr.rsplit_once('/')
+        .is_some_and(|(_, len_str)| len_str.parse::<u8>().is_ok_and(|len| len <= target))
+}
+
 // ===== Safe write follow-on: tag add/remove (ADR-0001) ===================
 //
 // Tag writes reuse the same planner/diff/confirm/concurrency/audit contracts
