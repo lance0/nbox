@@ -166,25 +166,43 @@ jobs:
       - name: Run security audit
         run: cargo audit
 
+  # Decide the cross-compile matrix by event. On a PR, build ONLY linux-musl (the
+  # release-critical static target, and the leg that runs on a fast, never-queued
+  # ubuntu runner) so the PR gate isn't gated on the slow macOS/Windows runners —
+  # the matrix legs run in parallel, so PR wall-clock is the slowest leg, and
+  # those are it. The FULL 4-target matrix runs on every push to master (i.e.
+  # right after each squash-merge), and release.yml's 6-target build is the final
+  # pre-tag gate. So every platform is still compiled before any release ships;
+  # only per-PR latency drops. (Branch protection should require the PR check
+  # `platform-build (x86_64-unknown-linux-musl)` — the macOS/Windows legs only
+  # exist on master pushes.)
+  platform-matrix:
+    name: platform-matrix
+    runs-on: ubuntu-latest
+    outputs:
+      include: ${{ steps.set.outputs.include }}
+    steps:
+      - id: set
+        shell: bash
+        run: |
+          musl='{"target":"x86_64-unknown-linux-musl","os":"ubuntu-latest","install_musl":true}'
+          mac_arm='{"target":"aarch64-apple-darwin","os":"macos-latest","install_musl":false}'
+          mac_x86='{"target":"x86_64-apple-darwin","os":"macos-latest","install_musl":false}'
+          win='{"target":"x86_64-pc-windows-msvc","os":"windows-latest","install_musl":false}'
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo "include=[$musl]" >> "$GITHUB_OUTPUT"
+          else
+            echo "include=[$musl,$mac_arm,$mac_x86,$win]" >> "$GITHUB_OUTPUT"
+          fi
+
   platform-build:
+    needs: platform-matrix
     name: platform-build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
-        include:
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-            install_musl: true
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            install_musl: false
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            install_musl: false
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            install_musl: false
+        include: ${{ fromJSON(needs.platform-matrix.outputs.include) }}
 
     steps:
       - uses: actions/checkout@v7
