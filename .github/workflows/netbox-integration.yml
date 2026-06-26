@@ -110,7 +110,13 @@ jobs:
         run: NETBOX_READY_HTTP_CODES=200,403 ./tests/integration/wait-for-ready.sh 420
 
       - name: Resolve NetBox 4.5 API token
-        run: echo "NETBOX_TOKEN=$(./tests/integration/resolve-token.sh)" >> "$GITHUB_ENV"
+        # Assign first so a non-zero exit from resolve-token.sh (e.g. the image
+        # never provisioned the token) fails this step loudly under `set -e`,
+        # rather than writing an empty NETBOX_TOKEN that surfaces later as a
+        # misleading readiness timeout.
+        run: |
+          token="$(./tests/integration/resolve-token.sh)"
+          echo "NETBOX_TOKEN=${token}" >> "$GITHUB_ENV"
 
       - name: Wait for NetBox to be ready
         run: ./tests/integration/wait-for-ready.sh 60
@@ -143,7 +149,9 @@ jobs:
 
   netbox-46-compat:
     name: live NetBox 4.6 compatibility
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    # Runs on every trigger (PRs, master pushes, the nightly schedule, manual
+    # dispatch) — 4.6 is the current NetBox line and the dev target, so it gates
+    # PRs like 4.2/4.5. The nightly schedule additionally catches image drift.
     runs-on: ubuntu-latest
     env:
       NETBOX_IMAGE: netboxcommunity/netbox:v4.6.2
@@ -166,7 +174,13 @@ jobs:
         run: NETBOX_READY_HTTP_CODES=200,403 ./tests/integration/wait-for-ready.sh 420
 
       - name: Resolve NetBox 4.6 API token
-        run: echo "NETBOX_TOKEN=$(./tests/integration/resolve-token.sh)" >> "$GITHUB_ENV"
+        # Assign first so a non-zero exit from resolve-token.sh (e.g. the image
+        # never provisioned the token) fails this step loudly under `set -e`,
+        # rather than writing an empty NETBOX_TOKEN that surfaces later as a
+        # misleading readiness timeout.
+        run: |
+          token="$(./tests/integration/resolve-token.sh)"
+          echo "NETBOX_TOKEN=${token}" >> "$GITHUB_ENV"
 
       - name: Wait for NetBox to be ready
         run: ./tests/integration/wait-for-ready.sh 60
