@@ -610,6 +610,7 @@ Full list with copy-paste fixes: [docs/TROUBLESHOOTING.md](docs/TROUBLESHOOTING.
 - [Continuous Integration](docs/CI.md) — required checks, scheduled gates, local smoke
 - [MCP server](docs/MCP.md) — agent setup, tools, HTTP/OIDC
 - [Architecture](docs/ARCHITECTURE.md) — internal design and module structure
+- [ADRs](docs/adr/) — architecture decision records
 - [Agents](AGENTS.md) — machine-readable surface, output formats, exit codes
 - [Troubleshooting](docs/TROUBLESHOOTING.md) — symptoms and fixes
 - [Known Issues](KNOWN_ISSUES.md) — current limitations
