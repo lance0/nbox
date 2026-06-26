@@ -2106,6 +2106,93 @@ async fn prefix_reserve_409_exhaustion_is_a_clean_error() {
     assert_eq!(post_count(&server).await, 1, "exactly one POST attempt");
 }
 
+#[tokio::test]
+async fn prefix_reserve_audit_logs_names_only_never_values_token_or_message_body() {
+    let server = MockServer::start().await;
+    mount_prefix_resolution(&server, 1, "10.0.0.0/24").await;
+    mount_available_prefixes_get(&server, 1, &["10.0.0.0/25"]).await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/prefixes/1/available-prefixes/"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": 42, "url": "u", "prefix": "10.0.0.0/25"
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let log = NamedTempFile::new().expect("log file");
+    let log_path = log.path().to_path_buf();
+    drop(log);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_nbox"))
+        .arg("--config")
+        .arg(config.path())
+        .arg("--no-tui")
+        .arg("--log-file")
+        .arg(&log_path)
+        .arg("--log-level")
+        .arg("nbox::write_audit=info")
+        .args([
+            "prefix",
+            "10.0.0.0/24",
+            "reserve",
+            "--length",
+            "25",
+            "--description",
+            "reserve-secret-desc",
+            "--allow-writes",
+            "--confirm",
+            "--message",
+            "reserve-secret-message",
+            "--json",
+        ])
+        .env("NBOX_TOKEN", "secret-nbox-token-12345")
+        .env_remove("NBOX_LOG")
+        .env_remove("RUST_LOG")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn nbox");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let log_text = std::fs::read_to_string(&log_path).expect("read log file");
+    assert!(log_text.contains("nbox::write_audit"), "log: {log_text}");
+    assert!(
+        log_text.contains("operation=\"allocate\"") || log_text.contains("operation=allocate"),
+        "operation recorded: {log_text}"
+    );
+    assert!(
+        log_text.contains("fields=\"prefix_length") || log_text.contains("fields=prefix_length"),
+        "field NAME recorded: {log_text}"
+    );
+    assert!(
+        log_text.contains("outcome=\"applied\"") || log_text.contains("outcome=applied"),
+        "outcome recorded: {log_text}"
+    );
+    assert!(
+        log_text.contains("message_present=true"),
+        "message_present flag: {log_text}"
+    );
+    assert!(
+        !log_text.contains("reserve-secret-desc"),
+        "description value leaked: {log_text}"
+    );
+    assert!(
+        !log_text.contains("reserve-secret-message"),
+        "message body leaked: {log_text}"
+    );
+    assert!(
+        !log_text.contains("secret-nbox-token-12345"),
+        "token leaked: {log_text}"
+    );
+}
+
 // ===== ip-range reserve (ADR-0001 follow-on) ===============================
 //
 // `ip-range reserve` mirrors `ip reserve` but targets an IP range instead of
@@ -2261,6 +2348,95 @@ async fn ip_range_reserve_409_exhaustion_is_a_clean_error() {
 
     assert_error_contract(&out, 1, "Insufficient space");
     assert_eq!(post_count(&server).await, 1, "exactly one POST attempt");
+}
+
+#[tokio::test]
+async fn ip_range_reserve_audit_logs_names_only_never_values_token_or_message_body() {
+    let server = MockServer::start().await;
+    mount_ip_range_resolution(&server, 1, "10.0.0.10", "10.0.0.20").await;
+    mount_ip_range_available_ips_get(&server, 1, Some("10.0.0.10/32")).await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/ip-ranges/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": 42, "url": "u", "address": "10.0.0.10/32"
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let log = NamedTempFile::new().expect("log file");
+    let log_path = log.path().to_path_buf();
+    drop(log);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_nbox"))
+        .arg("--config")
+        .arg(config.path())
+        .arg("--no-tui")
+        .arg("--log-file")
+        .arg(&log_path)
+        .arg("--log-level")
+        .arg("nbox::write_audit=info")
+        .args([
+            "ip-range",
+            "10.0.0.10",
+            "reserve",
+            "--description",
+            "reserve-secret-desc",
+            "--allow-writes",
+            "--confirm",
+            "--message",
+            "reserve-secret-message",
+            "--json",
+        ])
+        .env("NBOX_TOKEN", "secret-nbox-token-12345")
+        .env_remove("NBOX_LOG")
+        .env_remove("RUST_LOG")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn nbox");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let log_text = std::fs::read_to_string(&log_path).expect("read log file");
+    assert!(log_text.contains("nbox::write_audit"), "log: {log_text}");
+    assert!(
+        log_text.contains("operation=\"allocate\"") || log_text.contains("operation=allocate"),
+        "operation recorded: {log_text}"
+    );
+    assert!(
+        log_text.contains("http_method=\"POST\"") || log_text.contains("http_method=POST"),
+        "http_method recorded: {log_text}"
+    );
+    assert!(
+        log_text.contains("fields=\"description\"") || log_text.contains("fields=description"),
+        "field NAME recorded: {log_text}"
+    );
+    assert!(
+        log_text.contains("outcome=\"applied\"") || log_text.contains("outcome=applied"),
+        "outcome recorded: {log_text}"
+    );
+    assert!(
+        log_text.contains("message_present=true"),
+        "message_present flag: {log_text}"
+    );
+    assert!(
+        !log_text.contains("reserve-secret-desc"),
+        "description value leaked: {log_text}"
+    );
+    assert!(
+        !log_text.contains("reserve-secret-message"),
+        "message body leaked: {log_text}"
+    );
+    assert!(
+        !log_text.contains("secret-nbox-token-12345"),
+        "token leaked: {log_text}"
+    );
 }
 
 // ===== tag add (ADR-0001 follow-on) =====================================
