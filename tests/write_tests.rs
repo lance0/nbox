@@ -1953,7 +1953,7 @@ async fn ip_bare_without_address_is_a_usage_error() {
 
 // ===== tag add (ADR-0001 follow-on) =====================================
 //
-// The third write command reuses the same planner/diff/confirm/concurrency/
+// The fourth write command reuses the same planner/diff/confirm/concurrency/
 // audit contracts. Tags are a list field: the plan carries the full
 // replacement `{"tags": [slugs]}` (NetBox PATCH replaces the whole array).
 

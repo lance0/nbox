@@ -818,7 +818,7 @@ pub(crate) async fn apply_ip_reserve(
 
 // ===== Safe write follow-on: tag add (ADR-0001) ===========================
 //
-// The third write command reuses the same planner/diff/confirm/concurrency/
+// The fourth write command reuses the same planner/diff/confirm/concurrency/
 // audit contracts as the interface/device pilots. Tags are a list field: the
 // plan carries the full replacement `{"tags": [slugs]}` (NetBox's PATCH
 // semantics replace the whole array), so the before/after diff shows the tag

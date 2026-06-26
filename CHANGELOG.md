@@ -74,7 +74,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - A bare reserve `POST`s an empty body; an exhausted prefix (`409`) and a NetBox
     validation rejection (`400`) surface as clean errors (exit 1, empty stdout).
     The audit logs `operation=allocate`, `http_method=POST`, and field names only.
-- **`nbox tag add <type> <name> <tag>` — the third safe write.** Adds a tag to
+- **`nbox tag add <type> <name> <tag>` — the fourth safe write.** Adds a tag to
   any taggable object (device, IP, prefix, VLAN, site, rack, circuit, VM, …) via
   a minimal `PATCH` that replaces the full `tags` array, on the same ADR-0001
   gate/confirm/audit lifecycle as the interface/device pilots (`--dry-run` /

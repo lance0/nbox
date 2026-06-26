@@ -1650,7 +1650,7 @@ async fn run_ip_reserve(
     .await
 }
 
-/// `nbox tag add <type> <name> <tag>` — the third safe write (ADR-0001
+/// `nbox tag add <type> <name> <tag>` — the fourth safe write (ADR-0001
 /// follow-on), reusing the same gate/planner/lifecycle/audit path as the
 /// interface/device pilots. Resolves the tag and the target object, reads the
 /// current tags, and builds a plan that appends the tag's slug to the tags
