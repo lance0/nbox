@@ -251,24 +251,39 @@ impl NetBoxClient {
             Some(auth) => tracing::debug!(url = %url, auth = %auth, "OPTIONS"),
             None => tracing::debug!(url = %url, "OPTIONS (unauthenticated)"),
         }
-        let res = self
-            .http
-            .request(reqwest::Method::OPTIONS, url)
-            .send()
-            .await?;
-        let status = res.status();
-        let text = res.text().await.unwrap_or_default();
-        if !status.is_success() {
-            return Err(status_error(status, &text).into());
+        let mut attempt = 0;
+        loop {
+            // Attach the token (and Accept) exactly like `send`/`patch`: a
+            // secured NetBox returns 403 to an unauthenticated OPTIONS, so the
+            // choice enumeration must carry the same auth as every other call.
+            let mut req = self
+                .http
+                .request(reqwest::Method::OPTIONS, url.clone())
+                .header(ACCEPT, "application/json");
+            if let Some(token) = &self.token {
+                req = req.header(AUTHORIZATION, self.auth_scheme.header_value(token));
+            }
+
+            let res = req.send().await.context("sending OPTIONS to NetBox")?;
+            if retry_on_rate_limit(&res, attempt, "NetBox OPTIONS").await {
+                attempt += 1;
+                continue;
+            }
+
+            let status = res.status();
+            let text = res.text().await.unwrap_or_default();
+            if !status.is_success() {
+                return Err(status_error(status, &text).into());
+            }
+            // DRF's OPTIONS body is JSON metadata; tolerate an empty body (some
+            // proxies strip it) by falling back to an empty object, which the
+            // choice extractor treats as "couldn't enumerate" (a usage error,
+            // never an unvalidated PATCH).
+            if text.is_empty() {
+                return Ok(json!({}));
+            }
+            return serde_json::from_str(&text).context("decoding NetBox OPTIONS metadata");
         }
-        // DRF's OPTIONS body is JSON metadata; tolerate an empty body (some
-        // proxies strip it) by falling back to an empty object, which the choice
-        // extractor treats as "couldn't enumerate" (a usage error, never an
-        // unvalidated PATCH).
-        if text.is_empty() {
-            return Ok(json!({}));
-        }
-        serde_json::from_str(&text).context("decoding NetBox OPTIONS metadata")
     }
 
     /// Perform an authenticated `PATCH` (partial update) and deserialize the

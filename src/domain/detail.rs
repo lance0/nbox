@@ -477,6 +477,18 @@ pub(crate) async fn plan_device_status_update(
     // unknown/ambiguous input is a usage error (exit 2) BEFORE resolving the
     // device — no PATCH is ever built from an unvalidated value (ADR-0001 §6).
     let choices = client.device_status_choices().await?;
+    // Empty metadata means the OPTIONS enumeration came back without choices
+    // (an unexpected schema, a permission-stripped `actions`, or a proxy that
+    // dropped the body). Fail with a clear cause rather than letting
+    // `resolve_choice` report the input as an invalid value against an empty
+    // allow-list — and never send an unvalidated write (ADR-0001 §6).
+    if choices.is_empty() {
+        return Err(NboxError::Usage(format!(
+            "could not enumerate allowed values for device {DEVICE_WRITABLE_FIELD} from NetBox \
+             OPTIONS; refusing to send an unvalidated write"
+        ))
+        .into());
+    }
     let normalized =
         crate::netbox::choices::resolve_choice(&choices, DEVICE_WRITABLE_FIELD, new_status)?;
 

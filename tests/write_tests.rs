@@ -24,7 +24,7 @@ use std::process::{Command, Stdio};
 use serde_json::{Value, json};
 use support::binary::{CommandOutput, run_nbox, temp_config};
 use tempfile::NamedTempFile;
-use wiremock::matchers::{body_partial_json, header, method, path};
+use wiremock::matchers::{body_partial_json, header, header_exists, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// A config whose profile carries a token_env that is never set, so the client
@@ -700,23 +700,23 @@ async fn interface_read_still_works_with_no_action() {
 // canonical wire value BEFORE building the plan.
 
 /// NetBox's standard device status choices, as DRF surfaces them via OPTIONS.
+/// The real NetBox `OPTIONS` shape (verified against 4.6.2): writable-field
+/// schemas sit **directly** under `actions.POST.<field>` — no `body` wrapper.
 fn device_options_body() -> Value {
     json!({
         "name": "Device",
         "actions": {
             "POST": {
-                "body": {
-                    "status": {
-                        "type": "choice",
-                        "label": "Status",
-                        "choices": [
-                            {"value": "active", "display": "Active"},
-                            {"value": "planned", "display": "Planned"},
-                            {"value": "offline", "display": "Offline"},
-                            {"value": "failed", "display": "Failed"},
-                            {"value": "decommissioning", "display": "Decommissioning"}
-                        ]
-                    }
+                "status": {
+                    "type": "choice",
+                    "label": "Status",
+                    "choices": [
+                        {"value": "active", "display": "Active"},
+                        {"value": "planned", "display": "Planned"},
+                        {"value": "offline", "display": "Offline"},
+                        {"value": "failed", "display": "Failed"},
+                        {"value": "decommissioning", "display": "Decommissioning"}
+                    ]
                 }
             }
         }
@@ -783,6 +783,75 @@ fn run_device_set<'a>(config: &NamedTempFile, extra: &'a [&'a str]) -> CommandOu
     args.extend_from_slice(&["device", "edge01", "set", "status"]);
     args.extend_from_slice(extra);
     run_nbox(args)
+}
+
+#[tokio::test]
+async fn device_options_enumeration_is_authenticated() {
+    // A secured NetBox 403s an unauthenticated OPTIONS, so the choice
+    // enumeration must carry the same auth as every other call. Requiring the
+    // Authorization header on the OPTIONS mock fails a missing-auth regression
+    // (the request would no-match → the choice fetch errors).
+    let server = MockServer::start().await;
+    Mock::given(method("OPTIONS"))
+        .and(path("/api/dcim/devices/"))
+        .and(header_exists("authorization"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(device_options_body()))
+        .mount(&server)
+        .await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    mount_device_detail(&server, 7, None, "active", "2026-06-26T10:00:00Z").await;
+
+    let config = write_config(&server.uri());
+    // A token must be present for an Authorization header to exist; set it
+    // explicitly (the test profile's `token_env` is intentionally unset).
+    let out = Command::new(env!("CARGO_BIN_EXE_nbox"))
+        .args([
+            "--config",
+            config.path().to_str().unwrap(),
+            "--no-tui",
+            "device",
+            "edge01",
+            "set",
+            "status",
+            "offline",
+            "--dry-run",
+            "--json",
+        ])
+        .env("NBOX_TOKEN", "testtoken")
+        .env_remove("NBOX_LOG")
+        .env_remove("RUST_LOG")
+        .stdin(Stdio::null())
+        .output()
+        .expect("spawn nbox");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "OPTIONS must be authenticated; stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let plan: Value = serde_json::from_slice(&out.stdout).expect("plan JSON");
+    assert_eq!(plan["patch"], json!({"status": "offline"}));
+}
+
+#[tokio::test]
+async fn empty_status_choices_is_a_could_not_enumerate_usage_error() {
+    // OPTIONS came back without `status` choices (an unexpected schema, a
+    // permission-stripped `actions`, or a body-dropping proxy). The planner
+    // must fail with a clear "could not enumerate" cause — never report the
+    // input as invalid against an empty allow-list, never send an unvalidated
+    // write. This refusal is pre-resolution, so no device mocks are needed.
+    let server = MockServer::start().await;
+    Mock::given(method("OPTIONS"))
+        .and(path("/api/dcim/devices/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "actions": {"POST": {"name": {"type": "string"}}}
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_device_set(&config, &["offline", "--dry-run"]);
+    assert_error_contract(&out, 2, "could not enumerate allowed values");
 }
 
 #[tokio::test]

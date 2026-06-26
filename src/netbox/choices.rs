@@ -116,21 +116,25 @@ struct WireChoice {
 /// field wasn't found or carried no choices (the caller treats that as a
 /// "couldn't enumerate" usage error so no unvalidated value is ever sent).
 ///
-/// DRF's `OPTIONS` metadata nests writable-field schemas under
-/// `actions.<POST|PUT|PATCH>.body.<field>`. NetBox exposes the create (`POST`)
-/// body on the list endpoint; `PUT`/`PATCH` appear on the detail endpoint. nbox
-/// issues `OPTIONS` on the **list** endpoint and reads `POST` first (the
-/// canonical writable-action body), falling back to `PUT` then `PATCH` so a
-/// deployment that surfaces the field under a different verb still validates.
+/// DRF's `SimpleMetadata` nests writable-field schemas **directly** under the
+/// verb — `actions.<POST|PUT|PATCH>.<field>` (verified against NetBox 4.6.2's
+/// live `OPTIONS`). A `body`-wrapped variant (`actions.<verb>.body.<field>`) is
+/// tolerated as a fallback for any deployment/proxy that reshapes it. NetBox
+/// exposes the create (`POST`) action on the list endpoint and `PUT` on the
+/// detail; nbox issues `OPTIONS` on the **list** endpoint and reads `POST`
+/// first, falling back to `PUT` then `PATCH` so the field still validates.
 pub fn extract_choices(body: &serde_json::Value, field: &str) -> Vec<ChoiceOption> {
     let Some(actions) = body.get("actions") else {
         return Vec::new();
     };
     for verb in ["POST", "PUT", "PATCH"] {
-        let Some(field_meta) = actions
-            .get(verb)
-            .and_then(|a| a.get("body"))
-            .and_then(|b| b.get(field))
+        let Some(verb_meta) = actions.get(verb) else {
+            continue;
+        };
+        // Direct (real NetBox) first, then the `body`-wrapped fallback.
+        let Some(field_meta) = verb_meta
+            .get(field)
+            .or_else(|| verb_meta.get("body").and_then(|b| b.get(field)))
         else {
             continue;
         };
@@ -283,7 +287,52 @@ mod tests {
     }
 
     #[test]
+    fn extract_choices_reads_direct_post_field() {
+        // The real NetBox 4.6.2 shape: field schemas sit DIRECTLY under the verb
+        // (`actions.POST.status.choices`), with no `body` wrapper.
+        let body = json!({
+            "name": "Device",
+            "actions": {
+                "POST": {
+                    "name": {"type": "string", "label": "Name"},
+                    "status": {
+                        "type": "choice",
+                        "label": "Status",
+                        "choices": [
+                            {"value": "active", "display": "Active"},
+                            {"value": "offline", "display": "Offline"}
+                        ]
+                    }
+                }
+            }
+        });
+        let opts = extract_choices(&body, "status");
+        assert_eq!(opts.len(), 2);
+        assert_eq!(opts[0].value, "active");
+        assert_eq!(opts[1].value, "offline");
+    }
+
+    #[test]
+    fn extract_choices_reads_direct_put_field() {
+        // PUT-only direct shape (the detail endpoint exposes PUT); POST absent.
+        let body = json!({
+            "actions": {
+                "PUT": {
+                    "status": {
+                        "type": "choice",
+                        "choices": [{"value": "planned", "display": "Planned"}]
+                    }
+                }
+            }
+        });
+        let opts = extract_choices(&body, "status");
+        assert_eq!(opts.len(), 1);
+        assert_eq!(opts[0].value, "planned");
+    }
+
+    #[test]
     fn extract_choices_reads_post_body_under_actions() {
+        // `body`-wrapped fallback (tolerated for a reshaping proxy/deployment).
         let body = json!({
             "name": "Device",
             "actions": {
