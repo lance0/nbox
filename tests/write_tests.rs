@@ -690,3 +690,652 @@ async fn interface_read_still_works_with_no_action() {
     );
     assert_eq!(patch_count(&server).await, 0, "a read never PATCHes");
 }
+
+// ===== device `set status` (ADR-0001 follow-on) ==========================
+//
+// The second write command reuses the same planner/diff/confirm/concurrency/
+// audit contracts as the interface pilot. The new piece is choice validation:
+// `status` is a server-enumerated field, so the planner asks NetBox (read-only
+// `OPTIONS`) for the allowed values and normalizes the operator's input to the
+// canonical wire value BEFORE building the plan.
+
+/// NetBox's standard device status choices, as DRF surfaces them via OPTIONS.
+fn device_options_body() -> Value {
+    json!({
+        "name": "Device",
+        "actions": {
+            "POST": {
+                "body": {
+                    "status": {
+                        "type": "choice",
+                        "label": "Status",
+                        "choices": [
+                            {"value": "active", "display": "Active"},
+                            {"value": "planned", "display": "Planned"},
+                            {"value": "offline", "display": "Offline"},
+                            {"value": "failed", "display": "Failed"},
+                            {"value": "decommissioning", "display": "Decommissioning"}
+                        ]
+                    }
+                }
+            }
+        }
+    })
+}
+
+/// Mount the read-only `OPTIONS /api/dcim/devices/` that the planner uses to
+/// enumerate allowed `status` values. Read-only — never mutates.
+async fn mount_device_options(server: &MockServer) {
+    Mock::given(method("OPTIONS"))
+        .and(path("/api/dcim/devices/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(device_options_body()))
+        .mount(server)
+        .await;
+}
+
+/// Device-by-name resolution (GET `/api/dcim/devices/?name__ie=…`). The planner
+/// re-fetches the authoritative detail (with ETag/last_updated) separately per
+/// test, so this only needs to return the id.
+async fn mount_device_resolution(server: &MockServer, device_id: u64, name: &str) {
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": device_id,
+                "url": format!("{}/api/dcim/devices/{}/", server.uri(), device_id),
+                "name": name
+            }]
+        })))
+        .mount(server)
+        .await;
+}
+
+/// The authoritative device detail (GET `/api/dcim/devices/{id}/`), with an
+/// optional `ETag` response header and a configurable current `status` value.
+async fn mount_device_detail(
+    server: &MockServer,
+    device_id: u64,
+    etag: Option<&str>,
+    status_value: &str,
+    last_updated: &str,
+) {
+    let mut resp = ResponseTemplate::new(200).set_body_json(json!({
+        "id": device_id,
+        "url": format!("{}/api/dcim/devices/{}/", server.uri(), device_id),
+        "name": "edge01",
+        "status": {"value": status_value, "label": status_value},
+        "last_updated": last_updated
+    }));
+    if let Some(e) = etag {
+        resp = resp.insert_header("ETag", e);
+    }
+    Mock::given(method("GET"))
+        .and(path(format!("/api/dcim/devices/{device_id}/")))
+        .respond_with(resp)
+        .mount(server)
+        .await;
+}
+
+fn run_device_set<'a>(config: &NamedTempFile, extra: &'a [&'a str]) -> CommandOutput {
+    let mut args: Vec<&str> = vec!["--config", config.path().to_str().unwrap()];
+    args.push("--no-tui");
+    args.extend_from_slice(&["device", "edge01", "set", "status"]);
+    args.extend_from_slice(extra);
+    run_nbox(args)
+}
+
+#[tokio::test]
+async fn device_dry_run_sends_no_patch_and_shows_status_before_after() {
+    let server = MockServer::start().await;
+    mount_device_options(&server).await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    mount_device_detail(&server, 7, None, "active", "2026-06-26T10:00:00Z").await;
+
+    let config = write_config(&server.uri());
+    let out = run_device_set(&config, &["offline", "--dry-run", "--json"]);
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(patch_count(&server).await, 0, "dry-run must not PATCH");
+    let plan: Value = serde_json::from_str(&out.stdout).expect("plan JSON");
+    assert_eq!(plan["schema_version"], json!(1));
+    assert_eq!(plan["target"]["kind"], json!("device"));
+    assert_eq!(plan["target"]["id"], json!(7));
+    assert_eq!(plan["target"]["endpoint"], json!("/api/dcim/devices/7/"));
+    // Minimal patch: only the scoped field, normalized to the canonical value.
+    assert_eq!(plan["patch"], json!({"status": "offline"}));
+    assert_eq!(plan["fields"].as_array().unwrap().len(), 1);
+    assert_eq!(plan["fields"][0]["field"], json!("status"));
+    assert_eq!(plan["fields"][0]["before"], json!("active"));
+    assert_eq!(plan["fields"][0]["after"], json!("offline"));
+    assert_eq!(plan["no_op"], json!(false));
+    // No ETag → pre-4.6 precondition (last_updated + before_hash).
+    assert_eq!(plan["precondition"]["type"], json!("last_updated"));
+}
+
+#[tokio::test]
+async fn device_dry_run_plain_renders_status_diff_to_stdout() {
+    let server = MockServer::start().await;
+    mount_device_options(&server).await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    mount_device_detail(&server, 7, None, "active", "2026-06-26T10:00:00Z").await;
+
+    let config = write_config(&server.uri());
+    let out = run_device_set(&config, &["offline", "--dry-run"]);
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(patch_count(&server).await, 0);
+    // The plain diff names the field + before/after; the status line is stderr.
+    assert!(out.stdout.contains("status"), "stdout: {}", out.stdout);
+    assert!(
+        out.stdout.contains("active → offline"),
+        "stdout diff: {}",
+        out.stdout
+    );
+    assert!(out.stderr.contains("planned, no changes sent"));
+}
+
+#[tokio::test]
+async fn device_confirm_sends_one_minimal_patch_with_normalized_status() {
+    let server = MockServer::start().await;
+    mount_device_options(&server).await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    mount_device_detail(&server, 7, None, "active", "2026-06-26T10:00:00Z").await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/dcim/devices/7/"))
+        .and(body_partial_json(json!({"status": "offline"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7, "url": format!("{}/api/dcim/devices/7/", server.uri()),
+            "name": "edge01", "status": {"value": "offline", "label": "Offline"},
+            "last_updated": "2026-06-26T10:30:00Z"
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_device_set(
+        &config,
+        &["offline", "--allow-writes", "--confirm", "--json"],
+    );
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(patch_count(&server).await, 1, "exactly one PATCH");
+    let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
+    assert_eq!(receipt["applied"], json!(true));
+    assert_eq!(receipt["no_op"], json!(false));
+    assert_eq!(receipt["status"], json!(200));
+    assert_eq!(receipt["fields"][0]["after"], json!("offline"));
+    assert!(
+        receipt["message"]
+            .as_str()
+            .unwrap()
+            .contains("applied: device"),
+        "receipt message: {}",
+        receipt["message"]
+    );
+}
+
+#[tokio::test]
+async fn device_label_normalizes_to_canonical_value_case_insensitively() {
+    // The operator typed the label "Offline" (NetBox's display). The planner
+    // matches it case-insensitively to the canonical value `offline` and the
+    // PATCH carries the normalized value, not the label.
+    let server = MockServer::start().await;
+    mount_device_options(&server).await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    mount_device_detail(&server, 7, None, "active", "2026-06-26T10:00:00Z").await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/dcim/devices/7/"))
+        .and(body_partial_json(json!({"status": "offline"})))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7, "url": "u", "name": "edge01",
+            "status": {"value": "offline", "label": "Offline"}
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_device_set(
+        &config,
+        &["Offline", "--allow-writes", "--confirm", "--json"],
+    );
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(patch_count(&server).await, 1);
+    let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
+    assert_eq!(receipt["applied"], json!(true));
+    // Confirm the wire body actually carried the canonical value, not the label.
+    let patch_reqs: Vec<_> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.method.as_str() == "PATCH")
+        .collect();
+    let body: Value = serde_json::from_slice(&patch_reqs[0].body).unwrap();
+    assert_eq!(body, json!({"status": "offline"}));
+}
+
+#[tokio::test]
+async fn device_noop_status_sends_no_patch() {
+    let server = MockServer::start().await;
+    mount_device_options(&server).await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    // Current value already `offline` → no-op. No PATCH mock mounted.
+    mount_device_detail(&server, 7, None, "offline", "2026-06-26T10:00:00Z").await;
+
+    let config = write_config(&server.uri());
+    let out = run_device_set(
+        &config,
+        &["offline", "--allow-writes", "--confirm", "--json"],
+    );
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(patch_count(&server).await, 0, "no-op sends no PATCH");
+    let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
+    assert_eq!(receipt["applied"], json!(false));
+    assert_eq!(receipt["no_op"], json!(true));
+    assert_eq!(receipt["status"], json!(0));
+    assert!(receipt["message"].as_str().unwrap().contains("no change"));
+}
+
+#[tokio::test]
+async fn device_unknown_status_is_a_usage_error_before_any_patch() {
+    // OPTIONS enumerates the allowed values; `bogus` matches none → usage error
+    // (exit 2) naming the input and listing the allowed values, with no PATCH.
+    let server = MockServer::start().await;
+    mount_device_options(&server).await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    mount_device_detail(&server, 7, None, "active", "2026-06-26T10:00:00Z").await;
+
+    let config = write_config(&server.uri());
+    let out = run_device_set(&config, &["bogus", "--dry-run", "--json"]);
+
+    assert_error_contract(&out, 2, "invalid status \"bogus\"");
+    assert!(
+        out.stderr
+            .contains("active, planned, offline, failed, decommissioning"),
+        "stderr should list allowed values: {}",
+        out.stderr
+    );
+    assert_eq!(
+        patch_count(&server).await,
+        0,
+        "unknown status sends no PATCH"
+    );
+}
+
+#[tokio::test]
+async fn device_ambiguous_label_is_a_usage_error() {
+    // Two choices whose labels collide case-insensitively → ambiguous.
+    let server = MockServer::start().await;
+    Mock::given(method("OPTIONS"))
+        .and(path("/api/dcim/devices/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "actions": {
+                "POST": {
+                    "body": {
+                        "status": {
+                            "choices": [
+                                {"value": "active", "display": "Up"},
+                                {"value": "online", "display": "up"}
+                            ]
+                        }
+                    }
+                }
+            }
+        })))
+        .mount(&server)
+        .await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    mount_device_detail(&server, 7, None, "active", "2026-06-26T10:00:00Z").await;
+
+    let config = write_config(&server.uri());
+    let out = run_device_set(&config, &["UP", "--dry-run", "--json"]);
+
+    assert_error_contract(&out, 2, "ambiguous");
+    assert_eq!(patch_count(&server).await, 0);
+}
+
+#[tokio::test]
+async fn device_unsupported_field_is_a_usage_error_before_any_network() {
+    // No mocks mounted: a usage error must not reach the network. `set role …`
+    // fails closed at the field check before connect/resolve.
+    let config = write_config("http://unused.example/");
+    let out = run_nbox([
+        "--config".as_ref(),
+        config.path().as_os_str(),
+        "--no-tui".as_ref(),
+        "device".as_ref(),
+        "edge01".as_ref(),
+        "set".as_ref(),
+        "role".as_ref(),
+        "something".as_ref(),
+        "--dry-run".as_ref(),
+    ]);
+    assert_error_contract(&out, 2, "only `status` is writable");
+}
+
+#[tokio::test]
+async fn device_confirm_without_allow_writes_is_a_usage_error() {
+    let server = MockServer::start().await;
+    let config = write_config(&server.uri());
+    let out = run_device_set(&config, &["offline", "--confirm", "--json"]);
+    assert_error_contract(&out, 2, "writes are not enabled");
+    assert!(
+        out.stderr.contains("--allow-writes"),
+        "stderr: {}",
+        out.stderr
+    );
+    assert_eq!(patch_count(&server).await, 0);
+}
+
+#[tokio::test]
+async fn device_allow_writes_without_confirm_is_usage_in_non_tty() {
+    let server = MockServer::start().await;
+    let config = write_config(&server.uri());
+    let out = run_device_set(&config, &["offline", "--allow-writes", "--json"]);
+    assert_error_contract(&out, 2, "non-interactive write requires confirmation");
+    assert!(out.stderr.contains("--confirm"), "stderr: {}", out.stderr);
+    assert_eq!(patch_count(&server).await, 0);
+}
+
+#[tokio::test]
+async fn device_etag_sends_if_match_on_apply() {
+    let server = MockServer::start().await;
+    mount_device_options(&server).await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    // 4.6+ detail carries an ETag; the plan records it and the apply sends
+    // `If-Match: <etag>` (ADR-0001 §3).
+    mount_device_detail(
+        &server,
+        7,
+        Some("\"etag-v1\""),
+        "active",
+        "2026-06-26T10:00:00Z",
+    )
+    .await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/dcim/devices/7/"))
+        // The PATCH mock ONLY matches when If-Match is sent — proving the
+        // header is present. Without it, wiremock returns 404 and the test fails.
+        .and(header("if-match", "\"etag-v1\""))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7, "url": "u", "name": "edge01",
+            "status": {"value": "offline", "label": "Offline"}
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_device_set(
+        &config,
+        &["offline", "--allow-writes", "--confirm", "--json"],
+    );
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(patch_count(&server).await, 1);
+    let patch_reqs: Vec<_> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.method.as_str() == "PATCH")
+        .collect();
+    assert_eq!(
+        patch_reqs[0].headers.get("if-match").unwrap(),
+        "\"etag-v1\""
+    );
+}
+
+#[tokio::test]
+async fn device_stale_412_is_a_stale_precondition_refusal() {
+    let server = MockServer::start().await;
+    mount_device_options(&server).await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    mount_device_detail(
+        &server,
+        7,
+        Some("\"etag-v1\""),
+        "active",
+        "2026-06-26T10:00:00Z",
+    )
+    .await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/dcim/devices/7/"))
+        .respond_with(ResponseTemplate::new(412).set_body_string("Precondition Failed"))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_device_set(
+        &config,
+        &["offline", "--allow-writes", "--confirm", "--json"],
+    );
+
+    assert_error_contract(&out, 1, "object changed in NetBox");
+    assert!(
+        out.stderr.contains("re-run dry-run"),
+        "stderr: {}",
+        out.stderr
+    );
+}
+
+#[tokio::test]
+async fn device_stale_pre46_fallback_re_reads_and_refuses_on_last_updated_change() {
+    let server = MockServer::start().await;
+    mount_device_options(&server).await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    // No ETag → pre-4.6 path. The plan reads last_updated T1; the apply re-read
+    // must return a DIFFERENT last_updated so the read-before-write check
+    // refuses before any PATCH.
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/7/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7, "url": "u", "name": "edge01",
+            "status": {"value": "active", "label": "Active"},
+            "last_updated": "2026-06-26T10:00:00Z"
+        })))
+        .up_to_n_times(1)
+        .with_priority(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/7/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7, "url": "u", "name": "edge01",
+            "status": {"value": "active", "label": "Active"},
+            "last_updated": "2026-06-26T11:00:00Z"
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_device_set(
+        &config,
+        &["offline", "--allow-writes", "--confirm", "--json"],
+    );
+
+    assert_error_contract(&out, 1, "object changed in NetBox");
+    assert_eq!(
+        patch_count(&server).await,
+        0,
+        "stale pre-4.6 sends no PATCH"
+    );
+}
+
+#[tokio::test]
+async fn device_validation_400_surfaces_netbox_field_error_cleanly() {
+    let server = MockServer::start().await;
+    mount_device_options(&server).await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    mount_device_detail(&server, 7, None, "active", "2026-06-26T10:00:00Z").await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/dcim/devices/7/"))
+        .respond_with(
+            ResponseTemplate::new(400).set_body_json(json!({"status": ["Invalid status."]})),
+        )
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_device_set(
+        &config,
+        &["offline", "--allow-writes", "--confirm", "--json"],
+    );
+
+    assert_error_contract(&out, 1, "NetBox rejected the patch");
+    assert!(out.stderr.contains("status"), "stderr: {}", out.stderr);
+}
+
+#[tokio::test]
+async fn device_audit_logs_status_name_only_never_values_token_or_message_body() {
+    let server = MockServer::start().await;
+    mount_device_options(&server).await;
+    mount_device_resolution(&server, 7, "edge01").await;
+    mount_device_detail(&server, 7, None, "active", "2026-06-26T10:00:00Z").await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/dcim/devices/7/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7, "url": "u", "name": "edge01",
+            "status": {"value": "offline", "label": "Offline"}
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let log = NamedTempFile::new().expect("log file");
+    let log_path = log.path().to_path_buf();
+    drop(log);
+
+    // Distinctive old/new values, a secret token, and a message body — none of
+    // which may appear in the audit log (only the field NAME `status`, a
+    // message_present flag + length, and the outcome).
+    let out = Command::new(env!("CARGO_BIN_EXE_nbox"))
+        .arg("--config")
+        .arg(config.path())
+        .arg("--no-tui")
+        .arg("--log-file")
+        .arg(&log_path)
+        .arg("--log-level")
+        .arg("nbox::write_audit=info")
+        .args([
+            "device",
+            "edge01",
+            "set",
+            "status",
+            "offline",
+            "--allow-writes",
+            "--confirm",
+            "--message",
+            "draining-edge01-secret",
+            "--json",
+        ])
+        .env("NBOX_TOKEN", "secret-nbox-token-12345")
+        .env_remove("NBOX_LOG")
+        .env_remove("RUST_LOG")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn nbox");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let log_text = std::fs::read_to_string(&log_path).expect("read log file");
+    // Allow-list fields that MUST appear.
+    assert!(log_text.contains("nbox::write_audit"), "log: {log_text}");
+    assert!(
+        log_text.contains("fields=\"status\"") || log_text.contains("fields=status"),
+        "field NAME recorded: {log_text}"
+    );
+    assert!(
+        log_text.contains("outcome=\"applied\"") || log_text.contains("outcome=applied"),
+        "outcome recorded: {log_text}"
+    );
+    assert!(
+        log_text.contains("message_present=true"),
+        "message_present flag: {log_text}"
+    );
+    // Redaction: none of the old/new status values, the message body, or the
+    // token may leak into the audit log.
+    assert!(
+        !log_text.contains("active"),
+        "old status value leaked: {log_text}"
+    );
+    assert!(
+        !log_text.contains("offline"),
+        "new status value leaked: {log_text}"
+    );
+    assert!(
+        !log_text.contains("draining-edge01-secret"),
+        "message body leaked: {log_text}"
+    );
+    assert!(
+        !log_text.contains("secret-nbox-token-12345"),
+        "token leaked: {log_text}"
+    );
+}
+
+#[tokio::test]
+async fn device_read_still_works_with_no_action() {
+    // The `device` command gained an optional `set` subcommand; omitting it
+    // must keep the read path byte-identical. Mount the device detail + its
+    // interfaces/IPs/services (the read view) and assert a normal read result.
+    let server = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{"id": 7, "url": "u", "name": "edge01"}]
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/7/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "id": 7, "url": "u", "name": "edge01",
+            "status": {"value": "active", "label": "Active"}
+        })))
+        .mount(&server)
+        .await;
+    // The read view fans out to interfaces/IPs/services; mount empty pages.
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/interfaces/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 0, "next": null, "previous": null, "results": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/ip-addresses/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 0, "next": null, "previous": null, "results": []
+        })))
+        .mount(&server)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/services/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 0, "next": null, "previous": null, "results": []
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_nbox([
+        "--config".as_ref(),
+        config.path().as_os_str(),
+        "--no-tui".as_ref(),
+        "device".as_ref(),
+        "edge01".as_ref(),
+    ]);
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert!(out.stdout.contains("edge01"), "read output: {}", out.stdout);
+    assert_eq!(patch_count(&server).await, 0, "a read never PATCHes");
+}

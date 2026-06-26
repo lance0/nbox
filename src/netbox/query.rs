@@ -124,6 +124,18 @@ impl NetBoxClient {
         ambiguous_or_first("device", value, contains.results, |d| d.name.clone())
     }
 
+    /// Enumerate the canonical values for a device's `status` field, via a
+    /// read-only `OPTIONS` on the devices list endpoint (DRF metadata; ADR-0001
+    /// §6). The write foundation validates an operator's `set status` input
+    /// against this *before* sending a `PATCH`, so an unknown or ambiguous value
+    /// is a usage error naming the input and listing the allowed values. Returns
+    /// an empty `Vec` if NetBox didn't surface choices for the field (the planner
+    /// treats that as a usage error so no unvalidated value is ever sent).
+    pub async fn device_status_choices(&self) -> Result<Vec<crate::netbox::choices::ChoiceOption>> {
+        let body = self.options("/api/dcim/devices/").await?;
+        Ok(crate::netbox::choices::extract_choices(&body, "status"))
+    }
+
     /// All interfaces on a device (up to `max`).
     pub async fn device_interfaces(&self, device_id: u64, max: usize) -> Result<Vec<Interface>> {
         self.list_all(

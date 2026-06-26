@@ -238,6 +238,39 @@ impl NetBoxClient {
         Ok((body, etag))
     }
 
+    /// Issue an authenticated `OPTIONS` (read-only metadata; DRF field schemas
+    /// and choice enumerations). Reuses the read path's auth, timeout, URL
+    /// scoping, and token redaction. Used by the write foundation to enumerate a
+    /// choice field's allowed values *before* sending a `PATCH` (ADR-0001 §6),
+    /// e.g. a device's `status`. `OPTIONS` is read-only (no body is sent and none
+    /// is expected beyond DRF's metadata), so it shares the `GET`-style status
+    /// mapping — a non-2xx is the standard read [`status_error`].
+    pub(crate) async fn options(&self, path: &str) -> Result<serde_json::Value> {
+        let url = self.url_for(path)?;
+        match self.masked_authorization() {
+            Some(auth) => tracing::debug!(url = %url, auth = %auth, "OPTIONS"),
+            None => tracing::debug!(url = %url, "OPTIONS (unauthenticated)"),
+        }
+        let res = self
+            .http
+            .request(reqwest::Method::OPTIONS, url)
+            .send()
+            .await?;
+        let status = res.status();
+        let text = res.text().await.unwrap_or_default();
+        if !status.is_success() {
+            return Err(status_error(status, &text).into());
+        }
+        // DRF's OPTIONS body is JSON metadata; tolerate an empty body (some
+        // proxies strip it) by falling back to an empty object, which the choice
+        // extractor treats as "couldn't enumerate" (a usage error, never an
+        // unvalidated PATCH).
+        if text.is_empty() {
+            return Ok(json!({}));
+        }
+        serde_json::from_str(&text).context("decoding NetBox OPTIONS metadata")
+    }
+
     /// Perform an authenticated `PATCH` (partial update) and deserialize the
     /// response. The single v1 write transport (ADR-0001 §2): reuses the read
     /// path's auth, timeout, 429 retry, URL scoping, status mapping, and token

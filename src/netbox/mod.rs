@@ -7,6 +7,7 @@
 pub mod auth;
 pub mod browse;
 pub mod capabilities;
+pub mod choices;
 pub mod client;
 pub mod dashboard;
 pub mod endpoints;

@@ -3,7 +3,8 @@
 nbox is a **read-first** NetBox CLI, TUI, and MCP server. The near-term goal is the **best
 possible read experience** — fast, correct, and pleasant both in the terminal and to agents.
 A narrow **safe-write foundation** has now landed (ADR-0001): a gated, opt-in, before/after-previewed
-`PATCH` engine, with the first pilot being `interface <device> <iface> set description`. Reads stay
+`PATCH` engine, with two pilots landed — `interface <device> <iface> set description` and
+`device <name> set status <value>`. Reads stay
 the default everywhere and the write surface widens only as the read tool proves out in practice
 (see [Writes](#writes--deferred-later-track)).
 
@@ -422,16 +423,26 @@ the read tool proves out in practice. Consolidated future scope:
   "…"` pilot (`--allow-writes` + `--confirm`/`--dry-run`, `ETag`/`If-Match` on
   4.6+, `last_updated`+before-hash fallback, `--message`, local write audit).
 - ☑ `nbox interface <device> <iface> set description "…"` — the first write
-  command (on the ADR-0001 foundation). `nbox device <name> set status <value>`,
-  `nbox ip <addr> reserve --description "…"`, and `nbox tag add <type> <name>
-  <tag>` remain open, each reusing the same planner/diff/confirm/concurrency/audit
-  contracts.
-- ☐ **IPAM allocate** — claim the next IP/prefix, plus IP-range `available-ips` (POST to
-  `available-ips` / `available-prefixes`); the read half (`next-ip` / `next-prefix`, range lookup)
-  already ships.
+  command (on the ADR-0001 foundation). `nbox ip <addr> reserve --description "…"`
+  and `nbox tag add <type> <name> <tag>` remain open, each reusing the same
+  planner/diff/confirm/concurrency/audit contracts.
+- ☑ `nbox device <name> set status <value>` — the second write command,
+  reusing the ADR-0001 foundation. Allowed `status` values are enumerated live
+  from NetBox (read-only `OPTIONS`) and the operator's input is normalized to
+  the canonical value (a label is accepted case-insensitively when it maps
+  unambiguously to one value); unknown/ambiguous status is a usage error before
+  any `PATCH`. Same `--dry-run` / `--allow-writes --confirm` / `--message` /
+  ETag+`If-Match` / pre-4.6 fallback / local write-audit contracts as the
+  interface pilot. The smallest reusable choice-validation mechanism
+  (`src/netbox/choices.rs`) backs it, not a generic schema editor.
 - ☑ `changelog_message` support on writes — opt-in via `--message`, validated to
   NetBox's 200-character limit before applying; recorded in the object-change
   entry (never logged locally beyond a present-flag + length).
+- ☐ **IPAM allocate** — claim the next IP/prefix, plus IP-range `available-ips` (POST to
+  `available-ips` / `available-prefixes`); the read half (`next-ip` / `next-prefix`, range lookup)
+  already ships.
+- ☐ `nbox ip <addr> reserve --description "…"` and `nbox tag add <type> <name>
+  <tag>` — the next write commands, each reusing the same foundation.
 - ☐ **Write-capable MCP tools** — opt-in, return the diff for the agent to confirm; read-only stays the
   default — plus the **per-user credential vault (Pattern 2)** for real per-user NetBox RBAC over MCP.
 - ☐ TUI edit mode (`e` / `d` / confirm).

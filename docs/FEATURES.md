@@ -1,16 +1,17 @@
 # Features
 
 nbox is a NetBox client — a CLI and a TUI over the same core. Reads are the
-default; a narrow safe-write foundation (ADR-0001) adds one plan-first `PATCH`
-command behind `--allow-writes` + confirmation. The MCP server stays read-only.
+default; a narrow safe-write foundation (ADR-0001) adds two plan-first `PATCH`
+commands behind `--allow-writes` + confirmation — `interface … set description`
+and `device … set status`. The MCP server stays read-only.
 
 ## Lookups
 
 | Command | What |
 | ------- | ---- |
 | `nbox search <q>` | Parallel search across devices/sites/racks/IPs/prefixes/VLANs/circuits/virtual-circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers/VMs/clusters/VRFs/route-targets. Filters: `--status/--site/--region/--site-group/--location/--tenant/--role/--tag/--owner/--owner-group/--vrf`, `--limit`, `--cols`, `--partial`. |
-| `nbox device <name\|slug\|id> [--journal]` | Device + interfaces, IPs, cables, VLANs, services. |
-| `nbox interface <device> <iface>` | One interface: type, MTU, MAC, mode, VLANs, cable, **cable path** (an A↔Z trace diagram naming the device at each end), addresses. |
+| `nbox device <name\|slug\|id> [--journal]` | Device + interfaces, IPs, cables, VLANs, services. `set status <value>` is a safe write (ADR-0001): status validated live via OPTIONS, behind `--allow-writes` + confirm. |
+| `nbox interface <device> <iface>` | One interface: type, MTU, MAC, mode, VLANs, cable, **cable path** (an A↔Z trace diagram naming the device at each end), addresses. `set description "…"` is a safe write (ADR-0001), behind `--allow-writes` + confirm. |
 | `nbox ip <addr> [--vrf] [--journal]` | IP + most-specific parent prefix (VRF-scoped) and its VLAN plus the prefix's `scope`/`scope_type` (site, location, region, …); surfaces `nat_inside`/`nat_outside` (NetBox 4.6) when set. |
 | `nbox prefix <cidr> [--vrf] [--journal]` | Prefix with utilization, children, and contained IPs. |
 | `nbox next-ip <cidr> [--count] [--vrf]` | Next available address(es). |

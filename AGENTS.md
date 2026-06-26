@@ -35,6 +35,10 @@ minimize tokens, `--fields` to trim payloads).
 
 ```
 nbox device <name|slug|id>
+                                  # optional write subcommand:
+  device <name> set status <value> [--message "…"]
+                                  #   --dry-run | --allow-writes --confirm
+                                  #   (ADR-0001 safe write; read-only default)
 nbox ip <address> [--vrf <name|slug|rd>]  # surfaces nat_inside/nat_outside (NetBox 4.6) when set
 nbox prefix <cidr> [--vrf <name|slug|rd>]
 nbox next-ip <cidr> [--count N] [--vrf <name|slug|rd>]
@@ -177,13 +181,19 @@ nbox device edge01 --json | jq '.primary_ip4'
 ## Notes
 
 - The first write landed behind ADR-0001: `nbox interface <device> <interface>
-  set description "…"` is a safe, plan-first `PATCH`. Reads remain the default —
-  apply needs BOTH `--allow-writes` (the gate) AND `--confirm` (or a TTY prompt
-  in plain output); `--dry-run` previews with no mutation and needs neither.
+  set description "…"` and `nbox device <name> set status <value>` are safe,
+  plan-first `PATCH`es. Reads remain the default — apply needs BOTH
+  `--allow-writes` (the gate) AND `--confirm` (or a TTY prompt in plain
+  output); `--dry-run` previews with no mutation and needs neither.
   `--confirm` without `--allow-writes` is a usage error (exit 2, empty stdout).
   Non-TTY / `--json` / `--csv` / `--no-tui` never prompt. `--json --dry-run`
   returns the stable `MutationPlan`; `--json --confirm` returns a `MutationReceipt`
-  (both `schema_version: 1`). The MCP server stays read-only.
+  (both `schema_version: 1`). For `device set status`, the allowed values are
+  enumerated live from NetBox (read-only `OPTIONS`) and the input is normalized
+  to the canonical value (a label is accepted case-insensitively when it maps
+  unambiguously to one value); an unknown or ambiguous status is a usage error
+  (exit 2) naming the input and listing the allowed values, before any `PATCH`.
+  The MCP server stays read-only.
 - Filters that an object type can't satisfy cause that type to be skipped in
   `search` (nbox does not send NetBox unknown query params).
 - `owner` (NetBox 4.5+): a native owner field (user or group) surfaced on most
