@@ -69,6 +69,9 @@ Current nbox constraints also matter:
    command-specific intent DTOs and endpoint-specific patch DTOs, then derives
    a minimal patch from the live NetBox object. If a field is not writable or
    cannot be shaped safely, the planner fails closed before any network write.
+   The foundation work includes deserializing `last_updated` on the relevant
+   REST wire objects for planner preconditions; current read view models do not
+   need to expose it.
 
 2. **REST `PATCH` is the v1 write transport.** NetBox documents `PATCH` as the
    partial-update verb and `PUT` as requiring a complete representation. nbox
@@ -195,6 +198,8 @@ Current nbox constraints also matter:
    - audit-log redaction tests proving values, tokens, and messages do not leak
    - MCP tests, when MCP writes exist, proving the JSON-RPC stream on stdout is
      never contaminated and write tools are not advertised as read-only
+   - compatibility-doc updates for write-only version behavior, including the
+     NetBox 4.6 `ETag`/`If-Match` row when the write engine lands
 
 10. **Defer confirmed rollback.** Junos-style commit-confirmed semantics remain
    a future design, not v1. A safe NetBox implementation would need reversible
