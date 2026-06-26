@@ -118,9 +118,13 @@ Current nbox constraints also matter:
 
    CLI semantics:
 
-   - `--dry-run` prints the plan/diff and performs no mutation.
-   - `--confirm` applies without an interactive prompt, but only after building
-     the same plan and checking its precondition.
+   - `--dry-run` prints the plan/diff and performs no mutation, and needs neither
+     the write-enable gate nor confirmation.
+   - `--confirm`, together with the write-enable gate (Decision 4), applies
+     without an interactive prompt, but only after building the same plan and
+     checking its precondition. `--confirm` reviews and applies a plan; it does
+     not enable writes. Confirmation without the write-enable gate is a usage
+     error (exit `2`, empty stdout, stderr naming `--allow-writes`).
    - In plain output on a TTY, no `--dry-run` and no `--confirm` may prompt on
      stderr after showing the diff. The prompt must be an explicit positive
      confirmation, not a default-yes flow.

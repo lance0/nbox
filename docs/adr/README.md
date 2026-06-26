@@ -31,4 +31,8 @@ What was decided?
 ## Consequences
 
 What are the results - positive, negative, and neutral?
+
+## References
+
+Sources that informed the decision (optional).
 ```
