@@ -62,6 +62,22 @@ fn server_for(mock: &MockServer) -> NboxMcp {
     )
 }
 
+/// A server with the MCP read cache enabled for cache-behavior tests.
+fn cached_server_for(mock: &MockServer) -> NboxMcp {
+    let profile = ProfileConfig {
+        url: mock.uri(),
+        ..Default::default()
+    };
+    let cache = crate::cache::Cache::from_settings(
+        "t".into(),
+        &crate::config::CacheSettings {
+            enabled: true,
+            ttl_secs: 30,
+        },
+    );
+    NboxMcp::new(NetBoxClient::new(&profile, None).unwrap(), cache)
+}
+
 #[tokio::test]
 async fn nbox_get_consults_cache_and_clear_busts_it() {
     // No reachable NetBox: a cache HIT must answer with no network, and after a
@@ -99,6 +115,105 @@ async fn nbox_get_consults_cache_and_clear_busts_it() {
         server.get_cached(args).await.is_err(),
         "after clear, a miss hits NetBox (unreachable in this test)"
     );
+}
+
+#[tokio::test]
+async fn read_resource_consults_nbox_get_cache() {
+    // No reachable NetBox: a resource cache HIT must answer with no network.
+    let profile = ProfileConfig {
+        url: "http://127.0.0.1:9/".into(),
+        ..Default::default()
+    };
+    let cache = crate::cache::Cache::from_settings(
+        "t".into(),
+        &crate::config::CacheSettings {
+            enabled: true,
+            ttl_secs: 30,
+        },
+    );
+    let server = NboxMcp::new(NetBoxClient::new(&profile, None).unwrap(), cache);
+
+    let key = crate::cache::CacheKey::object("site", "iad1", "vrf=;site=;group=");
+    server
+        .cache
+        .put(&key, &json!({ "name": "IAD1", "from_cache": true }));
+
+    let result = server
+        .read_resource_impl("nbox://site/iad1")
+        .await
+        .expect("served from cache without touching the network");
+    let value = one_text(&result, "nbox://site/iad1");
+    assert_eq!(value["name"], json!("IAD1"));
+    assert_eq!(value["from_cache"], json!(true));
+}
+
+#[tokio::test]
+async fn nbox_get_and_resource_share_cache_entry() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/sites/"))
+        .and(query_param("slug", "iad1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 1, "url": "u", "name": "IAD1", "slug": "iad1",
+                "status": {"value": "active", "label": "Active"}
+            }]
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let server = cached_server_for(&mock);
+    let Json(via_get) = server
+        .nbox_get(Parameters(get_args(GetKind::Site, "iad1")))
+        .await
+        .expect("site via nbox_get");
+    let result = server
+        .read_resource_impl("nbox://site/iad1")
+        .await
+        .expect("site via resource");
+    let via_resource = one_text(&result, "nbox://site/iad1");
+
+    assert_eq!(
+        via_get, via_resource,
+        "resource read must reuse the same cached view as nbox_get"
+    );
+    mock.verify().await;
+}
+
+#[tokio::test]
+async fn cache_clear_busts_resource_cache_entries() {
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/sites/"))
+        .and(query_param("slug", "iad1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 1, "url": "u", "name": "IAD1", "slug": "iad1",
+                "status": {"value": "active", "label": "Active"}
+            }]
+        })))
+        .expect(2)
+        .mount(&mock)
+        .await;
+
+    let server = cached_server_for(&mock);
+    let first = server
+        .read_resource_impl("nbox://site/iad1")
+        .await
+        .expect("first resource read fills cache");
+    assert_eq!(one_text(&first, "nbox://site/iad1")["name"], json!("IAD1"));
+
+    server.nbox_cache_clear().await.expect("cache clear");
+
+    let second = server
+        .read_resource_impl("nbox://site/iad1")
+        .await
+        .expect("second resource read refetches after clear");
+    assert_eq!(one_text(&second, "nbox://site/iad1")["name"], json!("IAD1"));
+    mock.verify().await;
 }
 
 /// An empty paginated page, for endpoints a flow touches but doesn't care about.
@@ -2242,7 +2357,7 @@ mod contracts {
 
     /// Contract item: a resource read of `nbox://{kind}/{ref}` returns byte-for-
     /// byte the same JSON view as `nbox_get` for that kind. The resource path is
-    /// only a URI veneer over `get_impl`, and this pins that they cannot drift.
+    /// only a URI veneer over `get_cached`, and this pins that they cannot drift.
     #[tokio::test]
     async fn resource_read_matches_nbox_get() {
         // Two servers with identical mounts: one drives `nbox_get`, the other the

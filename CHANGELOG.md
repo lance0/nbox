@@ -42,6 +42,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **MCP resource cache reuse.** `nbox://{kind}/{ref}` resource reads now share
+  the same short-lived `nbox_get` cache entry, so an attached resource and the
+  matching tool call do not re-fetch the same object graph within the cache TTL.
+  `nbox_cache_clear` clears both paths.
 - **GraphQL accelerator fallback is more resilient.** If an effective GraphQL
   `vrf` or `route_target` bundle fails at runtime (for example, a low NetBox
   `GRAPHQL_MAX_QUERY_DEPTH`), nbox now warns and retries the same detail over
