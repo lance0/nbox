@@ -283,10 +283,20 @@ Shipped on this foundation, in order:
   surfaces the currently-next block as an advisory warning; an exhausted parent
   (`409`) is a clean error.
 
+- `ip-range reserve <start|id> [--description] [--dns-name]` — the seventh
+  write (`allocate` / `POST`), the third `allocate`: a `POST` to
+  `…/ip-ranges/{id}/available-ips/` that reserves the next free address within
+  an IP range. It proves the `allocate` pattern extends to a third endpoint
+  shape with no new machinery — same `Operation::Allocate`, same
+  `Precondition::None`, same gate/confirm/audit lifecycle, and the same
+  `object`-in-receipt pattern. The body carries optional `description` and
+  `dns_name` (the same v1 allow-list as `ip reserve`). The dry-run surfaces the
+  currently-next address as an advisory warning; an exhausted range (`409`) is
+  a clean error.
+
 Still deferred per Decision 6: choosing a specific address/block, multi-IP
-allocation, IP-range allocation (`POST` to a range's `available-ips`),
-interface/VM assignment, status/tags on reserve, generic create/delete, and
-`nbox raw` write verbs.
+allocation (`--count N`), interface/VM assignment, status/tags on reserve,
+generic create/delete, and `nbox raw` write verbs.
 
 ## References
 

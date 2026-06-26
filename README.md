@@ -16,12 +16,13 @@ this device, what owns this prefix?* — from the shell, a k9s-style TUI, or an 
 server for AI agents.
 
 **Status: pre-1.0.** Reads are the default; a narrow safe-write foundation
-(ADR-0001) has landed behind `--allow-writes` + confirmation — six commands
+(ADR-0001) has landed behind `--allow-writes` + confirmation — seven commands
 today (`nbox interface <device> <interface> set description "…"`,
-`nbox device <name> set status <value>`, `nbox ip reserve <prefix>` to
-allocate the next available IP, `nbox prefix reserve <cidr>` to allocate the
-next available child prefix, and `nbox tag add`/`remove <type> <name> <tag>`
-to manage tags on any object). Broader writes are on the [ROADMAP](ROADMAP.md).
+`nbox device <name> set status <value>`, `nbox ip reserve <prefix>` /
+`nbox prefix reserve <cidr>` / `nbox ip-range reserve <start|id>` to allocate
+the next available IP or child prefix, and `nbox tag add`/`remove <type> <name>
+<tag>` to manage tags on any object). Broader writes are on the
+[ROADMAP](ROADMAP.md).
 
 ## Quick Start
 
@@ -52,8 +53,7 @@ See [Installation](#installation) below for setup instructions.
 
 ## Features
 
-- **Fast shell lookups** — `device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `circuit`, `virtual-circuit`, `provider`, `aggregate`, `asn`, `ip-range`, `tenant`, `contact`, `vm`, `cluster`, `vrf`, `route-target`, `mac`, and `interface`, each as a one-liner.
-- **IPAM-aware** — IP → most-specific parent prefix → VLAN → scope resolution, prefix utilization and children, a navigable prefix tree, and `next-ip` / `next-prefix` to preview free addresses and blocks (read-only). To actually claim one, `nbox ip reserve <prefix>` allocates the next available IP and `nbox prefix reserve <cidr>` allocates the next available child prefix (safe writes — ADR-0001).
+- **IPAM-aware** — IP → most-specific parent prefix → VLAN → scope resolution, prefix utilization and children, a navigable prefix tree, and `next-ip` / `next-prefix` to preview free addresses and blocks (read-only). To actually claim one, `nbox ip reserve <prefix>` allocates the next available IP from a prefix, `nbox prefix reserve <cidr>` allocates the next available child prefix, and `nbox ip-range reserve <start|id>` allocates the next available IP from an IP range (safe writes — ADR-0001).
 - **A k9s-style TUI** — a three-pane home (navigation rail → results → live preview), an overview dashboard, a hierarchical prefix tree, cross-object navigation between related objects (every detail's related-object tabs are navigable — open an interface from a device and see its cable path drawn as an A↔Z diagram), fuzzy filters, server-side name filtering on the browse list, recents, and an in-app profile + settings editor. Twelve themes; `NO_COLOR` honored.
 - **Agent-ready** — `nbox serve` is a read-only MCP server: the same lookups exposed as eleven tools (plus every object as an `nbox://{kind}/{ref}` resource), returning the exact JSON view models the CLI does, so AI agents (Claude Code, Claude Desktop, …) query NetBox safely. Stdio for a local subprocess, or a loopback HTTP transport with OIDC resource-server auth for a network-reachable, read-only deployment. See [docs/MCP.md](docs/MCP.md); [SKILL.md](SKILL.md) is an installable Agent Skill that drives the CLI on matching requests.
 - **Scriptable** — `-o plain|json|csv`, `--fields`, `--raw`, versioned `--envelope`, and stable exit codes; stdout stays clean for piping, logs go to stderr. See [docs/SCRIPTING.md](docs/SCRIPTING.md).
@@ -273,6 +273,8 @@ nbox provider <slug-or-name-or-id>
 nbox aggregate <cidr-or-id> [--journal]
 nbox asn <number> [--journal]
 nbox ip-range <start-or-id> [--journal]
+  ip-range reserve [--description "…"] [--dns-name "…"]
+                                  # write: reserve the next available IP in an IP range (POST available-ips); --dry-run | --allow-writes --confirm [--message]
 nbox tenant <slug-or-name-or-id>
 nbox contact <name-or-id>
 nbox vm <name-or-id>

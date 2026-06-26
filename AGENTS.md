@@ -64,6 +64,9 @@ nbox vm-type <slug|name|id>          # NetBox 4.6+
 nbox aggregate <cidr|id>
 nbox asn <number>
 nbox ip-range <start|id>
+                                  # optional write subcommand:
+  ip-range <start|id> reserve [--description "…"] [--dns-name "…"]
+                                  # write: reserve the next available IP in an IP range (POST available-ips); --dry-run | --allow-writes --confirm [--message]
 nbox tenant <slug|name|id>
 nbox contact <name|id>
 nbox vm <name|id>
@@ -185,15 +188,13 @@ nbox ip 10.44.208.55 --json --fields address,parent_prefix,scope,scope_type,assi
 nbox search edge --status active --site dc1 -o csv --cols kind,display,url
 nbox device edge01 --json | jq '.primary_ip4'
 ```
-
-## Notes
-
-- Writes landed behind ADR-0001. Six commands reuse the same safe-write
+- Writes landed behind ADR-0001. Seven commands reuse the same safe-write
   foundation (the `MutationPlan` / `MutationReceipt` engine):
   `nbox interface <device> <interface> set description "…"`,
   `nbox device <name> set status <value>`,
   `nbox ip reserve <cidr>` (a `POST` to `available-ips` — the first `allocate`),
   `nbox prefix reserve <cidr>` (a `POST` to `available-prefixes` — the second `allocate`),
+  `nbox ip-range reserve <start|id>` (a `POST` to a range's `available-ips` — the third `allocate`),
   `nbox tag add <type> <name> <tag>` (a `PATCH` to the `tags` array on any
   object kind), and `nbox tag remove <type> <name> <tag>` (the inverse). All are
   plan-first: reads remain the default — apply needs BOTH `--allow-writes` (the
@@ -213,7 +214,9 @@ nbox device edge01 --json | jq '.primary_ip4'
   adding a tag the object already carries (or removing one it doesn't) is a
   no-op (no `PATCH`). For `prefix reserve`, the body carries optional
   `prefix_length` and `description`; the server allocates the block and the
-  receipt returns the created prefix. The MCP server stays read-only.
+  receipt returns the created prefix. For `ip-range reserve`, the body carries
+  optional `description` and `dns_name`; the server allocates the address and
+  the receipt returns the created IP. The MCP server stays read-only.
 - Filters that an object type can't satisfy cause that type to be skipped in
   `search` (nbox does not send NetBox unknown query params).
 - `owner` (NetBox 4.5+): a native owner field (user or group) surfaced on most

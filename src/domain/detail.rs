@@ -45,7 +45,7 @@ use crate::netbox::models::circuits::{Circuit, CircuitTermination, Provider, Vir
 use crate::netbox::models::common::BriefObject;
 use crate::netbox::models::dcim::{Device, Interface, MacAddress, Rack, RackGroup, Site};
 use crate::netbox::models::ipam::{
-    Aggregate, Asn, IpAddress, IpRange, Prefix, RouteTarget, Vlan, VlanGroup, Vrf,
+    Aggregate, Asn, AvailableIp, IpAddress, IpRange, Prefix, RouteTarget, Vlan, VlanGroup, Vrf,
 };
 use crate::netbox::models::tenancy::{Contact, Tenant};
 use crate::netbox::models::virtualization::{Cluster, VirtualMachine, VirtualMachineType};
@@ -991,6 +991,165 @@ pub(crate) async fn apply_prefix_reserve(
 fn prefix_satisfies_length(cidr: &str, target: u8) -> bool {
     cidr.rsplit_once('/')
         .is_some_and(|(_, len_str)| len_str.parse::<u8>().is_ok_and(|len| len <= target))
+}
+
+/// Plan an `ip-range reserve <start|id>` allocation (ADR-0001 §5 steps 1–4):
+/// validate the optional changelog message, resolve the IP range by start
+/// address or ID, and build an `Allocate` plan whose body POSTs to the range's
+/// `available-ips` endpoint.
+///
+/// The endpoint is server-side race-safe (NetBox never hands out the same
+/// address twice), so the plan carries [`Precondition::None`] — there is no
+/// prior object, ETag, or `last_updated` to bind. A dry-run surfaces the
+/// *currently* next address as an advisory warning: NetBox allocates at apply
+/// time, so the applied address may differ. Only `description` / `dns_name`
+/// may be set (the v1 narrow allow-list — no status/role/tags/assignment).
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn plan_ip_range_reserve(
+    client: &NetBoxClient,
+    range_ref: &str,
+    description: Option<&str>,
+    dns_name: Option<&str>,
+    changelog_message: Option<&str>,
+    profile: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<MutationPlan> {
+    // Message length is pure input validation — check first, before any network.
+    let message = match changelog_message {
+        Some(m) if !m.is_empty() => Some(m.to_string()),
+        _ => None,
+    };
+    mutation::validate_changelog_message(&message)?;
+
+    // Resolve the IP range by start address or ID (same resolver as
+    // `nbox ip-range`).
+    let range = client
+        .ip_range_by_ref(range_ref)
+        .await?
+        .ok_or_else(|| not_found("IP range", range_ref))?;
+    let endpoint = format!("/api/ipam/ip-ranges/{}/available-ips/", range.id);
+
+    let target = PlanTarget {
+        kind: "ip".to_string(),
+        r#ref: range_ref.to_string(),
+        id: range.id,
+        display: format!("{} – {}", range.start_address, range.end_address),
+        endpoint,
+        profile: profile.to_string(),
+    };
+
+    // The minimal POST body: only the fields the operator actually set. A bare
+    // reserve sends `{}` and takes NetBox's defaults.
+    let mut body = serde_json::Map::new();
+    let mut fields = Vec::new();
+    if let Some(d) = description.filter(|s| !s.is_empty()) {
+        body.insert("description".to_string(), serde_json::json!(d));
+        fields.push(FieldChange {
+            field: "description".to_string(),
+            before: Value::Null,
+            after: serde_json::json!(d),
+        });
+    }
+    if let Some(d) = dns_name.filter(|s| !s.is_empty()) {
+        body.insert("dns_name".to_string(), serde_json::json!(d));
+        fields.push(FieldChange {
+            field: "dns_name".to_string(),
+            before: Value::Null,
+            after: serde_json::json!(d),
+        });
+    }
+    let patch = Value::Object(body);
+    let precondition = Precondition::None;
+
+    // Dry-run advisory: the address NetBox would currently hand out. Read-only,
+    // and never part of the body — another client could allocate between this
+    // read and the apply POST, so the applied address may differ.
+    let mut warnings = Vec::new();
+    // NetBox's IP-range available-ips endpoint returns a bare JSON array.
+    match client
+        .get::<Vec<AvailableIp>>(
+            &format!("/api/ipam/ip-ranges/{}/available-ips/", range.id),
+            &[("limit", "1".to_string())],
+        )
+        .await
+    {
+        Ok(list) => match list.first() {
+            Some(next) => warnings.push(format!(
+                "currently next: {} — NetBox allocates at apply; the applied address may differ",
+                next.address
+            )),
+            None => warnings.push(
+                "no available addresses in this range — the reserve will fail at apply".to_string(),
+            ),
+        },
+        // A failed advisory read must not block planning; the apply POST is the
+        // authoritative attempt. Note it and carry on.
+        Err(_) => {
+            warnings.push("could not read the next available address (advisory only)".to_string());
+        }
+    }
+
+    let expires_epoch = mutation::plan_expiry_epoch(SystemTime::now());
+    let confirm_token = mutation::confirm_token(
+        &target,
+        Operation::Allocate,
+        &precondition,
+        &patch,
+        &message,
+        expires_epoch,
+    );
+
+    Ok(MutationPlan {
+        schema_version: PLAN_SCHEMA_VERSION,
+        operation: Operation::Allocate,
+        target,
+        precondition,
+        fields,
+        patch,
+        no_op: false,
+        warnings,
+        errors: Vec::new(),
+        changelog_message: message,
+        confirm_token,
+        expires_at: mutation::format_iso_utc(expires_epoch),
+    })
+}
+
+/// Apply a planned IP-range reservation (ADR-0001 §5 steps 5–7): verify the
+/// plan's confirmation token + expiry, then POST the minimal body to the
+/// range's `available-ips` endpoint. NetBox allocates the next free address
+/// and returns the created IP object (`201`), which becomes the receipt's
+/// `object`.
+pub(crate) async fn apply_ip_range_reserve(
+    client: &NetBoxClient,
+    plan: &MutationPlan,
+) -> Result<MutationReceipt> {
+    plan.verify()?;
+
+    // The wire body is the minimal create patch plus the opt-in changelog_message.
+    let mut body = plan.patch.clone();
+    if let Some(msg) = &plan.changelog_message {
+        body["changelog_message"] = serde_json::json!(msg);
+    }
+
+    let (created, status): (IpAddress, u16) = client.post(&plan.target.endpoint, &body).await?;
+    let address = created.address.clone();
+    let view = IpView::build(created, None);
+    let object = serde_json::to_value(&view).ok();
+
+    Ok(MutationReceipt {
+        schema_version: PLAN_SCHEMA_VERSION,
+        operation: plan.operation,
+        target: plan.target.clone(),
+        fields: plan.fields.clone(),
+        applied: true,
+        no_op: false,
+        status,
+        etag: None,
+        request_id: None,
+        object,
+        message: format!("reserved: {} in {}", address, plan.target.display),
+    })
 }
 
 // ===== Safe write follow-on: tag add/remove (ADR-0001) ===================
