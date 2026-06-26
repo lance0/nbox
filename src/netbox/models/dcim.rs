@@ -39,6 +39,14 @@ pub struct Device {
     #[serde(default)]
     pub description: Option<String>,
 
+    /// When the object was last modified (ISO 8601). Carried on detail responses;
+    /// the write foundation uses it as the pre-4.6 optimistic-concurrency
+    /// precondition when no `ETag` header is present (ADR-0001 §3), e.g. for
+    /// `nbox device <name> set status <value>`. `#[serde(default)]` so it is
+    /// simply `None` on a partial list shape that omits it.
+    #[serde(default)]
+    pub last_updated: Option<String>,
+
     /// The native owner (NetBox 4.5+); a user/group brief. `None` on older
     /// releases or when unset.
     #[serde(default)]

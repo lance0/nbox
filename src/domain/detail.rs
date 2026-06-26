@@ -431,6 +431,212 @@ fn interface_before_hash(iface: &Interface) -> String {
     mutation::before_hash(&m)
 }
 
+// ===== Safe write follow-on: device status (ADR-0001) =====================
+//
+// The second write command reuses the same planner/diff/confirm/concurrency/
+// audit contracts as the interface-description pilot. The new piece is choice
+// validation: `status` is a server-enumerated field, so the planner asks
+// NetBox (read-only `OPTIONS`) for the allowed values and normalizes the
+// operator's input to the canonical wire value BEFORE building the plan — an
+// unknown or ambiguous status is a usage error (exit 2) with no `PATCH`.
+// Still operation- and field-specific (one field: `status`); no generic editor.
+
+/// The only writable field on a device in this pilot (ADR-0001 §6).
+pub(crate) const DEVICE_WRITABLE_FIELD: &str = "status";
+
+/// Plan a device `status` update: enumerate the allowed status values from
+/// NetBox (read-only `OPTIONS`) and normalize the input, resolve the device,
+/// read the authoritative current state with its `ETag` (4.6+) or `last_updated`
+/// (pre-4.6), derive the minimal `PATCH` (`{"status": "<value>"}`), and build
+/// the [`MutationPlan`].
+///
+/// `new_status` is the operator's input verbatim — a canonical value
+/// (`active`) or a label (`Active`) matched case-insensitively when it maps
+/// unambiguously to one value. Unknown/ambiguous input is a usage error here,
+/// before any `PATCH`, naming the input and listing the allowed canonical
+/// values. A no-op (current value already matches) yields `no_op: true` and an
+/// empty `patch`. `changelog_message` is validated against NetBox's length
+/// limit here, before any network write.
+pub(crate) async fn plan_device_status_update(
+    client: &NetBoxClient,
+    device: &str,
+    new_status: &str,
+    changelog_message: Option<&str>,
+    profile: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<MutationPlan> {
+    // Message length is pure input validation — check first, before any network.
+    let message = match changelog_message {
+        Some(m) if !m.is_empty() => Some(m.to_string()),
+        _ => None,
+    };
+    mutation::validate_changelog_message(&message)?;
+
+    // Enumerate the allowed status values from NetBox (read-only OPTIONS) and
+    // normalize the operator's input to the canonical wire value. An
+    // unknown/ambiguous input is a usage error (exit 2) BEFORE resolving the
+    // device — no PATCH is ever built from an unvalidated value (ADR-0001 §6).
+    let choices = client.device_status_choices().await?;
+    // Empty metadata means the OPTIONS enumeration came back without choices
+    // (an unexpected schema, a permission-stripped `actions`, or a proxy that
+    // dropped the body). Fail with a clear cause rather than letting
+    // `resolve_choice` report the input as an invalid value against an empty
+    // allow-list — and never send an unvalidated write (ADR-0001 §6).
+    if choices.is_empty() {
+        return Err(NboxError::Usage(format!(
+            "could not enumerate allowed values for device {DEVICE_WRITABLE_FIELD} from NetBox \
+             OPTIONS; refusing to send an unvalidated write"
+        ))
+        .into());
+    }
+    let normalized =
+        crate::netbox::choices::resolve_choice(&choices, DEVICE_WRITABLE_FIELD, new_status)?;
+
+    // Resolve the device by reference (reuses the read path so ambiguity /
+    // not-found / case-insensitive fallback behave exactly like `nbox device`).
+    let dev = client
+        .device_by_ref(device)
+        .await?
+        .ok_or_else(|| not_found("device", device))?;
+    // Read the authoritative current state with its `ETag` header (4.6+) or
+    // `last_updated` (pre-4.6 fallback). The list above gave us the id; the
+    // detail gives the ETag plus the canonical object.
+    let endpoint = format!("/api/dcim/devices/{}/", dev.id);
+    let (current, etag): (Device, Option<String>) = client.get_with_etag(&endpoint, &[]).await?;
+
+    let target = PlanTarget {
+        kind: "device".to_string(),
+        r#ref: device.to_string(),
+        id: current.id,
+        display: current
+            .display
+            .clone()
+            .or_else(|| Some(current.name.clone()))
+            .unwrap_or_else(|| device.to_string()),
+        endpoint,
+        profile: profile.to_string(),
+    };
+
+    let precondition = match etag {
+        Some(e) => Precondition::Etag { etag: e },
+        None => Precondition::LastUpdated {
+            last_updated: current.last_updated.clone(),
+            before_hash: device_before_hash(&current),
+        },
+    };
+
+    // The current status value (the canonical wire value, e.g. "active").
+    let current_status = current.status.as_ref().map(|c| c.value.clone());
+    let before = serde_json::to_value(&current_status).unwrap_or(Value::Null);
+    let after = serde_json::to_value(&normalized).unwrap_or(Value::Null);
+    let no_op = current_status.as_deref() == Some(normalized.as_str());
+    let patch = if no_op {
+        serde_json::json!({})
+    } else {
+        serde_json::json!({ "status": normalized })
+    };
+    let fields = vec![FieldChange {
+        field: DEVICE_WRITABLE_FIELD.to_string(),
+        before: before.clone(),
+        after: after.clone(),
+    }];
+
+    let expires_epoch = mutation::plan_expiry_epoch(SystemTime::now());
+    let confirm_token = mutation::confirm_token(&target, &precondition, &patch, expires_epoch);
+
+    Ok(MutationPlan {
+        schema_version: PLAN_SCHEMA_VERSION,
+        operation: Operation::Update,
+        target,
+        precondition,
+        fields,
+        patch,
+        no_op,
+        warnings: Vec::new(),
+        errors: Vec::new(),
+        changelog_message: message,
+        confirm_token,
+        expires_at: mutation::format_iso_utc(expires_epoch),
+    })
+}
+
+/// Apply a planned device `status` update (ADR-0001 §5 steps 5–7): verify the
+/// plan's confirmation token + expiry, short-circuit a no-op, then send the
+/// minimal `PATCH` (`{"status": "<value>"}`) with the recorded precondition.
+/// Returns a [`MutationReceipt`] from the PATCH response.
+pub(crate) async fn apply_device_status_update(
+    client: &NetBoxClient,
+    plan: &MutationPlan,
+) -> Result<MutationReceipt> {
+    plan.verify()?;
+
+    if plan.no_op {
+        return Ok(no_op_receipt(plan));
+    }
+
+    // The wire body is the object-field patch plus the opt-in changelog_message
+    // (a NetBox write-only request field, recorded in the object-change entry,
+    // never stored on the object).
+    let mut body = plan.patch.clone();
+    if let Some(msg) = &plan.changelog_message {
+        body["changelog_message"] = serde_json::json!(msg);
+    }
+
+    let (_updated, new_etag, status): (Device, Option<String>, u16) = match &plan.precondition {
+        Precondition::Etag { etag } => {
+            client
+                .patch(&plan.target.endpoint, &body, Some(etag))
+                .await?
+        }
+        Precondition::LastUpdated {
+            last_updated,
+            before_hash,
+        } => {
+            // Read-before-write (pre-4.6 fallback): re-fetch and refuse if the
+            // object moved. `last_updated` ticking is the primary signal; the
+            // before-hash is a belt-and-suspenders guard for the rare case it
+            // didn't.
+            let (current, _): (Device, Option<String>) =
+                client.get_with_etag(&plan.target.endpoint, &[]).await?;
+            if current.last_updated != *last_updated || device_before_hash(&current) != *before_hash
+            {
+                return Err(NboxError::StalePrecondition(String::new()).into());
+            }
+            client.patch(&plan.target.endpoint, &body, None).await?
+        }
+    };
+
+    Ok(MutationReceipt {
+        schema_version: PLAN_SCHEMA_VERSION,
+        operation: plan.operation,
+        target: plan.target.clone(),
+        fields: plan.fields.clone(),
+        applied: true,
+        no_op: false,
+        status,
+        etag: new_etag,
+        request_id: None,
+        message: format!(
+            "applied: {} {} ({})",
+            plan.target.kind,
+            plan.target.display,
+            plan.changed_field_names().join(", ")
+        ),
+    })
+}
+
+/// Normalized before-hash over the device's in-scope writable field (`status`).
+/// The apply re-reads and recomputes this; a mismatch vs the plan's recorded
+/// `before_hash` means the object changed in NetBox.
+fn device_before_hash(dev: &Device) -> String {
+    let mut m = BTreeMap::new();
+    m.insert(
+        DEVICE_WRITABLE_FIELD.to_string(),
+        serde_json::to_value(dev.status.as_ref().map(|c| c.value.clone())).unwrap_or(Value::Null),
+    );
+    mutation::before_hash(&m)
+}
+
 /// `ip <address>`: resolve an IP (scoped by `vrf`, ambiguity-checked) and
 /// enrich with its most-specific parent prefix. Shared by CLI/MCP.
 pub async fn ip_view_by_ref(

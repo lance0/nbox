@@ -287,7 +287,30 @@ pub async fn run(cli: Cli) -> Result<()> {
             value,
             journal,
             journal_limit,
-        }) => run_device(&ctx, &value, journal, journal_limit).await,
+            action,
+        }) => match action {
+            None => run_device(&ctx, &value, journal, journal_limit).await,
+            Some(crate::cli::DeviceAction::Set {
+                field,
+                value: new_value,
+                message,
+                dry_run,
+                confirm,
+                allow_writes,
+            }) => {
+                Box::pin(run_device_set(
+                    &ctx,
+                    &value,
+                    &field,
+                    &new_value,
+                    message.as_deref(),
+                    dry_run,
+                    confirm,
+                    allow_writes,
+                ))
+                .await
+            }
+        },
         Some(Command::Ip {
             address,
             vrf,
@@ -1201,48 +1224,13 @@ fn write_action(
     }
 }
 
-/// `nbox interface <device> <interface> set <field> <value>` — the first safe
-/// write (ADR-0001). The lifecycle (ADR-0001 §5): resolve → read → plan →
-/// render → confirm → apply → receipt. Enablement + confirmation are separate
-/// (ADR §4): apply needs BOTH the `--allow-writes` gate AND confirmation
-/// (`--confirm`, or a TTY prompt in plain output); `--dry-run` needs neither.
-/// Non-TTY / JSON / CSV / `--no-tui` never prompt. The audit event (field names
-/// only, never values/tokens/objects/the message body) is emitted on every
-/// planned outcome; a pre-plan usage refusal emits none.
-#[allow(clippy::too_many_arguments)] // the CLI flag set; collapsing loses clarity
-async fn run_interface_set(
-    ctx: &Ctx,
-    device: &str,
-    interface: &str,
-    field: &str,
-    value: &str,
-    message: Option<&str>,
-    dry_run: bool,
-    confirm: bool,
-    allow_writes: bool,
-) -> Result<()> {
+/// Resolve the write gate + confirmation flags into a [`WriteAction`], refusing
+/// (exit 2, empty stdout) before any plan/network when the gate is missing or
+/// confirmation can't be obtained non-interactively. Shared by every write
+/// command so the gate matrix + refusal messages are one path (ADR-0001 §4/§5).
+/// `--dry-run` is exempt (mutates nothing) and always proceeds to plan + render.
+fn gate_write(ctx: &Ctx, dry_run: bool, confirm: bool, allow_writes: bool) -> Result<WriteAction> {
     use std::io::IsTerminal as _;
-    use std::io::Write as _;
-
-    use crate::netbox::write_audit::{Outcome, Started, Surface};
-
-    // Field validation is pure input checking — fail closed before any network
-    // use so `set status active` is a usage error regardless of the other flags.
-    if field != detail::INTERFACE_WRITABLE_FIELD {
-        return Err(error::NboxError::Usage(format!(
-            "only `{}` is writable on an interface in v1; got \"{field}\". \
-             Broader writes land later on the same safe-write contracts (ADR-0001 §6).",
-            detail::INTERFACE_WRITABLE_FIELD
-        ))
-        .into());
-    }
-
-    // Gate decision BEFORE any plan/network: a read-only invocation can never
-    // become a write (ADR-0001 §4/§5). `--dry-run` is exempt (mutates nothing).
-    // A refusal here keeps stdout empty (no diff) and names the required flag.
-    // The decision is a pure function of the flags + interactive context, so the
-    // full gate matrix is unit-tested in [`write_action`] (no TTY/network).
-    //
     // `interactive` requires a fully interactive terminal: plain output AND both
     // stdout AND stdin are TTYs (a piped/closed stdin cannot answer a prompt) AND
     // not `--no-tui`. Requiring stdin keeps the "non-TTY never prompts" contract
@@ -1253,36 +1241,53 @@ async fn run_interface_set(
         && !ctx.no_tui;
     let action = write_action(dry_run, confirm, allow_writes, interactive);
     match action {
-        WriteAction::RefuseNoGate => {
-            return Err(error::NboxError::Usage(
-                "writes are not enabled. To apply, pass `--allow-writes` AND confirm \
-                 (`--confirm`, or answer the prompt on a TTY). To preview only, pass `--dry-run`."
-                    .to_string(),
-            )
-            .into());
-        }
-        WriteAction::RefuseNeedsConfirm => {
-            return Err(error::NboxError::Usage(
-                "non-interactive write requires confirmation. Add `--confirm` to apply \
-                 (or `--dry-run` to preview the plan)."
-                    .to_string(),
-            )
-            .into());
-        }
+        WriteAction::RefuseNoGate => Err(error::NboxError::Usage(
+            "writes are not enabled. To apply, pass `--allow-writes` AND confirm \
+             (`--confirm`, or answer the prompt on a TTY). To preview only, pass `--dry-run`."
+                .to_string(),
+        )
+        .into()),
+        WriteAction::RefuseNeedsConfirm => Err(error::NboxError::Usage(
+            "non-interactive write requires confirmation. Add `--confirm` to apply \
+             (or `--dry-run` to preview the plan)."
+                .to_string(),
+        )
+        .into()),
         // DryRun / Apply / Prompt all proceed past the gate to plan + (render | apply).
-        _ => {}
+        _ => Ok(action),
     }
+}
 
-    let (client, profile) = connect_named(ctx)?;
-    let host = audit_origin(client.base_url());
+/// The shared post-plan write lifecycle (ADR-0001 §5 steps 4–7): given an
+/// already-built [`MutationPlan`] and the resolved [`WriteAction`], render a
+/// dry-run, prompt on a TTY (when `Prompt`), and apply (when `Apply`/`Prompt`
+/// accepted) — emitting the single structured write-audit event for each
+/// outcome. The two write commands share this so the gate/prompt/audit
+/// orchestration is one path, not two; only the field check + the planner +
+/// the applier differ per command. `apply` boxes the command-specific apply
+/// future so this stays generic over the target kind.
+///
+/// `plan` is borrowed for the whole body (the diff render, the audit event,
+/// and the apply all read it); nothing moves it.
+async fn apply_or_preview(
+    ctx: &Ctx,
+    client: &NetBoxClient,
+    plan: &MutationPlan,
+    action: WriteAction,
+    profile: &str,
+    host: &str,
+    apply: impl for<'a> Fn(
+        &'a NetBoxClient,
+        &'a MutationPlan,
+    ) -> std::pin::Pin<
+        Box<dyn std::future::Future<Output = anyhow::Result<MutationReceipt>> + 'a>,
+    >,
+) -> Result<()> {
+    use std::io::Write as _;
 
-    // 2–4) read + plan. (1 — resolve — happens inside the planner.)
-    let plan = detail::plan_interface_description_update(
-        &client, device, interface, value, message, &profile, &not_found,
-    )
-    .await?;
-    let audit_fields: Vec<&str> = plan.changed_field_names();
-    let field_names: Vec<&str> = audit_fields.clone();
+    use crate::netbox::write_audit::{Outcome, Started, Surface};
+
+    let field_names: Vec<&str> = plan.changed_field_names();
     // Audit the *planned* (normalized) message, not the raw `--message` arg: the
     // planner normalizes an empty/whitespace-only message to `None`, so it audits
     // as absent. The length is a character count (matching NetBox's 200-char
@@ -1294,11 +1299,11 @@ async fn run_interface_set(
 
     // `--dry-run`: plan + render, no mutation, no gate, no confirm. ADR §5.
     if action == WriteAction::DryRun {
-        let ev = audit_event(
+        audit_event(
             Surface::Cli,
-            &profile,
-            &host,
-            &plan,
+            profile,
+            host,
+            plan,
             &field_names,
             Outcome::DryRun,
             "GET",
@@ -1307,18 +1312,18 @@ async fn run_interface_set(
             0,
             message_present,
             message_len,
-        );
-        ev.emit();
+        )
+        .emit();
         if ctx.format == Format::Plain {
             eprintln!("planned, no changes sent");
         }
-        return emit(ctx, &plan, || render_plan_plain(&plan));
+        return emit(ctx, plan, || render_plan_plain(plan));
     }
 
     // 5) confirm. On a plain TTY without `--confirm`, show the diff then prompt.
     if action == WriteAction::Prompt {
         // The diff goes to stdout (the operator's review); the prompt to stderr.
-        render_plan_plain(&plan);
+        render_plan_plain(plan);
         if plan.no_op {
             // A no-op needs no confirmation — nothing would change. Still emit
             // the dry-plan-style line and let the apply path short-circuit.
@@ -1334,8 +1339,8 @@ async fn run_interface_set(
         if accepted.is_none() {
             write_audit::WriteAuditEvent {
                 surface: Surface::Cli,
-                profile: &profile,
-                host: &host,
+                profile,
+                host,
                 operation: plan.operation,
                 target_kind: &plan.target.kind,
                 target_id: plan.target.id,
@@ -1359,7 +1364,7 @@ async fn run_interface_set(
     // 6) apply (+ 7 receipt). The apply verifies the plan's token + expiry,
     // short-circuits a no-op, and sends the minimal PATCH with the precondition.
     let sw = Started::now();
-    match detail::apply_interface_description_update(&client, &plan).await {
+    match apply(client, plan).await {
         Ok(receipt) => {
             let outcome = if receipt.no_op {
                 Outcome::NoOp
@@ -1368,9 +1373,9 @@ async fn run_interface_set(
             };
             audit_event(
                 Surface::Cli,
-                &profile,
-                &host,
-                &plan,
+                profile,
+                host,
+                plan,
                 &field_names,
                 outcome,
                 "PATCH",
@@ -1393,9 +1398,9 @@ async fn run_interface_set(
             // the error variants don't surface the HTTP status.
             audit_event(
                 Surface::Cli,
-                &profile,
-                &host,
-                &plan,
+                profile,
+                host,
+                plan,
                 &field_names,
                 outcome,
                 "PATCH",
@@ -1409,6 +1414,111 @@ async fn run_interface_set(
             Err(e)
         }
     }
+}
+
+/// `nbox interface <device> <interface> set <field> <value>` — the first safe
+/// write (ADR-0001). The lifecycle (ADR-0001 §5): resolve → read → plan →
+/// render → confirm → apply → receipt. Enablement + confirmation are separate
+/// (ADR §4): apply needs BOTH the `--allow-writes` gate AND confirmation
+/// (`--confirm`, or a TTY prompt in plain output); `--dry-run` needs neither.
+/// Non-TTY / JSON / CSV / `--no-tui` never prompt. The audit event (field names
+/// only, never values/tokens/objects/the message body) is emitted on every
+/// planned outcome; a pre-plan usage refusal emits none.
+#[allow(clippy::too_many_arguments)] // the CLI flag set; collapsing loses clarity
+async fn run_interface_set(
+    ctx: &Ctx,
+    device: &str,
+    interface: &str,
+    field: &str,
+    value: &str,
+    message: Option<&str>,
+    dry_run: bool,
+    confirm: bool,
+    allow_writes: bool,
+) -> Result<()> {
+    // Field validation is pure input checking — fail closed before any network
+    // use so `set status active` is a usage error regardless of the other flags.
+    if field != detail::INTERFACE_WRITABLE_FIELD {
+        return Err(error::NboxError::Usage(format!(
+            "only `{}` is writable on an interface in v1; got \"{field}\". \
+             Broader writes land later on the same safe-write contracts (ADR-0001 §6).",
+            detail::INTERFACE_WRITABLE_FIELD
+        ))
+        .into());
+    }
+
+    // Gate decision BEFORE any plan/network: a read-only invocation can never
+    // become a write (ADR-0001 §4/§5). `--dry-run` is exempt (mutates nothing).
+    // A refusal here keeps stdout empty (no diff) and names the required flag.
+    // The decision is a pure function of the flags + interactive context, so the
+    // full gate matrix is unit-tested in [`write_action`] (no TTY/network).
+    let action = gate_write(ctx, dry_run, confirm, allow_writes)?;
+
+    let (client, profile) = connect_named(ctx)?;
+    let host = audit_origin(client.base_url());
+
+    // 2–4) read + plan. (1 — resolve — happens inside the planner.)
+    let plan = detail::plan_interface_description_update(
+        &client, device, interface, value, message, &profile, &not_found,
+    )
+    .await?;
+
+    // The shared dry-run/prompt/apply/audit lifecycle — one write path for both
+    // write commands; only the field check, planner, and applier differ.
+    apply_or_preview(ctx, &client, &plan, action, &profile, &host, |c, p| {
+        Box::pin(detail::apply_interface_description_update(c, p))
+    })
+    .await
+}
+
+/// `nbox device <device> set <field> <value>` — the second safe write
+/// (ADR-0001 follow-on), reusing the same gate/planner/lifecycle/audit path as
+/// the interface pilot. Only `status` is writable in this pilot; its allowed
+/// values are enumerated live from NetBox (read-only `OPTIONS`) and the
+/// operator's input is normalized to the canonical value (a label is accepted
+/// case-insensitively when it maps unambiguously to one value) before any
+/// `PATCH`. Unknown/ambiguous status is a usage error (exit 2) naming the input
+/// and listing the allowed values. No-op status change sends no `PATCH`.
+#[allow(clippy::too_many_arguments)] // the CLI flag set; collapsing loses clarity
+async fn run_device_set(
+    ctx: &Ctx,
+    device: &str,
+    field: &str,
+    value: &str,
+    message: Option<&str>,
+    dry_run: bool,
+    confirm: bool,
+    allow_writes: bool,
+) -> Result<()> {
+    // Field validation is pure input checking — fail closed before any network
+    // use so `set <non-status>` is a usage error regardless of the other flags.
+    if field != detail::DEVICE_WRITABLE_FIELD {
+        return Err(error::NboxError::Usage(format!(
+            "only `{}` is writable on a device in this pilot; got \"{field}\". \
+             Broader writes land later on the same safe-write contracts (ADR-0001 §6).",
+            detail::DEVICE_WRITABLE_FIELD
+        ))
+        .into());
+    }
+
+    // Gate decision BEFORE any plan/network (shared with the interface pilot).
+    let action = gate_write(ctx, dry_run, confirm, allow_writes)?;
+
+    let (client, profile) = connect_named(ctx)?;
+    let host = audit_origin(client.base_url());
+
+    // The planner enumerates the allowed status values from NetBox (read-only
+    // OPTIONS) and normalizes the input before building the plan — an
+    // unknown/ambiguous status is a usage error (exit 2) with no `PATCH`.
+    let plan =
+        detail::plan_device_status_update(&client, device, value, message, &profile, &not_found)
+            .await?;
+
+    // The shared dry-run/prompt/apply/audit lifecycle — one write path.
+    apply_or_preview(ctx, &client, &plan, action, &profile, &host, |c, p| {
+        Box::pin(detail::apply_device_status_update(c, p))
+    })
+    .await
 }
 
 /// Classify an apply error into the coarse audit outcome. A stale precondition
@@ -1497,7 +1607,7 @@ fn audit_event<'a>(
 /// precondition in force, and (for dry-run) the no-op note. Goes to stdout as
 /// the operator's review; the apply prompt and status lines go to stderr.
 fn render_plan_plain(plan: &MutationPlan) {
-    println!("interface: {}", plan.target.display);
+    println!("{}: {}", plan.target.kind, plan.target.display);
     for f in &plan.fields {
         println!(
             "  {}: {} → {}",

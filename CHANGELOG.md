@@ -35,6 +35,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     patch, full object, or `--message` body is ever logged.
   - **MCP stays read-only.** No write tools are exposed; per-user NetBox write
     identity (Pattern 2) is a prerequisite for MCP writes.
+- **`nbox device <name> set status <value>` — the second safe write.** Reuses
+  the ADR-0001 foundation (the same `MutationPlan`/`MutationReceipt` engine,
+  `--dry-run` / `--allow-writes --confirm` / `--message` gate, `ETag`+`If-Match`
+  on 4.6+, pre-4.6 `last_updated`+before-hash fallback, and local write audit)
+  as the interface-description pilot. Sends a minimal `PATCH` body
+  (`{"status": "<value>"}`); a no-op status (current value already matches)
+  sends no `PATCH`.
+  - **Choice validation.** `status` is a server-enumerated field, so nbox asks
+    NetBox for the allowed values via a read-only `OPTIONS` before any `PATCH`,
+    and normalizes the operator's input to the canonical wire value. Canonical
+    values are accepted; labels are accepted case-insensitively when they map
+    unambiguously to one value. Unknown or ambiguous status is a usage error
+    (exit 2, empty stdout) that names the input and lists the allowed canonical
+    values — before any `PATCH`. This is the smallest reusable mechanism for
+    REST choice fields (`src/netbox/choices.rs`), not a generic schema editor;
+    writable-field discovery, required-field checking, and relation shaping
+    stay out of scope (ROADMAP).
+  - **Shared CLI write path.** The gate decision and the dry-run/prompt/apply/
+    audit lifecycle are factored into shared helpers (`gate_write`,
+    `apply_or_preview`) now used by both write commands, so there is one write
+    path, not two.
 
 ### Changed
 

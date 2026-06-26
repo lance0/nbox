@@ -16,9 +16,10 @@ this device, what owns this prefix?* — from the shell, a k9s-style TUI, or an 
 server for AI agents.
 
 **Status: pre-1.0.** Reads are the default; a narrow safe-write foundation
-(ADR-0001) has landed behind `--allow-writes` + confirmation — one pilot
-command today (`nbox interface <device> <interface> set description "…"`).
-Broader writes are on the [ROADMAP](ROADMAP.md).
+(ADR-0001) has landed behind `--allow-writes` + confirmation — two pilot
+commands today (`nbox interface <device> <interface> set description "…"`
+and `nbox device <name> set status <value>`). Broader writes are on the
+[ROADMAP](ROADMAP.md).
 
 ## Quick Start
 
@@ -251,6 +252,7 @@ nbox search <query> [--limit N] [--status/--site/--region/--site-group/--locatio
                                   # --owner/--owner-group filter by user/group name (NetBox 4.5+).
                                   # Full scope/filter semantics: docs/FEATURES.md
 nbox device <name-or-id> [--journal] [--journal-limit N]
+  device <name> set status <value>                    # write: status validated live via OPTIONS; --dry-run | --allow-writes --confirm [--message]
 nbox ip <address> [--vrf <name>] [--journal]    # --vrf disambiguates duplicates across VRFs
                                   # shows nat_inside/nat_outside (NetBox 4.6) when set
 nbox prefix <cidr> [--vrf <name>] [--journal]   # includes utilization + children when present

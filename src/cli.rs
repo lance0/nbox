@@ -150,6 +150,12 @@ pub enum Command {
         /// Max inline journal entries to fold in (implies --journal; default 5).
         #[arg(long, value_name = "N")]
         journal_limit: Option<usize>,
+
+        /// Optional write action. Omit to read the device (`nbox device
+        /// <value>`); pass `set` to update a field (a write, behind
+        /// `--allow-writes` + confirmation — ADR-0001).
+        #[command(subcommand)]
+        action: Option<DeviceAction>,
     },
 
     /// Look up an IP address.
@@ -603,6 +609,55 @@ pub enum InterfaceAction {
         field: String,
 
         /// New value verbatim. Pass an empty string (`""`) to clear the field.
+        /// A value equal to the current one is a no-op: apply sends no `PATCH`
+        /// and reports "no change".
+        value: String,
+
+        /// Record this message in NetBox's object-change entry (a write-only
+        /// request field, never stored on the object). Validated to NetBox's
+        /// 200-character limit before applying. Optional.
+        #[arg(long, value_name = "MESSAGE")]
+        message: Option<String>,
+
+        /// Preview the plan + diff and perform no mutation. Needs neither
+        /// `--allow-writes` nor confirmation. With `--json`, returns the stable
+        /// `MutationPlan` JSON.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+
+        /// Apply the reviewed plan without an interactive prompt. Does NOT
+        /// enable writes on its own — `--confirm` without `--allow-writes` is a
+        /// usage error (exit 2). With `--json`, returns the stable
+        /// `MutationReceipt` JSON.
+        #[arg(long)]
+        confirm: bool,
+
+        /// The write-enable gate: required to apply ANY mutation. Kept separate
+        /// from `--confirm` so a read-only invocation can never be silently
+        /// turned into a write (ADR-0001 §4).
+        #[arg(long = "allow-writes")]
+        allow_writes: bool,
+    },
+}
+
+/// Write actions on a device (ADR-0001 safe-write foundation). The v1
+/// surface is intentionally narrow: one operation (`set`) on one field
+/// (`status`). No generic `edit`, no free-form patch — broader writes come
+/// later, on the same planner/diff/confirm/concurrency/audit contracts.
+#[derive(Debug, Subcommand)]
+pub enum DeviceAction {
+    /// Set a writable field on a device. A write: requires the `--allow-writes`
+    /// gate AND confirmation (`--confirm`, or an interactive prompt on a TTY in
+    /// plain output). `--dry-run` previews with no mutation and needs neither.
+    Set {
+        /// Field to set. Only `status` is supported in this pilot; any other
+        /// value is a usage error (exit 2) before any network write. Allowed
+        /// `status` values are read live from NetBox (OPTIONS) — a canonical
+        /// value (`active`) or a label (`Active`) matched case-insensitively
+        /// when it maps unambiguously to one value.
+        field: String,
+
+        /// New value verbatim. For `status`, the canonical value or a label.
         /// A value equal to the current one is a no-op: apply sends no `PATCH`
         /// and reports "no change".
         value: String,
@@ -1171,5 +1226,91 @@ mod tests {
             bare.command,
             Some(Command::Aggregate { journal: false, .. })
         ));
+    }
+
+    #[test]
+    fn device_read_unchanged_with_optional_set_subcommand() {
+        // Omitting `set` keeps the read path: `action` is `None`.
+        let read = Cli::try_parse_from(["nbox", "device", "edge01", "--journal"]).unwrap();
+        assert!(matches!(
+            read.command,
+            Some(Command::Device {
+                value,
+                journal: true,
+                action: None,
+                ..
+            }) if value == "edge01"
+        ));
+    }
+
+    #[test]
+    fn device_set_status_parses_flags() {
+        let set = Cli::try_parse_from([
+            "nbox",
+            "device",
+            "edge01",
+            "set",
+            "status",
+            "active",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Some(Command::Device {
+            value,
+            action:
+                Some(DeviceAction::Set {
+                    field,
+                    value: new_value,
+                    message,
+                    dry_run,
+                    confirm,
+                    allow_writes,
+                }),
+            ..
+        }) = set.command
+        else {
+            panic!("expected device set status");
+        };
+        assert_eq!(value, "edge01");
+        assert_eq!(field, "status");
+        assert_eq!(new_value, "active");
+        assert!(dry_run);
+        assert!(!confirm);
+        assert!(!allow_writes);
+        assert!(message.is_none());
+
+        // The write flags compose: --allow-writes + --confirm + --message.
+        let apply = Cli::try_parse_from([
+            "nbox",
+            "--no-tui",
+            "device",
+            "edge01",
+            "set",
+            "status",
+            "Offline",
+            "--allow-writes",
+            "--confirm",
+            "--message",
+            "draining",
+        ])
+        .unwrap();
+        let Some(Command::Device {
+            action:
+                Some(DeviceAction::Set {
+                    field,
+                    value: new_value,
+                    message: Some(msg),
+                    dry_run: false,
+                    confirm: true,
+                    allow_writes: true,
+                }),
+            ..
+        }) = apply.command
+        else {
+            panic!("expected device set status apply");
+        };
+        assert_eq!(field, "status");
+        assert_eq!(new_value, "Offline");
+        assert_eq!(msg, "draining");
     }
 }
