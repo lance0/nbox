@@ -93,15 +93,15 @@ Polish the read experience. No writes here.
     `within "10.0.0.0/24"`. Every Nav-rail kind is now filterable; the router's
     `None` → search arm stays as a defensive fallback for a future non-filterable
     browse kind.
-- ☐ **Targeted fetch-all for capped sub-resources.** Browse intentionally stops
-  at `BROWSE_CAP` (currently 500) and expects server-side filtering, not scrolling
-  through thousands of rows. Detail tabs stop at `DETAIL_SECTION_CAP` (200). The
-  only proven remaining cap pain is bounded sub-resources that operators naturally
-  inspect as a whole, e.g. a full `/24`'s contained IPs (254 hosts) truncating at
-  200. Do **not** resurrect generic load-more-on-scroll for every browse; add an
-  explicit fetch-all / raise-cap action on the affected detail tabs, following
-  the server's `next` link through `list_all` (the old `offset += page_size` row
-  skip is already fixed in 0.12.0).
+- ☑ **Prefix contained IP cap for full `/24`s.** Prefix detail's contained-IP tab
+  now fetches up to 512 rows in CLI, MCP, and TUI detail, covering a full IPv4
+  `/24` (254 hosts) while child prefixes and other detail tabs stay at
+  `DETAIL_SECTION_CAP` (200). Browse intentionally remains capped at
+  `BROWSE_CAP` (currently 500) and expects server-side filtering, not scrolling
+  through thousands of rows. Do **not** resurrect generic load-more-on-scroll for
+  every browse; only add targeted higher caps/load-more on detail tabs when a
+  real operator workflow proves the need. The old `offset += page_size` row skip
+  is already fixed in 0.12.0.
 - ☐ **Hierarchical scope filters (descendant expansion).** `--region`/`--site-group`/`--location` (and the
   TUI scope) match **exactly** today — a region matches only prefixes scoped to the region itself, not the
   sites inside it (`KNOWN_ISSUES.md`). NetBox's `PrefixFilter` has no `within`/descendant lookup (see the

@@ -53,16 +53,18 @@ use crate::netbox::prefix_tree::build_nodes;
 use crate::netbox::query;
 use crate::netbox::search::ObjectKind;
 
-/// Cap on the child rows pulled into any one detail-view section: a device's
-/// interfaces/IPs/services, a prefix's child prefixes/member IPs, a VLAN's
-/// referencing prefixes, or a VRF's scoped prefixes/addresses. One concept
+/// Cap on the child rows pulled into most detail-view sections: a device's
+/// interfaces/IPs/services, a prefix's child prefixes, a VLAN's referencing
+/// prefixes, or a VRF's scoped prefixes/addresses. One concept
 /// ("rows in one detail section") → one cap, named at the rendering layer the
 /// cap operates on, not the dcim/ipam domain layer. Sized generously below
 /// NetBox's `MAX_PAGE_SIZE` (1000) so a section-full is a single round trip.
-/// NOTE: a full `/24` (254 hosts) still truncates at 200; closing that fully is
-/// a targeted `--all` toggle, not a cap bump (200 covers the vast majority and
-/// ends the prior 50-vs-200 inconsistency).
+/// NOTE: prefix contained IPs use a targeted higher cap below so a full IPv4
+/// `/24` fits without changing every detail tab's fetch budget.
 const DETAIL_SECTION_CAP: usize = 200;
+/// Prefix detail's contained-address tab needs room for a full IPv4 `/24` while
+/// still staying bounded and below NetBox's `MAX_PAGE_SIZE` (1000).
+const PREFIX_CONTAINED_IP_CAP: usize = 512;
 /// How many recent journal entries to fold into a detail view with `--journal`.
 pub const JOURNAL_INLINE_MAX: usize = 5;
 
@@ -262,7 +264,7 @@ pub async fn resolve_prefix(
 }
 
 /// `prefix <cidr>`: resolve a prefix (scoped by `vrf`) and build its view with
-/// children and member IPs (cap [`DETAIL_SECTION_CAP`]). Shared by CLI/MCP.
+/// child prefixes and member IPs. Shared by CLI/MCP.
 pub async fn prefix_view_by_ref(
     client: &NetBoxClient,
     cidr: &str,
@@ -273,15 +275,23 @@ pub async fn prefix_view_by_ref(
     // Scope children/member IPs to the resolved prefix's VRF (or the global table
     // when it has none), so a CIDR shared across VRFs can't pull the wrong VRF's.
     let vrf_id = prefix.vrf.as_ref().map(|v| v.id);
-    // Children and contained IPs are independent; fetch them concurrently (as
-    // the TUI `ObjectKind::Prefix` arms do) so the CLI/MCP prefix detail costs
-    // one round-trip for the header plus one for both child collections, not
-    // two sequential awaits.
-    let (children, ips) = tokio::try_join!(
-        client.prefix_children(cidr, vrf_id, DETAIL_SECTION_CAP),
-        client.prefix_ips(cidr, vrf_id, DETAIL_SECTION_CAP),
-    )?;
+    let (children, ips) = prefix_children_and_ips(client, cidr, vrf_id).await?;
     Ok(PrefixView::build(prefix, children, ips))
+}
+
+async fn prefix_children_and_ips(
+    client: &NetBoxClient,
+    cidr: &str,
+    vrf_id: Option<u64>,
+) -> Result<(Vec<Prefix>, Vec<IpAddress>)> {
+    // Children and contained IPs are independent; fetch them concurrently so
+    // prefix detail costs one round-trip for the header plus one for both child
+    // collections, not two sequential awaits. Only contained IPs get the higher
+    // cap; child prefixes keep the shared detail-section budget.
+    tokio::try_join!(
+        client.prefix_children(cidr, vrf_id, DETAIL_SECTION_CAP),
+        client.prefix_ips(cidr, vrf_id, PREFIX_CONTAINED_IP_CAP),
+    )
 }
 
 /// Fetch the VLAN's group (for its scope) only when the VLAN actually has one.
@@ -1912,13 +1922,7 @@ pub async fn load_detail(client: &NetBoxClient, kind: ObjectKind, id: u64) -> Re
             links = prefix_links(&p);
             let cidr = p.prefix.clone();
             let vrf_id = p.vrf.as_ref().map(|v| v.id);
-            // Children and contained IPs are independent; fetch them concurrently
-            // (as build_vrf_detail does) so prefix detail costs one round-trip for
-            // the header plus one for both child collections, not two sequential.
-            let (children, ips) = tokio::try_join!(
-                client.prefix_children(&cidr, vrf_id, DETAIL_SECTION_CAP),
-                client.prefix_ips(&cidr, vrf_id, DETAIL_SECTION_CAP),
-            )?;
+            let (children, ips) = prefix_children_and_ips(client, &cidr, vrf_id).await?;
             let (title, prefix_body, prefix_tabs) = prefix_detail_parts(p, children, ips);
             tabs = prefix_tabs;
             (title, prefix_body)
@@ -2168,13 +2172,7 @@ pub async fn load_detail_by_ref(
             links = prefix_links(&p);
             let cidr = p.prefix.clone();
             let vrf_id = p.vrf.as_ref().map(|v| v.id);
-            // Children and contained IPs are independent; fetch them concurrently
-            // (as build_vrf_detail does) so prefix detail costs one round-trip for
-            // the header plus one for both child collections, not two sequential.
-            let (children, ips) = tokio::try_join!(
-                client.prefix_children(&cidr, vrf_id, DETAIL_SECTION_CAP),
-                client.prefix_ips(&cidr, vrf_id, DETAIL_SECTION_CAP),
-            )?;
+            let (children, ips) = prefix_children_and_ips(client, &cidr, vrf_id).await?;
             let (title, prefix_body, prefix_tabs) = prefix_detail_parts(p, children, ips);
             tabs = prefix_tabs;
             (id, title, prefix_body)
