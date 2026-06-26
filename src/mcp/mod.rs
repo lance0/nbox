@@ -897,14 +897,14 @@ impl NboxMcp {
     }
 
     /// Read an `nbox://{kind}/{ref}` resource: parse the URI, resolve through
-    /// the same shared view layer as `nbox_get`, and return the object's JSON
-    /// view as a single text content. Disambiguators (`vrf`/`site`/`group`) have
-    /// no place in a flat URI, so an ambiguous `ref` surfaces its candidate list
-    /// as an `invalid_params` error — the caller can then use `nbox_get`.
+    /// the same cached path as `nbox_get`, and return the object's JSON view as
+    /// a single text content. Disambiguators (`vrf`/`site`/`group`) have no
+    /// place in a flat URI, so an ambiguous `ref` surfaces its candidate list as
+    /// an `invalid_params` error — the caller can then use `nbox_get`.
     async fn read_resource_impl(&self, uri: &str) -> Result<ReadResourceResult, ErrorData> {
         let (kind, reference) = parse_resource_uri(uri)?;
         let Json(value) = self
-            .get_impl(GetArgs {
+            .get_cached(GetArgs {
                 kind,
                 reference,
                 vrf: None,
