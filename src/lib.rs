@@ -456,6 +456,29 @@ pub async fn run(cli: Cli) -> Result<()> {
         Some(Command::Open { object_ref }) => run_open(&ctx, &object_ref).await,
         Some(Command::Tags { limit }) => run_tags(&ctx, limit).await,
         Some(Command::Tagged { tag, limit }) => run_tagged(&ctx, &tag, limit).await,
+        Some(Command::Tag { action }) => match action {
+            crate::cli::TagAction::Add {
+                object_type,
+                object_name,
+                tag,
+                message,
+                dry_run,
+                confirm,
+                allow_writes,
+            } => {
+                Box::pin(run_tag_add(
+                    &ctx,
+                    &object_type,
+                    &object_name,
+                    &tag,
+                    message.as_deref(),
+                    dry_run,
+                    confirm,
+                    allow_writes,
+                ))
+                .await
+            }
+        },
         Some(Command::Journal { kind, value, limit }) => {
             run_journal(&ctx, &kind, &value, limit).await
         }
@@ -1623,6 +1646,49 @@ async fn run_ip_reserve(
     // The shared dry-run/prompt/apply/audit lifecycle — one write path.
     apply_or_preview(ctx, &client, &plan, action, &profile, &host, |c, p| {
         Box::pin(detail::apply_ip_reserve(c, p))
+    })
+    .await
+}
+
+/// `nbox tag add <type> <name> <tag>` — the third safe write (ADR-0001
+/// follow-on), reusing the same gate/planner/lifecycle/audit path as the
+/// interface/device pilots. Resolves the tag and the target object, reads the
+/// current tags, and builds a plan that appends the tag's slug to the tags
+/// array (a `PATCH` that replaces the whole array — NetBox semantics). Adding
+/// a tag the object already carries is a no-op (no `PATCH`).
+#[allow(clippy::too_many_arguments)] // the CLI flag set; collapsing loses clarity
+async fn run_tag_add(
+    ctx: &Ctx,
+    object_type: &str,
+    object_name: &str,
+    tag: &str,
+    message: Option<&str>,
+    dry_run: bool,
+    confirm: bool,
+    allow_writes: bool,
+) -> Result<()> {
+    // Gate decision BEFORE any plan/network (shared with the PATCH pilots): a
+    // read-only invocation can never become a write (ADR-0001 §4/§5).
+    let action = gate_write(ctx, dry_run, confirm, allow_writes)?;
+
+    let (client, profile) = connect_named(ctx)?;
+    let host = audit_origin(client.base_url());
+
+    // 2–4) resolve the tag + target object + build the plan.
+    let plan = detail::plan_tag_add(
+        &client,
+        object_type,
+        object_name,
+        tag,
+        message,
+        &profile,
+        &not_found,
+    )
+    .await?;
+
+    // The shared dry-run/prompt/apply/audit lifecycle — one write path.
+    apply_or_preview(ctx, &client, &plan, action, &profile, &host, |c, p| {
+        Box::pin(detail::apply_tag_add(c, p))
     })
     .await
 }

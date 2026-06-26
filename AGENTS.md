@@ -40,6 +40,8 @@ nbox device <name|slug|id>
                                   #   --dry-run | --allow-writes --confirm
                                   #   (ADR-0001 safe write; read-only default)
 nbox ip <address> [--vrf <name|slug|rd>]  # surfaces nat_inside/nat_outside (NetBox 4.6) when set
+nbox ip reserve <cidr> [--vrf <name|slug|rd>] [--description "…"] [--dns-name "…"]
+                                  # write: reserve the next available IP (POST available-ips); --dry-run | --allow-writes --confirm [--message]
 nbox prefix <cidr> [--vrf <name|slug|rd>]
 nbox next-ip <cidr> [--count N] [--vrf <name|slug|rd>]
 nbox next-prefix <cidr> [--length L] [--vrf <name|slug|rd>]
@@ -70,6 +72,8 @@ nbox search <query> [--limit N] [--status S] [--site <name|slug|id>] [--region <
 nbox tags
 nbox tagged <tag>               # objects carrying a tag, across kinds (NetBox 4.3+
                                   # `/api/extras/tagged-objects/`); tag = id|name|slug
+nbox tag add <type> <name> <tag>  # write: add a tag to any object (PATCH tags array); --dry-run | --allow-writes --confirm [--message]
+                                  # <type> = any read kind (device, ip, prefix, vlan, …); <tag> = id|name|slug; no-op if already present
 nbox journal <kind> <ref>         # kinds: device, ip, prefix, vlan, site, rack, rack-group, circuit,
                                   # virtual-circuit, aggregate, asn, ip-range, tenant, contact, provider, vm,
                                   # vm-type, cluster, vrf, route-target, mac, interface (<device>/<name>)
@@ -180,9 +184,13 @@ nbox device edge01 --json | jq '.primary_ip4'
 
 ## Notes
 
-- The first write landed behind ADR-0001: `nbox interface <device> <interface>
-  set description "…"` and `nbox device <name> set status <value>` are safe,
-  plan-first `PATCH`es. Reads remain the default — apply needs BOTH
+- Writes landed behind ADR-0001. Four commands reuse the same safe-write
+  foundation (the `MutationPlan` / `MutationReceipt` engine):
+  `nbox interface <device> <interface> set description "…"`,
+  `nbox device <name> set status <value>`,
+  `nbox ip reserve <cidr>` (a `POST` to `available-ips` — the first `allocate`),
+  and `nbox tag add <type> <name> <tag>` (a `PATCH` to the `tags` array on any
+  object kind). All are plan-first: reads remain the default — apply needs BOTH
   `--allow-writes` (the gate) AND `--confirm` (or a TTY prompt in plain
   output); `--dry-run` previews with no mutation and needs neither.
   `--confirm` without `--allow-writes` is a usage error (exit 2, empty stdout).
@@ -193,7 +201,11 @@ nbox device edge01 --json | jq '.primary_ip4'
   to the canonical value (a label is accepted case-insensitively when it maps
   unambiguously to one value); an unknown or ambiguous status is a usage error
   (exit 2) naming the input and listing the allowed values, before any `PATCH`.
-  The MCP server stays read-only.
+  For `tag add`, the tag resolves by id/name/slug (same resolver as
+  `nbox tagged`); the target object resolves the same way as `nbox <kind> <ref>`.
+  NetBox `PATCH` replaces the whole `tags` array, so the plan carries the full
+  replacement slug list (current slugs + new); adding a tag the object already
+  carries is a no-op (no `PATCH`). The MCP server stays read-only.
 - Filters that an object type can't satisfy cause that type to be skipped in
   `search` (nbox does not send NetBox unknown query params).
 - `owner` (NetBox 4.5+): a native owner field (user or group) surfaced on most

@@ -63,8 +63,8 @@ Current nbox constraints also matter:
    - a redacted, stable field diff
    - warnings, capability notes, and validation errors
    - optional `changelog_message`
-   - an opaque confirmation token derived from the target, precondition, patch,
-     profile, and plan expiry
+  - an opaque confirmation token derived from the target, operation,
+    precondition, patch, changelog message, profile, and plan expiry
 
    Domain view models are not write payloads. Write code gets explicit
    command-specific intent DTOs and endpoint-specific patch DTOs, then derives
@@ -257,6 +257,15 @@ Shipped on this foundation, in order:
     `update`, so existing receipts are byte-identical and `schema_version` stays
     `1`. The dry-run shows the *currently* next address as an advisory warning,
     never as a guaranteed field — the applied address may differ.
+- `tag add <type> <name> <tag>` — the fourth write (`update` / `PATCH`), the
+  first **list-valued** field and the first write on **any object kind**. Tags
+  are a list: the plan carries the full replacement `{"tags": [slugs]}` (NetBox
+  `PATCH` replaces the whole array), so the before/after diff shows the tag slugs.
+  The planner reads the object as a raw `serde_json::Value` — every NetBox
+  object carries the same `tags` array shape — so no per-kind model is needed
+  for this write. Adding a tag the object already carries is a no-op (empty
+  patch, no `PATCH`). `ETag`+`If-Match` on 4.6+, `last_updated`+before-hash on
+  pre-4.6, same as the interface/device pilots.
 
 Still deferred per Decision 6: choosing a specific address, multi-IP / range /
 next-prefix allocation, interface/VM assignment, status/tags on reserve, generic

@@ -445,6 +445,15 @@ pub enum Command {
         limit: usize,
     },
 
+    /// Add a tag to an object (a write — ADR-0001 safe-write foundation).
+    /// `nbox tag add <type> <name> <tag>` resolves the object and the tag,
+    /// then sends a minimal `PATCH` to add the tag. Behind `--allow-writes` +
+    /// confirmation. Adding a tag the object already carries is a no-op.
+    Tag {
+        #[command(subcommand)]
+        action: TagAction,
+    },
+
     /// Show recent journal entries for an object.
     Journal {
         /// Object kind: device, ip, prefix, vlan, site, rack, rack-group, circuit,
@@ -597,6 +606,56 @@ pub enum Command {
         /// docs/MCP.md (this prints the stdio recipe).
         #[arg(long)]
         print_config: bool,
+    },
+}
+
+/// `nbox tag` write actions (ADR-0001 safe-write foundation). The v1 surface
+/// is intentionally narrow: one operation (`add`). No generic `set`/`remove`
+/// — broader writes come later on the same planner/diff/confirm/concurrency/
+/// audit contracts.
+#[derive(Debug, Subcommand)]
+pub enum TagAction {
+    /// Add a tag to an object. A write: requires the `--allow-writes` gate AND
+    /// confirmation (`--confirm`, or an interactive prompt on a TTY in plain
+    /// output). `--dry-run` previews with no mutation and needs neither. Adding
+    /// a tag the object already carries is a no-op: apply sends no `PATCH`.
+    Add {
+        /// Object kind (e.g. `device`, `prefix`, `ip`, `vlan`, `site`, `rack`,
+        /// `circuit`, `tenant`, `vrf`, `vm`, `cluster`, `interface`, …). Any
+        /// kind `nbox <kind> <ref>` resolves.
+        object_type: String,
+
+        /// Object reference (name, slug, id, CIDR, VID, … — kind-dependent).
+        /// For an interface use `<device>/<name>`.
+        object_name: String,
+
+        /// Tag reference: id, exact name (e.g. `prod:us-east`), or exact slug.
+        tag: String,
+
+        /// Record this message in NetBox's object-change entry (a write-only
+        /// request field, never stored on the object). Validated to NetBox's
+        /// 200-character limit before applying. Optional.
+        #[arg(long, value_name = "MESSAGE")]
+        message: Option<String>,
+
+        /// Preview the plan + diff and perform no mutation. Needs neither
+        /// `--allow-writes` nor confirmation. With `--json`, returns the stable
+        /// `MutationPlan` JSON.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+
+        /// Apply the reviewed plan without an interactive prompt. Does NOT
+        /// enable writes on its own — `--confirm` without `--allow-writes` is a
+        /// usage error (exit 2). With `--json`, returns the stable
+        /// `MutationReceipt` JSON.
+        #[arg(long)]
+        confirm: bool,
+
+        /// The write-enable gate: required to apply ANY mutation. Kept separate
+        /// from `--confirm` so a read-only invocation can never be silently
+        /// turned into a write (ADR-0001 §4).
+        #[arg(long = "allow-writes")]
+        allow_writes: bool,
     },
 }
 
@@ -1370,5 +1429,38 @@ mod tests {
         assert_eq!(field, "status");
         assert_eq!(new_value, "Offline");
         assert_eq!(msg, "draining");
+    }
+
+    #[test]
+    fn tag_add_parses_flags() {
+        let add = Cli::try_parse_from([
+            "nbox",
+            "--no-tui",
+            "tag",
+            "add",
+            "device",
+            "edge01",
+            "prod",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Some(Command::Tag {
+            action:
+                TagAction::Add {
+                    object_type,
+                    object_name,
+                    tag,
+                    message: None,
+                    dry_run: true,
+                    confirm: false,
+                    allow_writes: false,
+                },
+        }) = add.command
+        else {
+            panic!("expected tag add");
+        };
+        assert_eq!(object_type, "device");
+        assert_eq!(object_name, "edge01");
+        assert_eq!(tag, "prod");
     }
 }
