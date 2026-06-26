@@ -24,12 +24,14 @@ flag, and the per-surface backend routing.
 | Prefix `utilization` | returned by the REST API | returned by the REST API | not returned → computed client-side ³ |
 | `/api/status/` auth | open by default | open by default | requires auth ³ |
 | Token scheme | v1 `Authorization: Token` | v1 `Token` | v1 `Token` **+ v2 `Authorization: Bearer nbt_…`** ¹ |
+| Write concurrency | no `ETag`/`If-Match`; read-before-write fallback ⁵ | same | **`ETag` + `If-Match` (412)**; 4.2–4.5 keep the fallback ⁵ |
 
 ¹ In the official NetBox release notes — the `4.2.0` scope change (Jan 2025) and the `4.5` v2 tokens (HMAC, `nbt_` prefix, `Bearer`). v1 tokens are **deprecated but retained through the 4.x line; removal is planned for v5.0** (4.6 pushed this out from the originally-announced 4.7). nbox auto-detects the scheme, so the timeline doesn't affect it.
 
 ⁴ NetBox 4.6 adds `GRAPHQL_MAX_QUERY_DEPTH`. nbox's GraphQL accelerators (the VRF and route-target bundles) issue nested queries; unsupported schemas resolve to REST in `nbox status`, and a runtime bundle failure (including a low depth cap) retries the same detail over REST with a warning. Search is REST regardless, so it's unaffected.
 ² NetBox [#7598](https://github.com/netbox-community/netbox/issues/7598), "adopt advanced query filtering in GraphQL." GraphQL never had a REST-style full-text `q`; this rework is why a per-kind GraphQL search can't stand in for REST search.
 ³ **Observed** against live instances (4.2 vs 4.5.10), **not called out in the release notes** — so treat as empirical, not a documented contract. `/api/status/` auth may reflect instance `LOGIN_REQUIRED`-style config rather than a strict version change; either way nbox authenticates **every** request (including the version probe), so it is unaffected.
+⁵ NetBox 4.6 returns an `ETag` on REST object-detail responses and honors `If-Match` on writes (a stale object yields `412 Precondition Failed`). The safe-write engine (ADR-0001 §3) records the `ETag` on the read-before-write and sends `If-Match` on apply when present; on 4.2–4.5 (no `ETag`) it falls back to a `last_updated` + before-hash read-before-write check. So 4.6+ gets race protection in one `PATCH`; older releases get a conservative re-read guard. Writes are off by default behind `--allow-writes` + confirmation.
 
 ## How nbox adapts
 

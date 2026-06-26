@@ -8,7 +8,7 @@ contributors understand why the design exists, not just what changed.
 
 | ADR | Title | Status | Date |
 |-----|-------|--------|------|
-| [0001](0001-safe-write-foundation.md) | Safe write foundation | Proposed | 2026-06-26 |
+| [0001](0001-safe-write-foundation.md) | Safe write foundation | Accepted | 2026-06-26 |
 
 ## Template
 

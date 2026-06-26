@@ -52,6 +52,14 @@ use crate::netbox::models::virtualization::{Cluster, VirtualMachine, VirtualMach
 use crate::netbox::prefix_tree::build_nodes;
 use crate::netbox::query;
 use crate::netbox::search::ObjectKind;
+use std::collections::BTreeMap;
+use std::time::SystemTime;
+
+use crate::netbox::mutation::{
+    self, FieldChange, MutationPlan, MutationReceipt, Operation, PLAN_SCHEMA_VERSION, PlanTarget,
+    Precondition,
+};
+use serde_json::Value;
 
 /// Cap on the child rows pulled into most detail-view sections: a device's
 /// interfaces/IPs/services, a prefix's child prefixes, a VLAN's referencing
@@ -218,6 +226,209 @@ pub async fn interface_view_by_ref(
         client.interface_trace(iface.id),
     )?;
     Ok(InterfaceView::build(iface, ips, trace))
+}
+
+// ===== Safe write foundation: interface description pilot (ADR-0001) =====
+//
+// The first write command is operation- and field-specific: update one
+// interface's `description`. The planner builds a `MutationPlan` from the live
+// object (+ an ETag precondition on 4.6+, else `last_updated` + before-hash);
+// `apply_*` sends the minimal `PATCH` with the write-engine semantics from
+// ADR-0001 (confirm-token check, no-op short-circuit, stale-precondition
+// handling, receipt). No generic `edit`, no free-form patch — see ROADMAP.
+
+/// The only writable field on an interface in v1 (ADR-0001 §6: operation- and
+/// field-specific, not a generic editor). A different field fails closed at
+/// plan time with an actionable usage error.
+pub(crate) const INTERFACE_WRITABLE_FIELD: &str = "description";
+
+/// Plan an interface `description` update: resolve the interface, read the
+/// authoritative current state with its `ETag` (4.6+) or `last_updated`
+/// (pre-4.6), derive the minimal `PATCH`, and build the [`MutationPlan`].
+///
+/// `new_description` is the desired value verbatim (empty string clears it). A
+/// no-op (current value already matches) yields a plan with `no_op: true` and
+/// an empty `patch`; applying it sends no `PATCH` and reports "no change".
+/// `changelog_message` is validated against NetBox's length limit here, before
+/// any network write, so an over-length message is a usage error (exit 2).
+pub(crate) async fn plan_interface_description_update(
+    client: &NetBoxClient,
+    device: &str,
+    interface: &str,
+    new_description: &str,
+    changelog_message: Option<&str>,
+    profile: &str,
+    not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
+) -> Result<MutationPlan> {
+    // The message length is input validation, not a server round-trip — check
+    // before resolving so a bad `--message` fails fast with no network use.
+    let message = match changelog_message {
+        Some(m) if !m.is_empty() => Some(m.to_string()),
+        _ => None,
+    };
+    mutation::validate_changelog_message(&message)?;
+
+    // 1) Resolve the interface by name (device + name → id). Reuses the read
+    //    resolution path so ambiguity / not-found / case-insensitive fallback
+    //    behave exactly like `nbox interface`.
+    let resolved = resolve_interface(client, device, interface, not_found).await?;
+    // 2) Fetch the authoritative current state with its `ETag` header. The list
+    //    above gave us the id; the detail gives the ETag (4.6+) plus the
+    //    canonical object. On pre-4.6 the ETag is `None` and the planner falls
+    //    back to `last_updated` + a before-hash (ADR-0001 §3).
+    let endpoint = format!("/api/dcim/interfaces/{}/", resolved.id);
+    let (current, etag): (Interface, Option<String>) = client.get_with_etag(&endpoint, &[]).await?;
+
+    let target = PlanTarget {
+        kind: "interface".to_string(),
+        r#ref: format!("{device}/{interface}"),
+        id: current.id,
+        display: current
+            .display
+            .clone()
+            .unwrap_or_else(|| format!("{device}/{interface}")),
+        endpoint,
+        profile: profile.to_string(),
+    };
+
+    // The before-hash covers the in-scope field's current value, so a concurrent
+    // writer that changes `description` (or anything that bumps `last_updated`)
+    // is caught at apply even without an ETag.
+    let precondition = match etag {
+        Some(e) => Precondition::Etag { etag: e },
+        None => Precondition::LastUpdated {
+            last_updated: current.last_updated.clone(),
+            before_hash: interface_before_hash(&current),
+        },
+    };
+
+    let before = serde_json::to_value(&current.description).unwrap_or(Value::Null);
+    let after = serde_json::to_value(new_description).unwrap_or(Value::Null);
+    let no_op = current.description.as_deref() == Some(new_description);
+    let patch = if no_op {
+        serde_json::json!({})
+    } else {
+        serde_json::json!({ "description": new_description })
+    };
+    let fields = vec![FieldChange {
+        field: INTERFACE_WRITABLE_FIELD.to_string(),
+        before: before.clone(),
+        after: after.clone(),
+    }];
+
+    let expires_epoch = mutation::plan_expiry_epoch(SystemTime::now());
+    let confirm_token = mutation::confirm_token(&target, &precondition, &patch, expires_epoch);
+
+    Ok(MutationPlan {
+        schema_version: PLAN_SCHEMA_VERSION,
+        operation: Operation::Update,
+        target,
+        precondition,
+        fields,
+        patch,
+        no_op,
+        warnings: Vec::new(),
+        errors: Vec::new(),
+        changelog_message: message,
+        confirm_token,
+        expires_at: mutation::format_iso_utc(expires_epoch),
+    })
+}
+
+/// Apply a planned interface `description` update (ADR-0001 §5 steps 5–7):
+/// verify the plan's confirmation token + expiry, short-circuit a no-op, then
+/// send the minimal `PATCH` with the recorded precondition. Returns a
+/// [`MutationReceipt`] (re-fetch after success is the PATCH response itself —
+/// NetBox returns the updated object — plus the new `ETag` when present).
+pub(crate) async fn apply_interface_description_update(
+    client: &NetBoxClient,
+    plan: &MutationPlan,
+) -> Result<MutationReceipt> {
+    plan.verify()?;
+
+    if plan.no_op {
+        return Ok(no_op_receipt(plan));
+    }
+
+    // The wire body is the object-field patch plus the opt-in changelog_message
+    // (a NetBox write-only request field, recorded in the object-change entry,
+    // never stored on the object).
+    let mut body = plan.patch.clone();
+    if let Some(msg) = &plan.changelog_message {
+        body["changelog_message"] = serde_json::json!(msg);
+    }
+
+    let (_updated, new_etag, status): (Interface, Option<String>, u16) = match &plan.precondition {
+        Precondition::Etag { etag } => {
+            client
+                .patch(&plan.target.endpoint, &body, Some(etag))
+                .await?
+        }
+        Precondition::LastUpdated {
+            last_updated,
+            before_hash,
+        } => {
+            // Read-before-write (pre-4.6 fallback): re-fetch and refuse if the
+            // object moved. `last_updated` ticking is the primary signal; the
+            // before-hash is a belt-and-suspenders guard for the rare case it
+            // didn't.
+            let (current, _): (Interface, Option<String>) =
+                client.get_with_etag(&plan.target.endpoint, &[]).await?;
+            if current.last_updated != *last_updated
+                || interface_before_hash(&current) != *before_hash
+            {
+                return Err(NboxError::StalePrecondition(String::new()).into());
+            }
+            client.patch(&plan.target.endpoint, &body, None).await?
+        }
+    };
+
+    Ok(MutationReceipt {
+        schema_version: PLAN_SCHEMA_VERSION,
+        operation: plan.operation,
+        target: plan.target.clone(),
+        fields: plan.fields.clone(),
+        applied: true,
+        no_op: false,
+        status,
+        etag: new_etag,
+        request_id: None,
+        message: format!(
+            "applied: {} {} ({})",
+            plan.target.kind,
+            plan.target.display,
+            plan.changed_field_names().join(", ")
+        ),
+    })
+}
+
+/// Build a no-op receipt: the current value already matches, so no `PATCH` is
+/// sent. ADR-0001 §8 wording: "no change: current value already matches".
+fn no_op_receipt(plan: &MutationPlan) -> MutationReceipt {
+    MutationReceipt {
+        schema_version: PLAN_SCHEMA_VERSION,
+        operation: plan.operation,
+        target: plan.target.clone(),
+        fields: plan.fields.clone(),
+        applied: false,
+        no_op: true,
+        status: 0,
+        etag: None,
+        request_id: None,
+        message: "no change: current value already matches".to_string(),
+    }
+}
+
+/// Normalized before-hash over the interface's in-scope writable field
+/// (`description`). The apply re-reads and recomputes this; a mismatch vs the
+/// plan's recorded `before_hash` means the object changed in NetBox.
+fn interface_before_hash(iface: &Interface) -> String {
+    let mut m = BTreeMap::new();
+    m.insert(
+        INTERFACE_WRITABLE_FIELD.to_string(),
+        serde_json::to_value(&iface.description).unwrap_or(Value::Null),
+    );
+    mutation::before_hash(&m)
 }
 
 /// `ip <address>`: resolve an IP (scoped by `vrf`, ambiguity-checked) and
@@ -3478,6 +3689,244 @@ mod tests {
                     .any(|r| String::from_utf8_lossy(&r.body).contains("route_target_list(filters")),
                 "a fallback must not issue the GraphQL bundle query"
             );
+        }
+    }
+
+    // ===== Safe-write planner/apply unit tests (ADR-0001) =====
+    //
+    // Direct unit-level coverage of `plan_interface_description_update` +
+    // `apply_interface_description_update`: precondition selection (ETag vs
+    // last_updated), no-op, minimal patch, and the two stale-precondition paths
+    // (412 + pre-4.6 before-hash mismatch). The binary `tests/write_tests.rs`
+    // pins the same contracts at the process boundary.
+    mod write_planner {
+        use super::super::{apply_interface_description_update, plan_interface_description_update};
+        use crate::error::NboxError;
+        use crate::netbox::client::NetBoxClient;
+        use crate::netbox::mutation::Precondition;
+        use serde_json::json;
+        use wiremock::matchers::{method, path};
+        use wiremock::{Mock, MockServer, ResponseTemplate};
+
+        fn client(server: &MockServer) -> NetBoxClient {
+            NetBoxClient::new(
+                &crate::config::ProfileConfig {
+                    url: server.uri(),
+                    ..Default::default()
+                },
+                None,
+            )
+            .expect("client")
+        }
+
+        async fn mount_resolution(server: &MockServer) {
+            Mock::given(method("GET"))
+                .and(path("/api/dcim/devices/"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "count":1,"next":null,"previous":null,
+                    "results":[{"id":7,"url":"u","name":"edge01"}]
+                })))
+                .mount(server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/api/dcim/interfaces/"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "count":1,"next":null,"previous":null,
+                    "results":[{
+                        "id":42,"url":"u","name":"xe-0/0/1",
+                        "description":"old","last_updated":"2026-06-26T10:00:00Z"
+                    }]
+                })))
+                .mount(server)
+                .await;
+        }
+
+        async fn mount_detail(server: &MockServer, etag: Option<&str>, last_updated: &str) {
+            let mut r = ResponseTemplate::new(200).set_body_json(json!({
+                "id":42,"url":"u","name":"xe-0/0/1",
+                "description":"old","last_updated":last_updated
+            }));
+            if let Some(e) = etag {
+                r = r.insert_header("ETag", e);
+            }
+            Mock::given(method("GET"))
+                .and(path("/api/dcim/interfaces/42/"))
+                .respond_with(r)
+                .mount(server)
+                .await;
+        }
+
+        #[tokio::test]
+        async fn plan_uses_etag_precondition_when_present() {
+            let server = MockServer::start().await;
+            mount_resolution(&server).await;
+            mount_detail(&server, Some("\"v1\""), "2026-06-26T10:00:00Z").await;
+            let plan = plan_interface_description_update(
+                &client(&server),
+                "edge01",
+                "xe-0/0/1",
+                "new",
+                None,
+                "default",
+                &not_found,
+            )
+            .await
+            .expect("plan");
+            assert!(matches!(plan.precondition, Precondition::Etag { .. }));
+            // Minimal patch — only the scoped field, never the full object.
+            assert_eq!(plan.patch, json!({"description": "new"}));
+            assert!(!plan.no_op);
+        }
+
+        #[tokio::test]
+        async fn plan_uses_last_updated_precondition_when_no_etag() {
+            let server = MockServer::start().await;
+            mount_resolution(&server).await;
+            mount_detail(&server, None, "2026-06-26T10:00:00Z").await;
+            let plan = plan_interface_description_update(
+                &client(&server),
+                "edge01",
+                "xe-0/0/1",
+                "new",
+                None,
+                "default",
+                &not_found,
+            )
+            .await
+            .expect("plan");
+            assert!(matches!(
+                plan.precondition,
+                Precondition::LastUpdated { .. }
+            ));
+        }
+
+        #[tokio::test]
+        async fn plan_detects_noop_when_value_unchanged() {
+            let server = MockServer::start().await;
+            mount_resolution(&server).await;
+            mount_detail(&server, None, "2026-06-26T10:00:00Z").await;
+            let plan = plan_interface_description_update(
+                &client(&server),
+                "edge01",
+                "xe-0/0/1",
+                "old", // == current
+                None,
+                "default",
+                &not_found,
+            )
+            .await
+            .expect("plan");
+            assert!(plan.no_op);
+            assert_eq!(plan.patch, json!({}));
+        }
+
+        #[tokio::test]
+        async fn apply_sends_patch_and_returns_receipt() {
+            let server = MockServer::start().await;
+            mount_resolution(&server).await;
+            mount_detail(&server, Some("\"v1\""), "2026-06-26T10:00:00Z").await;
+            Mock::given(method("PATCH"))
+                .and(path("/api/dcim/interfaces/42/"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "id":42,"url":"u","name":"xe-0/0/1","description":"new"
+                })))
+                .mount(&server)
+                .await;
+            let client = client(&server);
+            let plan = plan_interface_description_update(
+                &client, "edge01", "xe-0/0/1", "new", None, "default", &not_found,
+            )
+            .await
+            .expect("plan");
+            let receipt = apply_interface_description_update(&client, &plan)
+                .await
+                .expect("apply");
+            assert!(receipt.applied);
+            assert!(!receipt.no_op);
+            assert_eq!(receipt.status, 200);
+            assert!(receipt.message.starts_with("applied: interface"));
+        }
+
+        #[tokio::test]
+        async fn apply_412_maps_to_stale_precondition() {
+            let server = MockServer::start().await;
+            mount_resolution(&server).await;
+            mount_detail(&server, Some("\"v1\""), "2026-06-26T10:00:00Z").await;
+            Mock::given(method("PATCH"))
+                .and(path("/api/dcim/interfaces/42/"))
+                .respond_with(ResponseTemplate::new(412).set_body_string("precondition"))
+                .mount(&server)
+                .await;
+            let client = client(&server);
+            let plan = plan_interface_description_update(
+                &client, "edge01", "xe-0/0/1", "new", None, "default", &not_found,
+            )
+            .await
+            .expect("plan");
+            let err = apply_interface_description_update(&client, &plan)
+                .await
+                .unwrap_err();
+            assert!(
+                err.chain().any(|c| c
+                    .downcast_ref::<crate::error::NboxError>()
+                    .is_some_and(|n| matches!(n, crate::error::NboxError::StalePrecondition(_)))),
+                "412 → StalePrecondition: {err:#}"
+            );
+        }
+
+        #[tokio::test]
+        async fn apply_pre46_refuses_when_last_updated_changed_between_plan_and_apply() {
+            let server = MockServer::start().await;
+            mount_resolution(&server).await;
+            // Plan reads T1; the apply re-read returns T2 (no ETag → pre-4.6).
+            Mock::given(method("GET"))
+                .and(path("/api/dcim/interfaces/42/"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "id":42,"url":"u","name":"xe-0/0/1",
+                    "description":"old","last_updated":"2026-06-26T10:00:00Z"
+                })))
+                .up_to_n_times(1)
+                .with_priority(1)
+                .mount(&server)
+                .await;
+            Mock::given(method("GET"))
+                .and(path("/api/dcim/interfaces/42/"))
+                .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                    "id":42,"url":"u","name":"xe-0/0/1",
+                    "description":"old","last_updated":"2026-06-26T11:00:00Z"
+                })))
+                .mount(&server)
+                .await;
+            let client = client(&server);
+            let plan = plan_interface_description_update(
+                &client, "edge01", "xe-0/0/1", "new", None, "default", &not_found,
+            )
+            .await
+            .expect("plan");
+            let err = apply_interface_description_update(&client, &plan)
+                .await
+                .unwrap_err();
+            assert!(
+                err.chain().any(|c| c
+                    .downcast_ref::<crate::error::NboxError>()
+                    .is_some_and(|n| matches!(n, crate::error::NboxError::StalePrecondition(_)))),
+                "pre-4.6 mismatch → StalePrecondition: {err:#}"
+            );
+            // No PATCH was attempted — the read-before-write caught the change.
+            let patched = server
+                .received_requests()
+                .await
+                .unwrap()
+                .into_iter()
+                .filter(|r| r.method.as_str() == "PATCH")
+                .count();
+            assert_eq!(patched, 0);
+        }
+
+        // A not-found closure matching the CLI's shape (exit-4 NboxError::NotFound),
+        // so resolution failures here behave like the real `nbox interface` path.
+        fn not_found(noun: &str, value: &str) -> anyhow::Error {
+            NboxError::NotFound(format!("no {noun} matched \"{value}\"")).into()
         }
     }
 }

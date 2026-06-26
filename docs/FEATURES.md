@@ -1,6 +1,8 @@
 # Features
 
-nbox is a read-only NetBox client — a CLI and a TUI over the same core.
+nbox is a NetBox client — a CLI and a TUI over the same core. Reads are the
+default; a narrow safe-write foundation (ADR-0001) adds one plan-first `PATCH`
+command behind `--allow-writes` + confirmation. The MCP server stays read-only.
 
 ## Lookups
 

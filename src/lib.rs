@@ -24,7 +24,9 @@ use crate::domain::tagged_view::{ResolvedTag, TaggedObjectView, TaggedReport};
 use crate::netbox::capabilities::SurfaceRouting;
 use crate::netbox::client::NetBoxClient;
 use crate::netbox::models::ipam::{AvailablePrefix, Prefix};
+use crate::netbox::mutation::{MutationPlan, MutationReceipt};
 use crate::netbox::search::{SearchFilters, SearchRequest};
+use crate::netbox::write_audit;
 use crate::output::Format;
 use crate::output::plain::KeyValues;
 
@@ -364,9 +366,34 @@ pub async fn run(cli: Cli) -> Result<()> {
             )
             .await
         }
-        Some(Command::Interface { device, interface }) => {
-            run_interface(&ctx, &device, &interface).await
-        }
+        Some(Command::Interface {
+            device,
+            interface,
+            action,
+        }) => match action {
+            None => run_interface(&ctx, &device, &interface).await,
+            Some(crate::cli::InterfaceAction::Set {
+                field,
+                value,
+                message,
+                dry_run,
+                confirm,
+                allow_writes,
+            }) => {
+                Box::pin(run_interface_set(
+                    &ctx,
+                    &device,
+                    &interface,
+                    &field,
+                    &value,
+                    message.as_deref(),
+                    dry_run,
+                    confirm,
+                    allow_writes,
+                ))
+                .await
+            }
+        },
         Some(Command::Open { object_ref }) => run_open(&ctx, &object_ref).await,
         Some(Command::Tags { limit }) => run_tags(&ctx, limit).await,
         Some(Command::Tagged { tag, limit }) => run_tagged(&ctx, &tag, limit).await,
@@ -742,6 +769,13 @@ async fn serve_http_or_explain(
 
 /// Build a NetBox client from the active (or requested) profile.
 fn connect(ctx: &Ctx) -> Result<NetBoxClient> {
+    Ok(connect_named(ctx)?.0)
+}
+
+/// Like [`connect`] but also returns the resolved profile name, for the write
+/// audit event (ADR-0001 §8: the audit records the profile). The write path uses
+/// this so it doesn't re-load the config a second time.
+fn connect_named(ctx: &Ctx) -> Result<(NetBoxClient, String)> {
     let path = match &ctx.config_path {
         Some(p) => p.clone(),
         None => config::default_path()?,
@@ -759,7 +793,8 @@ fn connect(ctx: &Ctx) -> Result<NetBoxClient> {
         .with_context(|| format!("no profile named '{name}'"))?;
 
     let token = config::resolve_token(profile, &path, &name);
-    NetBoxClient::new(profile, token)
+    let client = NetBoxClient::new(profile, token)?;
+    Ok((client, name))
 }
 
 /// `nbox` / `nbox tui` — launch the interactive TUI.
@@ -1104,6 +1139,406 @@ async fn run_interface(ctx: &Ctx, device: &str, interface: &str) -> Result<()> {
     let client = connect(ctx)?;
     let view = detail::interface_view_by_ref(&client, device, interface, &not_found).await?;
     emit(ctx, &view, || println!("{}", view.to_plain()))
+}
+
+/// The gate decision for a write command (ADR-0001 §4/§5): a pure function of
+/// the write flags + the interactive context, with no I/O. Extracted so the full
+/// gate matrix — including the TTY `Prompt` branch and both refusal cases — is
+/// unit-testable without a terminal or network.
+#[derive(Debug, PartialEq, Eq)]
+enum WriteAction {
+    /// `--dry-run`: plan + render the diff, send no `PATCH`. Needs neither the
+    /// gate nor confirmation.
+    DryRun,
+    /// `--allow-writes` + `--confirm`: apply without an interactive prompt.
+    Apply,
+    /// `--allow-writes`, no `--confirm`, plain output with both stdout AND stdin
+    /// as TTYs: show the diff, prompt, and apply only on an explicit `y`/`yes`.
+    /// (Piped/closed stdin, non-TTY, JSON / CSV, or `--no-tui` never reach this —
+    /// they fall to [`WriteAction::RefuseNeedsConfirm`].)
+    Prompt,
+    /// No `--dry-run` and no `--allow-writes`: the write-enable gate is missing.
+    /// Covers `--confirm` without `--allow-writes` too (exit 2, empty stdout).
+    RefuseNoGate,
+    /// `--allow-writes` without `--confirm` in a non-interactive context: no
+    /// prompt is allowed, so apply is refused (exit 2, empty stdout).
+    RefuseNeedsConfirm,
+}
+
+/// Resolve the write gate + confirmation flags into a [`WriteAction`]. `interactive`
+/// is whether the caller can show a plain diff and prompt on a TTY — plain output
+/// with both stdout AND stdin as terminals, and not `--no-tui` (a piped/closed
+/// stdin cannot answer a prompt). It is computed by the caller so this stays
+/// I/O-free and testable.
+///
+/// The matrix (ADR-0001 §5):
+/// - `--dry-run` wins regardless of the other flags (no mutation, no gate).
+/// - apply needs BOTH `--allow-writes` (gate) AND confirmation (`--confirm` or a
+///   TTY prompt). `--confirm` without the gate is `RefuseNoGate`; the gate without
+///   `--confirm` non-interactively is `RefuseNeedsConfirm`; the gate without
+///   `--confirm` on a TTY is `Prompt`.
+#[allow(clippy::fn_params_excessive_bools)] // the four gate flags; collapsing loses the ADR mapping
+#[must_use]
+fn write_action(
+    dry_run: bool,
+    confirm: bool,
+    allow_writes: bool,
+    interactive: bool,
+) -> WriteAction {
+    if dry_run {
+        return WriteAction::DryRun;
+    }
+    if !allow_writes {
+        return WriteAction::RefuseNoGate;
+    }
+    if confirm {
+        return WriteAction::Apply;
+    }
+    if interactive {
+        WriteAction::Prompt
+    } else {
+        WriteAction::RefuseNeedsConfirm
+    }
+}
+
+/// `nbox interface <device> <interface> set <field> <value>` — the first safe
+/// write (ADR-0001). The lifecycle (ADR-0001 §5): resolve → read → plan →
+/// render → confirm → apply → receipt. Enablement + confirmation are separate
+/// (ADR §4): apply needs BOTH the `--allow-writes` gate AND confirmation
+/// (`--confirm`, or a TTY prompt in plain output); `--dry-run` needs neither.
+/// Non-TTY / JSON / CSV / `--no-tui` never prompt. The audit event (field names
+/// only, never values/tokens/objects/the message body) is emitted on every
+/// planned outcome; a pre-plan usage refusal emits none.
+#[allow(clippy::too_many_arguments)] // the CLI flag set; collapsing loses clarity
+async fn run_interface_set(
+    ctx: &Ctx,
+    device: &str,
+    interface: &str,
+    field: &str,
+    value: &str,
+    message: Option<&str>,
+    dry_run: bool,
+    confirm: bool,
+    allow_writes: bool,
+) -> Result<()> {
+    use std::io::IsTerminal as _;
+    use std::io::Write as _;
+
+    use crate::netbox::write_audit::{Outcome, Started, Surface};
+
+    // Field validation is pure input checking — fail closed before any network
+    // use so `set status active` is a usage error regardless of the other flags.
+    if field != detail::INTERFACE_WRITABLE_FIELD {
+        return Err(error::NboxError::Usage(format!(
+            "only `{}` is writable on an interface in v1; got \"{field}\". \
+             Broader writes land later on the same safe-write contracts (ADR-0001 §6).",
+            detail::INTERFACE_WRITABLE_FIELD
+        ))
+        .into());
+    }
+
+    // Gate decision BEFORE any plan/network: a read-only invocation can never
+    // become a write (ADR-0001 §4/§5). `--dry-run` is exempt (mutates nothing).
+    // A refusal here keeps stdout empty (no diff) and names the required flag.
+    // The decision is a pure function of the flags + interactive context, so the
+    // full gate matrix is unit-tested in [`write_action`] (no TTY/network).
+    //
+    // `interactive` requires a fully interactive terminal: plain output AND both
+    // stdout AND stdin are TTYs (a piped/closed stdin cannot answer a prompt) AND
+    // not `--no-tui`. Requiring stdin keeps the "non-TTY never prompts" contract
+    // airtight — stdout alone being a TTY is not enough to prompt.
+    let interactive = ctx.format == Format::Plain
+        && std::io::stdout().is_terminal()
+        && std::io::stdin().is_terminal()
+        && !ctx.no_tui;
+    let action = write_action(dry_run, confirm, allow_writes, interactive);
+    match action {
+        WriteAction::RefuseNoGate => {
+            return Err(error::NboxError::Usage(
+                "writes are not enabled. To apply, pass `--allow-writes` AND confirm \
+                 (`--confirm`, or answer the prompt on a TTY). To preview only, pass `--dry-run`."
+                    .to_string(),
+            )
+            .into());
+        }
+        WriteAction::RefuseNeedsConfirm => {
+            return Err(error::NboxError::Usage(
+                "non-interactive write requires confirmation. Add `--confirm` to apply \
+                 (or `--dry-run` to preview the plan)."
+                    .to_string(),
+            )
+            .into());
+        }
+        // DryRun / Apply / Prompt all proceed past the gate to plan + (render | apply).
+        _ => {}
+    }
+
+    let (client, profile) = connect_named(ctx)?;
+    let host = audit_origin(client.base_url());
+
+    // 2–4) read + plan. (1 — resolve — happens inside the planner.)
+    let plan = detail::plan_interface_description_update(
+        &client, device, interface, value, message, &profile, &not_found,
+    )
+    .await?;
+    let audit_fields: Vec<&str> = plan.changed_field_names();
+    let field_names: Vec<&str> = audit_fields.clone();
+    // Audit the *planned* (normalized) message, not the raw `--message` arg: the
+    // planner normalizes an empty/whitespace-only message to `None`, so it audits
+    // as absent. The length is a character count (matching NetBox's 200-char
+    // limit and the `WriteAuditEvent::message_len` "character length" contract),
+    // not a byte length. Only the present-flag + length are recorded — never the
+    // message body (ADR-0001 §8).
+    let message_present = plan.changelog_message.is_some();
+    let message_len = message_audit_len(plan.changelog_message.as_deref());
+
+    // `--dry-run`: plan + render, no mutation, no gate, no confirm. ADR §5.
+    if action == WriteAction::DryRun {
+        let ev = audit_event(
+            Surface::Cli,
+            &profile,
+            &host,
+            &plan,
+            &field_names,
+            Outcome::DryRun,
+            "GET",
+            &plan.target.endpoint,
+            0,
+            0,
+            message_present,
+            message_len,
+        );
+        ev.emit();
+        if ctx.format == Format::Plain {
+            eprintln!("planned, no changes sent");
+        }
+        return emit(ctx, &plan, || render_plan_plain(&plan));
+    }
+
+    // 5) confirm. On a plain TTY without `--confirm`, show the diff then prompt.
+    if action == WriteAction::Prompt {
+        // The diff goes to stdout (the operator's review); the prompt to stderr.
+        render_plan_plain(&plan);
+        if plan.no_op {
+            // A no-op needs no confirmation — nothing would change. Still emit
+            // the dry-plan-style line and let the apply path short-circuit.
+        }
+        eprintln!();
+        eprint!("Apply this change to NetBox? [y/N] ");
+        let _ = std::io::stderr().flush();
+        let mut answer = String::new();
+        let accepted = std::io::stdin().read_line(&mut answer).ok().and_then(|_| {
+            let a = answer.trim().to_ascii_lowercase();
+            (!a.is_empty() && (a == "y" || a == "yes")).then_some(())
+        });
+        if accepted.is_none() {
+            write_audit::WriteAuditEvent {
+                surface: Surface::Cli,
+                profile: &profile,
+                host: &host,
+                operation: plan.operation,
+                target_kind: &plan.target.kind,
+                target_id: plan.target.id,
+                target_display: &plan.target.display,
+                fields: &field_names,
+                outcome: Outcome::NotApplied,
+                http_method: "",
+                http_path: "",
+                status: 0,
+                latency_ms: 0,
+                request_id: None,
+                message_present,
+                message_len,
+            }
+            .emit();
+            eprintln!("not applied");
+            return Ok(());
+        }
+    }
+
+    // 6) apply (+ 7 receipt). The apply verifies the plan's token + expiry,
+    // short-circuits a no-op, and sends the minimal PATCH with the precondition.
+    let sw = Started::now();
+    match detail::apply_interface_description_update(&client, &plan).await {
+        Ok(receipt) => {
+            let outcome = if receipt.no_op {
+                Outcome::NoOp
+            } else {
+                Outcome::Applied
+            };
+            audit_event(
+                Surface::Cli,
+                &profile,
+                &host,
+                &plan,
+                &field_names,
+                outcome,
+                "PATCH",
+                &plan.target.endpoint,
+                receipt.status,
+                sw.elapsed_ms(),
+                message_present,
+                message_len,
+            )
+            .emit();
+            emit(ctx, &receipt, || render_receipt_plain(&receipt))
+        }
+        Err(e) => {
+            // Classify the error for the audit outcome (ADR §8), then return the
+            // error so the stable exit code + stderr message reach the process.
+            let outcome = classify_apply_error(&e);
+            // For the pre-4.6 stale path the refusal happens on the re-read
+            // (no PATCH sent); the 4.6+ 412 happens on the PATCH. Either way the
+            // attempt targeted the PATCH endpoint — record it, status 0 since
+            // the error variants don't surface the HTTP status.
+            audit_event(
+                Surface::Cli,
+                &profile,
+                &host,
+                &plan,
+                &field_names,
+                outcome,
+                "PATCH",
+                &plan.target.endpoint,
+                0,
+                sw.elapsed_ms(),
+                message_present,
+                message_len,
+            )
+            .emit();
+            Err(e)
+        }
+    }
+}
+
+/// Classify an apply error into the coarse audit outcome. A stale precondition
+/// (412 or pre-4.6 before-hash mismatch) is a recoverable refusal; a 400 is a
+/// NetBox validation rejection; anything else (network, auth, 5xx) is a plain
+/// error. Walks the chain so a `.context(...)`-wrapped typed error still maps.
+fn classify_apply_error(e: &anyhow::Error) -> write_audit::Outcome {
+    use crate::netbox::write_audit::Outcome;
+    if e.chain().any(|c| {
+        c.downcast_ref::<error::NboxError>()
+            .is_some_and(|n| matches!(n, error::NboxError::StalePrecondition(_)))
+    }) {
+        Outcome::Stale
+    } else if e.chain().any(|c| {
+        c.downcast_ref::<error::NboxError>()
+            .is_some_and(|n| matches!(n, error::NboxError::WriteValidation(_)))
+    }) {
+        Outcome::Validation
+    } else {
+        Outcome::Error
+    }
+}
+
+/// Build a [`WriteAuditEvent`] from a plan's target + the resolved outcome.
+/// The NetBox host as it appears in the write audit (ADR-0001 §8): the base
+/// URL's origin — scheme + host [+ port] — minus any path/query. Disambiguates
+/// `http` vs `https`, non-default ports, and same-host lab instances; empty
+/// when the base URL has no host (matching the previous `host_str().unwrap_or("")`
+/// fallback). No path is logged — a token could ride a query string.
+fn audit_origin(base: &reqwest::Url) -> String {
+    if base.host_str().is_some() {
+        base.origin().ascii_serialization()
+    } else {
+        String::new()
+    }
+}
+
+/// Character length of the planned (normalized) `changelog_message`, for the
+/// write audit (ADR-0001 §8) — a char count, matching NetBox's 200-char limit
+/// and the `WriteAuditEvent::message_len` "character length" contract, not a
+/// byte length. `None` (an empty/normalized-away message) is 0. Extracted so the
+/// policy (chars, not bytes) is pinned by a unit test with a non-ASCII message.
+#[must_use]
+fn message_audit_len(msg: Option<&str>) -> usize {
+    msg.map_or(0, |m| m.chars().count())
+}
+
+/// Keeps the (many) allow-list fields in one place so the dry-run and apply
+/// paths log the same shape.
+#[allow(clippy::too_many_arguments)]
+fn audit_event<'a>(
+    surface: write_audit::Surface,
+    profile: &'a str,
+    host: &'a str,
+    plan: &'a MutationPlan,
+    field_names: &'a [&'a str],
+    outcome: write_audit::Outcome,
+    http_method: &'a str,
+    http_path: &'a str,
+    status: u16,
+    latency_ms: u128,
+    message_present: bool,
+    message_len: usize,
+) -> write_audit::WriteAuditEvent<'a> {
+    write_audit::WriteAuditEvent {
+        surface,
+        profile,
+        host,
+        operation: plan.operation,
+        target_kind: &plan.target.kind,
+        target_id: plan.target.id,
+        target_display: &plan.target.display,
+        fields: field_names,
+        outcome,
+        http_method,
+        http_path,
+        status,
+        latency_ms,
+        request_id: None,
+        message_present,
+        message_len,
+    }
+}
+
+/// Plain rendering of a [`MutationPlan`]: the target, the scoped field diff, the
+/// precondition in force, and (for dry-run) the no-op note. Goes to stdout as
+/// the operator's review; the apply prompt and status lines go to stderr.
+fn render_plan_plain(plan: &MutationPlan) {
+    println!("interface: {}", plan.target.display);
+    for f in &plan.fields {
+        println!(
+            "  {}: {} → {}",
+            f.field,
+            value_or_empty(&f.before),
+            value_or_empty(&f.after)
+        );
+    }
+    let pre = match &plan.precondition {
+        crate::netbox::mutation::Precondition::Etag { .. } => "etag",
+        crate::netbox::mutation::Precondition::LastUpdated { .. } => "last_updated",
+    };
+    println!("precondition: {pre}");
+    if plan.no_op {
+        println!("(no change: current value already matches)");
+    }
+}
+
+/// Plain rendering of a [`MutationReceipt`]: the outcome line + the diff. The
+/// outcome line uses the exact ADR-0001 §8 wording (the receipt's `message`).
+fn render_receipt_plain(receipt: &MutationReceipt) {
+    println!("{}", receipt.message);
+    for f in &receipt.fields {
+        println!(
+            "  {}: {} → {}",
+            f.field,
+            value_or_empty(&f.before),
+            value_or_empty(&f.after)
+        );
+    }
+}
+
+/// Render a JSON `Value` for plain text: a quoted string as its contents, null
+/// as `<unset>`, anything else as its JSON form. Keeps the diff readable for both
+/// `description` (a string or null) and future non-string fields.
+fn value_or_empty(v: &serde_json::Value) -> String {
+    match v {
+        serde_json::Value::Null => "<unset>".to_string(),
+        serde_json::Value::String(s) => s.clone(),
+        other => other.to_string(),
+    }
 }
 
 /// `nbox ip <address>` — resolve an IP (scoped by `--vrf`) and its parent prefix.
@@ -1767,7 +2202,7 @@ fn check_raw_method(method: &str) -> Result<()> {
         Ok(())
     } else {
         anyhow::bail!(
-            "`nbox raw` only supports GET today; write verbs land with safe writes in a later release"
+            "`nbox raw` only supports GET today; raw write verbs are still deferred behind the safe-write engine"
         )
     }
 }
@@ -1843,9 +2278,10 @@ fn not_found(noun: &str, value: &str) -> anyhow::Error {
 #[cfg(test)]
 mod tests {
     use super::{
-        Cli, CommandFactory, build_mcp_config, check_raw_method, error, first_subnet_of_length,
-        init_logging, no_tui_refusal, normalize_raw_path, not_found, parse_object_ref,
-        resolve_content_type_id, resolve_logging, run_man, tui_startup_status, wants_journal,
+        Cli, CommandFactory, WriteAction, audit_origin, build_mcp_config, check_raw_method, error,
+        first_subnet_of_length, init_logging, message_audit_len, no_tui_refusal,
+        normalize_raw_path, not_found, parse_object_ref, resolve_content_type_id, resolve_logging,
+        run_man, tui_startup_status, wants_journal, write_action,
     };
     use crate::domain::detail::resolve_unique;
     use crate::netbox::models::ipam::AvailablePrefix;
@@ -2648,5 +3084,87 @@ mod tests {
             5,
             "journal mac <dup> must be ambiguous, not a first-pick"
         );
+    }
+
+    // --- safe-write gate decision (ADR-0001 §4/§5) -------------------------
+
+    /// The gate matrix as a decision table: `--dry-run` always wins (no gate,
+    /// no confirm); apply needs BOTH `--allow-writes` (gate) AND confirmation
+    /// (`--confirm` or a TTY prompt). Pure of I/O, so every branch — including
+    /// the TTY `Prompt` and both refusal cases — is exercisable here.
+    #[test]
+    fn write_action_matrix() {
+        // `--dry-run` wins regardless of the other flags (mutates nothing).
+        for &confirm in &[false, true] {
+            for &gate in &[false, true] {
+                for &interactive in &[false, true] {
+                    assert_eq!(
+                        write_action(true, confirm, gate, interactive),
+                        WriteAction::DryRun,
+                        "dry_run wins: confirm={confirm} gate={gate} tty={interactive}"
+                    );
+                }
+            }
+        }
+        // No gate + intent to apply → refuse naming the gate (covers `--confirm`
+        // without `--allow-writes`, and the bare no-flags case).
+        assert_eq!(
+            write_action(false, false, false, false),
+            WriteAction::RefuseNoGate
+        );
+        assert_eq!(
+            write_action(false, true, false, false),
+            WriteAction::RefuseNoGate
+        );
+        assert_eq!(
+            write_action(false, true, false, true),
+            WriteAction::RefuseNoGate
+        );
+        // Gate + `--confirm` → apply (no prompt).
+        assert_eq!(write_action(false, true, true, false), WriteAction::Apply);
+        assert_eq!(write_action(false, true, true, true), WriteAction::Apply);
+        // Gate, no `--confirm`, interactive TTY → prompt.
+        assert_eq!(write_action(false, false, true, true), WriteAction::Prompt);
+        // Gate, no `--confirm`, non-interactive → refuse naming `--confirm`
+        // (no prompt allowed in non-TTY / JSON / CSV / --no-tui).
+        assert_eq!(
+            write_action(false, false, true, false),
+            WriteAction::RefuseNeedsConfirm
+        );
+    }
+
+    // --- write audit host origin (scheme + host [+ port], no path) ---------
+
+    #[test]
+    fn audit_origin_includes_scheme_host_and_port_without_path() {
+        // scheme + host + non-default port; any path/query is dropped (a token
+        // could ride a query string).
+        let u = reqwest::Url::parse("https://netbox.example.com:8443/api/dcim/?q=x").unwrap();
+        assert_eq!(audit_origin(&u), "https://netbox.example.com:8443");
+        // default https port (443) is omitted by the URL origin serialization.
+        let u = reqwest::Url::parse("https://netbox.example.com/api/").unwrap();
+        assert_eq!(audit_origin(&u), "https://netbox.example.com");
+        // http vs https is disambiguated (default port 80 omitted).
+        let u = reqwest::Url::parse("http://netbox.example.com/api/").unwrap();
+        assert_eq!(audit_origin(&u), "http://netbox.example.com");
+        // no host → empty, matching the old host_str().unwrap_or("") fallback.
+        let u = reqwest::Url::parse("file:///etc/hosts").unwrap();
+        assert_eq!(audit_origin(&u), "");
+    }
+
+    // --- write audit message length is a character count, not bytes --------
+
+    #[test]
+    fn message_audit_len_counts_chars_not_bytes() {
+        // ASCII: char count == byte count.
+        assert_eq!(message_audit_len(Some("rotating uplink xe-0/0/1")), 24);
+        // Non-ASCII: "ü" is 1 char / 2 bytes — the audit records the char count
+        // (matching NetBox's 200-char limit), not the byte length.
+        assert_eq!(message_audit_len(Some("hümlaut")), 7);
+        assert_eq!("hümlaut".len(), 8); // sanity: bytes differ from chars
+        // An emoji is 1 char but 4 bytes — the limit is characters.
+        assert_eq!(message_audit_len(Some("a😀b")), 3);
+        assert_eq!(message_audit_len(None), 0);
+        assert_eq!(message_audit_len(Some("")), 0);
     }
 }

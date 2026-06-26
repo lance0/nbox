@@ -414,16 +414,22 @@ explicit opt-in (a write profile / `--allow-writes`, with `confirm_writes` alrea
 The foundation contract is drafted in [ADR-0001](docs/adr/0001-safe-write-foundation.md).
 Consolidated future scope:
 
-- ☐ **Safe `PATCH` engine** — minimal diff, before/after preview, confirmation modal; agent-safe
-  read-only default. Implement the ADR-0001 write rules first (choice fields
-  `{value,label}`→string, brief relations by slug/id/name, confirmation semantics
-  in non-TTY / `--json` / MCP).
-- ☐ `nbox device <name> set status <value>` · `nbox interface <device> <iface> set description "…"` ·
-  `nbox ip <addr> reserve --description "…"` · `nbox tag add <type> <name> <tag>`.
+- ☑ **Safe `PATCH` engine** — minimal diff, before/after preview, confirmation; agent-safe
+  read-only default. The ADR-0001 foundation landed: a shared `MutationPlan` /
+  `MutationReceipt` engine + the `nbox interface <device> <iface> set description
+  "…"` pilot (`--allow-writes` + `--confirm`/`--dry-run`, `ETag`/`If-Match` on
+  4.6+, `last_updated`+before-hash fallback, `--message`, local write audit).
+- ☑ `nbox interface <device> <iface> set description "…"` — the first write
+  command (on the ADR-0001 foundation). `nbox device <name> set status <value>`,
+  `nbox ip <addr> reserve --description "…"`, and `nbox tag add <type> <name>
+  <tag>` remain open, each reusing the same planner/diff/confirm/concurrency/audit
+  contracts.
 - ☐ **IPAM allocate** — claim the next IP/prefix, plus IP-range `available-ips` (POST to
   `available-ips` / `available-prefixes`); the read half (`next-ip` / `next-prefix`, range lookup)
   already ships.
-- ☐ `changelog_message` support on writes.
+- ☑ `changelog_message` support on writes — opt-in via `--message`, validated to
+  NetBox's 200-character limit before applying; recorded in the object-change
+  entry (never logged locally beyond a present-flag + length).
 - ☐ **Write-capable MCP tools** — opt-in, return the diff for the agent to confirm; read-only stays the
   default — plus the **per-user credential vault (Pattern 2)** for real per-user NetBox RBAC over MCP.
 - ☐ TUI edit mode (`e` / `d` / confirm).

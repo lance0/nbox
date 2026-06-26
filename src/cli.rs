@@ -391,13 +391,19 @@ pub enum Command {
         journal_limit: Option<usize>,
     },
 
-    /// Show an interface on a device.
+    /// Show an interface on a device, or set a writable field (a write — see `set`).
     Interface {
         /// Device name, slug, or ID.
         device: String,
 
         /// Interface name.
         interface: String,
+
+        /// Optional write action. Omit to read the interface (`nbox interface
+        /// <device> <interface>`); pass `set` to update a field (a write, behind
+        /// `--allow-writes` + confirmation — ADR-0001).
+        #[command(subcommand)]
+        action: Option<InterfaceAction>,
     },
 
     /// Open a NetBox object in the browser.
@@ -578,6 +584,53 @@ pub enum Command {
         /// docs/MCP.md (this prints the stdio recipe).
         #[arg(long)]
         print_config: bool,
+    },
+}
+
+/// Write actions on an interface (ADR-0001 safe-write foundation). The v1
+/// surface is intentionally narrow: one operation (`set`) on one field
+/// (`description`). No generic `edit`, no free-form patch — broader writes come
+/// later, on the same planner/diff/confirm/concurrency/audit contracts.
+#[derive(Debug, Subcommand)]
+pub enum InterfaceAction {
+    /// Set a writable field on an interface. A write: requires the
+    /// `--allow-writes` gate AND confirmation (`--confirm`, or an interactive
+    /// prompt on a TTY in plain output). `--dry-run` previews with no mutation
+    /// and needs neither.
+    Set {
+        /// Field to set. Only `description` is supported in v1; any other value
+        /// is a usage error (exit 2) before any network write.
+        field: String,
+
+        /// New value verbatim. Pass an empty string (`""`) to clear the field.
+        /// A value equal to the current one is a no-op: apply sends no `PATCH`
+        /// and reports "no change".
+        value: String,
+
+        /// Record this message in NetBox's object-change entry (a write-only
+        /// request field, never stored on the object). Validated to NetBox's
+        /// 200-character limit before applying. Optional.
+        #[arg(long, value_name = "MESSAGE")]
+        message: Option<String>,
+
+        /// Preview the plan + diff and perform no mutation. Needs neither
+        /// `--allow-writes` nor confirmation. With `--json`, returns the stable
+        /// `MutationPlan` JSON.
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+
+        /// Apply the reviewed plan without an interactive prompt. Does NOT
+        /// enable writes on its own — `--confirm` without `--allow-writes` is a
+        /// usage error (exit 2). With `--json`, returns the stable
+        /// `MutationReceipt` JSON.
+        #[arg(long)]
+        confirm: bool,
+
+        /// The write-enable gate: required to apply ANY mutation. Kept separate
+        /// from `--confirm` so a read-only invocation can never be silently
+        /// turned into a write (ADR-0001 §4).
+        #[arg(long = "allow-writes")]
+        allow_writes: bool,
     },
 }
 

@@ -1,7 +1,8 @@
 # ADR-0001: Safe Write Foundation
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-06-26
+**Implemented:** 2026-06-26 by the safe-write foundation PR (`nbox interface <device> <iface> set description "…"`).
 
 ## Context
 
