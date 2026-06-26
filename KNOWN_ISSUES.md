@@ -3,14 +3,17 @@
 Known limitations and edge cases — documented, not yet addressed. See ROADMAP.md
 for where they're headed.
 
-### Read-only (no writes yet)
+### Writes are narrow and opt-in (ADR-0001)
 
-**Issue:** nbox is read-only. There is no way to create, edit, or delete objects.
+**Status:** Seven safe-write commands have landed (`interface set description`,
+`device set status`, `ip reserve`, `prefix reserve`, `ip-range reserve`,
+`tag add`, `tag remove`), behind `--allow-writes` + `--confirm` (or `--dry-run`
+to preview). Reads remain the default everywhere.
 
-**Impact:** Allocation (`next-ip`/`next-prefix`) shows candidates but doesn't
-claim them; `tags`/`journal` are list-only.
-
-**Mitigation:** Safe, diff-confirmed `PATCH` writes are planned for a later release.
+**Remaining limitations:** Multi-IP allocation (`--count N`), choosing a
+specific address/block, interface/VM assignment, status/tags on reserve, and
+generic create/delete are still deferred (ADR-0001 Decision 6). The MCP server
+stays read-only.
 
 ---
 
