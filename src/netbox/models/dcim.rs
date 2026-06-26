@@ -71,6 +71,14 @@ pub struct Interface {
     #[serde(default)]
     pub mac_address: Option<String>,
 
+    /// When the object was last modified (ISO 8601). Carried from every NetBox
+    /// release on detail responses; the write foundation uses it as the
+    /// pre-4.6 optimistic-concurrency precondition when no `ETag` header is
+    /// present (ADR-0001 §3). `#[serde(default)]` so it is simply `None` when a
+    /// caller fetches a partial list shape that omits it.
+    #[serde(default)]
+    pub last_updated: Option<String>,
+
     #[serde(default)]
     pub mode: Option<Choice<String>>,
     #[serde(default)]

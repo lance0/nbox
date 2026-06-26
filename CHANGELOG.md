@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Safe write foundation (ADR-0001) — the first write.** nbox is no longer
+  strictly read-only: a shared `MutationPlan` / `MutationReceipt` engine backs a
+  narrow, operation- and field-specific pilot, `nbox interface <device> <iface>
+  set description "…"`. Every write builds a plan from the live object first
+  (minimal `PATCH`, before/after diff, an opaque confirmation token, an
+  optimistic-concurrency precondition), applies only after explicit enablement
+  AND confirmation, and emits a receipt. Read-only stays the default: writes
+  need `--allow-writes` (the gate) AND `--confirm` (or a TTY prompt in plain
+  output); `--dry-run` previews with no mutation and needs neither. `--confirm`
+  without `--allow-writes` is a usage error (exit 2, empty stdout). Non-TTY /
+  JSON / CSV / `--no-tui` never prompt.
+  - **Concurrency.** On NetBox 4.6+ the engine records the REST `ETag` on the
+    read-before-write and sends `If-Match` on apply (a stale object yields
+    `412`); on 4.2–4.5 it falls back to a `last_updated` + before-hash
+    read-before-write check. Either way a concurrent writer is caught and the
+    write is refused with a "re-run dry-run" message (exit 1).
+  - **`--message`.** An opt-in NetBox `changelog_message` (validated to the
+    200-character limit before applying) is recorded in the object-change
+    entry; the local write audit logs only a `message_present` flag + length,
+    never the body.
+  - **Audit.** Every planned write emits one structured `tracing` event (target
+    `nbox::write_audit`) with an allow-list of fields — changed field **names**
+    (never values), outcome, HTTP method/path, status, latency. No token, raw
+    patch, full object, or `--message` body is ever logged.
+  - **MCP stays read-only.** No write tools are exposed; per-user NetBox write
+    identity (Pattern 2) is a prerequisite for MCP writes.
+
 ### Changed
 
 - **Prefix contained IP detail cap.** Prefix detail now fetches up to 512

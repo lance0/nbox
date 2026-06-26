@@ -214,6 +214,91 @@ impl NetBoxClient {
         Self::decode(res).await
     }
 
+    /// Like [`get`](Self::get), but also captures the `ETag` response header when
+    /// NetBox sends one (4.6+ detail responses). The write foundation uses this
+    /// to record the server precondition on a read-before-write so the apply step
+    /// can send `If-Match` (ADR-0001 §3). On older releases the `ETag` header is
+    /// absent and the second element is `None`, in which case the planner falls
+    /// back to `last_updated` + a before-hash.
+    pub(crate) async fn get_with_etag<T>(
+        &self,
+        path: &str,
+        params: &[(&str, String)],
+    ) -> Result<(T, Option<String>)>
+    where
+        T: DeserializeOwned,
+    {
+        let res = self.send(path, params).await?;
+        let etag = res
+            .headers()
+            .get(reqwest::header::ETAG)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        let body = Self::decode(res).await?;
+        Ok((body, etag))
+    }
+
+    /// Perform an authenticated `PATCH` (partial update) and deserialize the
+    /// response. The single v1 write transport (ADR-0001 §2): reuses the read
+    /// path's auth, timeout, 429 retry, URL scoping, status mapping, and token
+    /// redaction. `if_match` sends `If-Match: <etag>` for optimistic concurrency
+    /// on NetBox 4.6+; a stale object produces `412`, mapped to
+    /// [`NboxError::StalePrecondition`]. A `400` carrying NetBox's field-level
+    /// validation is mapped to [`NboxError::WriteValidation`] so the message can
+    /// name the rejected field without polluting stdout. Returns the updated
+    /// object and the new `ETag` (when present) for the receipt.
+    pub(crate) async fn patch<T>(
+        &self,
+        path: &str,
+        body: &serde_json::Value,
+        if_match: Option<&str>,
+    ) -> Result<(T, Option<String>)>
+    where
+        T: DeserializeOwned,
+    {
+        let url = self.url_for(path)?;
+
+        match self.masked_authorization() {
+            Some(auth) => tracing::debug!(url = %url, auth = %auth, "PATCH"),
+            None => tracing::debug!(url = %url, "PATCH (unauthenticated)"),
+        }
+
+        let mut attempt = 0;
+        loop {
+            let mut req = self
+                .http
+                .patch(url.clone())
+                .header(ACCEPT, "application/json")
+                .header(CONTENT_TYPE, "application/json")
+                .json(body);
+            if let Some(token) = &self.token {
+                req = req.header(AUTHORIZATION, self.auth_scheme.header_value(token));
+            }
+            if let Some(etag) = if_match {
+                req = req.header(reqwest::header::IF_MATCH, etag);
+            }
+
+            let res = req.send().await.context("sending PATCH to NetBox")?;
+            if retry_on_rate_limit(&res, attempt, "NetBox PATCH").await {
+                attempt += 1;
+                continue;
+            }
+
+            let status = res.status();
+            let etag = res
+                .headers()
+                .get(reqwest::header::ETAG)
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            if !status.is_success() {
+                let text = res.text().await.unwrap_or_default();
+                return Err(write_status_error(status, &text).into());
+            }
+            let body: T = res.json().await.context("decoding PATCH response")?;
+            return Ok((body, etag));
+        }
+    }
+
     /// Like [`get`](Self::get), but maps HTTP 404 to `Ok(None)` (so a missing
     /// object by ID is "not found", not an error).
     pub async fn get_optional<T>(&self, path: &str, params: &[(&str, String)]) -> Result<Option<T>>
@@ -518,6 +603,27 @@ fn truncate(s: &str, max: usize) -> String {
         format!("{t}…")
     } else {
         t
+    }
+}
+
+/// Map a non-success status from a write (`PATCH`) to a typed [`NboxError`].
+/// Distinct from the read [`status_error`] so the two write-specific outcomes
+/// get precise, actionable messages per ADR-0001 §8.
+///
+/// `412 Precondition Failed` maps to [`NboxError::StalePrecondition`] (the
+/// `If-Match` ETag didn't match; the object changed in NetBox; re-run dry-run).
+///
+/// `400 Bad Request` maps to [`NboxError::WriteValidation`] carrying NetBox's
+/// field-level detail, surfaced with field context and no stdout pollution.
+///
+/// Auth/permission/not-found keep the same stable mapping as reads — a write is
+/// still just a REST call, so a 401/403/404 means the same thing it would on a
+/// read of the same object.
+fn write_status_error(status: reqwest::StatusCode, body: &str) -> NboxError {
+    match status {
+        reqwest::StatusCode::PRECONDITION_FAILED => NboxError::StalePrecondition(String::new()),
+        reqwest::StatusCode::BAD_REQUEST => NboxError::WriteValidation(truncate(body, 500)),
+        other => status_error(other, body),
     }
 }
 

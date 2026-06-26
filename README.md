@@ -15,8 +15,10 @@ Ask the questions you actually ask at the terminal — *what is this IP, where i
 this device, what owns this prefix?* — from the shell, a k9s-style TUI, or an MCP
 server for AI agents.
 
-**Status: pre-1.0, read-only.** Safe, diff-confirmed `PATCH` writes come later
-([ROADMAP.md](ROADMAP.md)).
+**Status: pre-1.0.** Reads are the default; a narrow safe-write foundation
+(ADR-0001) has landed behind `--allow-writes` + confirmation — one pilot
+command today (`nbox interface <device> <interface> set description "…"`).
+Broader writes are on the [ROADMAP](ROADMAP.md).
 
 ## Quick Start
 
@@ -72,7 +74,7 @@ nbox doesn't replace NetBox — it's a fast read path into it. When to reach for
 | Use it over SSH on a jump host | yes — one static binary, no runtime | no (needs a browser) | only if Python/curl are present |
 | Machine output (JSON/CSV, stable exit codes) | built in | no | you build it |
 | Feed an AI agent | built in (`nbox serve`, MCP) | no | you build it |
-| Reserve / allocate / edit (writes) | not yet — read-only | yes | yes |
+| Reserve / allocate / edit (writes) | narrow & safe behind `--allow-writes` + confirm (ADR-0001) | yes | yes |
 
 Full matrix and a "when to use each" guide: [docs/COMPARISON.md](docs/COMPARISON.md).
 
@@ -270,6 +272,7 @@ nbox vm <name-or-id>
 nbox vm-type <slug-or-name-or-id>                 # NetBox 4.6+
 nbox cluster <name-or-id>
 nbox interface <device> <interface>
+  interface <device> <interface> set description "…"   # write: --dry-run | --allow-writes --confirm [--message]
 nbox tags                         # list tags (slug, name, count)
 nbox tagged <tag>                 # objects carrying a tag, across kinds
                                   # (NetBox 4.3+; tag = id|name|slug)

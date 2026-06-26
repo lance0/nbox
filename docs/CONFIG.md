@@ -167,8 +167,11 @@ modal's **Settings** section (`Tab` to it; `↑`/`↓` move between fields; `Ent
   argument (never shell-interpolated); empty uses the OS default opener. The TUI
   reads the live value, so a change applies to the next `o`.
 
-`confirm_writes` is reserved for the future write features and has no effect today,
-so it is not exposed in the Settings section. (The former `wide` knob was removed —
+`confirm_writes` is reserved for the future TUI edit-mode preference and has
+no effect on the CLI. CLI writes (ADR-0001) are gated by `--allow-writes` +
+confirmation (`--confirm`, or a TTY prompt in plain output), not this knob —
+it would only control whether a future TUI edit mode prompts before applying.
+It is not exposed in the Settings section. (The former `wide` knob was removed —
 nothing read it; an existing `wide = …` in your file is harmlessly ignored.)
 
 ## Cache (`[cache]`)

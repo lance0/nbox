@@ -41,6 +41,10 @@ nbox next-ip <cidr> [--count N] [--vrf <name|slug|rd>]
 nbox next-prefix <cidr> [--length L] [--vrf <name|slug|rd>]
 nbox vlan <vid|name> [--site <name|slug>] [--group <name|slug>]
 nbox interface <device> <interface>
+                                  # optional write subcommand:
+  interface <device> <interface> set description "…" [--message "…"]
+                                  #   --dry-run | --allow-writes --confirm
+                                  #   (ADR-0001 safe write; read-only default)
 nbox site <name|slug>
 nbox rack <name|id>
 nbox rack-group <slug|name|id>      # NetBox 4.6+
@@ -172,7 +176,14 @@ nbox device edge01 --json | jq '.primary_ip4'
 
 ## Notes
 
-- Read-only today. Safe, diff-confirmed writes are planned for a later release.
+- The first write landed behind ADR-0001: `nbox interface <device> <interface>
+  set description "…"` is a safe, plan-first `PATCH`. Reads remain the default —
+  apply needs BOTH `--allow-writes` (the gate) AND `--confirm` (or a TTY prompt
+  in plain output); `--dry-run` previews with no mutation and needs neither.
+  `--confirm` without `--allow-writes` is a usage error (exit 2, empty stdout).
+  Non-TTY / `--json` / `--csv` / `--no-tui` never prompt. `--json --dry-run`
+  returns the stable `MutationPlan`; `--json --confirm` returns a `MutationReceipt`
+  (both `schema_version: 1`). The MCP server stays read-only.
 - Filters that an object type can't satisfy cause that type to be skipped in
   `search` (nbox does not send NetBox unknown query params).
 - `owner` (NetBox 4.5+): a native owner field (user or group) surfaced on most

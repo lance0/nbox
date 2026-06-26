@@ -35,9 +35,27 @@ pub enum NboxError {
     },
 
     /// The user asked for an unsupported flag/data combination (e.g. `-o csv`
-    /// on a single object). Carries a friendly, actionable message.
+    /// on a single object, or `--confirm` without `--allow-writes` on a write).
+    /// Carries a friendly, actionable message.
     #[error("{0}")]
     Usage(String),
+
+    /// A write was refused because the object changed in NetBox between plan and
+    /// apply (an `If-Match` 412 on 4.6+, or a `last_updated`/before-hash mismatch
+    /// on the pre-4.6 fallback). The caller should re-run dry-run and re-confirm.
+    /// Not a usage error and not a server failure — a deliberate, recoverable
+    /// refusal — so it sits in the generic exit-1 bucket with a precise message
+    /// (ADR-0001 §8: "not applied: object changed in NetBox; re-run dry-run").
+    #[error("not applied: object changed in NetBox; re-run dry-run{0}")]
+    StalePrecondition(String),
+
+    /// NetBox rejected a write's patch body (HTTP 400). Carries the field-level
+    /// detail NetBox returns, surfaced with field context and no stdout pollution
+    /// (ADR-0001 §8: "not applied: NetBox rejected the patch"). Exit 1, like other
+    /// API failures — distinct from a stale precondition above so the message can
+    /// tell the operator exactly what to fix rather than "re-run dry-run".
+    #[error("not applied: NetBox rejected the patch: {0}")]
+    WriteValidation(String),
 
     /// Any other non-success API response.
     #[error("NetBox API request failed: HTTP {status}: {body}")]
@@ -53,7 +71,9 @@ impl NboxError {
             NboxError::Authentication(_) | NboxError::PermissionDenied(_) => 3,
             NboxError::NotFound(_) => 4,
             NboxError::Ambiguous { .. } => 5,
-            NboxError::Api { .. } => 1,
+            NboxError::StalePrecondition(_)
+            | NboxError::WriteValidation(_)
+            | NboxError::Api { .. } => 1,
         }
     }
 
@@ -134,7 +154,7 @@ mod tests {
         // The chain-walking path (`exit_code_for`) must recover the stable code
         // for each variant even when buried under a `.context(...)` layer — this
         // is the real path `main` takes, since handlers wrap errors with context.
-        let cases: [(NboxError, i32); 6] = [
+        let cases: [(NboxError, i32); 8] = [
             (NboxError::Usage("bad combo".into()), 2),
             (NboxError::Authentication(String::new()), 3),
             (NboxError::PermissionDenied(String::new()), 3),
@@ -152,6 +172,11 @@ mod tests {
                     status: 502,
                     body: "bad gateway".into(),
                 },
+                1,
+            ),
+            (NboxError::StalePrecondition(String::new()), 1),
+            (
+                NboxError::WriteValidation("description: required".into()),
                 1,
             ),
         ];
