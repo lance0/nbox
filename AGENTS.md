@@ -43,6 +43,9 @@ nbox ip <address> [--vrf <name|slug|rd>]  # surfaces nat_inside/nat_outside (Net
 nbox ip reserve <cidr> [--vrf <name|slug|rd>] [--description "…"] [--dns-name "…"]
                                   # write: reserve the next available IP (POST available-ips); --dry-run | --allow-writes --confirm [--message]
 nbox prefix <cidr> [--vrf <name|slug|rd>]
+                                  # optional write subcommand:
+  prefix <cidr> reserve [--length L] [--vrf <name|slug|rd>] [--description "…"]
+                                  # write: reserve the next available child prefix (POST available-prefixes); --dry-run | --allow-writes --confirm [--message]
 nbox next-ip <cidr> [--count N] [--vrf <name|slug|rd>]
 nbox next-prefix <cidr> [--length L] [--vrf <name|slug|rd>]
 nbox vlan <vid|name> [--site <name|slug>] [--group <name|slug>]
@@ -185,28 +188,32 @@ nbox device edge01 --json | jq '.primary_ip4'
 
 ## Notes
 
-- Writes landed behind ADR-0001. Four commands reuse the same safe-write
+- Writes landed behind ADR-0001. Six commands reuse the same safe-write
   foundation (the `MutationPlan` / `MutationReceipt` engine):
   `nbox interface <device> <interface> set description "…"`,
   `nbox device <name> set status <value>`,
   `nbox ip reserve <cidr>` (a `POST` to `available-ips` — the first `allocate`),
-  and `nbox tag add <type> <name> <tag>` (a `PATCH` to the `tags` array on any
-  object kind). All are plan-first: reads remain the default — apply needs BOTH
-  `--allow-writes` (the gate) AND `--confirm` (or a TTY prompt in plain
-  output); `--dry-run` previews with no mutation and needs neither.
-  `--confirm` without `--allow-writes` is a usage error (exit 2, empty stdout).
-  Non-TTY / `--json` / `--csv` / `--no-tui` never prompt. `--json --dry-run`
-  returns the stable `MutationPlan`; `--json --confirm` returns a `MutationReceipt`
-  (both `schema_version: 1`). For `device set status`, the allowed values are
-  enumerated live from NetBox (read-only `OPTIONS`) and the input is normalized
-  to the canonical value (a label is accepted case-insensitively when it maps
-  unambiguously to one value); an unknown or ambiguous status is a usage error
-  (exit 2) naming the input and listing the allowed values, before any `PATCH`.
-  For `tag add`, the tag resolves by id/name/slug (same resolver as
-  `nbox tagged`); the target object resolves the same way as `nbox <kind> <ref>`.
-  NetBox `PATCH` replaces the whole `tags` array, so the plan carries the full
-  replacement slug list (current slugs + new); adding a tag the object already
-  carries is a no-op (no `PATCH`). The MCP server stays read-only.
+  `nbox prefix reserve <cidr>` (a `POST` to `available-prefixes` — the second `allocate`),
+  `nbox tag add <type> <name> <tag>` (a `PATCH` to the `tags` array on any
+  object kind), and `nbox tag remove <type> <name> <tag>` (the inverse). All are
+  plan-first: reads remain the default — apply needs BOTH `--allow-writes` (the
+  gate) AND `--confirm` (or a TTY prompt in plain output); `--dry-run` previews
+  with no mutation and needs neither. `--confirm` without `--allow-writes` is a
+  usage error (exit 2, empty stdout). Non-TTY / `--json` / `--csv` / `--no-tui`
+  never prompt. `--json --dry-run` returns the stable `MutationPlan`;
+  `--json --confirm` returns a `MutationReceipt` (both `schema_version: 1`).
+  For `device set status`, the allowed values are enumerated live from NetBox
+  (read-only `OPTIONS`) and the input is normalized to the canonical value (a
+  label is accepted case-insensitively when it maps unambiguously to one value);
+  an unknown or ambiguous status is a usage error (exit 2) naming the input and
+  listing the allowed values, before any `PATCH`. For `tag add`/`remove`, the
+  tag resolves by id/name/slug (same resolver as `nbox tagged`); the target
+  object resolves the same way as `nbox <kind> <ref>`. NetBox `PATCH` replaces
+  the whole `tags` array, so the plan carries the full replacement slug list;
+  adding a tag the object already carries (or removing one it doesn't) is a
+  no-op (no `PATCH`). For `prefix reserve`, the body carries optional
+  `prefix_length` and `description`; the server allocates the block and the
+  receipt returns the created prefix. The MCP server stays read-only.
 - Filters that an object type can't satisfy cause that type to be skipped in
   `search` (nbox does not send NetBox unknown query params).
 - `owner` (NetBox 4.5+): a native owner field (user or group) surfaced on most

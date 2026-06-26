@@ -358,7 +358,33 @@ pub async fn run(cli: Cli) -> Result<()> {
             vrf,
             journal,
             journal_limit,
-        }) => run_prefix(&ctx, &cidr, vrf.as_deref(), journal, journal_limit).await,
+            action,
+        }) => match action {
+            None => run_prefix(&ctx, &cidr, vrf.as_deref(), journal, journal_limit).await,
+            Some(crate::cli::PrefixAction::Reserve {
+                length,
+                vrf: reserve_vrf,
+                description,
+                message,
+                dry_run,
+                confirm,
+                allow_writes,
+            }) => {
+                let effective_vrf = ip_reserve_vrf_scope(vrf.as_deref(), reserve_vrf.as_deref())?;
+                Box::pin(run_prefix_reserve(
+                    &ctx,
+                    &cidr,
+                    effective_vrf,
+                    length,
+                    description.as_deref(),
+                    message.as_deref(),
+                    dry_run,
+                    confirm,
+                    allow_writes,
+                ))
+                .await
+            }
+        },
         Some(Command::NextIp { prefix, count, vrf }) => {
             run_next_ip(&ctx, &prefix, count, vrf.as_deref()).await
         }
@@ -1692,6 +1718,53 @@ async fn run_ip_reserve(
     // The shared dry-run/prompt/apply/audit lifecycle — one write path.
     apply_or_preview(ctx, &client, &plan, action, &profile, &host, |c, p| {
         Box::pin(detail::apply_ip_reserve(c, p))
+    })
+    .await
+}
+
+/// `nbox prefix reserve <cidr>` — the second Allocate write (ADR-0001
+/// follow-on): reserve the next available child prefix via a POST to its
+/// `available-prefixes` endpoint, on the same gate/lifecycle/audit path as
+/// `ip reserve`. NetBox allocates the block server-side and race-safe (no
+/// client precondition), so the receipt carries the created prefix object.
+/// Only `description` may be set in v1 (the narrow allow-list).
+#[allow(clippy::too_many_arguments)] // the CLI flag set; collapsing loses clarity
+async fn run_prefix_reserve(
+    ctx: &Ctx,
+    prefix: &str,
+    vrf: Option<&str>,
+    length: Option<u8>,
+    description: Option<&str>,
+    message: Option<&str>,
+    dry_run: bool,
+    confirm: bool,
+    allow_writes: bool,
+) -> Result<()> {
+    // Gate decision BEFORE any plan/network (shared with the PATCH pilots): a
+    // read-only invocation can never become a write (ADR-0001 §4/§5).
+    let action = gate_write(ctx, dry_run, confirm, allow_writes)?;
+
+    let (client, profile) = connect_named(ctx)?;
+    let host = audit_origin(client.base_url());
+
+    // 2–4) resolve the parent prefix + build the Allocate plan. (The
+    // read-only candidate GET for the dry-run advisory happens inside the
+    // planner.)
+    let plan = detail::plan_prefix_reserve(
+        &client,
+        prefix,
+        vrf,
+        length,
+        description,
+        message,
+        &profile,
+        &not_found,
+    )
+    .await?;
+
+    // The shared dry-run/prompt/apply/audit lifecycle — one write path.
+    apply_or_preview(ctx, &client, &plan, action, &profile, &host, |c, p| {
+        Box::pin(detail::apply_prefix_reserve(c, p))
     })
     .await
 }

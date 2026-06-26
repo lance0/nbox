@@ -95,6 +95,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   object doesn't carry is a no-op (no `PATCH`). Shares one planner/applier with
   `tag add` (`TagOperation::Add`/`Remove`), proving the foundation extends to
   the inverse operation without new machinery.
+- **`nbox prefix reserve <cidr>` — the sixth safe write.** Reserves the next
+  available child prefix via a `POST` to `…/prefixes/{id}/available-prefixes/`,
+  on the same ADR-0001 gate/confirm/audit lifecycle as the `PATCH` pilots and
+  `ip reserve` (`--dry-run` / `--allow-writes --confirm` / `--message`). Optional
+  `--vrf <name|rd|id>` scopes the parent prefix; `--length N` requests a specific
+  child prefix length; `--description` sets that field on the new prefix (the v1
+  allow-list — no status/role/tags/vlan). Proves the allocate pattern extends
+  past `ip reserve`:
+  - **Server-allocated, race-safe.** NetBox picks the block and never hands out
+    the same one twice, so the plan carries no client precondition (no `ETag` /
+    `last_updated`). The dry-run shows the currently next available block as an
+    advisory warning — the applied block may differ, since NetBox allocates at
+    apply time.
+  - **Receipt returns the created object.** `--json` apply returns a
+    `MutationReceipt` whose `object` field is the reserved prefix's view
+    (prefix, description, …), so scripts get the assigned block without a
+    follow-up read.
+  - A bare reserve `POST`s an empty body; an exhausted parent (`409`) and a
+    NetBox validation rejection (`400`) surface as clean errors (exit 1, empty
+    stdout). The audit logs `operation=allocate`, `http_method=POST`, and field
+    names only.
 
 ### Changed
 

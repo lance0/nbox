@@ -1951,6 +1951,161 @@ async fn ip_bare_without_address_is_a_usage_error() {
     assert_error_contract(&out, 2, "missing IP address");
 }
 
+// ===== prefix reserve (ADR-0001 follow-on) ================================
+//
+// `prefix reserve` mirrors `ip reserve`: same Allocate/POST pattern, same
+// server-side race-safe `Precondition::None`, same gate/confirm/audit
+// lifecycle. The POST targets `available-prefixes` instead of `available-ips`.
+
+/// Mount the available-prefixes advisory GET: returns a bare JSON array of
+/// free blocks.
+async fn mount_available_prefixes_get(server: &MockServer, prefix_id: u64, blocks: &[&str]) {
+    let results: Vec<Value> = blocks.iter().map(|b| json!({"prefix": b})).collect();
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/api/ipam/prefixes/{prefix_id}/available-prefixes/"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!(results)))
+        .mount(server)
+        .await;
+}
+
+fn run_prefix_reserve<'a>(config: &NamedTempFile, extra: &'a [&'a str]) -> CommandOutput {
+    let mut args: Vec<&str> = vec!["--config", config.path().to_str().unwrap()];
+    args.push("--no-tui");
+    args.extend_from_slice(&["prefix", "10.0.0.0/24", "reserve"]);
+    args.extend_from_slice(extra);
+    run_nbox(args)
+}
+
+#[tokio::test]
+async fn prefix_reserve_dry_run_sends_no_post_and_shows_candidate() {
+    let server = MockServer::start().await;
+    mount_prefix_resolution(&server, 1, "10.0.0.0/24").await;
+    mount_available_prefixes_get(&server, 1, &["10.0.0.0/25", "10.0.128.0/25"]).await;
+
+    let config = write_config(&server.uri());
+    let out = run_prefix_reserve(&config, &["--dry-run", "--json"]);
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(post_count(&server).await, 0, "dry-run must not POST");
+    let plan: Value = serde_json::from_str(&out.stdout).expect("plan JSON");
+    assert_eq!(plan["operation"], json!("allocate"));
+    assert_eq!(plan["target"]["kind"], json!("prefix"));
+    assert_eq!(plan["target"]["id"], json!(1));
+    assert_eq!(plan["patch"], json!({}));
+    assert_eq!(plan["precondition"]["type"], json!("none"));
+    // Advisory candidate in warnings.
+    let warnings = plan["warnings"].as_array().expect("warnings array");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap_or_default().contains("10.0.0.0/25")),
+        "candidate surfaced as a warning: {plan}"
+    );
+}
+
+#[tokio::test]
+async fn prefix_reserve_with_length_sends_prefix_length_in_body() {
+    let server = MockServer::start().await;
+    mount_prefix_resolution(&server, 1, "10.0.0.0/24").await;
+    mount_available_prefixes_get(&server, 1, &["10.0.0.0/26", "10.0.64.0/26"]).await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/prefixes/1/available-prefixes/"))
+        .and(body_partial_json(json!({"prefix_length": 26})))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": 42,
+            "url": "u",
+            "prefix": "10.0.0.0/26"
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_prefix_reserve(
+        &config,
+        &["--length", "26", "--allow-writes", "--confirm", "--json"],
+    );
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(post_count(&server).await, 1, "exactly one POST");
+    let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
+    assert_eq!(receipt["applied"], json!(true));
+    assert_eq!(receipt["status"], json!(201));
+    // The receipt carries the created prefix.
+    assert_eq!(receipt["object"]["prefix"], json!("10.0.0.0/26"));
+    assert!(
+        receipt["message"]
+            .as_str()
+            .unwrap()
+            .contains("reserved: 10.0.0.0/26")
+    );
+}
+
+#[tokio::test]
+async fn prefix_reserve_with_description_includes_it_in_body() {
+    let server = MockServer::start().await;
+    mount_prefix_resolution(&server, 1, "10.0.0.0/24").await;
+    mount_available_prefixes_get(&server, 1, &["10.0.0.0/25"]).await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/prefixes/1/available-prefixes/"))
+        .and(body_partial_json(json!({"description": "dmz block"})))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": 42,
+            "url": "u",
+            "prefix": "10.0.0.0/25"
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_prefix_reserve(
+        &config,
+        &[
+            "--description",
+            "dmz block",
+            "--allow-writes",
+            "--confirm",
+            "--json",
+        ],
+    );
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(post_count(&server).await, 1);
+    let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
+    assert_eq!(receipt["object"]["prefix"], json!("10.0.0.0/25"));
+}
+
+#[tokio::test]
+async fn prefix_reserve_confirm_without_allow_writes_is_a_usage_error() {
+    let server = MockServer::start().await;
+    let config = write_config(&server.uri());
+    let out = run_prefix_reserve(&config, &["--confirm", "--json"]);
+    assert_error_contract(&out, 2, "writes are not enabled");
+    assert_eq!(post_count(&server).await, 0);
+}
+
+#[tokio::test]
+async fn prefix_reserve_409_exhaustion_is_a_clean_error() {
+    let server = MockServer::start().await;
+    mount_prefix_resolution(&server, 1, "10.0.0.0/24").await;
+    mount_available_prefixes_get(&server, 1, &[]).await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/prefixes/1/available-prefixes/"))
+        .respond_with(
+            ResponseTemplate::new(409)
+                .set_body_json(json!({"detail": "Insufficient space in 10.0.0.0/24"})),
+        )
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_prefix_reserve(&config, &["--allow-writes", "--confirm", "--json"]);
+
+    assert_error_contract(&out, 1, "Insufficient space");
+    assert_eq!(post_count(&server).await, 1, "exactly one POST attempt");
+}
+
 // ===== tag add (ADR-0001 follow-on) =====================================
 //
 // The fourth write command reuses the same planner/diff/confirm/concurrency/

@@ -272,10 +272,21 @@ Shipped on this foundation, in order:
   operation without new machinery. A no-op (tag already absent) produces an empty
   patch, no `PATCH`. Same `ETag`+`If-Match` / `last_updated`+before-hash
   concurrency contracts.
+- `prefix reserve <cidr> [--vrf] [--length N] [--description]` — the sixth
+  write (`allocate` / `POST`), the second `allocate`: a `POST` to
+  `…/prefixes/{id}/available-prefixes/` that reserves the next free child block.
+  It proves the `allocate` pattern extends past `ip reserve` with no new
+  machinery — same `Operation::Allocate`, same `Precondition::None`, same
+  gate/confirm/audit lifecycle, and the same `object`-in-receipt pattern. The
+  body carries optional `prefix_length` (the desired child block size) and
+  `description` (the v1 allow-list — no status/role/tags/vlan). The dry-run
+  surfaces the currently-next block as an advisory warning; an exhausted parent
+  (`409`) is a clean error.
 
-Still deferred per Decision 6: choosing a specific address, multi-IP / range /
-next-prefix allocation, interface/VM assignment, status/tags on reserve, generic
-create/delete, and `nbox raw` write verbs.
+Still deferred per Decision 6: choosing a specific address/block, multi-IP
+allocation, IP-range allocation (`POST` to a range's `available-ips`),
+interface/VM assignment, status/tags on reserve, generic create/delete, and
+`nbox raw` write verbs.
 
 ## References
 
