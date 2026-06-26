@@ -2,12 +2,14 @@
 
 nbox is a **read-first** NetBox CLI, TUI, and MCP server. The near-term goal is the **best
 possible read experience** — fast, correct, and pleasant both in the terminal and to agents.
-write engine, with five commands landed — `interface <device> <iface> set description` and
-`device <name> set status <value>` (`PATCH`), `ip reserve <prefix>` (the first `allocate`, a
-`POST` to `available-ips`), `tag add <type> <name> <tag>` / `tag remove` (a `PATCH` to the `tags`
-array on any object kind), and `prefix reserve <cidr>` (a `POST` to `available-prefixes`). Reads
-stay the default everywhere and the write surface widens only as the read tool proves out in
-practice (see [Writes](#writes--deferred-later-track)).
+write engine, with seven commands landed — `interface <device> <iface> set
+description` and `device <name> set status <value>` (`PATCH`), `ip reserve
+<prefix>` / `prefix reserve <cidr>` / `ip-range reserve <start|id>` (three
+`allocate` `POST`s to `available-ips` / `available-prefixes`), and `tag add` /
+`tag remove <type> <name> <tag>` (a `PATCH` to the `tags` array on any object
+kind). Reads stay the default everywhere and the write surface widens only as
+the read tool proves out in practice (see
+[Writes](#writes--deferred-later-track)).
 
 Legend: ☐ planned · ◐ in progress · ☑ done
 
@@ -448,10 +450,16 @@ the read tool proves out in practice. Consolidated future scope:
   `--description`. Server-allocated and race-safe, so the plan carries no
   client precondition; the receipt returns the created prefix object. Same
   gate/confirm/audit lifecycle as the `PATCH` pilots and `ip reserve`.
-- ☐ **IPAM allocate (rest)** — IP-range allocation (`POST` to a range's
-  `available-ips`); the read half (`next-ip` / `next-prefix`, range lookup)
-  already ships, and the next-IP allocation (`ip reserve`) and prefix
-  allocation (`prefix reserve`) landed above.
+- ☑ `nbox ip-range reserve <start|id>` — the third **`allocate`** write (a
+  `POST` to `…/ip-ranges/{id}/available-ips/`): reserve the next available IP
+  address within an IP range, with optional `--description` / `--dns-name`.
+  Server-allocated and race-safe, so the plan carries no client precondition;
+  the receipt returns the created IP object. Same gate/confirm/audit lifecycle
+  as `ip reserve` and `prefix reserve`.
+- ☐ **IPAM allocate (rest)** — multi-IP allocation (`--count N` on `ip reserve`
+  / `ip-range reserve`), and choosing a specific address/block. The read half
+  (`next-ip` / `next-prefix`, range lookup) and all three allocate writes (`ip
+  reserve`, `prefix reserve`, `ip-range reserve`) landed above.
 - ☑ `nbox tag add <type> <name> <tag>` — a further write command, reusing the
   same foundation. Adds a tag to any taggable object via a minimal `PATCH` that
   replaces the full `tags` array; a no-op if the tag is already present. The

@@ -425,7 +425,30 @@ pub async fn run(cli: Cli) -> Result<()> {
             value,
             journal,
             journal_limit,
-        }) => run_ip_range(&ctx, &value, journal, journal_limit).await,
+            action,
+        }) => match action {
+            None => run_ip_range(&ctx, &value, journal, journal_limit).await,
+            Some(crate::cli::IpRangeAction::Reserve {
+                description,
+                dns_name,
+                message,
+                dry_run,
+                confirm,
+                allow_writes,
+            }) => {
+                Box::pin(run_ip_range_reserve(
+                    &ctx,
+                    &value,
+                    description.as_deref(),
+                    dns_name.as_deref(),
+                    message.as_deref(),
+                    dry_run,
+                    confirm,
+                    allow_writes,
+                ))
+                .await
+            }
+        },
         Some(Command::Tenant { value }) => run_tenant(&ctx, &value).await,
         Some(Command::Contact { value }) => run_contact(&ctx, &value).await,
         Some(Command::Vm { value }) => run_vm(&ctx, &value).await,
@@ -1765,6 +1788,50 @@ async fn run_prefix_reserve(
     // The shared dry-run/prompt/apply/audit lifecycle — one write path.
     apply_or_preview(ctx, &client, &plan, action, &profile, &host, |c, p| {
         Box::pin(detail::apply_prefix_reserve(c, p))
+    })
+    .await
+}
+
+/// `nbox ip-range reserve <start|id>` — the third Allocate write (ADR-0001
+/// follow-on): reserve the next available IP address within an IP range via a
+/// POST to its `available-ips` endpoint, on the same gate/lifecycle/audit path
+/// as `ip reserve`. NetBox allocates the address server-side and race-safe (no
+/// client precondition), so the receipt carries the created IP object.
+/// Only `description` / `dns_name` may be set in v1 (the narrow allow-list).
+#[allow(clippy::too_many_arguments)] // the CLI flag set; collapsing loses clarity
+async fn run_ip_range_reserve(
+    ctx: &Ctx,
+    range_ref: &str,
+    description: Option<&str>,
+    dns_name: Option<&str>,
+    message: Option<&str>,
+    dry_run: bool,
+    confirm: bool,
+    allow_writes: bool,
+) -> Result<()> {
+    // Gate decision BEFORE any plan/network (shared with the PATCH pilots): a
+    // read-only invocation can never become a write (ADR-0001 §4/§5).
+    let action = gate_write(ctx, dry_run, confirm, allow_writes)?;
+
+    let (client, profile) = connect_named(ctx)?;
+    let host = audit_origin(client.base_url());
+
+    // 2–4) resolve the IP range + build the Allocate plan. (The read-only
+    // candidate GET for the dry-run advisory happens inside the planner.)
+    let plan = detail::plan_ip_range_reserve(
+        &client,
+        range_ref,
+        description,
+        dns_name,
+        message,
+        &profile,
+        &not_found,
+    )
+    .await?;
+
+    // The shared dry-run/prompt/apply/audit lifecycle — one write path.
+    apply_or_preview(ctx, &client, &plan, action, &profile, &host, |c, p| {
+        Box::pin(detail::apply_ip_range_reserve(c, p))
     })
     .await
 }

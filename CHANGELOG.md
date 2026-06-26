@@ -116,6 +116,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     NetBox validation rejection (`400`) surface as clean errors (exit 1, empty
     stdout). The audit logs `operation=allocate`, `http_method=POST`, and field
     names only.
+- **`nbox ip-range reserve <start|id>` — the seventh safe write.** Reserves
+  the next available IP address within an IP range via a `POST` to
+  `…/ip-ranges/{id}/available-ips/`, on the same ADR-0001 gate/confirm/audit
+  lifecycle as `ip reserve` and `prefix reserve` (`--dry-run` / `--allow-writes
+  --confirm` / `--message`). Optional `--description` and `--dns-name` set
+  those fields on the new IP (the v1 allow-list — no status/role/tags/
+  assignment). Proves the allocate pattern extends to IP ranges:
+  - **Server-allocated, race-safe.** NetBox picks the address and never hands
+    out the same one twice, so the plan carries no client precondition. The
+    dry-run shows the currently next address as an advisory warning — the
+    applied address may differ, since NetBox allocates at apply time.
+  - **Receipt returns the created object.** `--json` apply returns a
+    `MutationReceipt` whose `object` field is the reserved IP's view.
+  - A bare reserve `POST`s an empty body; an exhausted range (`409`) and a
+    NetBox validation rejection (`400`) surface as clean errors (exit 1, empty
+    stdout). The audit logs `operation=allocate`, `http_method=POST`, and field
+    names only.
 
 ### Changed
 

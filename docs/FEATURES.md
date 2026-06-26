@@ -1,12 +1,12 @@
 # Features
 
 nbox is a NetBox client — a CLI and a TUI over the same core. Reads are the
-default; a narrow safe-write foundation (ADR-0001) adds six plan-first commands
-behind `--allow-writes` + confirmation — `interface … set description` and
-`device … set status` (`PATCH`), `ip reserve <prefix>` (the next-IP
-allocation, a `POST`), `prefix reserve <cidr>` (the next-prefix allocation,
-a `POST` to `available-prefixes`), and `tag add`/`remove <type> <name> <tag>`
-(a `PATCH` to the `tags` array on any object). The MCP server stays read-only.
+default; a narrow safe-write foundation (ADR-0001) adds seven plan-first
+commands behind `--allow-writes` + confirmation — `interface … set
+description` and `device … set status` (`PATCH`), `ip reserve <prefix>` /
+`prefix reserve <cidr>` / `ip-range reserve <start|id>` (three `allocate`
+`POST`s), and `tag add`/`remove <type> <name> <tag>` (a `PATCH` to the `tags`
+array on any object). The MCP server stays read-only.
 
 ## Lookups
 
@@ -20,7 +20,7 @@ a `POST` to `available-prefixes`), and `tag add`/`remove <type> <name> <tag>`
 | `nbox next-ip <cidr> [--count] [--vrf]` | Next available address(es) (read-only preview). |
 | `nbox next-prefix <cidr> [--length] [--vrf]` | Available free block(s). |
 | `nbox vlan <vid\|name> [--site] [--group] [--journal]` | VLAN + referencing prefixes, plus the VLAN's own `scope`/`scope_type` and, when it belongs to a scoped VLAN group, the group's `group_scope`/`group_scope_type`. |
-| `nbox site` / `rack` / `rack-group` / `circuit` / `virtual-circuit` / `aggregate` / `asn` / `ip-range` `[--journal]` | Object lookups. |
+| `nbox ip-range <start\|id>` | IP range. `reserve [--description] [--dns-name]` is a safe write (ADR-0001): `POST` to `available-ips`, behind `--allow-writes` + confirm. `--dry-run` previews the candidate; the receipt's `object` is the created IP. |
 | `nbox tenant <slug\|name\|id>` | Tenant: group, description, relation counts, tags, custom fields. |
 | `nbox contact <name\|id>` | Contact: title, phone, email, address, link, group, tags, custom fields. |
 | `nbox provider <slug\|name\|id>` | Provider: ASNs, accounts, description, circuit count, tags, custom fields. |

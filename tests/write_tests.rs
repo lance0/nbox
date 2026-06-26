@@ -2106,6 +2106,163 @@ async fn prefix_reserve_409_exhaustion_is_a_clean_error() {
     assert_eq!(post_count(&server).await, 1, "exactly one POST attempt");
 }
 
+// ===== ip-range reserve (ADR-0001 follow-on) ===============================
+//
+// `ip-range reserve` mirrors `ip reserve` but targets an IP range instead of
+// a prefix: same Allocate/POST pattern, same server-side race-safe
+// `Precondition::None`, same gate/confirm/audit lifecycle. The POST targets
+// `…/ip-ranges/{id}/available-ips/`.
+
+/// Mount an IP-range resolution: `GET /api/ipam/ip-ranges/?start_address=…` →
+/// one hit.
+async fn mount_ip_range_resolution(server: &MockServer, range_id: u64, start: &str, end: &str) {
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/ip-ranges/"))
+        .and(wiremock::matchers::query_param("start_address", start))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": range_id,
+                "url": format!("{}/api/ipam/ip-ranges/{}/", server.uri(), range_id),
+                "start_address": start,
+                "end_address": end
+            }]
+        })))
+        .mount(server)
+        .await;
+}
+
+/// Mount the IP-range available-ips advisory GET: returns a bare JSON array of
+/// free addresses.
+async fn mount_ip_range_available_ips_get(server: &MockServer, range_id: u64, addr: Option<&str>) {
+    let results: Vec<Value> = match addr {
+        Some(a) => vec![json!({"address": a})],
+        None => vec![],
+    };
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/api/ipam/ip-ranges/{range_id}/available-ips/"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!(results)))
+        .mount(server)
+        .await;
+}
+
+fn run_ip_range_reserve<'a>(config: &NamedTempFile, extra: &'a [&'a str]) -> CommandOutput {
+    let mut args: Vec<&str> = vec!["--config", config.path().to_str().unwrap()];
+    args.push("--no-tui");
+    args.extend_from_slice(&["ip-range", "10.0.0.10", "reserve"]);
+    args.extend_from_slice(extra);
+    run_nbox(args)
+}
+
+#[tokio::test]
+async fn ip_range_reserve_dry_run_sends_no_post_and_shows_candidate() {
+    let server = MockServer::start().await;
+    mount_ip_range_resolution(&server, 1, "10.0.0.10", "10.0.0.20").await;
+    mount_ip_range_available_ips_get(&server, 1, Some("10.0.0.10/32")).await;
+
+    let config = write_config(&server.uri());
+    let out = run_ip_range_reserve(&config, &["--dry-run", "--json"]);
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(post_count(&server).await, 0, "dry-run must not POST");
+    let plan: Value = serde_json::from_str(&out.stdout).expect("plan JSON");
+    assert_eq!(plan["operation"], json!("allocate"));
+    assert_eq!(plan["target"]["kind"], json!("ip"));
+    assert_eq!(plan["target"]["id"], json!(1));
+    assert_eq!(plan["target"]["display"], json!("10.0.0.10 – 10.0.0.20"));
+    assert_eq!(
+        plan["target"]["endpoint"],
+        json!("/api/ipam/ip-ranges/1/available-ips/")
+    );
+    assert_eq!(plan["patch"], json!({}));
+    assert_eq!(plan["precondition"]["type"], json!("none"));
+    let warnings = plan["warnings"].as_array().expect("warnings array");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap_or_default().contains("10.0.0.10/32")),
+        "candidate surfaced as a warning: {plan}"
+    );
+}
+
+#[tokio::test]
+async fn ip_range_reserve_with_description_and_dns_name_includes_them_in_body() {
+    let server = MockServer::start().await;
+    mount_ip_range_resolution(&server, 1, "10.0.0.10", "10.0.0.20").await;
+    mount_ip_range_available_ips_get(&server, 1, Some("10.0.0.10/32")).await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/ip-ranges/1/available-ips/"))
+        .and(body_partial_json(
+            json!({"description": "loopback", "dns_name": "lb.example"}),
+        ))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": 42,
+            "url": "u",
+            "address": "10.0.0.10/32"
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_ip_range_reserve(
+        &config,
+        &[
+            "--description",
+            "loopback",
+            "--dns-name",
+            "lb.example",
+            "--allow-writes",
+            "--confirm",
+            "--json",
+        ],
+    );
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(post_count(&server).await, 1);
+    let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
+    assert_eq!(receipt["applied"], json!(true));
+    assert_eq!(receipt["status"], json!(201));
+    assert_eq!(receipt["object"]["address"], json!("10.0.0.10/32"));
+    assert!(
+        receipt["message"]
+            .as_str()
+            .unwrap()
+            .contains("reserved: 10.0.0.10/32")
+    );
+}
+
+#[tokio::test]
+async fn ip_range_reserve_confirm_without_allow_writes_is_a_usage_error() {
+    let server = MockServer::start().await;
+    let config = write_config(&server.uri());
+    let out = run_ip_range_reserve(&config, &["--confirm", "--json"]);
+    assert_error_contract(&out, 2, "writes are not enabled");
+    assert_eq!(post_count(&server).await, 0);
+}
+
+#[tokio::test]
+async fn ip_range_reserve_409_exhaustion_is_a_clean_error() {
+    let server = MockServer::start().await;
+    mount_ip_range_resolution(&server, 1, "10.0.0.10", "10.0.0.20").await;
+    mount_ip_range_available_ips_get(&server, 1, None).await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/ip-ranges/1/available-ips/"))
+        .respond_with(
+            ResponseTemplate::new(409)
+                .set_body_json(json!({"detail": "Insufficient space in range"})),
+        )
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_ip_range_reserve(&config, &["--allow-writes", "--confirm", "--json"]);
+
+    assert_error_contract(&out, 1, "Insufficient space");
+    assert_eq!(post_count(&server).await, 1, "exactly one POST attempt");
+}
+
 // ===== tag add (ADR-0001 follow-on) =====================================
 //
 // The fourth write command reuses the same planner/diff/confirm/concurrency/
