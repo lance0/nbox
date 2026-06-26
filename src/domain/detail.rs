@@ -967,7 +967,11 @@ pub(crate) async fn apply_prefix_reserve(
 
     let (created, status): (Prefix, u16) = client.post(&plan.target.endpoint, &body).await?;
     let created_prefix = created.prefix.clone();
-    let object = serde_json::to_value(&created).ok();
+    // Flatten the created prefix into the same view the read path returns (a
+    // freshly reserved block has no children/contained IPs), so the receipt's
+    // `object` is consistent with `ip`/`ip-range reserve`'s `IpView`.
+    let view = PrefixView::build(created, Vec::new(), Vec::new());
+    let object = serde_json::to_value(&view).ok();
 
     Ok(MutationReceipt {
         schema_version: PLAN_SCHEMA_VERSION,
