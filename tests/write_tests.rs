@@ -1408,3 +1408,450 @@ async fn device_read_still_works_with_no_action() {
     assert!(out.stdout.contains("edge01"), "read output: {}", out.stdout);
     assert_eq!(patch_count(&server).await, 0, "a read never PATCHes");
 }
+
+// ===== ip `reserve` (ADR-0001 first Allocate write) ======================
+//
+// The first non-PATCH write: an `allocate` that POSTs to a prefix's
+// `available-ips` endpoint to reserve the next free address. It reuses the same
+// gate/confirm/audit lifecycle as the PATCH pilots; the new pieces are the POST
+// transport, the `none` precondition (the endpoint is server-side race-safe),
+// and a receipt that carries the *created* object. The planner always reads the
+// currently-next address (read-only) to surface an advisory candidate.
+
+/// Count the `POST` requests the mock received.
+async fn post_count(server: &MockServer) -> usize {
+    server
+        .received_requests()
+        .await
+        .unwrap_or_default()
+        .into_iter()
+        .filter(|r| r.method.as_str() == "POST")
+        .count()
+}
+
+/// Prefix-by-CIDR resolution: GET `/api/ipam/prefixes/?prefix=<cidr>` → one hit.
+async fn mount_prefix_resolution(server: &MockServer, prefix_id: u64, cidr: &str) {
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": prefix_id,
+                "url": format!("{}/api/ipam/prefixes/{}/", server.uri(), prefix_id),
+                "prefix": cidr
+            }]
+        })))
+        .mount(server)
+        .await;
+}
+
+/// The read-only candidate GET the planner uses for the dry-run advisory:
+/// GET `/api/ipam/prefixes/{id}/available-ips/` → a bare JSON array.
+async fn mount_available_ips_get(server: &MockServer, prefix_id: u64, addr: &str) {
+    Mock::given(method("GET"))
+        .and(path(format!(
+            "/api/ipam/prefixes/{prefix_id}/available-ips/"
+        )))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([{ "address": addr }])))
+        .mount(server)
+        .await;
+}
+
+fn run_ip_reserve<'a>(config: &NamedTempFile, extra: &'a [&'a str]) -> CommandOutput {
+    let mut args: Vec<&str> = vec!["--config", config.path().to_str().unwrap()];
+    args.push("--no-tui");
+    args.extend_from_slice(&["ip", "reserve", "203.0.113.0/24"]);
+    args.extend_from_slice(extra);
+    run_nbox(args)
+}
+
+#[tokio::test]
+async fn ip_reserve_dry_run_sends_no_post_and_shows_candidate() {
+    let server = MockServer::start().await;
+    mount_prefix_resolution(&server, 1, "203.0.113.0/24").await;
+    mount_available_ips_get(&server, 1, "203.0.113.5/24").await;
+
+    let config = write_config(&server.uri());
+    let out = run_ip_reserve(&config, &["--dry-run", "--json"]);
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(post_count(&server).await, 0, "dry-run must not POST");
+    let plan: Value = serde_json::from_str(&out.stdout).expect("plan JSON");
+    assert_eq!(plan["schema_version"], json!(1));
+    assert_eq!(plan["operation"], json!("allocate"));
+    assert_eq!(plan["target"]["kind"], json!("ip"));
+    assert_eq!(plan["target"]["id"], json!(1));
+    assert_eq!(plan["target"]["display"], json!("203.0.113.0/24"));
+    assert_eq!(
+        plan["target"]["endpoint"],
+        json!("/api/ipam/prefixes/1/available-ips/")
+    );
+    // Bare reserve → empty body, no synthetic address, server-race-safe precond.
+    assert_eq!(plan["patch"], json!({}));
+    assert_eq!(plan["fields"].as_array().unwrap().len(), 0);
+    assert_eq!(plan["precondition"]["type"], json!("none"));
+    // The candidate is advisory only — a warning, never in `patch`/`fields`.
+    let warnings = plan["warnings"].as_array().expect("warnings array");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap_or_default().contains("203.0.113.5/24")),
+        "candidate surfaced as a warning: {plan}"
+    );
+}
+
+#[tokio::test]
+async fn ip_reserve_dry_run_plain_renders_candidate_note() {
+    let server = MockServer::start().await;
+    mount_prefix_resolution(&server, 1, "203.0.113.0/24").await;
+    mount_available_ips_get(&server, 1, "203.0.113.5/24").await;
+
+    let config = write_config(&server.uri());
+    let out = run_ip_reserve(&config, &["--dry-run"]);
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(post_count(&server).await, 0);
+    assert!(
+        out.stdout.contains("ip: 203.0.113.0/24"),
+        "stdout target line: {}",
+        out.stdout
+    );
+    assert!(
+        out.stdout.contains("note:") && out.stdout.contains("203.0.113.5/24"),
+        "stdout candidate note: {}",
+        out.stdout
+    );
+    assert!(out.stderr.contains("planned, no changes sent"));
+}
+
+#[tokio::test]
+async fn ip_reserve_confirm_sends_one_post_and_returns_created_object() {
+    let server = MockServer::start().await;
+    mount_prefix_resolution(&server, 1, "203.0.113.0/24").await;
+    mount_available_ips_get(&server, 1, "203.0.113.5/24").await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/prefixes/1/available-ips/"))
+        .and(body_partial_json(json!({"description": "edge uplink"})))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": 7,
+            "url": format!("{}/api/ipam/ip-addresses/7/", server.uri()),
+            "address": "203.0.113.5/24",
+            "status": {"value": "active", "label": "Active"},
+            "description": "edge uplink"
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_ip_reserve(
+        &config,
+        &[
+            "--description",
+            "edge uplink",
+            "--allow-writes",
+            "--confirm",
+            "--json",
+        ],
+    );
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(post_count(&server).await, 1, "exactly one POST");
+    let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
+    assert_eq!(receipt["operation"], json!("allocate"));
+    assert_eq!(receipt["applied"], json!(true));
+    assert_eq!(receipt["no_op"], json!(false));
+    assert_eq!(receipt["status"], json!(201));
+    // The receipt carries the created object so scripts get the assigned address.
+    assert_eq!(receipt["object"]["address"], json!("203.0.113.5/24"));
+    assert_eq!(receipt["object"]["status"], json!("active"));
+    assert!(
+        receipt["message"]
+            .as_str()
+            .unwrap()
+            .contains("reserved: 203.0.113.5/24 in 203.0.113.0/24"),
+        "receipt message: {}",
+        receipt["message"]
+    );
+}
+
+#[tokio::test]
+async fn ip_reserve_bare_sends_empty_body() {
+    let server = MockServer::start().await;
+    mount_prefix_resolution(&server, 1, "203.0.113.0/24").await;
+    mount_available_ips_get(&server, 1, "203.0.113.5/24").await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/prefixes/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": 7, "url": "u", "address": "203.0.113.5/24"
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_ip_reserve(&config, &["--allow-writes", "--confirm", "--json"]);
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(post_count(&server).await, 1);
+    // The wire body for a bare reserve is exactly `{}` (no fields, no message).
+    let post_reqs: Vec<_> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.method.as_str() == "POST")
+        .collect();
+    let body: Value = serde_json::from_slice(&post_reqs[0].body).unwrap();
+    assert_eq!(body, json!({}), "bare reserve POSTs an empty body");
+}
+
+#[tokio::test]
+async fn ip_reserve_sends_description_and_dns_name_when_present() {
+    let server = MockServer::start().await;
+    mount_prefix_resolution(&server, 1, "203.0.113.0/24").await;
+    mount_available_ips_get(&server, 1, "203.0.113.5/24").await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/prefixes/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": 7, "url": "u", "address": "203.0.113.5/24"
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_ip_reserve(
+        &config,
+        &[
+            "--description",
+            "edge uplink",
+            "--dns-name",
+            "edge01.example.net",
+            "--allow-writes",
+            "--confirm",
+            "--json",
+        ],
+    );
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    let post_reqs: Vec<_> = server
+        .received_requests()
+        .await
+        .unwrap()
+        .into_iter()
+        .filter(|r| r.method.as_str() == "POST")
+        .collect();
+    let body: Value = serde_json::from_slice(&post_reqs[0].body).unwrap();
+    assert_eq!(
+        body,
+        json!({"description": "edge uplink", "dns_name": "edge01.example.net"})
+    );
+}
+
+#[tokio::test]
+async fn ip_reserve_409_exhaustion_is_a_clean_error() {
+    let server = MockServer::start().await;
+    mount_prefix_resolution(&server, 1, "203.0.113.0/24").await;
+    mount_available_ips_get(&server, 1, "203.0.113.5/24").await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/prefixes/1/available-ips/"))
+        .respond_with(
+            ResponseTemplate::new(409)
+                .set_body_string("The requested number of IP addresses is not available"),
+        )
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_ip_reserve(&config, &["--allow-writes", "--confirm", "--json"]);
+
+    // 409 maps through the generic API error → exit 1, clean stdout.
+    assert_eq!(out.code, Some(1), "stderr: {}", out.stderr);
+    assert!(
+        out.stdout.is_empty(),
+        "error keeps stdout clean: {:?}",
+        out.stdout
+    );
+}
+
+#[tokio::test]
+async fn ip_reserve_400_validation_is_a_clean_error() {
+    let server = MockServer::start().await;
+    mount_prefix_resolution(&server, 1, "203.0.113.0/24").await;
+    mount_available_ips_get(&server, 1, "203.0.113.5/24").await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/prefixes/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(400).set_body_json(json!({"dns_name": ["Invalid."]})))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_ip_reserve(
+        &config,
+        &[
+            "--dns-name",
+            "bad name",
+            "--allow-writes",
+            "--confirm",
+            "--json",
+        ],
+    );
+
+    assert_error_contract(&out, 1, "NetBox rejected");
+}
+
+#[tokio::test]
+async fn ip_reserve_without_gate_is_a_usage_error_before_any_network() {
+    // No `--allow-writes` → refuse at the gate (exit 2) with no plan/network.
+    let server = MockServer::start().await;
+    let config = write_config(&server.uri());
+    let out = run_ip_reserve(&config, &[]);
+    assert_error_contract(&out, 2, "writes are not enabled");
+    assert_eq!(post_count(&server).await, 0);
+}
+
+#[tokio::test]
+async fn ip_reserve_confirm_without_gate_is_a_usage_error() {
+    // `--confirm` without `--allow-writes` can never become a write (gate ⟂
+    // confirm): refuse at the gate (exit 2), naming the missing gate flag.
+    let server = MockServer::start().await;
+    let config = write_config(&server.uri());
+    let out = run_ip_reserve(&config, &["--confirm"]);
+    assert_error_contract(&out, 2, "writes are not enabled");
+    assert_eq!(post_count(&server).await, 0);
+}
+
+#[tokio::test]
+async fn ip_reserve_allow_writes_without_confirm_nontty_is_a_usage_error() {
+    // `--allow-writes` but no `--confirm` on a non-TTY → refuse (exit 2): a
+    // non-interactive write must be explicitly confirmed.
+    let server = MockServer::start().await;
+    let config = write_config(&server.uri());
+    let out = run_ip_reserve(&config, &["--allow-writes"]);
+    assert_error_contract(&out, 2, "non-interactive write requires confirmation");
+    assert_eq!(post_count(&server).await, 0);
+}
+
+#[tokio::test]
+async fn ip_reserve_over_length_message_is_a_usage_error() {
+    // The message length is validated (exit 2) before any network use — even
+    // with the full gate flags, no prefix lookup or POST is performed.
+    let server = MockServer::start().await;
+    let config = write_config(&server.uri());
+    let over = "x".repeat(201);
+    let out = run_ip_reserve(
+        &config,
+        &[
+            "--allow-writes",
+            "--confirm",
+            "--message",
+            over.as_str(),
+            "--json",
+        ],
+    );
+    assert_error_contract(&out, 2, "200-character limit");
+    assert_eq!(post_count(&server).await, 0);
+}
+
+#[tokio::test]
+async fn ip_reserve_audit_logs_names_only_never_values_token_or_message_body() {
+    let server = MockServer::start().await;
+    mount_prefix_resolution(&server, 1, "203.0.113.0/24").await;
+    mount_available_ips_get(&server, 1, "203.0.113.5/24").await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/prefixes/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": 7, "url": "u", "address": "203.0.113.5/24"
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let log = NamedTempFile::new().expect("log file");
+    let log_path = log.path().to_path_buf();
+    drop(log);
+
+    let out = Command::new(env!("CARGO_BIN_EXE_nbox"))
+        .arg("--config")
+        .arg(config.path())
+        .arg("--no-tui")
+        .arg("--log-file")
+        .arg(&log_path)
+        .arg("--log-level")
+        .arg("nbox::write_audit=info")
+        .args([
+            "ip",
+            "reserve",
+            "203.0.113.0/24",
+            "--description",
+            "reserve-secret-desc",
+            "--allow-writes",
+            "--confirm",
+            "--message",
+            "reserve-secret-message",
+            "--json",
+        ])
+        .env("NBOX_TOKEN", "secret-nbox-token-12345")
+        .env_remove("NBOX_LOG")
+        .env_remove("RUST_LOG")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .expect("spawn nbox");
+    assert_eq!(
+        out.status.code(),
+        Some(0),
+        "stderr: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+
+    let log_text = std::fs::read_to_string(&log_path).expect("read log file");
+    assert!(log_text.contains("nbox::write_audit"), "log: {log_text}");
+    // Allocate audits operation=allocate + http_method=POST + the field NAME.
+    assert!(
+        log_text.contains("operation=\"allocate\"") || log_text.contains("operation=allocate"),
+        "operation recorded: {log_text}"
+    );
+    assert!(
+        log_text.contains("http_method=\"POST\"") || log_text.contains("http_method=POST"),
+        "http_method recorded: {log_text}"
+    );
+    assert!(
+        log_text.contains("fields=\"description\"") || log_text.contains("fields=description"),
+        "field NAME recorded: {log_text}"
+    );
+    assert!(
+        log_text.contains("outcome=\"applied\"") || log_text.contains("outcome=applied"),
+        "outcome recorded: {log_text}"
+    );
+    assert!(
+        log_text.contains("message_present=true"),
+        "message_present flag: {log_text}"
+    );
+    // Redaction: the description value, the message body, and the token never leak.
+    assert!(
+        !log_text.contains("reserve-secret-desc"),
+        "description value leaked: {log_text}"
+    );
+    assert!(
+        !log_text.contains("reserve-secret-message"),
+        "message body leaked: {log_text}"
+    );
+    assert!(
+        !log_text.contains("secret-nbox-token-12345"),
+        "token leaked: {log_text}"
+    );
+}
+
+#[tokio::test]
+async fn ip_bare_without_address_is_a_usage_error() {
+    // `nbox ip` with neither an address nor a subcommand → usage error (exit 2).
+    let server = MockServer::start().await;
+    let config = write_config(&server.uri());
+    let out = run_nbox(vec![
+        "--config",
+        config.path().to_str().unwrap(),
+        "--no-tui",
+        "ip",
+    ]);
+    assert_error_contract(&out, 2, "missing IP address");
+}

@@ -204,6 +204,22 @@ mod tests {
     }
 
     #[test]
+    fn allocate_event_audits_operation_and_post_method() {
+        // An allocate (e.g. `ip reserve`) audits with operation="allocate" and
+        // http_method="POST"; still only field NAMES are carried, never values.
+        let fields = ["description", "dns_name"];
+        let mut e = ev(&fields, None);
+        e.operation = Operation::Allocate;
+        e.target_kind = "ip";
+        e.http_method = "POST";
+        e.http_path = "/api/ipam/prefixes/1/available-ips/";
+        e.status = 201;
+        assert_eq!(e.operation.as_str(), "allocate");
+        assert_eq!(e.http_method, "POST");
+        assert_eq!(e.fields, &["description", "dns_name"]);
+    }
+
+    #[test]
     fn message_is_recorded_as_present_flag_and_length_only() {
         // The event carries a present-flag + length, never the body. This test
         // pins the fields exist and the length is what was passed; the body

@@ -16,10 +16,10 @@ this device, what owns this prefix?* — from the shell, a k9s-style TUI, or an 
 server for AI agents.
 
 **Status: pre-1.0.** Reads are the default; a narrow safe-write foundation
-(ADR-0001) has landed behind `--allow-writes` + confirmation — two pilot
-commands today (`nbox interface <device> <interface> set description "…"`
-and `nbox device <name> set status <value>`). Broader writes are on the
-[ROADMAP](ROADMAP.md).
+(ADR-0001) has landed behind `--allow-writes` + confirmation — three commands
+today (`nbox interface <device> <interface> set description "…"`,
+`nbox device <name> set status <value>`, and `nbox ip reserve <prefix>` to
+allocate the next available IP). Broader writes are on the [ROADMAP](ROADMAP.md).
 
 ## Quick Start
 
@@ -52,7 +52,7 @@ See [Installation](#installation) below for setup instructions.
 
 - **Fast shell lookups** — `device`, `ip`, `prefix`, `vlan`, `site`, `rack`, `circuit`, `virtual-circuit`, `provider`, `aggregate`, `asn`, `ip-range`, `tenant`, `contact`, `vm`, `cluster`, `vrf`, `route-target`, `mac`, and `interface`, each as a one-liner.
 - **Normalized search** — one `search` query runs in parallel across devices, sites, racks, IPs, prefixes, VLANs, circuits, virtual circuits, providers, aggregates, ASNs, IP ranges, tenants, contacts, VMs, clusters, VRFs, and route targets, returning ranked, deduped hits. Scope it with `--site` (exact) or `--region`/`--site-group`/`--location` (hierarchical where NetBox exposes tree filters), one at a time; or narrow by `--status`/`--tenant`/`--role`/`--tag`/`--vrf`.
-- **IPAM-aware** — IP → most-specific parent prefix → VLAN → scope resolution, prefix utilization and children, a navigable prefix tree, and `next-ip` / `next-prefix` for free addresses and blocks (read-only — nothing is reserved).
+- **IPAM-aware** — IP → most-specific parent prefix → VLAN → scope resolution, prefix utilization and children, a navigable prefix tree, and `next-ip` / `next-prefix` to preview free addresses and blocks (read-only). To actually claim one, `nbox ip reserve <prefix>` allocates the next available IP (a safe write — ADR-0001).
 - **A k9s-style TUI** — a three-pane home (navigation rail → results → live preview), an overview dashboard, a hierarchical prefix tree, cross-object navigation between related objects (every detail's related-object tabs are navigable — open an interface from a device and see its cable path drawn as an A↔Z diagram), fuzzy filters, server-side name filtering on the browse list, recents, and an in-app profile + settings editor. Twelve themes; `NO_COLOR` honored.
 - **Agent-ready** — `nbox serve` is a read-only MCP server: the same lookups exposed as eleven tools (plus every object as an `nbox://{kind}/{ref}` resource), returning the exact JSON view models the CLI does, so AI agents (Claude Code, Claude Desktop, …) query NetBox safely. Stdio for a local subprocess, or a loopback HTTP transport with OIDC resource-server auth for a network-reachable, read-only deployment. See [docs/MCP.md](docs/MCP.md); [SKILL.md](SKILL.md) is an installable Agent Skill that drives the CLI on matching requests.
 - **Scriptable** — `-o plain|json|csv`, `--fields`, `--raw`, versioned `--envelope`, and stable exit codes; stdout stays clean for piping, logs go to stderr. See [docs/SCRIPTING.md](docs/SCRIPTING.md).
@@ -255,6 +255,8 @@ nbox device <name-or-id> [--journal] [--journal-limit N]
   device <name> set status <value>                    # write: status validated live via OPTIONS; --dry-run | --allow-writes --confirm [--message]
 nbox ip <address> [--vrf <name>] [--journal]    # --vrf disambiguates duplicates across VRFs
                                   # shows nat_inside/nat_outside (NetBox 4.6) when set
+  ip reserve <cidr> [--vrf <name>] [--description "…"] [--dns-name "…"]
+                                  # write: reserve the next available IP (POST available-ips); --dry-run | --allow-writes --confirm [--message]
 nbox prefix <cidr> [--vrf <name>] [--journal]   # includes utilization + children when present
 nbox next-ip <cidr> [--count N] [--vrf <name>]        # next available address(es)
 nbox next-prefix <cidr> [--length L] [--vrf <name>]   # available free block(s)
