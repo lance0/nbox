@@ -468,16 +468,16 @@ the read tool proves out in practice. Consolidated future scope:
   confirmation token. Partial failure (k of N POSTs succeeded) returns the k
   created IPs with `partial: true` and exit 1; the audit logs `outcome=partial`.
   `count=1` plans/receipts are byte-identical to existing single-IP ones.
-- ☐ **Atomic multi-IP allocation (list-body POST).** NetBox's `available-ips`
+- ☑ **Atomic multi-IP allocation (list-body POST).** NetBox's `available-ips`
   endpoint accepts a JSON list body (`[{…}, …]`) for all-or-nothing allocation
-  in a single round-trip — the server either creates all N or creates zero. The
-  current sequential-POST approach (above) permits partial states (handled
-  honestly with `partial: true` + exit 1, but the operator still has k orphan
-  IPs to clean up) and costs N round-trips. Switching to the list-body POST
-  would eliminate the partial-failure path and cut latency to one request; the
-  touch points are small (POST body builder + response parser already handles
-  single `IpView` vs. JSON array). Revisit if orphan-IP cleanup burden shows up
-  in practice.
+  in a single round-trip — the server either creates all N or creates zero.
+  `count > 1` now attempts the list-body POST first (one request, all-or-
+  nothing); on a server rejection of the list shape (HTTP 400/422, older
+  NetBox) it falls back to the N sequential POSTs above, which may still yield
+  a partial state (`partial: true` + exit 1). Other atomic-path failures (409
+  exhaustion, 401/403, 412, network) propagate as a plain error — no orphan
+  IPs, since the list-body request creates zero on rejection. `count == 1`
+  stays on the single-object POST path, byte-identical to existing receipts.
 - ☐ **IPAM allocate (rest)** — choosing a specific address/block. The read half
   (`next-ip` / `next-prefix`, range lookup) and all three allocate writes (`ip
   reserve`, `prefix reserve`, `ip-range reserve`) plus multi-IP `--count N`
