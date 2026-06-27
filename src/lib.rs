@@ -1280,8 +1280,7 @@ async fn run_search(
                     .filter(|s| !s.is_empty())
                     .collect()
             });
-            let value = serde_json::to_value(&results)?;
-            print!("{}", output::csv::to_csv(&value, columns.as_deref())?);
+            output::csv::print_streaming(&results, columns.as_deref())?;
         }
         Format::Plain => {
             if results.is_empty() {

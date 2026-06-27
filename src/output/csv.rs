@@ -8,6 +8,8 @@
 //! Scalars/complex cell values are stringified (nested objects/arrays as
 //! compact JSON).
 
+use std::io::Write;
+
 use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
@@ -21,6 +23,36 @@ const CSV_NOT_TABULAR: &str = "CSV output is only supported for tabular results 
 pub fn print<T: Serialize>(value: &T) -> Result<()> {
     let value = serde_json::to_value(value)?;
     print!("{}", to_csv(&value, None)?);
+    Ok(())
+}
+
+/// Write CSV directly to a locked stdout, row by row, instead of building one
+/// full String. Byte-identical to `print` (and `to_csv`) — `escape` and `cell`
+/// are reused unchanged; only the writer target differs (`write!` vs
+/// `String::push_str`).
+pub fn print_streaming<T: Serialize>(value: &T, cols: Option<&[String]>) -> Result<()> {
+    let v = serde_json::to_value(value)?; // still need Value to inspect shape
+    let stdout = std::io::stdout();
+    let mut lock = stdout.lock();
+    match &v {
+        Value::Array(items) => {
+            // Two-pass: infer columns first (needed before writing header), then stream rows.
+            let columns = match cols {
+                Some(c) if !c.is_empty() => c.to_vec(),
+                _ => infer_columns(items),
+            };
+            write_header(&mut lock, &columns)?;
+            for item in items {
+                write_row(&mut lock, item, &columns)?;
+            }
+        }
+        Value::Object(_) => {
+            return Err(NboxError::Usage(CSV_NOT_TABULAR.to_string()).into());
+        }
+        other => {
+            writeln!(lock, "{}", escape(&cell(other)))?;
+        }
+    }
     Ok(())
 }
 
@@ -78,6 +110,27 @@ fn row<'a>(fields: impl Iterator<Item = &'a str>) -> String {
 fn row_owned(fields: impl Iterator<Item = String>) -> String {
     let escaped: Vec<String> = fields.map(|f| escape(&f)).collect();
     format!("{}\n", escaped.join(","))
+}
+
+/// Write the CSV header line (escaped column names joined by commas, trailing
+/// newline) to `w`. Streaming-path sibling of the `row` helper — builds the line
+/// as a String then writes it, so the byte output matches `array_csv` exactly.
+fn write_header<W: Write>(w: &mut W, columns: &[String]) -> Result<()> {
+    let line = row(columns.iter().map(String::as_str));
+    w.write_all(line.as_bytes())?;
+    Ok(())
+}
+
+/// Write one CSV record for `item` (an object) to `w`, selecting `columns` in
+/// order; missing keys render as empty cells. Streaming-path sibling of
+/// `row_owned` — byte-identical to the `array_csv` row output.
+fn write_row<W: Write>(w: &mut W, item: &Value, columns: &[String]) -> Result<()> {
+    let values = columns
+        .iter()
+        .map(|c| item.get(c).map(cell).unwrap_or_default());
+    let line = row_owned(values);
+    w.write_all(line.as_bytes())?;
+    Ok(())
 }
 
 /// Stringify a single JSON value for a CSV cell.

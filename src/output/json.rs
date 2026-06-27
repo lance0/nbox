@@ -1,5 +1,7 @@
 //! JSON output for scriptable / agent consumers.
 
+use std::io::Write;
+
 use anyhow::Result;
 use serde::Serialize;
 use serde_json::Value;
@@ -50,6 +52,24 @@ pub fn render_with<T: Serialize>(value: &T, opts: &JsonOptions) -> Result<String
 /// Print `value` as JSON, applying field selection, envelope, and raw options.
 pub fn print_with<T: Serialize>(value: &T, opts: &JsonOptions) -> Result<()> {
     println!("{}", render_with(value, opts)?);
+    Ok(())
+}
+
+/// Write a value directly to a locked stdout via `serde_json::to_writer_pretty`,
+/// skipping the intermediate `Value` + `String` materialization. Byte-identical
+/// to `render_with(value, &JsonOptions::default())` followed by `println!` —
+/// `to_writer_pretty` and `to_string_pretty` share the same formatter. Only
+/// called when no shaping is needed (`opts.fields.is_none() && !opts.envelope`);
+/// `opts.raw` selects the compact writer.
+pub fn print_streaming<T: Serialize>(value: &T, opts: &JsonOptions) -> Result<()> {
+    let stdout = std::io::stdout();
+    let mut lock = stdout.lock();
+    if opts.raw {
+        serde_json::to_writer(&mut lock, value)?;
+    } else {
+        serde_json::to_writer_pretty(&mut lock, value)?;
+    }
+    writeln!(lock)?;
     Ok(())
 }
 
