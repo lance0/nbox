@@ -242,15 +242,15 @@ async fn site_detail_makes_exactly_1_round_trip() {
     );
 }
 
-// === 6. JSON output is single-write (materialized, not streamed) ==========
+// === 6. JSON output is one complete value ================================
 //
-// `nbox device <name> --json` must emit exactly one JSON value on stdout —
-// materialized in full, not chunked or streamed in fragments. Parse stdout as a
-// single JSON value; a streamed/chunked output would either fail to parse or
-// leave trailing bytes. This is a contract assertion, not a speed test.
+// `nbox device <name> --json` must emit exactly one JSON value on stdout. This
+// test pins the consumer contract (one parseable document, no second JSON value
+// or non-whitespace trailing bytes); process capture cannot observe syscall/write
+// boundaries.
 
 #[tokio::test]
-async fn json_output_is_single_write_materialized_not_streamed() {
+async fn json_stdout_is_one_complete_value() {
     let server = MockServer::start().await;
     mount_page(
         &server,
@@ -277,7 +277,8 @@ async fn json_output_is_single_write_materialized_not_streamed() {
 
     assert_eq!(out.code, Some(0), "device failed: {}", out.stderr);
 
-    // stdout must parse as exactly one JSON value, with nothing trailing.
+    // stdout must parse as exactly one JSON value, allowing the trailing newline
+    // printed by the JSON output helper.
     let parsed: Value = serde_json::from_str(out.stdout.trim())
         .expect("stdout must be a single materialized JSON object");
     assert_eq!(parsed["name"], Value::String("edge01".into()));

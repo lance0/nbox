@@ -2093,12 +2093,46 @@ async fn ip_reserve_count_3_partial_failure_returns_created_and_exit_1() {
     assert_eq!(post_count(&server).await, 3, "three POSTs attempted");
     let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
     assert_eq!(receipt["partial"], json!(true));
+    assert_eq!(receipt["status"], json!(409));
     assert_eq!(receipt["requested_count"], json!(3));
     assert_eq!(receipt["created_count"], json!(2));
     let objects = receipt["object"].as_array().expect("object array");
     assert_eq!(objects.len(), 2);
     assert_eq!(objects[0]["address"], json!("203.0.113.5/24"));
     assert_eq!(objects[1]["address"], json!("203.0.113.6/24"));
+}
+
+#[tokio::test]
+async fn ip_reserve_count_3_first_post_failure_is_plain_error_with_empty_stdout() {
+    let server = MockServer::start().await;
+    mount_prefix_resolution(&server, 1, "203.0.113.0/24").await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"address": "203.0.113.5/24"},
+            {"address": "203.0.113.6/24"},
+            {"address": "203.0.113.7/24"}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/prefixes/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(409).set_body_string("exhausted"))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_ip_reserve(
+        &config,
+        &["--count", "3", "--allow-writes", "--confirm", "--json"],
+    );
+
+    assert_error_contract(&out, 1, "HTTP 409");
+    assert_eq!(
+        post_count(&server).await,
+        1,
+        "first POST failure stops immediately"
+    );
 }
 
 #[tokio::test]
@@ -2750,11 +2784,44 @@ async fn ip_range_reserve_count_2_partial_failure_returns_created_and_exit_1() {
     assert_eq!(post_count(&server).await, 2, "two POSTs attempted");
     let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
     assert_eq!(receipt["partial"], json!(true));
+    assert_eq!(receipt["status"], json!(409));
     assert_eq!(receipt["requested_count"], json!(2));
     assert_eq!(receipt["created_count"], json!(1));
     let objects = receipt["object"].as_array().expect("object array");
     assert_eq!(objects.len(), 1);
     assert_eq!(objects[0]["address"], json!("10.0.0.10/32"));
+}
+
+#[tokio::test]
+async fn ip_range_reserve_count_2_first_post_failure_is_plain_error_with_empty_stdout() {
+    let server = MockServer::start().await;
+    mount_ip_range_resolution(&server, 1, "10.0.0.10", "10.0.0.20").await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/ip-ranges/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"address": "10.0.0.10/32"},
+            {"address": "10.0.0.11/32"}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/ip-ranges/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(409).set_body_string("exhausted"))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_ip_range_reserve(
+        &config,
+        &["--count", "2", "--allow-writes", "--confirm", "--json"],
+    );
+
+    assert_error_contract(&out, 1, "HTTP 409");
+    assert_eq!(
+        post_count(&server).await,
+        1,
+        "first POST failure stops immediately"
+    );
 }
 
 // ===== tag add (ADR-0001 follow-on) =====================================

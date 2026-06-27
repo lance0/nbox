@@ -1280,10 +1280,18 @@ async fn apply_multi_ip_reserve(
                     views.push(v);
                 }
             }
-            Err(_) => {
+            Err(e) => {
+                if views.is_empty() {
+                    return Err(e);
+                }
                 // Partial failure: k of N succeeded. Return a receipt with
                 // the created IPs so they reach stdout, but mark it partial.
                 let created_count = i as u32;
+                let failure_status = e
+                    .chain()
+                    .find_map(|cause| cause.downcast_ref::<NboxError>())
+                    .and_then(NboxError::http_status)
+                    .unwrap_or(last_status);
                 let addresses: Vec<String> = views
                     .iter()
                     .filter_map(|v| v.get("address").and_then(|a| a.as_str()).map(String::from))
@@ -1295,7 +1303,7 @@ async fn apply_multi_ip_reserve(
                     fields: plan.fields.clone(),
                     applied: created_count > 0,
                     no_op: false,
-                    status: last_status,
+                    status: failure_status,
                     etag: None,
                     request_id: None,
                     object: Some(Value::Array(views)),

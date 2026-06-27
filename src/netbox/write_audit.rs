@@ -303,13 +303,17 @@ mod tests {
         let subscriber = Registry::default().with(layer);
 
         with_default(subscriber, || {
-            ev(&["description", "status"], None).emit();
+            let mut event = ev(&["description", "status"], None);
+            event.request_id = Some("req-1");
+            event.emit();
         });
 
-        let names = names.lock().unwrap();
+        let mut names = names.lock().unwrap().clone();
+        names.sort_unstable();
+        names.dedup();
 
         // The exact documented allow-list (plus the `message` event message).
-        let allowed = [
+        let mut allowed: Vec<String> = [
             "message",
             "surface",
             "profile",
@@ -327,13 +331,12 @@ mod tests {
             "request_id",
             "message_present",
             "message_len",
-        ];
-        for name in names.iter() {
-            assert!(
-                allowed.contains(&name.as_str()),
-                "write-audit event emitted an unexpected field: {name}"
-            );
-        }
+        ]
+        .into_iter()
+        .map(String::from)
+        .collect();
+        allowed.sort_unstable();
+        assert_eq!(names, allowed, "write-audit event field set drifted");
         // The forbidden fields must never be present, under any name.
         for forbidden in ["token", "authorization", "secret", "bearer"] {
             assert!(
