@@ -10,51 +10,46 @@
 //! no TTY at all), and the refusal happens before any TUI/terminal init, so a
 //! blocking `wait()` cannot hang. Every command here is network-free.
 
-use std::process::{Command, Stdio};
+mod support;
 
-/// Run `nbox <args>` with no TTY (stdin from null, piped stdout/stderr) and
-/// return `(exit_code, stdout, stderr)`. `wait_with_output` reads to EOF and
-/// reaps the child, so it cannot hang once the process exits.
-fn run(args: &[&str]) -> (Option<i32>, String, String) {
-    let out = Command::new(env!("CARGO_BIN_EXE_nbox"))
-        .args(args)
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .output()
-        .expect("spawn nbox");
-    (
-        out.status.code(),
-        String::from_utf8_lossy(&out.stdout).into_owned(),
-        String::from_utf8_lossy(&out.stderr).into_owned(),
-    )
-}
+use support::binary::run_nbox;
 
 #[test]
 fn no_tui_with_no_subcommand_refuses_with_exit_2() {
-    let (code, stdout, stderr) = run(&["--no-tui"]);
+    let out = run_nbox(["--no-tui"]);
 
-    assert_eq!(code, Some(2), "expected usage exit code 2");
-    assert!(stdout.is_empty(), "stdout must stay clean, got: {stdout:?}");
+    assert_eq!(out.code, Some(2), "expected usage exit code 2");
     assert!(
-        stderr.contains("--no-tui"),
-        "stderr should explain --no-tui, got: {stderr:?}"
+        out.stdout.is_empty(),
+        "stdout must stay clean, got: {:?}",
+        out.stdout
     );
     assert!(
-        stderr.contains("no command given"),
-        "stderr should name the empty invocation, got: {stderr:?}"
+        out.stderr.contains("--no-tui"),
+        "stderr should explain --no-tui, got: {:?}",
+        out.stderr
+    );
+    assert!(
+        out.stderr.contains("no command given"),
+        "stderr should name the empty invocation, got: {:?}",
+        out.stderr
     );
 }
 
 #[test]
 fn no_tui_with_explicit_tui_subcommand_refuses_with_exit_2() {
-    let (code, stdout, stderr) = run(&["--no-tui", "tui"]);
+    let out = run_nbox(["--no-tui", "tui"]);
 
-    assert_eq!(code, Some(2), "expected usage exit code 2");
-    assert!(stdout.is_empty(), "stdout must stay clean, got: {stdout:?}");
+    assert_eq!(out.code, Some(2), "expected usage exit code 2");
     assert!(
-        stderr.contains("conflicts with the `tui` command"),
-        "stderr should name the conflict with `tui`, got: {stderr:?}"
+        out.stdout.is_empty(),
+        "stdout must stay clean, got: {:?}",
+        out.stdout
+    );
+    assert!(
+        out.stderr.contains("conflicts with the `tui` command"),
+        "stderr should name the conflict with `tui`, got: {:?}",
+        out.stderr
     );
 }
 
@@ -64,7 +59,7 @@ fn no_tui_is_a_no_op_on_a_normal_subcommand() {
     // unaffected. With no config/profile, `nbox --no-tui status` fails to connect
     // (it does NOT get the --no-tui usage refusal), proving the flag is inert
     // here. We assert it did NOT exit 2 with the --no-tui message.
-    let (code, stdout, stderr) = run(&[
+    let out = run_nbox([
         "--no-tui",
         "--config",
         "/nonexistent/nbox/config/does-not-exist.toml",
@@ -73,11 +68,16 @@ fn no_tui_is_a_no_op_on_a_normal_subcommand() {
 
     // It fails (no usable config), but never launches a TUI and never prints the
     // --no-tui refusal — the flag is a silent no-op on a real subcommand.
-    assert_ne!(code, Some(0), "status with no config should fail");
+    assert_ne!(out.code, Some(0), "status with no config should fail");
     assert!(
-        !stderr.contains("no command given") && !stderr.contains("--no-tui suppresses"),
-        "the --no-tui refusal must not fire on a real subcommand, got: {stderr:?}"
+        !out.stderr.contains("no command given") && !out.stderr.contains("--no-tui suppresses"),
+        "the --no-tui refusal must not fire on a real subcommand, got: {:?}",
+        out.stderr
     );
     // stdout stays clean on the error path regardless.
-    assert!(stdout.is_empty(), "stdout must stay clean, got: {stdout:?}");
+    assert!(
+        out.stdout.is_empty(),
+        "stdout must stay clean, got: {:?}",
+        out.stdout
+    );
 }

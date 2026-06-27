@@ -22,7 +22,7 @@ mod support;
 use std::process::{Command, Stdio};
 
 use serde_json::{Value, json};
-use support::binary::{CommandOutput, run_nbox, temp_config};
+use support::binary::{CommandOutput, assert_error_contract, run_nbox, temp_config};
 use tempfile::NamedTempFile;
 use wiremock::matchers::{body_partial_json, header, header_exists, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
@@ -32,23 +32,6 @@ use wiremock::{Mock, MockServer, ResponseTemplate};
 /// token-redaction assertion). Identical shape to `support::binary::temp_config`.
 fn write_config(server_uri: &str) -> NamedTempFile {
     temp_config(server_uri)
-}
-
-/// Assert the process-level error contract: a stable exit code, EMPTY stdout
-/// (errors never pollute the data stream), and an actionable stderr substring.
-fn assert_error_contract(output: &CommandOutput, code: i32, stderr_contains: &str) {
-    assert_eq!(output.code, Some(code), "stderr: {}", output.stderr);
-    assert!(
-        output.stdout.is_empty(),
-        "error paths must keep stdout clean, got: {:?}",
-        output.stdout
-    );
-    assert!(
-        output.stderr.contains(stderr_contains),
-        "stderr should contain {:?}, got: {:?}",
-        stderr_contains,
-        output.stderr
-    );
 }
 
 /// The device + interface-name resolution mocks `plan_interface_description_update`
