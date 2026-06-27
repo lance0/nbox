@@ -5,27 +5,14 @@
 //! stderr. Lower-level tests still cover typed error propagation in detail.
 
 use serde_json::json;
-use support::binary::{CommandOutput, run_nbox, temp_config};
+use support::binary::{
+    CommandOutput, assert_error_contract, assert_json_stdout, assert_success, run_nbox, temp_config,
+};
 use support::netbox::page;
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 mod support;
-
-fn assert_error_contract(output: &CommandOutput, code: i32, expected_stderr: impl AsRef<str>) {
-    assert_eq!(output.code, Some(code), "stderr: {}", output.stderr);
-    assert!(
-        output.stdout.is_empty(),
-        "error paths must keep stdout clean, got: {:?}",
-        output.stdout
-    );
-    assert!(
-        output.stderr.contains(expected_stderr.as_ref()),
-        "stderr should contain {:?}, got: {:?}",
-        expected_stderr.as_ref(),
-        output.stderr
-    );
-}
 
 fn run_device(config: &tempfile::NamedTempFile, value: &str) -> CommandOutput {
     run_nbox([
@@ -199,4 +186,68 @@ async fn mac_ambiguous_exits_5_and_lists_the_interfaces() {
         "stderr should name the carrying interfaces: {:?}",
         output.stderr
     );
+}
+
+/// Contract test for the `tests/support/binary` harness itself: prove the
+/// three canonical helpers accept the shapes they promise (`impl AsRef<str>`
+/// for the error substring, a success `CommandOutput` for `assert_success`, and
+/// valid JSON stdout for `assert_json_stdout`) and panic on the wrong shape.
+/// These build `CommandOutput` directly (no binary spawn, no network) so the
+/// harness is pinned independently of any CLI behavior change.
+#[test]
+fn harness_helpers_accept_the_documented_shapes() {
+    // `assert_error_contract`: a `&str` (the common call-site shape) satisfies
+    // `impl AsRef<str>`, and a `String` does too.
+    let err = CommandOutput {
+        code: Some(2),
+        stdout: String::new(),
+        stderr: "no command given: pass --help".into(),
+    };
+    assert_error_contract(&err, 2, "no command given");
+    assert_error_contract(&err, 2, String::from("no command given"));
+
+    // `assert_success`: exit 0 with a non-empty stderr (warnings allowed on a
+    // success path) is accepted — only the code is constrained.
+    let ok = CommandOutput {
+        code: Some(0),
+        stdout: String::new(),
+        stderr: "warning: stale cache".into(),
+    };
+    assert_success(&ok);
+
+    // `assert_json_stdout`: exit 0 with valid JSON parses and returns the Value.
+    let json_out = CommandOutput {
+        code: Some(0),
+        stdout: r#"{"schema_version":1,"applied":true}"#.into(),
+        stderr: String::new(),
+    };
+    let value = assert_json_stdout(&json_out);
+    assert_eq!(value["schema_version"], json!(1));
+    assert_eq!(value["applied"], json!(true));
+}
+
+/// The error-contract helper rejects a polluted stdout on the error path (the
+/// whole point of the contract — errors never touch the data stream).
+#[test]
+#[should_panic(expected = "error paths must keep stdout clean")]
+fn harness_error_contract_rejects_polluted_stdout() {
+    let err = CommandOutput {
+        code: Some(2),
+        stdout: "leaked data".into(),
+        stderr: "no command given".into(),
+    };
+    assert_error_contract(&err, 2, "no command given");
+}
+
+/// `assert_json_stdout` panics (not a silent `unwrap`) when stdout is not valid
+/// JSON, so a malformed-data regression is loud.
+#[test]
+#[should_panic(expected = "stdout is not valid JSON")]
+fn harness_json_stdout_panics_on_non_json() {
+    let bad = CommandOutput {
+        code: Some(0),
+        stdout: "not json at all".into(),
+        stderr: String::new(),
+    };
+    let _ = assert_json_stdout(&bad);
 }
