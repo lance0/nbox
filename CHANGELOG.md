@@ -140,11 +140,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   created `IpView`s
   and the plan shows `count` in its fields diff. `count` is bound into the
   confirmation token so a `count=3` plan can't be replayed as `count=5`.
-  - **Partial failure.** If the k-th `POST` fails (k > 0), the receipt is
-    returned with `partial: true`, `created_count: k`, and the k created IPs in
-    `object`, but the process exits 1 so scripts detect the incomplete
-    allocation. The audit log records `outcome=partial`. A first-POST failure
-    (k=0) is the existing single-reserve error path.
+  - **Partial failure.** If the k-th `POST` fails after `k > 0` already
+    succeeded, the receipt is returned with `partial: true`, `created_count: k`,
+    the k created IPs in `object`, and `status` set to the *failing* `POST`'s
+    HTTP status (e.g. `409` when the range is exhausted mid-run, not the prior
+    success's `201`) — then the process exits 1 so scripts detect the incomplete
+    allocation. The audit log records `outcome=partial`. A first-`POST` failure
+    (k=0, nothing created) is not a partial receipt: it propagates as the plain
+    single-reserve error (exit 1, empty stdout).
   - **Backward compatible.** `count=1` (the default) is byte-identical to the
     existing single-IP plan/receipt — `count`, `partial`, `requested_count`, and
     `created_count` use `skip_serializing_if` defaults so they're omitted when

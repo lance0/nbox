@@ -180,6 +180,11 @@ Current nbox constraints also matter:
    free-form changelog message body. A `message_present` flag and length are
    enough locally.
 
+   This allow-list is a closed set, not a floor: a contract test asserts the
+   emitted field set equals it **exactly** (no missing and no extra fields), so
+   the audit schema cannot drift open (a new field leaking in) or closed (a
+   documented field silently dropped) without failing CI.
+
    NetBox `changelog_message` is opt-in via a write flag such as `--message`.
    nbox validates NetBox's 200-character limit before applying. If absent, nbox
    does not fabricate a message in NetBox; NetBox's own object-change record
@@ -300,12 +305,15 @@ Shipped on this foundation, in order:
   the receipt carries a JSON array of the created `IpView`s in `object`. The `count`
   is bound into the confirmation token (so a `count=3` plan cannot be replayed
   as `count=5`) and appears in the plan's fields diff when > 1.
-  - **Partial failure.** If the k-th `POST` fails (k > 0), the receipt is
-    returned with `partial: true`, `created_count: k`, and the k created IPs in
-    `object`, but the process exits 1 (the audit logs `outcome=partial`) so
-    scripts detect the incomplete allocation. A first-POST failure (k=0) is the
-    existing single-reserve error path (exit 1, empty stdout). This is an
-    `allocate`-specific outcome — `update` writes remain atomic single-`PATCH`.
+  - **Partial failure.** If the k-th `POST` fails after `k > 0` already
+    succeeded, the receipt is returned with `partial: true`, `created_count: k`,
+    the k created IPs in `object`, and `status` set to the *failing* `POST`'s
+    HTTP status (e.g. `409`, not the prior success's `201`); the process exits 1
+    (the audit logs `outcome=partial`) so scripts detect the incomplete
+    allocation. A first-`POST` failure (k=0, nothing created) is **not** a
+    partial receipt — it propagates as the plain single-reserve error (exit 1,
+    empty stdout). This is an `allocate`-specific outcome — `update` writes
+    remain atomic single-`PATCH`.
   - **Backward compatible.** `count=1` (the default) is byte-identical to the
     existing single-IP plan/receipt: `count`, `partial`, `requested_count`, and
     `created_count` use `skip_serializing_if` defaults so they're omitted when
