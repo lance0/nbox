@@ -1936,31 +1936,42 @@ async fn ip_bare_without_address_is_a_usage_error() {
 
 // ===== multi-IP ip reserve (--count N) (ADR-0001 follow-on) ================
 //
-// `ip reserve --count N` issues N sequential POSTs to the prefix's
-// `available-ips` endpoint. Each POST creates one IP. A mid-sequence failure
-// returns the k created IPs as a JSON array with `partial: true` and exit 1.
+// `ip reserve --count N` first attempts an atomic list-body POST (a single
+// request with a JSON array body) so NetBox creates all N or zero IPs in one
+// round-trip. Modern NetBox returns `201` with a JSON array of the created IPs.
+// Older NetBox that rejects the list shape (400/422) falls back to N sequential
+// single-object POSTs; a mid-sequence failure there returns the k created IPs
+// as a JSON array with `partial: true` and exit 1.
 
-/// Mount N sequential POST responses for multi-IP allocation.
-async fn mount_multi_ip_post(server: &MockServer, prefix_id: u64, addresses: &[&str]) {
-    for (i, addr) in addresses.iter().enumerate() {
-        Mock::given(method("POST"))
-            .and(path(format!(
-                "/api/ipam/prefixes/{prefix_id}/available-ips/"
-            )))
-            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+/// Mount one atomic list-body POST response: `201` with a JSON array of the N
+/// created IPs. The request body is a JSON array of N copies of the single-IP
+/// create body; this mock matches any POST to the endpoint (the body shape is
+/// asserted separately where relevant).
+async fn mount_atomic_multi_ip_post(server: &MockServer, prefix_id: u64, addresses: &[&str]) {
+    let results: Vec<Value> = addresses
+        .iter()
+        .enumerate()
+        .map(|(i, addr)| {
+            json!({
                 "id": 100 + i,
                 "url": format!("{}/api/ipam/ip-addresses/{}/", server.uri(), 100 + i),
                 "address": addr,
                 "status": {"value": "active", "label": "Active"},
-            })))
-            .up_to_n_times(1)
-            .mount(server)
-            .await;
-    }
+            })
+        })
+        .collect();
+    Mock::given(method("POST"))
+        .and(path(format!(
+            "/api/ipam/prefixes/{prefix_id}/available-ips/"
+        )))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!(results)))
+        .up_to_n_times(1)
+        .mount(server)
+        .await;
 }
 
 #[tokio::test]
-async fn ip_reserve_count_3_sends_three_posts_and_returns_array() {
+async fn ip_reserve_count_3_atomic_list_body_post_creates_all_in_one_request() {
     let server = MockServer::start().await;
     mount_prefix_resolution(&server, 1, "203.0.113.0/24").await;
     // Advisory: 3 available addresses.
@@ -1973,7 +1984,7 @@ async fn ip_reserve_count_3_sends_three_posts_and_returns_array() {
         ])))
         .mount(&server)
         .await;
-    mount_multi_ip_post(
+    mount_atomic_multi_ip_post(
         &server,
         1,
         &["203.0.113.5/24", "203.0.113.6/24", "203.0.113.7/24"],
@@ -1987,7 +1998,12 @@ async fn ip_reserve_count_3_sends_three_posts_and_returns_array() {
     );
 
     assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
-    assert_eq!(post_count(&server).await, 3, "exactly three POSTs");
+    // All-or-nothing: exactly ONE POST (the list-body request), not three.
+    assert_eq!(
+        post_count(&server).await,
+        1,
+        "atomic path: one list-body POST"
+    );
     let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
     assert_eq!(receipt["operation"], json!("allocate"));
     assert!(
@@ -2044,7 +2060,7 @@ async fn ip_reserve_count_3_dry_run_shows_count_in_fields_and_no_posts() {
 }
 
 #[tokio::test]
-async fn ip_reserve_count_3_partial_failure_returns_created_and_exit_1() {
+async fn ip_reserve_count_3_list_body_rejected_falls_back_to_sequential_partial() {
     let server = MockServer::start().await;
     mount_prefix_resolution(&server, 1, "203.0.113.0/24").await;
     // Advisory: 3 available.
@@ -2057,7 +2073,17 @@ async fn ip_reserve_count_3_partial_failure_returns_created_and_exit_1() {
         ])))
         .mount(&server)
         .await;
-    // First 2 POSTs succeed, 3rd fails with 409 (exhausted).
+    // The atomic list-body POST is rejected with 422 (list shape unsupported).
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/prefixes/1/available-ips/"))
+        .respond_with(
+            ResponseTemplate::new(422)
+                .set_body_json(json!({"non_field_errors": ["Expected a list but got an object."]})),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    // Sequential fallback: first 2 POSTs succeed, 3rd fails with 409.
     Mock::given(method("POST"))
         .and(path("/api/ipam/prefixes/1/available-ips/"))
         .respond_with(ResponseTemplate::new(201).set_body_json(json!({
@@ -2090,7 +2116,12 @@ async fn ip_reserve_count_3_partial_failure_returns_created_and_exit_1() {
 
     // Partial: exit 1, but stdout carries the receipt with 2 created IPs.
     assert_eq!(out.code, Some(1), "stderr: {}", out.stderr);
-    assert_eq!(post_count(&server).await, 3, "three POSTs attempted");
+    // 1 atomic attempt (422) + 3 sequential POSTs = 4 total.
+    assert_eq!(
+        post_count(&server).await,
+        4,
+        "1 atomic + 3 sequential POSTs"
+    );
     let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
     assert_eq!(receipt["partial"], json!(true));
     assert_eq!(receipt["status"], json!(409));
@@ -2170,6 +2201,119 @@ async fn ip_reserve_count_1_is_byte_identical_to_no_count() {
     assert!(
         !fields.iter().any(|f| f["field"] == "count"),
         "no count in fields"
+    );
+}
+
+#[tokio::test]
+async fn ip_reserve_count_1_apply_is_byte_identical_to_no_count() {
+    // --count 1 on the apply path: a single single-object POST (never the
+    // list-body atomic path), byte-identical receipt to no --count.
+    let server = MockServer::start().await;
+    mount_prefix_resolution(&server, 1, "203.0.113.0/24").await;
+    mount_available_ips_get(&server, 1, "203.0.113.5/24").await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/prefixes/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": 7,
+            "url": format!("{}/api/ipam/ip-addresses/7/", server.uri()),
+            "address": "203.0.113.5/24",
+            "status": {"value": "active", "label": "Active"},
+            "description": "edge uplink"
+        })))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out_no_count = run_ip_reserve(
+        &config,
+        &[
+            "--description",
+            "edge uplink",
+            "--allow-writes",
+            "--confirm",
+            "--json",
+        ],
+    );
+    let out_count_1 = run_ip_reserve(
+        &config,
+        &[
+            "--count",
+            "1",
+            "--description",
+            "edge uplink",
+            "--allow-writes",
+            "--confirm",
+            "--json",
+        ],
+    );
+
+    assert_eq!(
+        out_no_count.code,
+        Some(0),
+        "stderr: {}",
+        out_no_count.stderr
+    );
+    assert_eq!(out_count_1.code, Some(0), "stderr: {}", out_count_1.stderr);
+    // count==1 is a single single-object POST (NOT the list-body path).
+    assert_eq!(
+        post_count(&server).await,
+        2,
+        "two runs, one single POST each"
+    );
+    // The receipts are byte-identical: no partial, no requested/created count,
+    // same object and message.
+    let r_no: Value = serde_json::from_str(&out_no_count.stdout).expect("receipt");
+    let r_1: Value = serde_json::from_str(&out_count_1.stdout).expect("receipt");
+    assert!(r_no.get("partial").is_none(), "no partial for count==1");
+    assert!(r_1.get("partial").is_none(), "no partial for count==1");
+    assert!(r_no.get("requested_count").is_none());
+    assert!(r_1.get("requested_count").is_none());
+    assert_eq!(r_no, r_1, "count==1 receipt byte-identical to no-count");
+}
+
+#[tokio::test]
+async fn ip_reserve_count_3_atomic_409_is_plain_error_no_orphans() {
+    // A 409 on the atomic list-body POST is NOT a list-shape rejection — it
+    // means the prefix is exhausted. The atomic path creates zero IPs, so the
+    // error propagates as a plain exit-1 error with clean stdout (no fallback,
+    // no partial receipt, no orphan IPs).
+    let server = MockServer::start().await;
+    mount_prefix_resolution(&server, 1, "203.0.113.0/24").await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"address": "203.0.113.5/24"},
+            {"address": "203.0.113.6/24"},
+            {"address": "203.0.113.7/24"}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/prefixes/1/available-ips/"))
+        .respond_with(
+            ResponseTemplate::new(409)
+                .set_body_string("The requested number of IP addresses is not available"),
+        )
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_ip_reserve(
+        &config,
+        &["--count", "3", "--allow-writes", "--confirm", "--json"],
+    );
+
+    // 409 propagates from the atomic attempt; no fallback, one POST total.
+    assert_error_contract(&out, 1, "HTTP 409");
+    assert_eq!(
+        post_count(&server).await,
+        1,
+        "atomic 409: one POST, no fallback"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "no receipt on atomic 409: {:?}",
+        out.stdout
     );
 }
 
@@ -2662,9 +2806,43 @@ async fn ip_range_reserve_audit_logs_names_only_never_values_token_or_message_bo
 }
 
 // ===== multi-IP ip-range reserve (--count N) (ADR-0001 follow-on) ============
+//
+// `ip-range reserve --count N` first attempts an atomic list-body POST (a
+// single request with a JSON array body) so NetBox creates all N or zero IPs
+// in one round-trip. Older NetBox that rejects the list shape (400/422) falls
+// back to N sequential single-object POSTs.
+
+/// Mount one atomic list-body POST response for an ip-range: `201` with a JSON
+/// array of the N created IPs.
+async fn mount_atomic_ip_range_multi_ip_post(
+    server: &MockServer,
+    range_id: u64,
+    addresses: &[&str],
+) {
+    let results: Vec<Value> = addresses
+        .iter()
+        .enumerate()
+        .map(|(i, addr)| {
+            json!({
+                "id": 100 + i,
+                "url": format!("{}/api/ipam/ip-addresses/{}/", server.uri(), 100 + i),
+                "address": addr,
+                "status": {"value": "active", "label": "Active"},
+            })
+        })
+        .collect();
+    Mock::given(method("POST"))
+        .and(path(format!(
+            "/api/ipam/ip-ranges/{range_id}/available-ips/"
+        )))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!(results)))
+        .up_to_n_times(1)
+        .mount(server)
+        .await;
+}
 
 #[tokio::test]
-async fn ip_range_reserve_count_2_sends_two_posts_and_returns_array() {
+async fn ip_range_reserve_count_2_atomic_list_body_post_creates_both_in_one_request() {
     let server = MockServer::start().await;
     mount_ip_range_resolution(&server, 1, "10.0.0.10", "10.0.0.20").await;
     // Advisory: 2 available addresses.
@@ -2676,25 +2854,8 @@ async fn ip_range_reserve_count_2_sends_two_posts_and_returns_array() {
         ])))
         .mount(&server)
         .await;
-    // Two POST responses.
-    Mock::given(method("POST"))
-        .and(path("/api/ipam/ip-ranges/1/available-ips/"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
-            "id": 100, "url": "u", "address": "10.0.0.10/32",
-            "status": {"value": "active", "label": "Active"}
-        })))
-        .up_to_n_times(1)
-        .mount(&server)
-        .await;
-    Mock::given(method("POST"))
-        .and(path("/api/ipam/ip-ranges/1/available-ips/"))
-        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
-            "id": 101, "url": "u", "address": "10.0.0.11/32",
-            "status": {"value": "active", "label": "Active"}
-        })))
-        .up_to_n_times(1)
-        .mount(&server)
-        .await;
+    // One atomic list-body POST returns a JSON array of both created IPs.
+    mount_atomic_ip_range_multi_ip_post(&server, 1, &["10.0.0.10/32", "10.0.0.11/32"]).await;
 
     let config = write_config(&server.uri());
     let out = run_ip_range_reserve(
@@ -2703,7 +2864,12 @@ async fn ip_range_reserve_count_2_sends_two_posts_and_returns_array() {
     );
 
     assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
-    assert_eq!(post_count(&server).await, 2, "exactly two POSTs");
+    // All-or-nothing: exactly ONE POST (the list-body request), not two.
+    assert_eq!(
+        post_count(&server).await,
+        1,
+        "atomic path: one list-body POST"
+    );
     let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
     assert!(
         receipt.get("partial").is_none(),
@@ -2747,7 +2913,7 @@ async fn ip_range_reserve_count_2_dry_run_shows_count_in_fields() {
 }
 
 #[tokio::test]
-async fn ip_range_reserve_count_2_partial_failure_returns_created_and_exit_1() {
+async fn ip_range_reserve_count_2_list_body_rejected_falls_back_to_sequential_partial() {
     let server = MockServer::start().await;
     mount_ip_range_resolution(&server, 1, "10.0.0.10", "10.0.0.20").await;
     Mock::given(method("GET"))
@@ -2758,7 +2924,17 @@ async fn ip_range_reserve_count_2_partial_failure_returns_created_and_exit_1() {
         ])))
         .mount(&server)
         .await;
-    // First POST succeeds, second fails with 409.
+    // The atomic list-body POST is rejected with 400 (list shape unsupported).
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/ip-ranges/1/available-ips/"))
+        .respond_with(
+            ResponseTemplate::new(400)
+                .set_body_json(json!({"non_field_errors": ["Invalid input. Expected a list."]})),
+        )
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    // Sequential fallback: first POST succeeds, second fails with 409.
     Mock::given(method("POST"))
         .and(path("/api/ipam/ip-ranges/1/available-ips/"))
         .respond_with(ResponseTemplate::new(201).set_body_json(json!({
@@ -2781,7 +2957,12 @@ async fn ip_range_reserve_count_2_partial_failure_returns_created_and_exit_1() {
     );
 
     assert_eq!(out.code, Some(1), "stderr: {}", out.stderr);
-    assert_eq!(post_count(&server).await, 2, "two POSTs attempted");
+    // 1 atomic attempt (400) + 2 sequential POSTs = 3 total.
+    assert_eq!(
+        post_count(&server).await,
+        3,
+        "1 atomic + 2 sequential POSTs"
+    );
     let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
     assert_eq!(receipt["partial"], json!(true));
     assert_eq!(receipt["status"], json!(409));
@@ -2821,6 +3002,47 @@ async fn ip_range_reserve_count_2_first_post_failure_is_plain_error_with_empty_s
         post_count(&server).await,
         1,
         "first POST failure stops immediately"
+    );
+}
+
+#[tokio::test]
+async fn ip_range_reserve_count_2_atomic_409_is_plain_error_no_orphans() {
+    // A 409 on the atomic list-body POST is NOT a list-shape rejection — it
+    // means the range is exhausted. The atomic path creates zero IPs, so the
+    // error propagates as a plain exit-1 error with clean stdout (no fallback,
+    // no partial receipt, no orphan IPs).
+    let server = MockServer::start().await;
+    mount_ip_range_resolution(&server, 1, "10.0.0.10", "10.0.0.20").await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/ip-ranges/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"address": "10.0.0.10/32"},
+            {"address": "10.0.0.11/32"}
+        ])))
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/ip-ranges/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(409).set_body_string("Insufficient space in range"))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_ip_range_reserve(
+        &config,
+        &["--count", "2", "--allow-writes", "--confirm", "--json"],
+    );
+
+    assert_error_contract(&out, 1, "HTTP 409");
+    assert_eq!(
+        post_count(&server).await,
+        1,
+        "atomic 409: one POST, no fallback"
+    );
+    assert!(
+        out.stdout.is_empty(),
+        "no receipt on atomic 409: {:?}",
+        out.stdout
     );
 }
 

@@ -148,6 +148,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     allocation. The audit log records `outcome=partial`. A first-`POST` failure
     (k=0, nothing created) is not a partial receipt: it propagates as the plain
     single-reserve error (exit 1, empty stdout).
+  - **Atomic multi-IP (list-body POST).** `count > 1` first attempts a single
+    list-body `POST` (`[body, body, …]` — N copies of the single-IP create
+    body) so NetBox creates all N or zero IPs in one round-trip; on success the
+    receipt is `partial: false` with all N `IpView`s. Older NetBox that rejects
+    the list shape (HTTP 400/422) falls back to the N sequential `POST`s above
+    (which may still yield `partial: true`). Other atomic-path failures (409
+    exhaustion, 401/403, 412, network) propagate as a plain exit-1 error — no
+    fallback, no orphan IPs, since the list-body request creates zero on
+    rejection. `count == 1` is unchanged (single-object `POST`, byte-identical
+    receipt).
   - **Backward compatible.** `count=1` (the default) is byte-identical to the
     existing single-IP plan/receipt — `count`, `partial`, `requested_count`, and
     `created_count` use `skip_serializing_if` defaults so they're omitted when
