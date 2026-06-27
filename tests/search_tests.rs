@@ -1,9 +1,14 @@
 //! Integration tests for the multi-endpoint search fan-out.
 
+mod support;
 use nbox::config::ProfileConfig;
 use nbox::netbox::client::NetBoxClient;
 use nbox::netbox::search::{ObjectKind, SearchFilters, SearchRequest};
 use serde_json::json;
+use support::netbox::{
+    empty_page, mount_empty_list, nb_circuit, nb_device, nb_ip, nb_prefix, nb_rack, nb_site,
+    nb_tenant, nb_vlan, nb_vrf, page,
+};
 use wiremock::matchers::{method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
@@ -15,18 +20,6 @@ fn client(server: &MockServer) -> NetBoxClient {
     NetBoxClient::new(&profile, None).unwrap()
 }
 
-fn empty() -> serde_json::Value {
-    json!({ "count": 0, "next": null, "previous": null, "results": [] })
-}
-
-async fn mount_empty(server: &MockServer, p: &str) {
-    Mock::given(method("GET"))
-        .and(path(p))
-        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
-        .mount(server)
-        .await;
-}
-
 #[tokio::test]
 async fn search_merges_ranks_and_dedups_across_endpoints() {
     let server = MockServer::start().await;
@@ -34,42 +27,39 @@ async fn search_merges_ranks_and_dedups_across_endpoints() {
     // Devices: one exact-ish hit.
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 1, "url": "http://nb/api/dcim/devices/1/", "name": "edge01",
-                "site": {"id": 9, "display": "iad1"}
-            }]
-        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(page(vec![nb_device(1, "edge01").site(9, "iad1").build()])),
+        )
         .mount(&server)
         .await;
     // VLAN whose name contains the query (lower score than the exact device).
     Mock::given(method("GET"))
         .and(path("/api/ipam/vlans/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{"id": 5, "url": "http://nb/api/ipam/vlans/5/", "vid": 10, "name": "edge01-transit"}]
-        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(page(vec![nb_vlan(5, 10, "edge01-transit").build()])),
+        )
         .mount(&server)
         .await;
-    mount_empty(&server, "/api/dcim/sites/").await;
-    mount_empty(&server, "/api/ipam/ip-addresses/").await;
-    mount_empty(&server, "/api/ipam/prefixes/").await;
-    mount_empty(&server, "/api/circuits/circuits/").await;
-    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
-    mount_empty(&server, "/api/ipam/aggregates/").await;
-    mount_empty(&server, "/api/ipam/asns/").await;
-    mount_empty(&server, "/api/ipam/ip-ranges/").await;
-    mount_empty(&server, "/api/tenancy/tenants/").await;
-    mount_empty(&server, "/api/tenancy/contacts/").await;
-    mount_empty(&server, "/api/circuits/providers/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machines/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machine-types/").await;
-    mount_empty(&server, "/api/virtualization/clusters/").await;
-    mount_empty(&server, "/api/dcim/racks/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/dcim/sites/").await;
+    mount_empty_list(&server, "/api/ipam/ip-addresses/").await;
+    mount_empty_list(&server, "/api/ipam/prefixes/").await;
+    mount_empty_list(&server, "/api/circuits/circuits/").await;
+    mount_empty_list(&server, "/api/circuits/virtual-circuits/").await;
+    mount_empty_list(&server, "/api/ipam/aggregates/").await;
+    mount_empty_list(&server, "/api/ipam/asns/").await;
+    mount_empty_list(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty_list(&server, "/api/tenancy/tenants/").await;
+    mount_empty_list(&server, "/api/tenancy/contacts/").await;
+    mount_empty_list(&server, "/api/circuits/providers/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machines/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machine-types/").await;
+    mount_empty_list(&server, "/api/virtualization/clusters/").await;
+    mount_empty_list(&server, "/api/dcim/racks/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -97,35 +87,32 @@ async fn search_truncates_to_limit() {
     let server = MockServer::start().await;
     Mock::given(method("GET"))
         .and(path("/api/dcim/sites/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 3, "next": null, "previous": null,
-            "results": [
-                {"id": 1, "url": "http://nb/api/dcim/sites/1/", "name": "site-a", "slug": "site-a"},
-                {"id": 2, "url": "http://nb/api/dcim/sites/2/", "name": "site-b", "slug": "site-b"},
-                {"id": 3, "url": "http://nb/api/dcim/sites/3/", "name": "site-c", "slug": "site-c"}
-            ]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            nb_site(1, "site-a", "site-a").build(),
+            nb_site(2, "site-b", "site-b").build(),
+            nb_site(3, "site-c", "site-c").build(),
+        ])))
         .mount(&server)
         .await;
-    mount_empty(&server, "/api/dcim/devices/").await;
-    mount_empty(&server, "/api/ipam/ip-addresses/").await;
-    mount_empty(&server, "/api/ipam/prefixes/").await;
-    mount_empty(&server, "/api/ipam/vlans/").await;
-    mount_empty(&server, "/api/circuits/circuits/").await;
-    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
-    mount_empty(&server, "/api/ipam/aggregates/").await;
-    mount_empty(&server, "/api/ipam/asns/").await;
-    mount_empty(&server, "/api/ipam/ip-ranges/").await;
-    mount_empty(&server, "/api/tenancy/tenants/").await;
-    mount_empty(&server, "/api/tenancy/contacts/").await;
-    mount_empty(&server, "/api/circuits/providers/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machines/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machine-types/").await;
-    mount_empty(&server, "/api/virtualization/clusters/").await;
-    mount_empty(&server, "/api/dcim/racks/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/dcim/devices/").await;
+    mount_empty_list(&server, "/api/ipam/ip-addresses/").await;
+    mount_empty_list(&server, "/api/ipam/prefixes/").await;
+    mount_empty_list(&server, "/api/ipam/vlans/").await;
+    mount_empty_list(&server, "/api/circuits/circuits/").await;
+    mount_empty_list(&server, "/api/circuits/virtual-circuits/").await;
+    mount_empty_list(&server, "/api/ipam/aggregates/").await;
+    mount_empty_list(&server, "/api/ipam/asns/").await;
+    mount_empty_list(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty_list(&server, "/api/tenancy/tenants/").await;
+    mount_empty_list(&server, "/api/tenancy/contacts/").await;
+    mount_empty_list(&server, "/api/circuits/providers/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machines/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machine-types/").await;
+    mount_empty_list(&server, "/api/virtualization/clusters/").await;
+    mount_empty_list(&server, "/api/dcim/racks/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -145,10 +132,9 @@ async fn search_reports_partial_endpoint_failures() {
     // Devices succeed; sites return a 403; the rest are empty.
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{"id": 1, "url": "http://nb/api/dcim/devices/1/", "name": "edge01"}]
-        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(page(vec![nb_device(1, "edge01").build()])),
+        )
         .mount(&server)
         .await;
     Mock::given(method("GET"))
@@ -156,24 +142,24 @@ async fn search_reports_partial_endpoint_failures() {
         .respond_with(ResponseTemplate::new(403).set_body_string("Forbidden"))
         .mount(&server)
         .await;
-    mount_empty(&server, "/api/ipam/ip-addresses/").await;
-    mount_empty(&server, "/api/ipam/prefixes/").await;
-    mount_empty(&server, "/api/ipam/vlans/").await;
-    mount_empty(&server, "/api/circuits/circuits/").await;
-    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
-    mount_empty(&server, "/api/ipam/aggregates/").await;
-    mount_empty(&server, "/api/ipam/asns/").await;
-    mount_empty(&server, "/api/ipam/ip-ranges/").await;
-    mount_empty(&server, "/api/tenancy/tenants/").await;
-    mount_empty(&server, "/api/tenancy/contacts/").await;
-    mount_empty(&server, "/api/circuits/providers/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machines/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machine-types/").await;
-    mount_empty(&server, "/api/virtualization/clusters/").await;
-    mount_empty(&server, "/api/dcim/racks/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/ipam/ip-addresses/").await;
+    mount_empty_list(&server, "/api/ipam/prefixes/").await;
+    mount_empty_list(&server, "/api/ipam/vlans/").await;
+    mount_empty_list(&server, "/api/circuits/circuits/").await;
+    mount_empty_list(&server, "/api/circuits/virtual-circuits/").await;
+    mount_empty_list(&server, "/api/ipam/aggregates/").await;
+    mount_empty_list(&server, "/api/ipam/asns/").await;
+    mount_empty_list(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty_list(&server, "/api/tenancy/tenants/").await;
+    mount_empty_list(&server, "/api/tenancy/contacts/").await;
+    mount_empty_list(&server, "/api/circuits/providers/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machines/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machine-types/").await;
+    mount_empty_list(&server, "/api/virtualization/clusters/").await;
+    mount_empty_list(&server, "/api/dcim/racks/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -199,63 +185,50 @@ async fn search_surfaces_circuits_aggregates_asns_and_ip_ranges() {
 
     Mock::given(method("GET"))
         .and(path("/api/circuits/circuits/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 1, "url": "http://nb/api/circuits/circuits/1/", "cid": "edge-wan-1",
-                "provider": {"id": 7, "display": "ACME"}
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            nb_circuit(1, "edge-wan-1").provider(7, "ACME").build(),
+        ])))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/ipam/aggregates/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 2, "url": "http://nb/api/ipam/aggregates/2/", "prefix": "10.0.0.0/8",
-                "rir": {"id": 3, "display": "RFC 1918"}
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            json!({"id": 2, "url": "http://nb/api/ipam/aggregates/2/", "prefix": "10.0.0.0/8",
+                   "rir": {"id": 3, "display": "RFC 1918"}}),
+        ])))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/ipam/asns/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 3, "url": "http://nb/api/ipam/asns/3/", "asn": 64512,
-                "rir": {"id": 3, "display": "RFC 6996"}
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            json!({"id": 3, "url": "http://nb/api/ipam/asns/3/", "asn": 64512,
+                   "rir": {"id": 3, "display": "RFC 6996"}}),
+        ])))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/ipam/ip-ranges/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 4, "url": "http://nb/api/ipam/ip-ranges/4/",
-                "start_address": "10.0.0.10/24", "end_address": "10.0.0.20/24"
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            json!({"id": 4, "url": "http://nb/api/ipam/ip-ranges/4/",
+                   "start_address": "10.0.0.10/24", "end_address": "10.0.0.20/24"}),
+        ])))
         .mount(&server)
         .await;
-    mount_empty(&server, "/api/dcim/devices/").await;
-    mount_empty(&server, "/api/dcim/sites/").await;
-    mount_empty(&server, "/api/ipam/ip-addresses/").await;
-    mount_empty(&server, "/api/ipam/prefixes/").await;
-    mount_empty(&server, "/api/ipam/vlans/").await;
-    mount_empty(&server, "/api/tenancy/tenants/").await;
-    mount_empty(&server, "/api/tenancy/contacts/").await;
-    mount_empty(&server, "/api/circuits/providers/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machines/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machine-types/").await;
-    mount_empty(&server, "/api/virtualization/clusters/").await;
-    mount_empty(&server, "/api/dcim/racks/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/dcim/devices/").await;
+    mount_empty_list(&server, "/api/dcim/sites/").await;
+    mount_empty_list(&server, "/api/ipam/ip-addresses/").await;
+    mount_empty_list(&server, "/api/ipam/prefixes/").await;
+    mount_empty_list(&server, "/api/ipam/vlans/").await;
+    mount_empty_list(&server, "/api/tenancy/tenants/").await;
+    mount_empty_list(&server, "/api/tenancy/contacts/").await;
+    mount_empty_list(&server, "/api/circuits/providers/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machines/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machine-types/").await;
+    mount_empty_list(&server, "/api/virtualization/clusters/").await;
+    mount_empty_list(&server, "/api/dcim/racks/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -297,45 +270,37 @@ async fn search_surfaces_tenants_and_contacts() {
 
     Mock::given(method("GET"))
         .and(path("/api/tenancy/tenants/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 1, "url": "http://nb/api/tenancy/tenants/1/",
-                "name": "Acme Corp", "slug": "acme",
-                "group": {"id": 5, "display": "Customers"}
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            nb_tenant(1, "Acme Corp", "acme").group(5, "Customers").build(),
+        ])))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/tenancy/contacts/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 2, "url": "http://nb/api/tenancy/contacts/2/",
-                "name": "Acme NOC", "email": "noc@acme.example"
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            json!({"id": 2, "url": "http://nb/api/tenancy/contacts/2/",
+                   "name": "Acme NOC", "email": "noc@acme.example"}),
+        ])))
         .mount(&server)
         .await;
-    mount_empty(&server, "/api/dcim/devices/").await;
-    mount_empty(&server, "/api/dcim/sites/").await;
-    mount_empty(&server, "/api/ipam/ip-addresses/").await;
-    mount_empty(&server, "/api/ipam/prefixes/").await;
-    mount_empty(&server, "/api/ipam/vlans/").await;
-    mount_empty(&server, "/api/circuits/circuits/").await;
-    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
-    mount_empty(&server, "/api/ipam/aggregates/").await;
-    mount_empty(&server, "/api/ipam/asns/").await;
-    mount_empty(&server, "/api/ipam/ip-ranges/").await;
-    mount_empty(&server, "/api/circuits/providers/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machines/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machine-types/").await;
-    mount_empty(&server, "/api/virtualization/clusters/").await;
-    mount_empty(&server, "/api/dcim/racks/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/dcim/devices/").await;
+    mount_empty_list(&server, "/api/dcim/sites/").await;
+    mount_empty_list(&server, "/api/ipam/ip-addresses/").await;
+    mount_empty_list(&server, "/api/ipam/prefixes/").await;
+    mount_empty_list(&server, "/api/ipam/vlans/").await;
+    mount_empty_list(&server, "/api/circuits/circuits/").await;
+    mount_empty_list(&server, "/api/circuits/virtual-circuits/").await;
+    mount_empty_list(&server, "/api/ipam/aggregates/").await;
+    mount_empty_list(&server, "/api/ipam/asns/").await;
+    mount_empty_list(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty_list(&server, "/api/circuits/providers/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machines/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machine-types/").await;
+    mount_empty_list(&server, "/api/virtualization/clusters/").await;
+    mount_empty_list(&server, "/api/dcim/racks/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -375,35 +340,32 @@ async fn search_surfaces_providers() {
 
     Mock::given(method("GET"))
         .and(path("/api/circuits/providers/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 1, "url": "http://nb/api/circuits/providers/1/",
-                "name": "ACME Telecom", "slug": "acme-telecom",
-                "asns": [{"id": 5, "url": "u", "asn": 64512}]
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            json!({"id": 1, "url": "http://nb/api/circuits/providers/1/",
+                   "name": "ACME Telecom", "slug": "acme-telecom",
+                   "asns": [{"id": 5, "url": "u", "asn": 64512}]}),
+        ])))
         .mount(&server)
         .await;
-    mount_empty(&server, "/api/dcim/devices/").await;
-    mount_empty(&server, "/api/dcim/sites/").await;
-    mount_empty(&server, "/api/ipam/ip-addresses/").await;
-    mount_empty(&server, "/api/ipam/prefixes/").await;
-    mount_empty(&server, "/api/ipam/vlans/").await;
-    mount_empty(&server, "/api/circuits/circuits/").await;
-    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
-    mount_empty(&server, "/api/ipam/aggregates/").await;
-    mount_empty(&server, "/api/ipam/asns/").await;
-    mount_empty(&server, "/api/ipam/ip-ranges/").await;
-    mount_empty(&server, "/api/tenancy/tenants/").await;
-    mount_empty(&server, "/api/tenancy/contacts/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machines/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machine-types/").await;
-    mount_empty(&server, "/api/virtualization/clusters/").await;
-    mount_empty(&server, "/api/dcim/racks/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/dcim/devices/").await;
+    mount_empty_list(&server, "/api/dcim/sites/").await;
+    mount_empty_list(&server, "/api/ipam/ip-addresses/").await;
+    mount_empty_list(&server, "/api/ipam/prefixes/").await;
+    mount_empty_list(&server, "/api/ipam/vlans/").await;
+    mount_empty_list(&server, "/api/circuits/circuits/").await;
+    mount_empty_list(&server, "/api/circuits/virtual-circuits/").await;
+    mount_empty_list(&server, "/api/ipam/aggregates/").await;
+    mount_empty_list(&server, "/api/ipam/asns/").await;
+    mount_empty_list(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty_list(&server, "/api/tenancy/tenants/").await;
+    mount_empty_list(&server, "/api/tenancy/contacts/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machines/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machine-types/").await;
+    mount_empty_list(&server, "/api/virtualization/clusters/").await;
+    mount_empty_list(&server, "/api/dcim/racks/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -432,46 +394,38 @@ async fn search_surfaces_vms_and_clusters() {
 
     Mock::given(method("GET"))
         .and(path("/api/virtualization/virtual-machines/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 1, "url": "http://nb/api/virtualization/virtual-machines/1/",
-                "name": "prod-web-01",
-                "cluster": {"id": 5, "display": "prod"}
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            json!({"id": 1, "url": "http://nb/api/virtualization/virtual-machines/1/",
+                   "name": "prod-web-01", "cluster": {"id": 5, "display": "prod"}}),
+        ])))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/virtualization/clusters/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 2, "url": "http://nb/api/virtualization/clusters/2/",
-                "name": "prod",
-                "type": {"id": 1, "display": "VMware"}
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            json!({"id": 2, "url": "http://nb/api/virtualization/clusters/2/",
+                   "name": "prod", "type": {"id": 1, "display": "VMware"}}),
+        ])))
         .mount(&server)
         .await;
-    mount_empty(&server, "/api/dcim/devices/").await;
-    mount_empty(&server, "/api/dcim/sites/").await;
-    mount_empty(&server, "/api/ipam/ip-addresses/").await;
-    mount_empty(&server, "/api/ipam/prefixes/").await;
-    mount_empty(&server, "/api/ipam/vlans/").await;
-    mount_empty(&server, "/api/circuits/circuits/").await;
-    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
-    mount_empty(&server, "/api/ipam/aggregates/").await;
-    mount_empty(&server, "/api/ipam/asns/").await;
-    mount_empty(&server, "/api/ipam/ip-ranges/").await;
-    mount_empty(&server, "/api/tenancy/tenants/").await;
-    mount_empty(&server, "/api/tenancy/contacts/").await;
-    mount_empty(&server, "/api/circuits/providers/").await;
-    mount_empty(&server, "/api/dcim/racks/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machine-types/").await;
+    mount_empty_list(&server, "/api/dcim/devices/").await;
+    mount_empty_list(&server, "/api/dcim/sites/").await;
+    mount_empty_list(&server, "/api/ipam/ip-addresses/").await;
+    mount_empty_list(&server, "/api/ipam/prefixes/").await;
+    mount_empty_list(&server, "/api/ipam/vlans/").await;
+    mount_empty_list(&server, "/api/circuits/circuits/").await;
+    mount_empty_list(&server, "/api/circuits/virtual-circuits/").await;
+    mount_empty_list(&server, "/api/ipam/aggregates/").await;
+    mount_empty_list(&server, "/api/ipam/asns/").await;
+    mount_empty_list(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty_list(&server, "/api/tenancy/tenants/").await;
+    mount_empty_list(&server, "/api/tenancy/contacts/").await;
+    mount_empty_list(&server, "/api/circuits/providers/").await;
+    mount_empty_list(&server, "/api/dcim/racks/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machine-types/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -510,34 +464,31 @@ async fn search_surfaces_racks() {
 
     Mock::given(method("GET"))
         .and(path("/api/dcim/racks/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 3, "url": "http://nb/api/dcim/racks/3/", "name": "R1-42",
-                "site": {"id": 1, "display": "den1"}
-            }]
-        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(page(vec![nb_rack(3, "R1-42").site(1, "den1").build()])),
+        )
         .mount(&server)
         .await;
-    mount_empty(&server, "/api/dcim/devices/").await;
-    mount_empty(&server, "/api/dcim/sites/").await;
-    mount_empty(&server, "/api/ipam/ip-addresses/").await;
-    mount_empty(&server, "/api/ipam/prefixes/").await;
-    mount_empty(&server, "/api/ipam/vlans/").await;
-    mount_empty(&server, "/api/circuits/circuits/").await;
-    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
-    mount_empty(&server, "/api/ipam/aggregates/").await;
-    mount_empty(&server, "/api/ipam/asns/").await;
-    mount_empty(&server, "/api/ipam/ip-ranges/").await;
-    mount_empty(&server, "/api/tenancy/tenants/").await;
-    mount_empty(&server, "/api/tenancy/contacts/").await;
-    mount_empty(&server, "/api/circuits/providers/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machines/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machine-types/").await;
-    mount_empty(&server, "/api/virtualization/clusters/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/dcim/devices/").await;
+    mount_empty_list(&server, "/api/dcim/sites/").await;
+    mount_empty_list(&server, "/api/ipam/ip-addresses/").await;
+    mount_empty_list(&server, "/api/ipam/prefixes/").await;
+    mount_empty_list(&server, "/api/ipam/vlans/").await;
+    mount_empty_list(&server, "/api/circuits/circuits/").await;
+    mount_empty_list(&server, "/api/circuits/virtual-circuits/").await;
+    mount_empty_list(&server, "/api/ipam/aggregates/").await;
+    mount_empty_list(&server, "/api/ipam/asns/").await;
+    mount_empty_list(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty_list(&server, "/api/tenancy/tenants/").await;
+    mount_empty_list(&server, "/api/tenancy/contacts/").await;
+    mount_empty_list(&server, "/api/circuits/providers/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machines/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machine-types/").await;
+    mount_empty_list(&server, "/api/virtualization/clusters/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -567,35 +518,30 @@ async fn search_surfaces_vrfs() {
 
     Mock::given(method("GET"))
         .and(path("/api/ipam/vrfs/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 4, "url": "http://nb/api/ipam/vrfs/4/", "name": "customer-prod",
-                "rd": "65000:100",
-                "tenant": {"id": 1, "display": "Acme Corp"}
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            nb_vrf(4, "customer-prod", "65000:100").tenant(1, "Acme Corp").build(),
+        ])))
         .mount(&server)
         .await;
-    mount_empty(&server, "/api/dcim/devices/").await;
-    mount_empty(&server, "/api/dcim/sites/").await;
-    mount_empty(&server, "/api/ipam/ip-addresses/").await;
-    mount_empty(&server, "/api/ipam/prefixes/").await;
-    mount_empty(&server, "/api/ipam/vlans/").await;
-    mount_empty(&server, "/api/circuits/circuits/").await;
-    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
-    mount_empty(&server, "/api/ipam/aggregates/").await;
-    mount_empty(&server, "/api/ipam/asns/").await;
-    mount_empty(&server, "/api/ipam/ip-ranges/").await;
-    mount_empty(&server, "/api/tenancy/tenants/").await;
-    mount_empty(&server, "/api/tenancy/contacts/").await;
-    mount_empty(&server, "/api/circuits/providers/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machines/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machine-types/").await;
-    mount_empty(&server, "/api/virtualization/clusters/").await;
-    mount_empty(&server, "/api/dcim/racks/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/dcim/devices/").await;
+    mount_empty_list(&server, "/api/dcim/sites/").await;
+    mount_empty_list(&server, "/api/ipam/ip-addresses/").await;
+    mount_empty_list(&server, "/api/ipam/prefixes/").await;
+    mount_empty_list(&server, "/api/ipam/vlans/").await;
+    mount_empty_list(&server, "/api/circuits/circuits/").await;
+    mount_empty_list(&server, "/api/circuits/virtual-circuits/").await;
+    mount_empty_list(&server, "/api/ipam/aggregates/").await;
+    mount_empty_list(&server, "/api/ipam/asns/").await;
+    mount_empty_list(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty_list(&server, "/api/tenancy/tenants/").await;
+    mount_empty_list(&server, "/api/tenancy/contacts/").await;
+    mount_empty_list(&server, "/api/circuits/providers/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machines/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machine-types/").await;
+    mount_empty_list(&server, "/api/virtualization/clusters/").await;
+    mount_empty_list(&server, "/api/dcim/racks/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -625,34 +571,31 @@ async fn search_surfaces_route_targets() {
 
     Mock::given(method("GET"))
         .and(path("/api/ipam/route-targets/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 7, "url": "http://nb/api/ipam/route-targets/7/", "name": "65000:100",
-                "tenant": {"id": 1, "display": "Acme Corp"}
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            json!({"id": 7, "url": "http://nb/api/ipam/route-targets/7/", "name": "65000:100",
+                   "tenant": {"id": 1, "display": "Acme Corp"}}),
+        ])))
         .mount(&server)
         .await;
-    mount_empty(&server, "/api/dcim/devices/").await;
-    mount_empty(&server, "/api/dcim/sites/").await;
-    mount_empty(&server, "/api/ipam/ip-addresses/").await;
-    mount_empty(&server, "/api/ipam/prefixes/").await;
-    mount_empty(&server, "/api/ipam/vlans/").await;
-    mount_empty(&server, "/api/circuits/circuits/").await;
-    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
-    mount_empty(&server, "/api/ipam/aggregates/").await;
-    mount_empty(&server, "/api/ipam/asns/").await;
-    mount_empty(&server, "/api/ipam/ip-ranges/").await;
-    mount_empty(&server, "/api/tenancy/tenants/").await;
-    mount_empty(&server, "/api/tenancy/contacts/").await;
-    mount_empty(&server, "/api/circuits/providers/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machines/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machine-types/").await;
-    mount_empty(&server, "/api/virtualization/clusters/").await;
-    mount_empty(&server, "/api/dcim/racks/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/dcim/devices/").await;
+    mount_empty_list(&server, "/api/dcim/sites/").await;
+    mount_empty_list(&server, "/api/ipam/ip-addresses/").await;
+    mount_empty_list(&server, "/api/ipam/prefixes/").await;
+    mount_empty_list(&server, "/api/ipam/vlans/").await;
+    mount_empty_list(&server, "/api/circuits/circuits/").await;
+    mount_empty_list(&server, "/api/circuits/virtual-circuits/").await;
+    mount_empty_list(&server, "/api/ipam/aggregates/").await;
+    mount_empty_list(&server, "/api/ipam/asns/").await;
+    mount_empty_list(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty_list(&server, "/api/tenancy/tenants/").await;
+    mount_empty_list(&server, "/api/tenancy/contacts/").await;
+    mount_empty_list(&server, "/api/circuits/providers/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machines/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machine-types/").await;
+    mount_empty_list(&server, "/api/virtualization/clusters/").await;
+    mount_empty_list(&server, "/api/dcim/racks/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -685,29 +628,29 @@ async fn search_matches_asn_by_number() {
         .and(wiremock::matchers::query_param("asn", "64512"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "count": 1, "next": null, "previous": null,
-            "results": [{"id": 3, "url": "http://nb/api/ipam/asns/3/", "asn": 64512}]
+            "results": [json!({"id": 3, "url": "http://nb/api/ipam/asns/3/", "asn": 64512})]
         })))
         .mount(&server)
         .await;
-    mount_empty(&server, "/api/dcim/devices/").await;
-    mount_empty(&server, "/api/dcim/sites/").await;
-    mount_empty(&server, "/api/ipam/ip-addresses/").await;
-    mount_empty(&server, "/api/ipam/prefixes/").await;
-    mount_empty(&server, "/api/ipam/vlans/").await;
-    mount_empty(&server, "/api/circuits/circuits/").await;
-    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
-    mount_empty(&server, "/api/ipam/aggregates/").await;
-    mount_empty(&server, "/api/ipam/ip-ranges/").await;
-    mount_empty(&server, "/api/tenancy/tenants/").await;
-    mount_empty(&server, "/api/tenancy/contacts/").await;
-    mount_empty(&server, "/api/circuits/providers/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machines/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machine-types/").await;
-    mount_empty(&server, "/api/virtualization/clusters/").await;
-    mount_empty(&server, "/api/dcim/racks/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/dcim/devices/").await;
+    mount_empty_list(&server, "/api/dcim/sites/").await;
+    mount_empty_list(&server, "/api/ipam/ip-addresses/").await;
+    mount_empty_list(&server, "/api/ipam/prefixes/").await;
+    mount_empty_list(&server, "/api/ipam/vlans/").await;
+    mount_empty_list(&server, "/api/circuits/circuits/").await;
+    mount_empty_list(&server, "/api/circuits/virtual-circuits/").await;
+    mount_empty_list(&server, "/api/ipam/aggregates/").await;
+    mount_empty_list(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty_list(&server, "/api/tenancy/tenants/").await;
+    mount_empty_list(&server, "/api/tenancy/contacts/").await;
+    mount_empty_list(&server, "/api/circuits/providers/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machines/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machine-types/").await;
+    mount_empty_list(&server, "/api/virtualization/clusters/").await;
+    mount_empty_list(&server, "/api/dcim/racks/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -738,12 +681,10 @@ async fn search_with_site_scopes_prefixes_by_scope_type_and_id() {
     Mock::given(method("GET"))
         .and(path("/api/dcim/sites/"))
         .and(query_param("slug", "iad1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 9, "url": "http://nb/api/dcim/sites/9/", "name": "iad1", "slug": "iad1"
-            }]
-        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(page(vec![nb_site(9, "iad1", "iad1").build()])),
+        )
         .mount(&server)
         .await;
 
@@ -753,13 +694,9 @@ async fn search_with_site_scopes_prefixes_by_scope_type_and_id() {
         .and(path("/api/ipam/prefixes/"))
         .and(query_param("scope_type", "dcim.site"))
         .and(query_param("scope_id", "9"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 11, "url": "http://nb/api/ipam/prefixes/11/", "prefix": "10.1.0.0/24",
-                "scope_type": "dcim.site", "scope": {"id": 9, "display": "iad1"}
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            nb_prefix(11, "10.1.0.0/24").scope("dcim.site", 9, "iad1").build(),
+        ])))
         .mount(&server)
         .await;
 
@@ -768,7 +705,7 @@ async fn search_with_site_scopes_prefixes_by_scope_type_and_id() {
     Mock::given(method("GET"))
         .and(path("/api/dcim/sites/"))
         .and(query_param("q", "10.1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
         .mount(&server)
         .await;
 
@@ -778,45 +715,34 @@ async fn search_with_site_scopes_prefixes_by_scope_type_and_id() {
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
         .and(query_param("site_id", "9"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 1, "url": "http://nb/api/dcim/devices/1/", "name": "10.1-edge",
-                "site": {"id": 9, "display": "iad1"}
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            nb_device(1, "10.1-edge").site(9, "iad1").build(),
+        ])))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/ipam/vlans/"))
         .and(query_param("site_id", "9"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 5, "url": "http://nb/api/ipam/vlans/5/", "vid": 101, "name": "10.1-vlan",
-                "site": {"id": 9, "display": "iad1"}
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            nb_vlan(5, 101, "10.1-vlan").site(9, "iad1").build(),
+        ])))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/virtualization/virtual-machines/"))
         .and(query_param("site_id", "9"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 7, "url": "http://nb/api/virtualization/virtual-machines/7/",
-                "name": "10.1-vm", "site": {"id": 9, "display": "iad1"}
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            json!({"id": 7, "url": "http://nb/api/virtualization/virtual-machines/7/",
+                   "name": "10.1-vm", "site": {"id": 9, "display": "iad1"}}),
+        ])))
         .mount(&server)
         .await;
     // Clusters honor `--site` via the polymorphic scope; give an empty page.
-    mount_empty(&server, "/api/virtualization/clusters/").await;
-    mount_empty(&server, "/api/dcim/racks/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/virtualization/clusters/").await;
+    mount_empty_list(&server, "/api/dcim/racks/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -864,7 +790,7 @@ async fn search_with_unknown_site_errors_not_found_not_empty() {
 
     // Every site lookup (`slug`, `name__ie`, `name__ic`) comes back empty, so the
     // site can't be resolved.
-    mount_empty(&server, "/api/dcim/sites/").await;
+    mount_empty_list(&server, "/api/dcim/sites/").await;
 
     let err = client(&server)
         .search(SearchRequest {
@@ -897,32 +823,30 @@ async fn search_skips_non_site_endpoints_unchanged_with_active_site() {
     Mock::given(method("GET"))
         .and(path("/api/dcim/sites/"))
         .and(query_param("slug", "iad1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 9, "url": "http://nb/api/dcim/sites/9/", "name": "iad1", "slug": "iad1"
-            }]
-        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(page(vec![nb_site(9, "iad1", "iad1").build()])),
+        )
         .mount(&server)
         .await;
     // Endpoints that honor `--site` (directly or via scope) are reached.
-    mount_empty(&server, "/api/dcim/devices/").await; // site_id-filtered
-    mount_empty(&server, "/api/ipam/vlans/").await; // site_id-filtered
-    mount_empty(&server, "/api/ipam/prefixes/").await; // exact site scope
-    mount_empty(&server, "/api/virtualization/virtual-machines/").await; // site_id-filtered
-    mount_empty(&server, "/api/virtualization/clusters/").await; // exact site scope
-    mount_empty(&server, "/api/dcim/racks/").await; // site_id-filtered
+    mount_empty_list(&server, "/api/dcim/devices/").await; // site_id-filtered
+    mount_empty_list(&server, "/api/ipam/vlans/").await; // site_id-filtered
+    mount_empty_list(&server, "/api/ipam/prefixes/").await; // exact site scope
+    mount_empty_list(&server, "/api/virtualization/virtual-machines/").await; // site_id-filtered
+    mount_empty_list(&server, "/api/virtualization/clusters/").await; // exact site scope
+    mount_empty_list(&server, "/api/dcim/racks/").await; // site_id-filtered
     // Defensive catch-alls for endpoints that are skipped under active scope;
     // if they are accidentally reached, `outcome.errors` below catches it.
-    mount_empty(&server, "/api/virtualization/virtual-machine-types/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machine-types/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
     // The site-search branch (`q=` lookup) is reached too; fall through to a
     // catch-all empty page for `/api/dcim/sites/` so it doesn't 404.
     Mock::given(method("GET"))
         .and(path("/api/dcim/sites/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
         .mount(&server)
         .await;
 
@@ -964,16 +888,13 @@ async fn assert_scope_filters_prefixes(
     Mock::given(method("GET"))
         .and(path(endpoint))
         .and(query_param("slug", "scope-ref"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 7, "url": "http://nb/api/.../7/", "name": "Scope Ref", "slug": "scope-ref"
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            json!({"id": 7, "url": "http://nb/api/.../7/", "name": "Scope Ref", "slug": "scope-ref"}),
+        ])))
         .mount(&server)
         .await;
     // Catch-all for the scope endpoint so other lookups don't 404.
-    mount_empty(&server, endpoint).await;
+    mount_empty_list(&server, endpoint).await;
 
     // The prefix endpoint must carry the native scoped id filter, and a matching
     // prefix comes back (proving it's queried, not skipped). NetBox backs these
@@ -982,24 +903,20 @@ async fn assert_scope_filters_prefixes(
     Mock::given(method("GET"))
         .and(path("/api/ipam/prefixes/"))
         .and(query_param(expected_filter, "7"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 11, "url": "http://nb/api/ipam/prefixes/11/", "prefix": "10.2.0.0/24",
-                "scope_type": content_type, "scope": {"id": 7, "display": "Scope Ref"}
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            nb_prefix(11, "10.2.0.0/24").scope(content_type, 7, "Scope Ref").build(),
+        ])))
         .mount(&server)
         .await;
 
     // Devices + clusters honor region/site-group/location scopes; give them empty
     // pages so the fan-out doesn't 404. Other endpoints are skipped.
-    mount_empty(&server, "/api/dcim/devices/").await;
-    mount_empty(&server, "/api/virtualization/clusters/").await;
-    mount_empty(&server, "/api/dcim/racks/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/dcim/devices/").await;
+    mount_empty_list(&server, "/api/virtualization/clusters/").await;
+    mount_empty_list(&server, "/api/dcim/racks/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
 
     let c = client(&server);
     // Box the fan-out future to keep it off the stack (clippy::large_futures).
@@ -1066,7 +983,7 @@ async fn search_with_location_scopes_prefixes_by_tree_filter() {
 async fn assert_unknown_scope_is_not_found(endpoint: &str, noun: &str, filters: SearchFilters) {
     let server = MockServer::start().await;
     // Every lookup (`slug`, `name__ie`, `name__ic`) comes back empty.
-    mount_empty(&server, endpoint).await;
+    mount_empty_list(&server, endpoint).await;
 
     let c = client(&server);
     // Box the fan-out future to keep it off the stack (clippy::large_futures).
@@ -1138,39 +1055,33 @@ async fn assert_scope_filters_clusters(
     Mock::given(method("GET"))
         .and(path(endpoint))
         .and(query_param("slug", "scope-ref"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 7, "url": "http://nb/api/.../7/", "name": "Scope Ref", "slug": "scope-ref"
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            json!({"id": 7, "url": "http://nb/api/.../7/", "name": "Scope Ref", "slug": "scope-ref"}),
+        ])))
         .mount(&server)
         .await;
-    mount_empty(&server, endpoint).await;
+    mount_empty_list(&server, endpoint).await;
 
     // The cluster endpoint must carry the native scoped id filter, and a matching
     // cluster comes back (proving it's queried, not skipped).
     Mock::given(method("GET"))
         .and(path("/api/virtualization/clusters/"))
         .and(query_param(expected_filter, "7"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 12, "url": "http://nb/api/virtualization/clusters/12/", "name": "prod",
-                "scope_type": content_type, "scope": {"id": 7, "display": "Scope Ref"}
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            json!({"id": 12, "url": "http://nb/api/virtualization/clusters/12/", "name": "prod",
+                   "scope_type": content_type, "scope": {"id": 7, "display": "Scope Ref"}}),
+        ])))
         .mount(&server)
         .await;
 
     // Prefixes, devices, and racks also honor the scope; give them empty pages so
     // the fan-out doesn't 404. Everything else is skipped.
-    mount_empty(&server, "/api/ipam/prefixes/").await;
-    mount_empty(&server, "/api/dcim/devices/").await;
-    mount_empty(&server, "/api/dcim/racks/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/ipam/prefixes/").await;
+    mount_empty_list(&server, "/api/dcim/devices/").await;
+    mount_empty_list(&server, "/api/dcim/racks/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
 
     let c = client(&server);
     // Box the fan-out future to keep it off the stack (clippy::large_futures).
@@ -1272,12 +1183,9 @@ async fn search_with_vrf_filters_ip_and_prefix_by_vrf_id() {
     Mock::given(method("GET"))
         .and(path("/api/ipam/vrfs/"))
         .and(query_param("rd", "blue"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 7, "url": "http://nb/api/ipam/vrfs/7/", "name": "blue", "rd": "blue"
-            }]
-        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(page(vec![nb_vrf(7, "blue", "blue").build()])),
+        )
         .mount(&server)
         .await;
 
@@ -1286,26 +1194,19 @@ async fn search_with_vrf_filters_ip_and_prefix_by_vrf_id() {
     Mock::given(method("GET"))
         .and(path("/api/ipam/ip-addresses/"))
         .and(query_param("vrf_id", "7"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 21, "url": "http://nb/api/ipam/ip-addresses/21/", "address": "10.0.0.1/24",
-                "vrf": {"id": 7, "display": "blue"}
-            }]
-        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(page(vec![nb_ip(21, "10.0.0.1/24").vrf(7, "blue").build()])),
+        )
         .mount(&server)
         .await;
     // Prefixes carry the vrf filter too.
     Mock::given(method("GET"))
         .and(path("/api/ipam/prefixes/"))
         .and(query_param("vrf_id", "7"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 31, "url": "http://nb/api/ipam/prefixes/31/", "prefix": "10.0.0.0/24",
-                "vrf": {"id": 7, "display": "blue"}
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            nb_prefix(31, "10.0.0.0/24").vrf(7, "blue").build(),
+        ])))
         .mount(&server)
         .await;
 
@@ -1315,29 +1216,28 @@ async fn search_with_vrf_filters_ip_and_prefix_by_vrf_id() {
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
         .and(query_param("q", "10.0"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{"id": 1, "url": "http://nb/api/dcim/devices/1/", "name": "10.0-edge"}]
-        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(page(vec![nb_device(1, "10.0-edge").build()])),
+        )
         .mount(&server)
         .await;
-    mount_empty(&server, "/api/dcim/sites/").await;
-    mount_empty(&server, "/api/ipam/vlans/").await;
-    mount_empty(&server, "/api/circuits/circuits/").await;
-    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
-    mount_empty(&server, "/api/ipam/aggregates/").await;
-    mount_empty(&server, "/api/ipam/asns/").await;
-    mount_empty(&server, "/api/ipam/ip-ranges/").await;
-    mount_empty(&server, "/api/tenancy/tenants/").await;
-    mount_empty(&server, "/api/tenancy/contacts/").await;
-    mount_empty(&server, "/api/circuits/providers/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machines/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machine-types/").await;
-    mount_empty(&server, "/api/virtualization/clusters/").await;
-    mount_empty(&server, "/api/dcim/racks/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/dcim/sites/").await;
+    mount_empty_list(&server, "/api/ipam/vlans/").await;
+    mount_empty_list(&server, "/api/circuits/circuits/").await;
+    mount_empty_list(&server, "/api/circuits/virtual-circuits/").await;
+    mount_empty_list(&server, "/api/ipam/aggregates/").await;
+    mount_empty_list(&server, "/api/ipam/asns/").await;
+    mount_empty_list(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty_list(&server, "/api/tenancy/tenants/").await;
+    mount_empty_list(&server, "/api/tenancy/contacts/").await;
+    mount_empty_list(&server, "/api/circuits/providers/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machines/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machine-types/").await;
+    mount_empty_list(&server, "/api/virtualization/clusters/").await;
+    mount_empty_list(&server, "/api/dcim/racks/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -1386,13 +1286,9 @@ async fn search_with_owner_filter_sends_owner_param_to_endpoints() {
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
         .and(query_param("owner", "netops"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 1, "url": "http://nb/api/dcim/devices/1/", "name": "edge01",
-                "status": {"value": "active", "label": "Active"}
-            }]
-        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(page(vec![nb_device(1, "edge01").build()])),
+        )
         .mount(&server)
         .await;
     for p in [
@@ -1416,7 +1312,7 @@ async fn search_with_owner_filter_sends_owner_param_to_endpoints() {
         "/api/ipam/vrfs/",
         "/api/ipam/route-targets/",
     ] {
-        mount_empty(&server, p).await;
+        mount_empty_list(&server, p).await;
     }
 
     let outcome = client(&server)
@@ -1446,42 +1342,38 @@ async fn search_with_vrf_resolved_by_id_filters_prefixes() {
 
     Mock::given(method("GET"))
         .and(path("/api/ipam/vrfs/7/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": 7, "url": "http://nb/api/ipam/vrfs/7/", "name": "blue", "rd": "65000:7"
-        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(nb_vrf(7, "blue", "65000:7").build()),
+        )
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/ipam/prefixes/"))
         .and(query_param("vrf_id", "7"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 31, "url": "http://nb/api/ipam/prefixes/31/", "prefix": "10.0.0.0/24",
-                "vrf": {"id": 7, "display": "blue"}
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            nb_prefix(31, "10.0.0.0/24").vrf(7, "blue").build(),
+        ])))
         .mount(&server)
         .await;
-    mount_empty(&server, "/api/ipam/ip-addresses/").await;
-    mount_empty(&server, "/api/dcim/devices/").await;
-    mount_empty(&server, "/api/dcim/sites/").await;
-    mount_empty(&server, "/api/ipam/vlans/").await;
-    mount_empty(&server, "/api/circuits/circuits/").await;
-    mount_empty(&server, "/api/circuits/virtual-circuits/").await;
-    mount_empty(&server, "/api/ipam/aggregates/").await;
-    mount_empty(&server, "/api/ipam/asns/").await;
-    mount_empty(&server, "/api/ipam/ip-ranges/").await;
-    mount_empty(&server, "/api/tenancy/tenants/").await;
-    mount_empty(&server, "/api/tenancy/contacts/").await;
-    mount_empty(&server, "/api/circuits/providers/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machines/").await;
-    mount_empty(&server, "/api/virtualization/virtual-machine-types/").await;
-    mount_empty(&server, "/api/virtualization/clusters/").await;
-    mount_empty(&server, "/api/dcim/racks/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/ipam/ip-addresses/").await;
+    mount_empty_list(&server, "/api/dcim/devices/").await;
+    mount_empty_list(&server, "/api/dcim/sites/").await;
+    mount_empty_list(&server, "/api/ipam/vlans/").await;
+    mount_empty_list(&server, "/api/circuits/circuits/").await;
+    mount_empty_list(&server, "/api/circuits/virtual-circuits/").await;
+    mount_empty_list(&server, "/api/ipam/aggregates/").await;
+    mount_empty_list(&server, "/api/ipam/asns/").await;
+    mount_empty_list(&server, "/api/ipam/ip-ranges/").await;
+    mount_empty_list(&server, "/api/tenancy/tenants/").await;
+    mount_empty_list(&server, "/api/tenancy/contacts/").await;
+    mount_empty_list(&server, "/api/circuits/providers/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machines/").await;
+    mount_empty_list(&server, "/api/virtualization/virtual-machine-types/").await;
+    mount_empty_list(&server, "/api/virtualization/clusters/").await;
+    mount_empty_list(&server, "/api/dcim/racks/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -1510,8 +1402,8 @@ async fn search_with_unknown_vrf_errors_not_found_not_empty() {
     let server = MockServer::start().await;
 
     // Every VRF lookup (`rd`, `name__ie`, `name__ic`) comes back empty.
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
 
     let err = client(&server)
         .search(SearchRequest {
@@ -1542,18 +1434,16 @@ async fn search_combines_vrf_and_site_scope_on_prefixes() {
     Mock::given(method("GET"))
         .and(path("/api/dcim/sites/"))
         .and(query_param("slug", "iad1"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{"id": 9, "url": "http://nb/api/dcim/sites/9/", "name": "iad1", "slug": "iad1"}]
-        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(page(vec![nb_site(9, "iad1", "iad1").build()])),
+        )
         .mount(&server)
         .await;
     // VRF resolution (by id) → id 7.
     Mock::given(method("GET"))
         .and(path("/api/ipam/vrfs/7/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": 7, "url": "http://nb/api/ipam/vrfs/7/", "name": "blue"
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(nb_vrf(7, "blue", "").build()))
         .mount(&server)
         .await;
 
@@ -1563,14 +1453,9 @@ async fn search_combines_vrf_and_site_scope_on_prefixes() {
         .and(query_param("scope_type", "dcim.site"))
         .and(query_param("scope_id", "9"))
         .and(query_param("vrf_id", "7"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 31, "url": "http://nb/api/ipam/prefixes/31/", "prefix": "10.0.0.0/24",
-                "scope_type": "dcim.site", "scope": {"id": 9, "display": "iad1"},
-                "vrf": {"id": 7, "display": "blue"}
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            nb_prefix(31, "10.0.0.0/24").scope("dcim.site", 9, "iad1").vrf(7, "blue").build(),
+        ])))
         .mount(&server)
         .await;
 
@@ -1579,7 +1464,7 @@ async fn search_combines_vrf_and_site_scope_on_prefixes() {
     Mock::given(method("GET"))
         .and(path("/api/dcim/sites/"))
         .and(query_param("q", "10.0"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
         .mount(&server)
         .await;
     // Devices/VLANs/VMs filter by the resolved `site_id` (not the slug `?site=`);
@@ -1588,26 +1473,26 @@ async fn search_combines_vrf_and_site_scope_on_prefixes() {
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
         .and(query_param("site_id", "9"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/ipam/vlans/"))
         .and(query_param("site_id", "9"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/virtualization/virtual-machines/"))
         .and(query_param("site_id", "9"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
         .mount(&server)
         .await;
-    mount_empty(&server, "/api/virtualization/clusters/").await;
-    mount_empty(&server, "/api/dcim/racks/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/virtualization/clusters/").await;
+    mount_empty_list(&server, "/api/dcim/racks/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
 
     let results = client(&server)
         .search(SearchRequest {
@@ -1642,16 +1527,14 @@ async fn search_with_scope_and_vrf_filters_prefixes() {
         .and(query_param("slug", "us-east"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "count": 1, "next": null, "previous": null,
-            "results": [{"id": 3, "url": "http://nb/api/dcim/regions/3/", "name": "US East", "slug": "us-east"}]
+            "results": [json!({"id": 3, "url": "http://nb/api/dcim/regions/3/", "name": "US East", "slug": "us-east"})]
         })))
         .mount(&server)
         .await;
     // VRF resolution (by id) → id 7.
     Mock::given(method("GET"))
         .and(path("/api/ipam/vrfs/7/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": 7, "url": "http://nb/api/ipam/vrfs/7/", "name": "blue"
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(nb_vrf(7, "blue", "").build()))
         .mount(&server)
         .await;
 
@@ -1659,33 +1542,28 @@ async fn search_with_scope_and_vrf_filters_prefixes() {
         .and(path("/api/ipam/prefixes/"))
         .and(query_param("region_id", "3"))
         .and(query_param("vrf_id", "7"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 31, "url": "http://nb/api/ipam/prefixes/31/", "prefix": "10.0.0.0/24",
-                "scope_type": "dcim.site", "scope": {"id": 9, "display": "iad1"},
-                "vrf": {"id": 7, "display": "blue"}
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            nb_prefix(31, "10.0.0.0/24").scope("dcim.site", 9, "iad1").vrf(7, "blue").build(),
+        ])))
         .mount(&server)
         .await;
 
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
         .and(query_param("region_id", "3"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/virtualization/clusters/"))
         .and(query_param("region_id", "3"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/dcim/racks/"))
         .and(query_param("region_id", "3"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
         .mount(&server)
         .await;
 
@@ -1723,23 +1601,20 @@ async fn search_region_scope_skips_non_prefix_non_device_non_cluster_endpoints()
     Mock::given(method("GET"))
         .and(path("/api/dcim/regions/"))
         .and(query_param("slug", "us-east"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 3, "url": "http://nb/api/dcim/regions/3/", "name": "US East", "slug": "us-east"
-            }]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            json!({"id": 3, "url": "http://nb/api/dcim/regions/3/", "name": "US East", "slug": "us-east"}),
+        ])))
         .mount(&server)
         .await;
-    mount_empty(&server, "/api/ipam/prefixes/").await; // scope-filtered
-    mount_empty(&server, "/api/dcim/devices/").await; // region_id-filtered
-    mount_empty(&server, "/api/dcim/racks/").await;
+    mount_empty_list(&server, "/api/ipam/prefixes/").await; // scope-filtered
+    mount_empty_list(&server, "/api/dcim/devices/").await; // region_id-filtered
+    mount_empty_list(&server, "/api/dcim/racks/").await;
     // Defensive catch-alls for skipped endpoints; `outcome.errors` catches any
     // accidental request to them.
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
-    mount_empty(&server, "/api/virtualization/clusters/").await; // scope-filtered
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/virtualization/clusters/").await; // scope-filtered
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -1771,9 +1646,7 @@ async fn search_with_numeric_site_filters_devices_vlans_vms_by_site_id() {
     // Numeric `--site` → resolved via the detail endpoint (id 9).
     Mock::given(method("GET"))
         .and(path("/api/dcim/sites/9/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "id": 9, "url": "http://nb/api/dcim/sites/9/", "name": "iad1", "slug": "iad1"
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(nb_site(9, "iad1", "iad1").build()))
         .mount(&server)
         .await;
 
@@ -1782,19 +1655,17 @@ async fn search_with_numeric_site_filters_devices_vlans_vms_by_site_id() {
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
         .and(query_param("site_id", "9"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{"id": 1, "url": "http://nb/api/dcim/devices/1/", "name": "edge01"}]
-        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(page(vec![nb_device(1, "edge01").build()])),
+        )
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/ipam/vlans/"))
         .and(query_param("site_id", "9"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{"id": 5, "url": "http://nb/api/ipam/vlans/5/", "vid": 10, "name": "edge"}]
-        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(page(vec![nb_vlan(5, 10, "edge").build()])),
+        )
         .mount(&server)
         .await;
     Mock::given(method("GET"))
@@ -1802,19 +1673,19 @@ async fn search_with_numeric_site_filters_devices_vlans_vms_by_site_id() {
         .and(query_param("site_id", "9"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "count": 1, "next": null, "previous": null,
-            "results": [{"id": 7, "url": "http://nb/api/virtualization/virtual-machines/7/", "name": "edge-vm"}]
+            "results": [json!({"id": 7, "url": "http://nb/api/virtualization/virtual-machines/7/", "name": "edge-vm"})]
         })))
         .mount(&server)
         .await;
     // Prefixes + clusters honor `--site` via the polymorphic scope (empty here).
-    mount_empty(&server, "/api/ipam/prefixes/").await;
-    mount_empty(&server, "/api/virtualization/clusters/").await;
-    mount_empty(&server, "/api/dcim/racks/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/ipam/prefixes/").await;
+    mount_empty_list(&server, "/api/virtualization/clusters/").await;
+    mount_empty_list(&server, "/api/dcim/racks/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
     // The site-search branch hits `/api/dcim/sites/` with `q=` (no detail id).
-    mount_empty(&server, "/api/dcim/sites/").await;
+    mount_empty_list(&server, "/api/dcim/sites/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -1846,49 +1717,48 @@ async fn search_with_site_name_filters_devices_by_site_id() {
         Mock::given(method("GET"))
             .and(path("/api/dcim/sites/"))
             .and(query_param(key, "IAD One"))
-            .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+            .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
             .mount(&server)
             .await;
     }
     Mock::given(method("GET"))
         .and(path("/api/dcim/sites/"))
         .and(query_param("name__ic", "IAD One"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{"id": 9, "url": "http://nb/api/dcim/sites/9/", "name": "IAD One", "slug": "iad1"}]
-        })))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(page(vec![nb_site(9, "IAD One", "iad1").build()])),
+        )
         .mount(&server)
         .await;
 
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
         .and(query_param("site_id", "9"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{"id": 1, "url": "http://nb/api/dcim/devices/1/", "name": "edge01"}]
-        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(page(vec![nb_device(1, "edge01").build()])),
+        )
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/ipam/vlans/"))
         .and(query_param("site_id", "9"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
         .mount(&server)
         .await;
     Mock::given(method("GET"))
         .and(path("/api/virtualization/virtual-machines/"))
         .and(query_param("site_id", "9"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(empty()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
         .mount(&server)
         .await;
-    mount_empty(&server, "/api/ipam/prefixes/").await;
-    mount_empty(&server, "/api/virtualization/clusters/").await;
-    mount_empty(&server, "/api/dcim/racks/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/ipam/prefixes/").await;
+    mount_empty_list(&server, "/api/virtualization/clusters/").await;
+    mount_empty_list(&server, "/api/dcim/racks/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
     // The site-search branch (`q=`) — catch-all empty page.
-    mount_empty(&server, "/api/dcim/sites/").await;
+    mount_empty_list(&server, "/api/dcim/sites/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -1923,7 +1793,7 @@ async fn search_with_region_filters_devices_by_region_id() {
         .and(query_param("slug", "us-east"))
         .respond_with(ResponseTemplate::new(200).set_body_json(json!({
             "count": 1, "next": null, "previous": null,
-            "results": [{"id": 3, "url": "http://nb/api/dcim/regions/3/", "name": "US East", "slug": "us-east"}]
+            "results": [json!({"id": 3, "url": "http://nb/api/dcim/regions/3/", "name": "US East", "slug": "us-east"})]
         })))
         .mount(&server)
         .await;
@@ -1931,19 +1801,18 @@ async fn search_with_region_filters_devices_by_region_id() {
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
         .and(query_param("region_id", "3"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{"id": 1, "url": "http://nb/api/dcim/devices/1/", "name": "edge01"}]
-        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(page(vec![nb_device(1, "edge01").build()])),
+        )
         .mount(&server)
         .await;
     // Prefixes + clusters honor a region scope; empty pages keep the fan-out clean.
-    mount_empty(&server, "/api/ipam/prefixes/").await;
-    mount_empty(&server, "/api/virtualization/clusters/").await;
-    mount_empty(&server, "/api/dcim/racks/").await;
-    mount_empty(&server, "/api/dcim/rack-groups/").await;
-    mount_empty(&server, "/api/ipam/vrfs/").await;
-    mount_empty(&server, "/api/ipam/route-targets/").await;
+    mount_empty_list(&server, "/api/ipam/prefixes/").await;
+    mount_empty_list(&server, "/api/virtualization/clusters/").await;
+    mount_empty_list(&server, "/api/dcim/racks/").await;
+    mount_empty_list(&server, "/api/dcim/rack-groups/").await;
+    mount_empty_list(&server, "/api/ipam/vrfs/").await;
+    mount_empty_list(&server, "/api/ipam/route-targets/").await;
 
     let outcome = client(&server)
         .search(SearchRequest {
@@ -1978,12 +1847,9 @@ async fn search_swallows_404_on_version_gated_endpoints() {
     // The device hit is what we assert survives; everything else is empty.
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{
-                "id": 1, "url": "http://nb/api/dcim/devices/1/", "name": "edge01"
-            }]
-        })))
+        .respond_with(
+            ResponseTemplate::new(200).set_body_json(page(vec![nb_device(1, "edge01").build()])),
+        )
         .mount(&server)
         .await;
 
@@ -2007,7 +1873,7 @@ async fn search_swallows_404_on_version_gated_endpoints() {
         "/api/ipam/vrfs/",
         "/api/ipam/route-targets/",
     ] {
-        mount_empty(&server, ep).await;
+        mount_empty_list(&server, ep).await;
     }
 
     // The 4.6-only endpoints return 404 — the NetBox 4.2 reality.
@@ -2075,7 +1941,7 @@ async fn mount_empty_all_except(server: &MockServer, except: &str) {
     ];
     for p in all {
         if p != except {
-            mount_empty(server, p).await;
+            mount_empty_list(server, p).await;
         }
     }
 }
@@ -2087,11 +1953,9 @@ async fn search_caps_per_endpoint_at_req_limit() {
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
         .and(query_param("limit", "25"))
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{"id": 1, "url": "u", "name": "edge01",
-                         "site": {"id": 9, "display": "iad1"}}]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            nb_device(1, "edge01").url("u").site(9, "iad1").build(),
+        ])))
         .expect(1) // regression catcher: must be called with limit=25
         .mount(&server)
         .await;
@@ -2117,11 +1981,9 @@ async fn search_floors_per_endpoint_limit_at_25() {
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
         .and(query_param("limit", "25")) // floor, not 5
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{"id": 1, "url": "u", "name": "edge01",
-                         "site": {"id": 9, "display": "iad1"}}]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            nb_device(1, "edge01").url("u").site(9, "iad1").build(),
+        ])))
         .expect(1)
         .mount(&server)
         .await;
@@ -2148,11 +2010,9 @@ async fn search_caps_per_endpoint_at_page_size_for_large_limit() {
     Mock::given(method("GET"))
         .and(path("/api/dcim/devices/"))
         .and(query_param("limit", "100")) // page_size, not 200
-        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
-            "count": 1, "next": null, "previous": null,
-            "results": [{"id": 1, "url": "u", "name": "edge01",
-                         "site": {"id": 9, "display": "iad1"}}]
-        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(page(vec![
+            nb_device(1, "edge01").url("u").site(9, "iad1").build(),
+        ])))
         .expect(1)
         .mount(&server)
         .await;
