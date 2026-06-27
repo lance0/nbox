@@ -47,6 +47,12 @@ pub struct NboxMcp {
     /// agent re-reading the same object graph de-dupes within the TTL. Agents can
     /// drop it with `nbox_cache_clear`.
     cache: Cache,
+    /// Per-user credential vault for write tools (Pattern 2). Absent ⇒ writes
+    /// are disabled (the read-only default). See [`vault::CredentialVault`].
+    vault: Option<Arc<vault::CredentialVault>>,
+    /// The active profile name — bound into the confirmation token so a plan
+    /// from one profile can't be applied under another. Empty for stdio.
+    profile: String,
     tool_router: ToolRouter<Self>,
 }
 
@@ -479,10 +485,17 @@ fn percent_decode(s: &str) -> String {
 impl NboxMcp {
     /// Build a server bound to a NetBox client and a read cache. Pass
     /// `Cache::disabled()` to opt out (e.g. in tests).
-    pub fn new(client: NetBoxClient, cache: Cache) -> Self {
+    pub fn new(
+        client: NetBoxClient,
+        cache: Cache,
+        vault: Option<vault::CredentialVault>,
+        profile: String,
+    ) -> Self {
         Self {
             client: Arc::new(client),
             cache,
+            vault: vault.map(Arc::new),
+            profile,
             tool_router: Self::tool_router(),
         }
     }
@@ -771,6 +784,36 @@ impl NboxMcp {
         };
         Ok(Json(report))
     }
+
+    /// Plan a write operation. Builds a `MutationPlan` (the reviewable diff +
+    /// confirm token) without mutating NetBox. The agent reviews the plan,
+    /// then calls `nbox_apply_write` to execute it. Requires writes enabled.
+    #[tool(
+        name = "nbox_plan_write",
+        description = "Plan a NetBox write operation (interface description, device status, IP/prefix/IP-range reserve, tag add/remove). Builds a MutationPlan with a before/after diff and a confirm token, without mutating. Review the plan, then call nbox_apply_write to execute. Requires writes enabled (--allow-writes + [serve.vault] per-user credential mapping).",
+        annotations(read_only_hint = true)
+    )]
+    async fn nbox_plan_write(
+        &self,
+        Parameters(args): Parameters<write::PlanWriteArgs>,
+    ) -> Result<Json<crate::netbox::mutation::MutationPlan>, ErrorData> {
+        self.plan_write_impl(args).await
+    }
+
+    /// Apply a previously planned write. Verifies the plan's confirm token,
+    /// then executes the write under the caller's per-user NetBox identity.
+    /// Returns a `MutationReceipt` with the outcome.
+    #[tool(
+        name = "nbox_apply_write",
+        description = "Apply a previously planned write. Pass the full MutationPlan JSON from nbox_plan_write. The confirm token is verified, then the write executes under the caller's per-user NetBox identity. Returns a MutationReceipt. Requires writes enabled.",
+        annotations(read_only_hint = false)
+    )]
+    async fn nbox_apply_write(
+        &self,
+        Parameters(args): Parameters<write::ApplyWriteArgs>,
+    ) -> Result<Json<crate::netbox::mutation::MutationReceipt>, ErrorData> {
+        self.apply_write_impl(args).await
+    }
 }
 
 impl NboxMcp {
@@ -1058,7 +1101,9 @@ impl ServerHandler for NboxMcp {
 ///
 /// stdout is reserved for the JSON-RPC stream; this prints nothing else.
 pub async fn serve(client: NetBoxClient, cache: Cache) -> anyhow::Result<()> {
-    let service = NboxMcp::new(client, cache).serve(stdio()).await?;
+    let service = NboxMcp::new(client, cache, None, String::new())
+        .serve(stdio())
+        .await?;
     service.waiting().await?;
     Ok(())
 }
@@ -1075,6 +1120,12 @@ pub mod http;
 #[cfg(feature = "http")]
 pub mod oidc;
 pub mod prompts;
+/// Per-user credential vault (Pattern 2, DESIGN §24). Maps OIDC `sub` →
+/// per-user NetBox token so write tools hit NetBox under the caller's
+/// identity, not the shared service token. Not gated on the `http` feature —
+/// the vault type is pure and testable without HTTP.
+pub mod vault;
+pub mod write;
 #[cfg(feature = "http")]
 pub use http::{OidcArgs, ServeOptions, serve_http};
 

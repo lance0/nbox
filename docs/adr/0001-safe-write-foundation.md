@@ -148,18 +148,24 @@ Current nbox constraints also matter:
    and no `nbox raw POST|PATCH|DELETE` should ship until they are built on the
    same planner, diff, confirmation, concurrency, and audit contracts.
 
-7. **Keep MCP read-only until write identity is real.** Existing MCP tools stay
-   read-only. Future write-capable MCP tools must:
+7. **MCP writes require per-user identity (Pattern 2).** ✅ **Implemented.** The
+   `nbox_plan_write` and `nbox_apply_write` MCP tools are now live, backed by the
+   per-user credential vault (`src/mcp/vault.rs`). The vault maps OIDC `sub` →
+   per-user NetBox token (env var), bridged at request time via
+   `NetBoxClient::with_token` so the write `PATCH`/`POST` hits NetBox under the
+   caller's identity. The design follows the constraints below:
 
-   - be operation-specific, not a generic raw mutation tool;
-   - require `nbox:write` and must not use `read_only_hint`;
-   - return a plan/diff first and require an explicit apply call carrying the
+   - ✅ operation-specific, not a generic raw mutation tool;
+   - ✅ require `--allow-writes` on `nbox serve` + the `nbox:write` OIDC scope
+     (gate-enforced); `nbox_plan_write` is `read_only_hint = true` (no mutation),
+     `nbox_apply_write` is not;
+   - ✅ return a plan/diff first and require an explicit apply call carrying the
      confirmation token;
-   - use the same mutation engine as the CLI;
-   - require Pattern 2 per-user NetBox credential bridging before writes are
-     exposed over network-reachable MCP. Pattern 3 can attribute a caller in the
-     nbox audit log, but NetBox would still see the shared service token, which
-     is not acceptable for writes.
+   - ✅ use the same mutation engine as the CLI;
+   - ✅ require Pattern 2 per-user NetBox credential bridging (the
+     `[serve.vault]` config + `--allow-writes` flag) before writes are exposed.
+     The vault fails closed: no entry for the caller's `sub` → `invalid_params`,
+     never a fallthrough to the service token.
 
 8. **Use clear audit and status wording.** Write logs and user-visible messages
    should describe facts, not magic:
