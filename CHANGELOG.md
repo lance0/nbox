@@ -148,6 +148,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     existing single-IP plan/receipt — `count`, `partial`, `requested_count`, and
     `created_count` use `skip_serializing_if` defaults so they're omitted when
     at their default values.
+- **Agent write ergonomics — per-domain skill files.** The root `SKILL.md`
+  now indexes a small catalog of focused, flag-free skill files for the write
+  surface, in the standard agent-skills layout (`skills/<domain>/SKILL.md`):
+  `skills/writes/SKILL.md` (the universal dry-run/confirm/audit lifecycle),
+  `skills/ipam-allocate/SKILL.md` (`ip`/`prefix`/`ip-range reserve`),
+  `skills/tag-writes/SKILL.md` (`tag add`/`remove`), and
+  `skills/patch-writes/SKILL.md` (`interface set description` / `device set
+  status`). Each points at `nbox <cmd> --help` rather than enumerating flags, so
+  the skills can't silently drift as the CLI evolves. A `scripts/lint_skills.sh`
+  script + a `skills-lint` CI workflow validate the frontmatter shape (`name` +
+  `description`) on every `skills/*/SKILL.md`.
 
 ### Changed
 

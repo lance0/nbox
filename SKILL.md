@@ -1,13 +1,15 @@
 ---
 name: nbox
-description: Query NetBox (DCIM/IPAM) from the shell with the `nbox` CLI — look up devices, interfaces, IPs, prefixes, VLANs, sites, racks, circuits, VRFs, tenants, VMs, and clusters; run cross-object search; and use IPAM helpers (next free IP/prefix, prefix utilization, cable-path traces). Use when the user asks about NetBox, network inventory, IP addressing, or device/interface/cable details, or wants machine-readable network data. Read-only; supports `-o json` / `-o csv` and an MCP server.
+description: Query and modify NetBox (DCIM/IPAM) from the shell with the `nbox` CLI — look up devices, interfaces, IPs, prefixes, VLANs, sites, racks, circuits, VRFs, tenants, VMs, and clusters; run cross-object search; use IPAM helpers (next free IP/prefix, prefix utilization, cable-path traces); and safely write (reserve IPs/prefixes, set status/description, manage tags) behind a dry-run/confirm gate. Use when the user asks about NetBox, network inventory, IP addressing, or device/interface/cable details, or wants machine-readable network data or safe mutations. Read-only by default; supports `-o json` / `-o csv` and an MCP server.
 ---
 
 # nbox — NetBox from the shell
 
-`nbox` is a fast, **read-only** CLI / TUI / MCP client for [NetBox](https://github.com/netbox-community/netbox)
+`nbox` is a CLI / TUI / MCP client for [NetBox](https://github.com/netbox-community/netbox)
 (DCIM + IPAM). Use it to answer questions about network inventory and addressing
-without clicking through the NetBox web UI. It never modifies NetBox.
+without clicking through the NetBox web UI. Reads are the default; seven safe-write
+commands (interface description, device status, IP/prefix/ip-range reserve, tag
+add/remove) are available behind `--allow-writes` + confirmation.
 
 ## When to use this skill
 
@@ -53,3 +55,25 @@ Output flags:
 stdout carries only the requested data; logs/diagnostics/errors go to stderr. Exit
 codes are stable: `3` auth, `4` not-found, `5` ambiguous. Full command + flag
 reference: [AGENTS.md](https://github.com/lance0/nbox/blob/master/AGENTS.md).
+
+## Safe writes
+
+`nbox` can modify NetBox through seven plan-first, dry-run/confirm-gated write
+commands (ADR-0001). Reads stay the default — a write never happens without
+explicit opt-in. See the focused skill files:
+
+- [Safe writes](skills/writes/SKILL.md) — the universal dry-run / confirm / audit
+  lifecycle shared by all seven write commands
+- [IPAM allocate](skills/ipam-allocate/SKILL.md) — `ip reserve`, `prefix reserve`,
+  `ip-range reserve` (POST to available-ips / available-prefixes)
+- [Tag writes](skills/tag-writes/SKILL.md) — `tag add`, `tag remove` (PATCH the
+  tags array on any object kind)
+- [PATCH writes](skills/patch-writes/SKILL.md) — `interface set description`,
+  `device set status` (minimal PATCH with ETag/If-Match concurrency)
+
+The recommended agent pattern is a two-step dry-run-then-apply:
+
+```bash
+nbox --no-tui <cmd> ... --dry-run --json          # preview the plan
+nbox --no-tui <cmd> ... --allow-writes --confirm --json  # apply
+```

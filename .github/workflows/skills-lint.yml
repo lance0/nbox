@@ -1,0 +1,28 @@
+name: Skills lint
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'skills/**'
+      - 'scripts/lint_skills.sh'
+      - '.github/workflows/skills-lint.yml'
+  pull_request:
+    paths:
+      - 'skills/**'
+      - 'scripts/lint_skills.sh'
+      - '.github/workflows/skills-lint.yml'
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Lint skills catalog shape
+        run: bash scripts/lint_skills.sh
