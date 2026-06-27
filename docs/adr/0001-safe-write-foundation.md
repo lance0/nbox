@@ -149,23 +149,34 @@ Current nbox constraints also matter:
    same planner, diff, confirmation, concurrency, and audit contracts.
 
 7. **MCP writes require per-user identity (Pattern 2).** ✅ **Implemented.** The
-   `nbox_plan_write` and `nbox_apply_write` MCP tools are now live, backed by the
-   per-user credential vault (`src/mcp/vault.rs`). The vault maps OIDC `sub` →
-   per-user NetBox token (env var), bridged at request time via
-   `NetBoxClient::with_token` so the write `PATCH`/`POST` hits NetBox under the
-   caller's identity. The design follows the constraints below:
+   `nbox_plan_write` and `nbox_apply_write` MCP tools are backed by the per-user
+   credential vault (`src/mcp/vault.rs`). The validated OIDC `Identity` (`sub` +
+   scopes) is plumbed from the auth gate into the request `Parts`, which the
+   Streamable-HTTP transport nests into the rmcp `RequestContext`; the write tools
+   read the caller's `sub` from there and the vault maps it to a per-user NetBox
+   token (env var), bridged at request time via `NetBoxClient::with_token` so the
+   write `PATCH`/`POST` hits NetBox under the caller's identity. The design
+   follows the constraints below:
 
    - ✅ operation-specific, not a generic raw mutation tool;
-   - ✅ require `--allow-writes` on `nbox serve` + the `nbox:write` OIDC scope
-     (gate-enforced); `nbox_plan_write` is `read_only_hint = true` (no mutation),
-     `nbox_apply_write` is not;
+   - ✅ require `--allow-writes` on `nbox serve` **and** the caller's token
+     carrying the `nbox:write` scope. Scope is enforced **in the write tools**
+     (per request), not the HTTP gate — the gate deliberately does not parse the
+     JSON-RPC method (that would mean buffering the streaming body), so it cannot
+     tell a read tool from a write one. Both `nbox_plan_write` and
+     `nbox_apply_write` are advertised `read_only_hint = false`: planning is part
+     of the write flow (it requires the same gate + scope + per-user identity),
+     so a host's "auto-run read-only tools" policy must not auto-invoke it.
    - ✅ return a plan/diff first and require an explicit apply call carrying the
      confirmation token;
    - ✅ use the same mutation engine as the CLI;
-   - ✅ require Pattern 2 per-user NetBox credential bridging (the
-     `[serve.vault]` config + `--allow-writes` flag) before writes are exposed.
-     The vault fails closed: no entry for the caller's `sub` → `invalid_params`,
-     never a fallthrough to the service token.
+   - ✅ require Pattern 2 per-user NetBox credential bridging. Authorization fails
+     closed, in order: writes disabled (`--allow-writes` / `[serve.vault]` absent)
+     → no authenticated caller identity (stdio / loopback static-bearer carry
+     none — writes need HTTP+OIDC) → missing `nbox:write` scope → no
+     `[serve.vault]` entry for the caller's `sub`. The service token is never used
+     for writes, and the no-identity case is its own distinct error that never
+     suggests mapping a placeholder `sub`.
 
 8. **Use clear audit and status wording.** Write logs and user-visible messages
    should describe facts, not magic:

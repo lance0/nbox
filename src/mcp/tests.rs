@@ -3760,7 +3760,8 @@ mod contracts {
 
 // --- MCP write tool tests (Pattern 2) ---------------------------------------
 
-/// A server with writes enabled (vault configured for a test user).
+/// A server with writes enabled and a vault entry for the test user `alice`
+/// (sub `alice` → env var `NBOX_VAULT_TEST_WRITE`).
 fn write_server_for(mock: &MockServer) -> NboxMcp {
     let profile = ProfileConfig {
         url: mock.uri(),
@@ -3768,7 +3769,7 @@ fn write_server_for(mock: &MockServer) -> NboxMcp {
     };
     let mut entries = std::collections::BTreeMap::new();
     entries.insert(
-        "__stdio_no_identity__".to_string(),
+        "alice".to_string(),
         crate::mcp::vault::VaultEntry {
             token_env: "NBOX_VAULT_TEST_WRITE".to_string(),
         },
@@ -3782,28 +3783,85 @@ fn write_server_for(mock: &MockServer) -> NboxMcp {
     )
 }
 
+/// A write caller (the per-request authz facts the tool layer extracts from the
+/// OIDC identity), for driving `plan_write_impl`/`apply_write_impl` directly.
+fn caller(sub: &str, has_write_scope: bool) -> crate::mcp::write::WriteCaller {
+    crate::mcp::write::WriteCaller {
+        sub: sub.to_string(),
+        has_write_scope,
+    }
+}
+
+/// The caller-identity extraction (the riskiest new wiring): the auth gate puts
+/// a validated `Identity` into the HTTP request `Parts` extensions, and the
+/// Streamable-HTTP transport nests those `Parts` into the rmcp request
+/// `Extensions`. This reproduces that exact nesting and asserts the `sub` +
+/// `nbox:write` scope are pulled out — and that an absent/empty identity yields
+/// `None` (→ the no-identity reject path), never a fabricated caller.
+#[cfg(feature = "http")]
+#[test]
+fn write_caller_extracts_sub_and_scope_from_nested_request_parts() {
+    use crate::mcp::oidc::{Identity, SCOPE_WRITE};
+
+    let identity = |sub: Option<&str>, scopes: Vec<String>| Identity {
+        sub: sub.map(str::to_string),
+        client_id: None,
+        scopes,
+        jti: None,
+        iss: None,
+    };
+    let nest = |id: Option<Identity>| {
+        let mut req = axum::http::Request::builder().body(()).unwrap();
+        if let Some(id) = id {
+            req.extensions_mut().insert(id);
+        }
+        let (parts, ()) = req.into_parts();
+        let mut ext = rmcp::model::Extensions::new();
+        ext.insert(parts);
+        ext
+    };
+
+    // sub + write scope → extracted.
+    let ext = nest(Some(identity(Some("alice"), vec![SCOPE_WRITE.to_string()])));
+    let c = crate::mcp::write_caller_from_extensions(&ext).expect("identity extracted");
+    assert_eq!(c.sub, "alice");
+    assert!(c.has_write_scope);
+
+    // sub but no write scope → extracted with the flag false (bridged_client rejects).
+    let ext = nest(Some(identity(Some("bob"), vec!["nbox:read".to_string()])));
+    let c = crate::mcp::write_caller_from_extensions(&ext).expect("identity extracted");
+    assert_eq!(c.sub, "bob");
+    assert!(!c.has_write_scope);
+
+    // No Identity in the parts → None.
+    assert!(crate::mcp::write_caller_from_extensions(&nest(None)).is_none());
+
+    // Identity present but empty/absent sub → None (no usable identity).
+    let ext = nest(Some(identity(None, vec![SCOPE_WRITE.to_string()])));
+    assert!(crate::mcp::write_caller_from_extensions(&ext).is_none());
+
+    // No Parts at all (e.g. stdio) → None.
+    assert!(crate::mcp::write_caller_from_extensions(&rmcp::model::Extensions::new()).is_none());
+}
+
 #[tokio::test]
 async fn plan_write_rejects_when_vault_absent() {
     // A read-only server (vault = None) must reject write planning with a
     // clear "writes not enabled" error, not fall through to the service token.
     let mock = MockServer::start().await;
     let server = server_for(&mock); // vault = None
-    let _err = server
-        .plan_write_impl(crate::mcp::write::PlanWriteArgs {
-            operation: crate::mcp::write::WriteOperation::DeviceStatus {
-                device: "edge01".into(),
-                status: "active".into(),
-            },
-        })
-        .await
-        .is_err();
+    // Even with a fully valid caller (sub + write scope), the disabled gate is
+    // checked first: "writes not enabled", never a service-token fallthrough.
     let result = server
-        .plan_write_impl(crate::mcp::write::PlanWriteArgs {
-            operation: crate::mcp::write::WriteOperation::DeviceStatus {
-                device: "edge01".into(),
-                status: "active".into(),
+        .plan_write_impl(
+            crate::mcp::write::PlanWriteArgs {
+                operation: crate::mcp::write::WriteOperation::DeviceStatus {
+                    device: "edge01".into(),
+                    status: "active".into(),
+                },
             },
-        })
+            Some(caller("alice", true)),
+        )
         .await;
     assert!(result.is_err(), "should reject writes when vault is absent");
     let err = result.err().unwrap();
@@ -3811,6 +3869,83 @@ async fn plan_write_rejects_when_vault_absent() {
     assert!(
         err.message.contains("writes are not enabled"),
         "error should mention writes not enabled: {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn plan_write_rejects_when_no_caller_identity() {
+    // Writes enabled + a vault, but the request carried no identity (stdio /
+    // loopback). Must reject with a distinct "requires an authenticated OIDC
+    // caller" error — never the placeholder-sub path, never the service token.
+    let mock = MockServer::start().await;
+    let server = write_server_for(&mock);
+    let result = server
+        .plan_write_impl(
+            crate::mcp::write::PlanWriteArgs {
+                operation: crate::mcp::write::WriteOperation::DeviceStatus {
+                    device: "edge01".into(),
+                    status: "active".into(),
+                },
+            },
+            None,
+        )
+        .await;
+    let err = result.err().expect("no identity must be rejected");
+    assert!(
+        err.message.contains("authenticated OIDC caller"),
+        "error should name the missing identity: {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn plan_write_rejects_when_missing_write_scope() {
+    // A caller with a valid sub + vault entry but no `nbox:write` scope is
+    // rejected before any NetBox call (ADR-0001 §7).
+    let mock = MockServer::start().await;
+    let server = write_server_for(&mock);
+    let result = server
+        .plan_write_impl(
+            crate::mcp::write::PlanWriteArgs {
+                operation: crate::mcp::write::WriteOperation::DeviceStatus {
+                    device: "edge01".into(),
+                    status: "active".into(),
+                },
+            },
+            Some(caller("alice", false)),
+        )
+        .await;
+    let err = result.err().expect("missing write scope must be rejected");
+    assert!(
+        err.message.contains("nbox:write"),
+        "error should name the missing scope: {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn plan_write_rejects_when_sub_not_in_vault() {
+    // Writes enabled, caller has write scope, but their sub has no vault entry:
+    // fail closed (NoEntry), never the service token.
+    let mock = MockServer::start().await;
+    let server = write_server_for(&mock); // vault maps "alice", not "bob"
+    let result = server
+        .plan_write_impl(
+            crate::mcp::write::PlanWriteArgs {
+                operation: crate::mcp::write::WriteOperation::DeviceStatus {
+                    device: "edge01".into(),
+                    status: "active".into(),
+                },
+            },
+            Some(caller("bob", true)),
+        )
+        .await;
+    let err = result.err().expect("unknown sub must be rejected");
+    assert!(
+        err.message
+            .contains("no vault entry for caller sub \"bob\""),
+        "error should name the missing vault entry: {}",
         err.message
     );
 }
@@ -3876,12 +4011,15 @@ async fn plan_write_device_status_produces_plan() {
 
     let server = write_server_for(&mock);
     let result = server
-        .plan_write_impl(crate::mcp::write::PlanWriteArgs {
-            operation: crate::mcp::write::WriteOperation::DeviceStatus {
-                device: "edge01".into(),
-                status: "active".into(),
+        .plan_write_impl(
+            crate::mcp::write::PlanWriteArgs {
+                operation: crate::mcp::write::WriteOperation::DeviceStatus {
+                    device: "edge01".into(),
+                    status: "active".into(),
+                },
             },
-        })
+            Some(caller("alice", true)),
+        )
         .await;
 
     unsafe {
@@ -3936,7 +4074,7 @@ async fn apply_write_rejects_tampered_plan() {
     };
 
     let result = server
-        .apply_write_impl(crate::mcp::write::ApplyWriteArgs { plan })
+        .apply_write_impl(crate::mcp::write::ApplyWriteArgs { plan }, None)
         .await;
     assert!(result.is_err(), "should reject tampered plan");
     let err = result.err().unwrap();

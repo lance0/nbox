@@ -34,9 +34,10 @@ use serde::Deserialize;
 use tokio::sync::Mutex;
 
 /// The two scopes nbox understands (DESIGN §24). Reads need `nbox:read`; writes
-/// (none yet) will need `nbox:write`.
-pub const SCOPE_READ: &str = "nbox:read";
-pub const SCOPE_WRITE: &str = "nbox:write";
+/// need `nbox:write`. Defined in the always-compiled [`super`] module (so the
+/// transport-agnostic write engine can name `nbox:write` without depending on
+/// this `http`-only module) and re-exported here for the OIDC validation path.
+pub use super::{SCOPE_READ, SCOPE_WRITE};
 
 /// The algorithms nbox will verify with — the explicit allowlist. The token's
 /// own `alg` is never trusted: `decode` is told exactly these, so `none` and any

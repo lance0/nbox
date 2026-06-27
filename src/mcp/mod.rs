@@ -374,6 +374,42 @@ fn to_mcp_error(err: anyhow::Error) -> ErrorData {
     }
 }
 
+/// Extract the write caller's authorization facts from the tool-call request
+/// context. Over the HTTP transport the validated [`oidc::Identity`] rides in
+/// the request [`Parts`](axum::http::request::Parts) — placed there by the auth
+/// gate (`http::gate_inner`) and propagated into the rmcp `RequestContext` by
+/// the Streamable-HTTP transport. Returns the caller's `sub` + whether the token
+/// holds `nbox:write`, both of which the write path enforces (ADR-0001 §7).
+///
+/// On stdio / non-`http` builds there is no per-user identity, so this returns
+/// `None` and the write path rejects with a clear "writes require OIDC" error —
+/// never the service token.
+#[cfg(feature = "http")]
+fn write_caller(ctx: &RequestContext<RoleServer>) -> Option<write::WriteCaller> {
+    write_caller_from_extensions(&ctx.extensions)
+}
+
+/// The extraction proper, over the rmcp request `Extensions` so it's unit-testable
+/// without a live `RequestContext`/`Peer`. The Streamable-HTTP transport stores
+/// the originating [`Parts`](axum::http::request::Parts) here; the auth gate put
+/// the validated [`oidc::Identity`] inside *those* parts' extensions.
+#[cfg(feature = "http")]
+fn write_caller_from_extensions(ext: &rmcp::model::Extensions) -> Option<write::WriteCaller> {
+    let parts = ext.get::<axum::http::request::Parts>()?;
+    let identity = parts.extensions.get::<oidc::Identity>()?;
+    let sub = identity.sub.clone().filter(|s| !s.is_empty())?;
+    Some(write::WriteCaller {
+        sub,
+        has_write_scope: identity.has_scope(SCOPE_WRITE),
+    })
+}
+
+/// Non-`http` builds have no OIDC transport, hence no per-user write identity.
+#[cfg(not(feature = "http"))]
+fn write_caller(_ctx: &RequestContext<RoleServer>) -> Option<write::WriteCaller> {
+    None
+}
+
 /// A permissive `{"type":"object"}` output schema, used only by `nbox_get`.
 ///
 /// `nbox_get` is polymorphic — its return shape depends on `kind`
@@ -790,14 +826,15 @@ impl NboxMcp {
     /// then calls `nbox_apply_write` to execute it. Requires writes enabled.
     #[tool(
         name = "nbox_plan_write",
-        description = "Plan a NetBox write operation (interface description, device status, IP/prefix/IP-range reserve, tag add/remove). Builds a MutationPlan with a before/after diff and a confirm token, without mutating. Review the plan, then call nbox_apply_write to execute. Requires writes enabled (--allow-writes + [serve.vault] per-user credential mapping).",
-        annotations(read_only_hint = true)
+        description = "Plan a NetBox write operation (interface description, device status, IP/prefix/IP-range reserve, tag add/remove). Builds a MutationPlan with a before/after diff and a confirm token, without mutating. Review the plan, then call nbox_apply_write to execute. Requires writes enabled (--allow-writes), the caller's token carrying the nbox:write scope, and a [serve.vault] mapping for the caller's OIDC sub; rejected over stdio (no per-user identity).",
+        annotations(read_only_hint = false)
     )]
     async fn nbox_plan_write(
         &self,
         Parameters(args): Parameters<write::PlanWriteArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<Json<crate::netbox::mutation::MutationPlan>, ErrorData> {
-        self.plan_write_impl(args).await
+        self.plan_write_impl(args, write_caller(&ctx)).await
     }
 
     /// Apply a previously planned write. Verifies the plan's confirm token,
@@ -811,8 +848,9 @@ impl NboxMcp {
     async fn nbox_apply_write(
         &self,
         Parameters(args): Parameters<write::ApplyWriteArgs>,
+        ctx: RequestContext<RoleServer>,
     ) -> Result<Json<crate::netbox::mutation::MutationReceipt>, ErrorData> {
-        self.apply_write_impl(args).await
+        self.apply_write_impl(args, write_caller(&ctx)).await
     }
 }
 
@@ -1112,6 +1150,13 @@ pub async fn serve(client: NetBoxClient, cache: Cache) -> anyhow::Result<()> {
 /// same [`NboxMcp`] backs it; see [`http::serve_http`]. [`oidc`] is the OAuth 2.1
 /// resource-server layer applied to `/mcp` when `--oidc-issuer` is configured;
 /// [`audit`] is the v1 ops layer (structured audit log + per-caller rate limit).
+/// The two OAuth scopes nbox understands (DESIGN §24). Reads need `nbox:read`;
+/// writes need `nbox:write` (ADR-0001 §7). Defined here in the always-compiled
+/// module so both the `http`-only OIDC validation path ([`oidc`]) and the
+/// transport-agnostic write engine ([`write`]) name one source of truth.
+pub const SCOPE_READ: &str = "nbox:read";
+pub const SCOPE_WRITE: &str = "nbox:write";
+
 #[cfg(feature = "http")]
 pub mod audit;
 
