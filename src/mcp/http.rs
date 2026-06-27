@@ -211,6 +211,12 @@ pub struct ServeOptions {
     pub rate_limit: u32,
     /// The read cache the long-lived server shares across tool calls.
     pub cache: crate::cache::Cache,
+    /// Per-user credential vault for write tools (Pattern 2). `None` ⇒
+    /// write tools reject with "writes disabled" (read-only HTTP server).
+    pub vault: Option<crate::mcp::vault::CredentialVault>,
+    /// The active profile name — bound into the confirmation token so a plan
+    /// from one profile can't be applied under another.
+    pub profile: String,
 }
 
 /// Serve the read-only MCP server over HTTP until interrupted.
@@ -228,6 +234,8 @@ pub async fn serve_http(client: NetBoxClient, addr: &str, opts: ServeOptions) ->
         allowed_hosts: extra_hosts,
         rate_limit,
         cache,
+        vault,
+        profile,
     } = opts;
     let oidc_on = oidc.is_some();
     let socket = parse_bind_addr(addr, oidc_on)?;
@@ -289,7 +297,7 @@ pub async fn serve_http(client: NetBoxClient, addr: &str, opts: ServeOptions) ->
     // Build the server once; the service factory hands rmcp a fresh clone per
     // session (cheap — `NboxMcp` holds an `Arc<NetBoxClient>` and a cheaply-cloned
     // `Cache` sharing one store, so all sessions share the cache).
-    let server = NboxMcp::new(client, cache);
+    let server = NboxMcp::new(client, cache, vault, profile);
 
     let cancel = CancellationToken::new();
     // `StreamableHttpServerConfig` is `#[non_exhaustive]`, so build from the

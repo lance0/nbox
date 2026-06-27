@@ -52,7 +52,7 @@ pub const CHANGELOG_MESSAGE_MAX: usize = 200;
 /// The operation a plan performs. `update` (`PATCH`) and `allocate` (`POST` to a
 /// server allocation endpoint, e.g. a prefix's `available-ips`) are the v1 verbs;
 /// create/delete are reserved for later releases (ADR-0001 §1, §6).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "lowercase")]
 pub enum Operation {
     /// A partial update (`PATCH` against the object detail endpoint).
@@ -86,7 +86,7 @@ impl Operation {
 
 /// Identity of the write target, captured so the plan is self-describing and
 /// the audit event can record it without re-deriving.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct PlanTarget {
     /// Object kind (e.g. `interface`).
     pub kind: String,
@@ -109,7 +109,7 @@ pub struct PlanTarget {
 /// a normalized before-hash, checked by a read-before-write at apply time. An
 /// allocation has no client precondition — the server endpoint is race-safe.
 /// Exactly one variant is populated; it is folded into the confirmation token.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Precondition {
     /// NetBox 4.6+ returns an `ETag` on the detail response; the apply sends
@@ -133,7 +133,7 @@ pub enum Precondition {
 /// declaration order — never the full object, never unrelated fields
 /// (ADR-0001 §1, §8). Values are the shaped values the operator reviews, not
 /// raw wire JSON.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct FieldChange {
     pub field: String,
     pub before: Value,
@@ -142,7 +142,7 @@ pub struct FieldChange {
 
 /// A validated, ready-to-review write plan (ADR-0001 §1). Built from a live
 /// object + an intent; applied only after explicit confirmation.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct MutationPlan {
     pub schema_version: u32,
     pub operation: Operation,
@@ -234,7 +234,7 @@ impl MutationPlan {
 
 /// The result of applying a plan (ADR-0001 §5 step 6): re-fetch after success
 /// and emit a receipt. Stable JSON surface for scripts (`--json --confirm`).
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct MutationReceipt {
     pub schema_version: u32,
     pub operation: Operation,

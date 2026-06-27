@@ -59,6 +59,8 @@ fn server_for(mock: &MockServer) -> NboxMcp {
     NboxMcp::new(
         NetBoxClient::new(&profile, None).unwrap(),
         crate::cache::Cache::disabled(),
+        None,
+        String::new(),
     )
 }
 
@@ -75,7 +77,12 @@ fn cached_server_for(mock: &MockServer) -> NboxMcp {
             ttl_secs: 30,
         },
     );
-    NboxMcp::new(NetBoxClient::new(&profile, None).unwrap(), cache)
+    NboxMcp::new(
+        NetBoxClient::new(&profile, None).unwrap(),
+        cache,
+        None,
+        String::new(),
+    )
 }
 
 /// A cached server whose entries expire immediately. This keeps TTL-expiry tests
@@ -93,7 +100,12 @@ fn zero_ttl_cached_server_for(mock: &MockServer) -> NboxMcp {
             ttl_secs: 0,
         },
     );
-    NboxMcp::new(NetBoxClient::new(&profile, None).unwrap(), cache)
+    NboxMcp::new(
+        NetBoxClient::new(&profile, None).unwrap(),
+        cache,
+        None,
+        String::new(),
+    )
 }
 
 #[tokio::test]
@@ -111,7 +123,12 @@ async fn nbox_get_consults_cache_and_clear_busts_it() {
             ttl_secs: 30,
         },
     );
-    let server = NboxMcp::new(NetBoxClient::new(&profile, None).unwrap(), cache);
+    let server = NboxMcp::new(
+        NetBoxClient::new(&profile, None).unwrap(),
+        cache,
+        None,
+        String::new(),
+    );
 
     let args = get_args(GetKind::Site, "iad1");
     // Pre-seed under the exact key `get_cached` computes for these args.
@@ -149,7 +166,12 @@ async fn read_resource_consults_nbox_get_cache() {
             ttl_secs: 30,
         },
     );
-    let server = NboxMcp::new(NetBoxClient::new(&profile, None).unwrap(), cache);
+    let server = NboxMcp::new(
+        NetBoxClient::new(&profile, None).unwrap(),
+        cache,
+        None,
+        String::new(),
+    );
 
     let key = crate::cache::CacheKey::object("site", "iad1", "vrf=;site=;group=");
     server
@@ -3734,4 +3756,194 @@ mod contracts {
         );
         assert_eq!(value["mac_address"], "aa:bb:cc:dd:ee:ff");
     }
+}
+
+// --- MCP write tool tests (Pattern 2) ---------------------------------------
+
+/// A server with writes enabled (vault configured for a test user).
+fn write_server_for(mock: &MockServer) -> NboxMcp {
+    let profile = ProfileConfig {
+        url: mock.uri(),
+        ..Default::default()
+    };
+    let mut entries = std::collections::BTreeMap::new();
+    entries.insert(
+        "__stdio_no_identity__".to_string(),
+        crate::mcp::vault::VaultEntry {
+            token_env: "NBOX_VAULT_TEST_WRITE".to_string(),
+        },
+    );
+    let vault = crate::mcp::vault::CredentialVault::new(entries, true);
+    NboxMcp::new(
+        NetBoxClient::new(&profile, None).unwrap(),
+        crate::cache::Cache::disabled(),
+        Some(vault),
+        "test-profile".to_string(),
+    )
+}
+
+#[tokio::test]
+async fn plan_write_rejects_when_vault_absent() {
+    // A read-only server (vault = None) must reject write planning with a
+    // clear "writes not enabled" error, not fall through to the service token.
+    let mock = MockServer::start().await;
+    let server = server_for(&mock); // vault = None
+    let _err = server
+        .plan_write_impl(crate::mcp::write::PlanWriteArgs {
+            operation: crate::mcp::write::WriteOperation::DeviceStatus {
+                device: "edge01".into(),
+                status: "active".into(),
+            },
+        })
+        .await
+        .is_err();
+    let result = server
+        .plan_write_impl(crate::mcp::write::PlanWriteArgs {
+            operation: crate::mcp::write::WriteOperation::DeviceStatus {
+                device: "edge01".into(),
+                status: "active".into(),
+            },
+        })
+        .await;
+    assert!(result.is_err(), "should reject writes when vault is absent");
+    let err = result.err().unwrap();
+
+    assert!(
+        err.message.contains("writes are not enabled"),
+        "error should mention writes not enabled: {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn plan_write_device_status_produces_plan() {
+    // Set the per-user token env var so the vault resolves successfully.
+    unsafe {
+        std::env::set_var("NBOX_VAULT_TEST_WRITE", "nbt_per_user_token");
+    }
+    let mock = MockServer::start().await;
+
+    // Mount the device detail (read-before-write) — paginated search response.
+    mount_one(
+        &mock,
+        "/api/dcim/devices/",
+        json!({
+            "id": 1, "name": "edge01", "slug": "edge01",
+            "status": {"value": "planned", "label": "Planned"},
+            "display": "edge01", "url": "u",
+            "custom_fields": {}
+        }),
+    )
+    .await;
+    // Mount the choices endpoint for status validation (DRF OPTIONS shape).
+    mock.register(
+        wiremock::Mock::given(wiremock::matchers::method("OPTIONS"))
+            .and(wiremock::matchers::path("/api/dcim/devices/"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "name": "Device",
+                "actions": {
+                    "POST": {
+                        "status": {
+                            "type": "choice",
+                            "label": "Status",
+                            "choices": [
+                                {"value": "active", "display": "Active"},
+                                {"value": "planned", "display": "Planned"},
+                            ]
+                        }
+                    }
+                }
+            }))),
+    )
+    .await;
+
+    // Mount the device detail endpoint (read-before-write with ETag).
+    mock.register(
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/api/dcim/devices/1/"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({
+                        "id": 1, "name": "edge01", "slug": "edge01",
+                        "status": {"value": "planned", "label": "Planned"},
+                        "display": "edge01", "url": "u",
+                        "custom_fields": {}
+                    }))
+                    .insert_header("ETag", "\"v1\""),
+            ),
+    )
+    .await;
+
+    let server = write_server_for(&mock);
+    let result = server
+        .plan_write_impl(crate::mcp::write::PlanWriteArgs {
+            operation: crate::mcp::write::WriteOperation::DeviceStatus {
+                device: "edge01".into(),
+                status: "active".into(),
+            },
+        })
+        .await;
+
+    unsafe {
+        std::env::remove_var("NBOX_VAULT_TEST_WRITE");
+    }
+
+    let plan = result.expect("plan should succeed with vault configured");
+    let plan = plan.0; // unwrap Json
+    assert_eq!(plan.operation, crate::netbox::mutation::Operation::Update);
+    assert_eq!(plan.target.kind, "device");
+    assert_eq!(plan.target.r#ref, "edge01");
+    // The plan should show the status changing from planned to active.
+    let status_change = plan
+        .fields
+        .iter()
+        .find(|f| f.field == "status")
+        .expect("plan should include a status field change");
+    assert_eq!(status_change.before, "planned");
+    assert_eq!(status_change.after, "active");
+    // The plan must have a confirm_token (non-empty).
+    assert!(!plan.confirm_token.is_empty());
+}
+
+#[tokio::test]
+async fn apply_write_rejects_tampered_plan() {
+    // A plan whose confirm_token doesn't match its contents must be rejected.
+    let mock = MockServer::start().await;
+    let server = server_for(&mock); // vault doesn't matter — verify is first
+
+    // Build a fake plan with a bad confirm_token.
+    let plan = crate::netbox::mutation::MutationPlan {
+        schema_version: 1,
+        operation: crate::netbox::mutation::Operation::Update,
+        target: crate::netbox::mutation::PlanTarget {
+            kind: "device".into(),
+            r#ref: "edge01".into(),
+            id: 1,
+            display: "edge01".into(),
+            endpoint: "/api/dcim/devices/1/".into(),
+            profile: "test-profile".into(),
+        },
+        precondition: crate::netbox::mutation::Precondition::None,
+        fields: vec![],
+        patch: json!({}),
+        no_op: true,
+        warnings: vec![],
+        errors: vec![],
+        changelog_message: None,
+        count: 1,
+        confirm_token: "tampered_token".into(),
+        expires_at: "2999-01-01T00:00:00Z".into(),
+    };
+
+    let result = server
+        .apply_write_impl(crate::mcp::write::ApplyWriteArgs { plan })
+        .await;
+    assert!(result.is_err(), "should reject tampered plan");
+    let err = result.err().unwrap();
+
+    assert!(
+        err.message.contains("confirmation token"),
+        "error should mention confirm token: {}",
+        err.message
+    );
 }

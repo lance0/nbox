@@ -52,6 +52,8 @@ const EXPECTED_TOOLS: &[&str] = &[
     "nbox_list_tags",
     "nbox_tagged",
     "nbox_cache_clear",
+    "nbox_plan_write",
+    "nbox_apply_write",
 ];
 
 /// A live `nbox serve` child plus the plumbing to talk to it. Holds the child's

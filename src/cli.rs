@@ -607,6 +607,15 @@ pub enum Command {
         #[arg(long, value_name = "N")]
         rate_limit: Option<u32>,
 
+        /// Enable MCP write tools (Pattern 2, DESIGN §24). Requires the `http`
+        /// feature and `--http` (writes need the HTTP transport so the OIDC
+        /// caller identity can be resolved to a per-user NetBox token via the
+        /// `[serve.vault]` config). Without this flag (the default), all write
+        /// tools reject with "writes disabled". Also read from
+        /// `[serve].allow_writes`.
+        #[arg(long = "allow-writes")]
+        allow_writes: bool,
+
         /// Print a copy-paste MCP server config (the `mcpServers` JSON object
         /// most hosts read) to stdout and exit, without starting the server or
         /// connecting to NetBox. The `command` is the absolute path to this
@@ -1329,6 +1338,7 @@ mod tests {
                 ref allowed_host,
                 rate_limit: None,
                 print_config: false,
+                ..
             }) if allowed_host.is_empty()
         ));
         // `--http` (and the optional `--http-token`) parse onto the variant.

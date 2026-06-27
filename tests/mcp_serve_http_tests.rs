@@ -52,6 +52,8 @@ const EXPECTED_TOOLS: &[&str] = &[
     "nbox_list_tags",
     "nbox_tagged",
     "nbox_cache_clear",
+    "nbox_plan_write",
+    "nbox_apply_write",
 ];
 
 /// A live `nbox serve --http` child plus its base URL. On drop the child is

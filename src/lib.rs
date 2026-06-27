@@ -598,6 +598,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             oidc_jwks_url,
             allowed_host,
             rate_limit,
+            allow_writes,
             print_config,
         }) => {
             run_serve(
@@ -610,6 +611,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                     oidc_jwks_url,
                     allowed_host,
                     rate_limit,
+                    allow_writes,
                     print_config,
                 },
             )
@@ -745,6 +747,9 @@ struct ServeFlags {
     /// Per-caller requests-per-minute cap; `None` ⇒ fall back to config / off.
     rate_limit: Option<u32>,
     /// `--print-config`: print the `mcpServers` snippet and exit (no connect).
+    /// `--allow-writes`: enable MCP write tools (Pattern 2). `false` (the
+    /// default) keeps the server read-only.
+    allow_writes: bool,
     print_config: bool,
 }
 
@@ -784,6 +789,9 @@ async fn run_serve(ctx: &Ctx, flags: ServeFlags) -> Result<()> {
     // Per-caller rate limit: flag wins, then config, then off (0). Absent / 0 =
     // disabled, so existing behavior is unchanged unless the operator opts in.
     let rate_limit = flags.rate_limit.or(serve_cfg.rate_limit).unwrap_or(0);
+    // Write tools require both the flag/config gate AND the HTTP transport
+    // (writes need OIDC identity → per-user token resolution via the vault).
+    let allow_writes = flags.allow_writes || serve_cfg.allow_writes;
 
     // OIDC resource-server mode is enabled by the issuer's presence; the audience
     // is then required (RFC 8707 — without an expected `aud`, nbox can't bind a
@@ -807,6 +815,17 @@ async fn run_serve(ctx: &Ctx, flags: ServeFlags) -> Result<()> {
     // The long-lived server shares a read cache across tool calls (chatty agents
     // re-read the same object graph); agents can drop it with `nbox_cache_clear`.
     let cache = serve_cache(ctx, &client);
+
+    // Build the per-user credential vault when writes are enabled. The vault
+    // maps OIDC `sub` → env var name holding a per-user NetBox token. Writes
+    // require the HTTP transport (OIDC identity); stdio has no caller identity,
+    // so writes on stdio are rejected by the vault being `None`.
+    let vault = if allow_writes && http.is_some() {
+        Some(mcp::vault::CredentialVault::new(serve_cfg.vault, true))
+    } else {
+        None
+    };
+
     match http {
         None => mcp::serve(client, cache).await,
         Some(addr) => {
@@ -819,6 +838,8 @@ async fn run_serve(ctx: &Ctx, flags: ServeFlags) -> Result<()> {
                 allowed_hosts,
                 rate_limit,
                 cache,
+                vault,
+                ctx.profile.clone().unwrap_or_default(),
             )
             .await
         }
@@ -908,6 +929,8 @@ async fn serve_http_or_explain(
     allowed_hosts: Vec<String>,
     rate_limit: u32,
     cache: cache::Cache,
+    vault: Option<mcp::vault::CredentialVault>,
+    profile: String,
 ) -> Result<()> {
     let oidc = oidc.map(|(issuer, audience)| mcp::OidcArgs {
         issuer,
@@ -923,6 +946,8 @@ async fn serve_http_or_explain(
             allowed_hosts,
             rate_limit,
             cache,
+            vault,
+            profile,
         },
     )
     .await
@@ -942,6 +967,8 @@ async fn serve_http_or_explain(
     _allowed_hosts: Vec<String>,
     _rate_limit: u32,
     _cache: cache::Cache,
+    _vault: Option<mcp::vault::CredentialVault>,
+    _profile: String,
 ) -> Result<()> {
     Err(error::NboxError::Usage(
         "`nbox serve --http` requires the `http` build feature, which this binary \

@@ -491,8 +491,10 @@ the read tool proves out in practice. Consolidated future scope:
 - ☑ `nbox tag remove <type> <name> <tag>` — the inverse of `tag add`, sharing
   one planner/applier (`TagOperation::Add`/`Remove`). A no-op if the tag is
   already absent.
-- ☐ **Write-capable MCP tools** — opt-in, return the diff for the agent to confirm; read-only stays the
-  default — plus the **per-user credential vault (Pattern 2)** for real per-user NetBox RBAC over MCP.
+- ☑ **Write-capable MCP tools + per-user credential vault (Pattern 2)** — `nbox_plan_write` and
+  `nbox_apply_write` tools reuse the CLI's ADR-0001 safe-write engine; the `[serve.vault]` config maps
+  OIDC `sub` → per-user NetBox token (env var), bridged at request time via `NetBoxClient::with_token`.
+  Writes require `--allow-writes` + HTTP transport (OIDC identity); stdio stays read-only.
 - ☐ TUI edit mode (`e` / `d` / confirm).
 - ☐ `nbox raw POST|PATCH|DELETE`; OPTIONS write-capability discovery (optional `schema` command; would
   also enable value-level filter validation beyond today's typed allowlist, netbox#6489).

@@ -4,6 +4,7 @@
 //! `%APPDATA%\nbox\config.toml` (Windows). We read with `toml` and mutate with
 //! `toml_edit` so user comments and formatting survive `profile add`/`use`.
 
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -13,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use toml_edit::{DocumentMut, Item, Table, value};
 
 use crate::cli::{ConfigCommand, ProfileCommand, TokenCommand};
+use crate::mcp::vault::VaultEntry;
 use crate::netbox::auth::AuthScheme;
 
 /// Starter config written by `nbox config init`.
@@ -135,6 +137,20 @@ pub struct ServeConfig {
     /// minute. Absent / `0` ⇒ disabled (default). Overridden by `--rate-limit`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rate_limit: Option<u32>,
+
+    /// Whether to enable write tools on the MCP server (Pattern 2, DESIGN §24).
+    /// When `false` (the default), all write tools reject with "writes
+    /// disabled". When `true`, the operator must also provision
+    /// `[serve.vault.<sub>]` entries mapping each caller's OIDC `sub` to an
+    /// env var holding their per-user NetBox token. Overridden by `--allow-writes`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub allow_writes: bool,
+
+    /// Per-user credential vault: maps OIDC `sub` → env var name holding a
+    /// per-user NetBox token. See [`crate::mcp::vault::CredentialVault`]. Only
+    /// consulted when `allow_writes` is `true`.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub vault: BTreeMap<String, VaultEntry>,
 }
 
 impl std::fmt::Debug for ServeConfig {
@@ -152,6 +168,8 @@ impl std::fmt::Debug for ServeConfig {
             .field("jwks_url", &self.jwks_url)
             .field("allowed_hosts", &self.allowed_hosts)
             .field("rate_limit", &self.rate_limit)
+            .field("allow_writes", &self.allow_writes)
+            .field("vault_entries", &self.vault.len())
             .finish()
     }
 }

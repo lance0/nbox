@@ -109,6 +109,24 @@ impl NetBoxClient {
         })
     }
 
+    /// Clone this client with the token swapped to a per-user credential.
+    ///
+    /// The MCP write path (Pattern 2, DESIGN §24) resolves a caller's OIDC
+    /// `sub` to a per-user NetBox token via
+    /// [`crate::mcp::vault::CredentialVault`], then bridges it here so the
+    /// write `PATCH`/`POST` hits NetBox under the caller's identity — not
+    /// the shared service token. The GraphQL capability probe is intentionally
+    /// **not** shared with the original client: a per-user client is
+    /// short-lived (one plan + one apply) and should re-probe its own
+    /// capabilities, not inherit the service account's.
+    pub(crate) fn with_token(&self, token: String) -> Self {
+        Self {
+            token: Some(token),
+            graphql_capabilities: Arc::new(tokio::sync::OnceCell::new()),
+            ..self.clone()
+        }
+    }
+
     /// The configured backend preference for `surface` (REST when unset). This is
     /// the *preference*; [`effective_backend`](Self::effective_backend) resolves it
     /// against the capability probe.
