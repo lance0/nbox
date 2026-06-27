@@ -296,8 +296,8 @@ Shipped on this foundation, in order:
 
 - **Multi-IP allocation (`--count N`).** `ip reserve` and `ip-range reserve`
   accept `--count N` (default 1) to reserve N IP addresses in one invocation.
-  NetBox has no batch allocation endpoint, so each IP is a separate `POST`; the
-  receipt carries a JSON array of the created `IpView`s in `object`. The `count`
+  The v1 implementation issues each IP as a separate `POST` (one per request);
+  the receipt carries a JSON array of the created `IpView`s in `object`. The `count`
   is bound into the confirmation token (so a `count=3` plan cannot be replayed
   as `count=5`) and appears in the plan's fields diff when > 1.
   - **Partial failure.** If the k-th `POST` fails (k > 0), the receipt is

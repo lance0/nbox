@@ -463,11 +463,21 @@ the read tool proves out in practice. Consolidated future scope:
   as `ip reserve` and `prefix reserve`.
 - ☑ **Multi-IP allocation (`--count N`).** `ip reserve` and `ip-range reserve`
   accept `--count N` (default 1) to reserve N IP addresses in one invocation.
-  Each IP is a separate `POST` (NetBox has no batch endpoint); the receipt
-  carries a JSON array of created `IpView`s. `count` is bound into the
+  The v1 implementation issues N sequential `POST`s (one IP per request); the
+  receipt carries a JSON array of created `IpView`s. `count` is bound into the
   confirmation token. Partial failure (k of N POSTs succeeded) returns the k
   created IPs with `partial: true` and exit 1; the audit logs `outcome=partial`.
   `count=1` plans/receipts are byte-identical to existing single-IP ones.
+- ☐ **Atomic multi-IP allocation (list-body POST).** NetBox's `available-ips`
+  endpoint accepts a JSON list body (`[{…}, …]`) for all-or-nothing allocation
+  in a single round-trip — the server either creates all N or creates zero. The
+  current sequential-POST approach (above) permits partial states (handled
+  honestly with `partial: true` + exit 1, but the operator still has k orphan
+  IPs to clean up) and costs N round-trips. Switching to the list-body POST
+  would eliminate the partial-failure path and cut latency to one request; the
+  touch points are small (POST body builder + response parser already handles
+  single `IpView` vs. JSON array). Revisit if orphan-IP cleanup burden shows up
+  in practice.
 - ☐ **IPAM allocate (rest)** — choosing a specific address/block. The read half
   (`next-ip` / `next-prefix`, range lookup) and all three allocate writes (`ip
   reserve`, `prefix reserve`, `ip-range reserve`) plus multi-IP `--count N`

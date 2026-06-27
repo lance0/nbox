@@ -135,8 +135,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     names only.
 - **Multi-IP allocation: `ip reserve --count N` and `ip-range reserve --count N`.**
   Both allocate commands now accept `--count N` (default 1) to reserve N IP
-  addresses in one invocation. Each IP is a separate `POST` (NetBox has no batch
-  allocation endpoint); the receipt carries a JSON array of the created `IpView`s
+  addresses in one invocation. The v1 implementation issues each IP as a
+  separate `POST` (one per request); the receipt carries a JSON array of the
+  created `IpView`s
   and the plan shows `count` in its fields diff. `count` is bound into the
   confirmation token so a `count=3` plan can't be replayed as `count=5`.
   - **Partial failure.** If the k-th `POST` fails (k > 0), the receipt is
