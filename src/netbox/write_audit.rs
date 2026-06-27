@@ -196,6 +196,7 @@ mod tests {
         assert_eq!(Outcome::DryRun.as_str(), "dry_run");
         assert_eq!(Outcome::NoOp.as_str(), "no_op");
         assert_eq!(Outcome::Applied.as_str(), "applied");
+        assert_eq!(Outcome::Partial.as_str(), "partial");
         assert_eq!(Outcome::NotApplied.as_str(), "not_applied");
         assert_eq!(Outcome::Stale.as_str(), "stale");
         assert_eq!(Outcome::Validation.as_str(), "validation");
@@ -250,5 +251,98 @@ mod tests {
         let s = Started::now();
         // Just exercises the path; a freshly started stopwatch reads ~0ms.
         assert!(s.elapsed_ms() < 5_000);
+    }
+
+    /// The tracing event `emit()` produces carries exactly the documented
+    /// field allow-list — and no `token`/`authorization`/secret — regardless
+    /// of what an operator filters. Pins the field names an agent/log scraper
+    /// can rely on; a removed, renamed, or added field fails here.
+    #[test]
+    fn write_audit_field_allowlist_is_stable() {
+        use std::sync::{Arc, Mutex as StdMutex};
+
+        use tracing::field::{Field, Visit};
+        use tracing::subscriber::with_default;
+        use tracing_subscriber::layer::{Context, SubscriberExt};
+        use tracing_subscriber::{Layer, Registry};
+
+        // A tracing layer that records the field NAMES of every event under
+        // the write-audit target. We use it to prove the emitted record carries
+        // exactly the documented allow-list — and, crucially, no
+        // `token`/`authorization` field.
+        #[derive(Default)]
+        struct Capture {
+            names: Arc<StdMutex<Vec<String>>>,
+        }
+        struct NameVisitor<'a> {
+            names: &'a mut Vec<String>,
+        }
+        impl Visit for NameVisitor<'_> {
+            fn record_debug(&mut self, field: &Field, _value: &dyn std::fmt::Debug) {
+                self.names.push(field.name().to_string());
+            }
+            fn record_str(&mut self, field: &Field, _value: &str) {
+                self.names.push(field.name().to_string());
+            }
+        }
+        impl<S: tracing::Subscriber> Layer<S> for Capture {
+            fn on_event(&self, event: &tracing::Event<'_>, _ctx: Context<'_, S>) {
+                if event.metadata().target() != AUDIT_TARGET {
+                    return;
+                }
+                let mut names = self.names.lock().unwrap();
+                let mut v = NameVisitor { names: &mut names };
+                event.record(&mut v);
+            }
+        }
+
+        let names = Arc::new(StdMutex::new(Vec::new()));
+        let layer = Capture {
+            names: names.clone(),
+        };
+        let subscriber = Registry::default().with(layer);
+
+        with_default(subscriber, || {
+            ev(&["description", "status"], None).emit();
+        });
+
+        let names = names.lock().unwrap();
+
+        // The exact documented allow-list (plus the `message` event message).
+        let allowed = [
+            "message",
+            "surface",
+            "profile",
+            "host",
+            "operation",
+            "target_kind",
+            "target_id",
+            "target_display",
+            "fields",
+            "outcome",
+            "http_method",
+            "http_path",
+            "status",
+            "latency_ms",
+            "request_id",
+            "message_present",
+            "message_len",
+        ];
+        for name in names.iter() {
+            assert!(
+                allowed.contains(&name.as_str()),
+                "write-audit event emitted an unexpected field: {name}"
+            );
+        }
+        // The forbidden fields must never be present, under any name.
+        for forbidden in ["token", "authorization", "secret", "bearer"] {
+            assert!(
+                !names.iter().any(|n| n == forbidden),
+                "write-audit event must never emit a `{forbidden}` field"
+            );
+        }
+        // Sanity: a representative allow-list field did make it through.
+        assert!(names.iter().any(|n| n == "outcome"));
+        assert!(names.iter().any(|n| n == "surface"));
     }
 }

@@ -421,4 +421,34 @@ mod tests {
             "unverified (endpoint absent (NetBox < 4.5))"
         );
     }
+
+    #[test]
+    fn auth_check_serde_shape_tags_each_variant() {
+        // The `token` field of `nbox status` / MCP `nbox_status` is a tagged
+        // enum (`#[serde(tag = "status", rename_all = "snake_case")]`). An agent
+        // reads `token.status` to decide validity, so the tag value and the
+        // per-variant fields are a stable contract — pin all three shapes.
+        let valid = serde_json::to_value(AuthCheck::Valid {
+            username: "admin".into(),
+            display: Some("Admin".into()),
+        })
+        .expect("serialize Valid");
+        assert_eq!(valid["status"], "valid");
+        assert_eq!(valid["username"], "admin");
+        assert_eq!(valid["display"], "Admin");
+
+        let invalid = serde_json::to_value(AuthCheck::Invalid {
+            reason: "bad token".into(),
+        })
+        .expect("serialize Invalid");
+        assert_eq!(invalid["status"], "invalid");
+        assert_eq!(invalid["reason"], "bad token");
+
+        let unverified = serde_json::to_value(AuthCheck::Unverified {
+            reason: "not checked".into(),
+        })
+        .expect("serialize Unverified");
+        assert_eq!(unverified["status"], "unverified");
+        assert_eq!(unverified["reason"], "not checked");
+    }
 }
