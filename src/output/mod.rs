@@ -21,8 +21,18 @@ pub fn emit<T: Serialize>(
     plain: impl FnOnce(),
 ) -> Result<()> {
     match format {
-        Format::Json => json::print_with(value, opts)?,
-        Format::Csv => csv::print(value)?,
+        Format::Json => {
+            // Fast path: when no shaping is needed, stream straight to a locked
+            // stdout via serde_json::to_writer_pretty — skipping both the
+            // intermediate Value and the full String materialization. Byte-identical
+            // to print_with (to_writer_pretty and to_string_pretty share a formatter).
+            if opts.fields.is_none() && !opts.envelope {
+                json::print_streaming(value, opts)?;
+            } else {
+                json::print_with(value, opts)?;
+            }
+        }
+        Format::Csv => csv::print_streaming(value, None)?,
         Format::Plain => plain(),
     }
     Ok(())
