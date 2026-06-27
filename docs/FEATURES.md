@@ -40,6 +40,19 @@ array on any object). The MCP server stays read-only.
 | `nbox open <kind>/<ref>` | Open an object in the browser. Kinds: device, ip, prefix, vlan, site, rack, rack-group, circuit, virtual-circuit, aggregate, asn, ip-range, tenant, contact, provider, vm, vm-type, cluster, vrf, route-target, mac, and `interface/<device>/<name>` (the interface name may contain slashes, e.g. `xe-0/0/1`). |
 | `nbox raw GET <path>` | Raw read-only API request (escape hatch). |
 
+## Structured exports
+
+| Command | What |
+| ------- | ---- |
+| `nbox export prometheus-sd --prefix <cidr> [--vrf] [--port N]` | Emit Prometheus file-based service-discovery JSON (`[{"targets": ["ip:port"], "labels": {...}}]`) for IPs assigned within a prefix. Reuses the read engine: resolves the prefix (with `--vrf` disambiguation), lists its member IPs, enriches each with its assigned device's site/role/status via one `id__in` fetch, and groups targets by device. Pipe straight to a file Prometheus scrapes. |
+| `nbox export prometheus-sd --tag <slug> [--port N]` | Same SD JSON, sourced from IPs carrying a tag (IP-addresses `?tag=` filter). |
+
+Targets are `ip:port` (default port `9100`, the conventional `node_exporter`
+port). Labels per group: `device`, `site`, `role`, `status`, `tags` (comma-
+joined, de-duplicated, sorted). IPs without an assigned device group by site
+(or a single `device=""` group). `--prefix` and `--tag` are mutually
+exclusive. Output is a compact JSON array on stdout — pipe-safe, no envelope.
+
 Every detail lookup surfaces the object's `tags` (joined slugs in plain output, a
 `tags` array in `--json`), dropped when the object has none, plus its non-empty
 custom fields as `cf.<name>`. `owner` (NetBox 4.5+) — a native owner (user or
