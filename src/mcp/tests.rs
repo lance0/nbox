@@ -201,6 +201,45 @@ async fn nbox_get_and_resource_share_cache_entry() {
 }
 
 #[tokio::test]
+async fn nbox_get_cache_hit_makes_zero_origin_requests() {
+    // A repeat `nbox_get` for the same object hits the read cache, not the
+    // origin. The mock is mounted with `.expect(1)`: the second call must NOT
+    // reach the wiremock server, or `verify()` fails.
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/sites/"))
+        .and(query_param("slug", "iad1"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 1, "url": "u", "name": "IAD1", "slug": "iad1",
+                "status": {"value": "active", "label": "Active"}
+            }]
+        })))
+        .expect(1)
+        .mount(&mock)
+        .await;
+
+    let server = cached_server_for(&mock);
+    let args = get_args(GetKind::Site, "iad1");
+    let Json(first) = server
+        .nbox_get(Parameters(args.clone()))
+        .await
+        .expect("first nbox_get fills the cache");
+    assert_eq!(first["name"], json!("IAD1"));
+
+    // Second read — same object, same args — must be a cache HIT: zero origin
+    // requests. `.expect(1)` on the mock would fail if this touched the wire.
+    let Json(second) = server
+        .nbox_get(Parameters(args))
+        .await
+        .expect("second nbox_get served from cache");
+    assert_eq!(second["name"], json!("IAD1"));
+
+    mock.verify().await;
+}
+
+#[tokio::test]
 async fn cache_clear_busts_resource_cache_entries() {
     let mock = MockServer::start().await;
     Mock::given(method("GET"))
