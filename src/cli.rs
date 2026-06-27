@@ -618,6 +618,51 @@ pub enum Command {
         #[arg(long)]
         print_config: bool,
     },
+
+    /// Structured read-only exports (e.g. Prometheus service-discovery JSON).
+    /// Query NetBox via the read engine and emit a fixed structured shape to
+    /// stdout — distinct from the presentation-oriented JSON/CSV view layer.
+    Export {
+        #[command(subcommand)]
+        action: ExportAction,
+    },
+}
+
+/// `nbox export` — structured read-only exports (file-SD JSON for Prometheus,
+/// etc.). Each subcommand queries NetBox via the read engine and emits a fixed
+/// structured shape to stdout, distinct from the presentation-oriented
+/// JSON/CSV view layer.
+///
+/// The subcommand names are the consumer format (`prometheus-sd`), not a
+/// generic verb, so a future `--format`/`<consumer>` split stays obvious.
+#[derive(Debug, Subcommand)]
+pub enum ExportAction {
+    /// Emit Prometheus file-based service-discovery JSON
+    /// (`[{"targets": ["ip:port"], "labels": {...}}]`) for IPs in a prefix
+    /// or carrying a tag. Targets are grouped by device; labels carry
+    /// device/site/role/status/tags. Pipe the output straight to a file
+    /// Prometheus scrapes (`prometheus-sd.json` in its `file_sd_configs`).
+    PrometheusSd {
+        /// Source prefix in CIDR notation. IPs assigned within the prefix
+        /// become targets. Mutually exclusive with `--tag`.
+        #[arg(long, value_name = "CIDR")]
+        prefix: Option<String>,
+
+        /// Source tag slug (or name): IPs carrying this tag become targets.
+        /// Mutually exclusive with `--prefix`.
+        #[arg(long, value_name = "SLUG")]
+        tag: Option<String>,
+
+        /// Disambiguate the prefix by VRF (name, slug, or RD) when the CIDR
+        /// exists in more than one VRF. Ignored with `--tag`.
+        #[arg(long, value_name = "VRF")]
+        vrf: Option<String>,
+
+        /// Scrape target port. Defaults to 9100 (the conventional
+        /// `node_exporter` port).
+        #[arg(long, value_name = "PORT", default_value_t = crate::export::DEFAULT_PORT)]
+        port: u16,
+    },
 }
 
 /// `nbox tag` write actions (ADR-0001 safe-write foundation). Add and remove

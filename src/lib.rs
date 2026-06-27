@@ -35,6 +35,7 @@ pub mod cli;
 pub mod config;
 pub mod domain;
 pub mod error;
+pub mod export;
 pub mod mac;
 pub mod mcp;
 pub mod netbox;
@@ -564,6 +565,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             limit,
             diff,
         }) => run_history(&ctx, &kind, &value, limit, diff).await,
+        Some(Command::Export { action }) => run_export(&ctx, action).await,
         Some(Command::Raw { method, path }) => run_raw(&ctx, &method, &path).await,
         Some(Command::Status) => run_status(&ctx).await,
         Some(Command::Config { command }) => config::run_config(
@@ -2546,6 +2548,178 @@ async fn run_tagged(ctx: &Ctx, tag: &str, limit: usize) -> Result<()> {
             println!("{:<7} {}", r.kind, r.display);
         }
     })
+}
+
+/// `nbox export <action>` — structured read-only exports.
+///
+/// `prometheus-sd` queries NetBox for IPs in a prefix (or carrying a tag),
+/// enriches each with its assigned device's site/role, and emits Prometheus
+/// file-SD JSON to stdout. The SD JSON is the only sensible output shape for
+/// this subcommand, so it is written directly (not via the plain/JSON/CSV
+/// view layer) — `--json`/`--output` are accepted (global flags) but have no
+/// effect: the export's format is fixed by its consumer.
+async fn run_export(ctx: &Ctx, action: crate::cli::ExportAction) -> Result<()> {
+    use crate::cli::ExportAction::PrometheusSd;
+    use crate::export::{ExportIp, prometheus_sd, strip_prefix_len};
+    use crate::netbox::models::ipam::IpAddress;
+
+    let PrometheusSd {
+        prefix,
+        tag,
+        vrf,
+        port,
+    } = action;
+
+    // Exactly one source — `--prefix` xor `--tag`.
+    match (prefix.as_deref(), tag.as_deref()) {
+        (Some(_), Some(_)) => {
+            return Err(error::NboxError::Usage(
+                "--prefix and --tag are mutually exclusive — pass one".to_string(),
+            )
+            .into());
+        }
+        (None, None) => {
+            return Err(error::NboxError::Usage(
+                "pass --prefix <cidr> or --tag <slug>".to_string(),
+            )
+            .into());
+        }
+        _ => {}
+    }
+
+    let client = connect(ctx)?;
+
+    // Gather the source IPs. The prefix path resolves the prefix (so --vrf
+    // disambiguation + 404 reuse the read engine) then lists its member IPs,
+    // scoped to the resolved prefix's VRF. The tag path resolves the tag (id)
+    // then lists IPs carrying it via the IP-addresses `?tag=` filter.
+    let ips: Vec<IpAddress> = if let Some(cidr) = prefix.as_deref() {
+        let p = detail::resolve_prefix(&client, cidr, vrf.as_deref(), &not_found).await?;
+        let vrf_id = p.vrf.as_ref().map(|v| v.id);
+        client.prefix_ips(cidr, vrf_id, EXPORT_IP_CAP).await?
+    } else {
+        let tag_slug = tag.as_deref().unwrap();
+        let tag_info = client
+            .tag_by_ref(tag_slug)
+            .await?
+            .ok_or_else(|| not_found("tag", tag_slug))?;
+        client
+            .list_all(
+                crate::netbox::endpoints::Endpoint::IpAddresses,
+                vec![("tag", tag_info.slug.clone())],
+                EXPORT_IP_CAP,
+            )
+            .await?
+    };
+
+    // Enrich: resolve the distinct assigned devices in one `id__in` fetch so
+    // site/role/status come from the device (the IP's `assigned_object`
+    // interface brief carries a nested device id but not site/role). IPs
+    // without an assigned device keep `device=None` and fall back to per-site
+    // grouping in [`prometheus_sd`].
+    let device_map = resolve_assigned_devices(&client, &ips).await?;
+
+    let export_ips: Vec<ExportIp> = ips
+        .into_iter()
+        .map(|ip| {
+            let (device_id, device_name) = assigned_device(&ip);
+            let (site, role, status, dev_tags) = device_id
+                .and_then(|id| device_map.get(&id))
+                .map(|d| {
+                    let site = d
+                        .site
+                        .as_ref()
+                        .map(crate::netbox::models::common::BriefObject::label);
+                    let role = d
+                        .role
+                        .as_ref()
+                        .map(crate::netbox::models::common::BriefObject::label);
+                    (
+                        site,
+                        role,
+                        d.status.as_ref().map(|c| c.value.clone()),
+                        d.tags.clone(),
+                    )
+                })
+                .unwrap_or((
+                    None,
+                    None,
+                    ip.status.as_ref().map(|c| c.value.clone()),
+                    Vec::new(),
+                ));
+            // Prefer the device's tags when a device resolved; else the IP's own tags.
+            let tags = if dev_tags.is_empty() {
+                ip.tags.into_iter().map(|t| t.slug).collect::<Vec<_>>()
+            } else {
+                dev_tags.into_iter().map(|t| t.slug).collect()
+            };
+            ExportIp {
+                address: strip_prefix_len(&ip.address),
+                device: device_name,
+                site,
+                role,
+                status,
+                tags,
+            }
+        })
+        .collect();
+
+    let groups = prometheus_sd(&export_ips, port);
+    // SD JSON is a compact array on stdout — pipe-safe, no envelope.
+    let json = serde_json::to_string(&groups).context("serializing Prometheus SD JSON")?;
+    println!("{json}");
+    Ok(())
+}
+
+/// Cap on the number of source IPs an export gathers. Generous — a /24 is
+/// 254 addresses — but bounded so a misconfigured `--tag` over a huge table
+/// can't stream unbounded work into one export.
+const EXPORT_IP_CAP: usize = 5_000;
+
+/// Resolve the distinct devices an IP set is assigned to, in one
+/// `?id__in=…` fetch. Returns an empty map when no IP has an assigned device
+/// (or NetBox omits the nested device brief). Stale/missing device ids are
+/// tolerated — they simply don't appear, so the IP groups as unassigned.
+async fn resolve_assigned_devices(
+    client: &NetBoxClient,
+    ips: &[crate::netbox::models::ipam::IpAddress],
+) -> Result<std::collections::HashMap<u64, crate::netbox::models::dcim::Device>> {
+    use std::collections::HashSet;
+    let mut ids: HashSet<u64> = HashSet::new();
+    for ip in ips {
+        if let Some(id) = assigned_device(ip).0 {
+            ids.insert(id);
+        }
+    }
+    if ids.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let id_list = ids.iter().map(u64::to_string).collect::<Vec<_>>().join(",");
+    let devices: Vec<crate::netbox::models::dcim::Device> = client
+        .list_all(
+            crate::netbox::endpoints::Endpoint::Devices,
+            vec![("id__in", id_list)],
+            ids.len(),
+        )
+        .await?;
+    Ok(devices.into_iter().map(|d| (d.id, d)).collect())
+}
+
+/// Extract the assigned device's `(id, name)` from an IP's polymorphic
+/// `assigned_object`. The brief is a `dcim.interface` carrying a nested
+/// `device: {id, display, name}`; both keys are optional and permissively
+/// read so an unassigned IP (or a non-interface assignment) yields `None`.
+fn assigned_device(ip: &crate::netbox::models::ipam::IpAddress) -> (Option<u64>, Option<String>) {
+    let dev = ip.assigned_object.as_ref().and_then(|o| o.get("device"));
+    let id = dev
+        .and_then(|d| d.get("id"))
+        .and_then(serde_json::Value::as_u64);
+    let name = dev.and_then(|d| {
+        d.get("name")
+            .and_then(serde_json::Value::as_str)
+            .or_else(|| d.get("display").and_then(serde_json::Value::as_str))
+    });
+    (id, name.map(str::to_string))
 }
 
 /// `nbox journal <kind> <ref>` — recent journal entries for an object.
