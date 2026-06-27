@@ -136,12 +136,35 @@ fn not_found(noun: &str, value: &str) -> anyhow::Error {
     anyhow::anyhow!("no {noun} matched \"{value}\"; use nbox_search to find the right reference")
 }
 
+/// The caller authorization facts the write path needs, extracted by the
+/// transport from the validated request identity (OIDC `sub` + scopes over the
+/// HTTP transport). Kept transport-agnostic — the write engine and its unit
+/// tests depend on this, not on the HTTP-only `oidc::Identity` — so the
+/// stdio/non-`http` build still compiles (it simply never produces one).
+pub(crate) struct WriteCaller {
+    /// The caller's OIDC `sub`, resolved to a per-user NetBox token by the vault.
+    pub sub: String,
+    /// Whether the caller's token carries the `nbox:write` scope (ADR-0001 §7).
+    pub has_write_scope: bool,
+}
+
 impl NboxMcp {
     /// Resolve the caller's per-user NetBox client via the vault, or reject
     /// with a clear error if writes are disabled or the caller has no vault
     /// entry. Returns a short-lived `NetBoxClient` clone with the per-user
     /// token swapped in.
-    fn bridged_client(&self) -> Result<NetBoxClient, ErrorData> {
+    /// Resolve the caller's per-user NetBox client, enforcing the full write
+    /// authorization ladder — fail-closed at every step (ADR-0001 §7):
+    ///
+    /// 1. writes enabled at all (`[serve].allow_writes` → a vault is present);
+    /// 2. the request carried an authenticated caller (HTTP+OIDC; stdio and
+    ///    loopback static-bearer have no per-user identity → rejected);
+    /// 3. the caller's token carries the `nbox:write` scope;
+    /// 4. the caller's `sub` maps to a provisioned per-user NetBox token.
+    ///
+    /// The service token is never used for writes. A `None` caller (no identity)
+    /// gets a distinct error that never suggests mapping a placeholder `sub`.
+    fn bridged_client(&self, caller: Option<WriteCaller>) -> Result<NetBoxClient, ErrorData> {
         let vault = self.vault.as_ref().ok_or_else(|| {
             ErrorData::invalid_params(
                 "MCP writes are not enabled on this nbox serve instance; \
@@ -150,13 +173,26 @@ impl NboxMcp {
                 None,
             )
         })?;
-        // stdio transport has no caller identity — writes require HTTP + OIDC.
-        // TODO: extract Identity from RequestContext.extensions via
-        // http::request::Parts when the HTTP transport is active. On stdio,
-        // writes are always rejected (no identity to bridge).
-        let dummy_sub = "__stdio_no_identity__";
+        let caller = caller.ok_or_else(|| {
+            ErrorData::invalid_params(
+                "MCP writes require an authenticated OIDC caller identity; this request \
+                 carried none. Writes are unavailable over the stdio transport and over \
+                 loopback static-bearer auth — use the HTTP transport with OIDC so each \
+                 write is attributed to a real NetBox user.",
+                None,
+            )
+        })?;
+        if !caller.has_write_scope {
+            return Err(ErrorData::invalid_params(
+                format!(
+                    "the caller's token is missing the required `{}` scope for MCP writes",
+                    crate::mcp::SCOPE_WRITE
+                ),
+                None,
+            ));
+        }
         let token = vault
-            .resolve(dummy_sub)
+            .resolve(&caller.sub)
             .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
         Ok((*self.client)
             .clone()
@@ -167,8 +203,9 @@ impl NboxMcp {
     pub(crate) async fn plan_write_impl(
         &self,
         args: PlanWriteArgs,
+        caller: Option<WriteCaller>,
     ) -> Result<Json<MutationPlan>, ErrorData> {
-        let client = self.bridged_client()?;
+        let client = self.bridged_client(caller)?;
         let profile = self.profile.as_str();
         let plan = match args.operation {
             WriteOperation::InterfaceDescription {
@@ -293,12 +330,13 @@ impl NboxMcp {
     pub(crate) async fn apply_write_impl(
         &self,
         args: ApplyWriteArgs,
+        caller: Option<WriteCaller>,
     ) -> Result<Json<MutationReceipt>, ErrorData> {
         args.plan
             .verify()
             .map_err(|e| super::to_mcp_error(e.into()))?;
 
-        let client = self.bridged_client()?;
+        let client = self.bridged_client(caller)?;
         let receipt = match args.plan.operation {
             crate::netbox::mutation::Operation::Update => match args.plan.target.kind.as_str() {
                 "interface" => {

@@ -268,13 +268,21 @@ asked, but NetBox's object permissions and changelog still attribute the call to
 the service account. Every authenticated caller therefore gets the service
 account's read rights — there is no per-user RBAC.
 
-Run this mode only for a **trusted, read-only, ideally single-team** deployment.
-Use a NetBox token scoped to exactly what an agent should see (read-only); that
-token is the real privilege boundary. Multi-tenant use, writes, and real per-user
-NetBox RBAC require per-user identity → NetBox-token bridging (a credential vault
-keyed by the OIDC `sub`, so NetBox sees the real user) — the documented v2
-(DESIGN §24, Pattern 2). The validated caller identity (`sub`, `client_id`,
-`scope`, `jti`, `iss`) is already plumbed through for it.
+Run **reads** in this mode only for a **trusted, read-only, ideally single-team**
+deployment. Use a NetBox token scoped to exactly what an agent should see
+(read-only); that token is the real privilege boundary for reads.
+
+**Writes** are a separate, opt-in **Pattern 2** path (DESIGN §24): per-user
+identity → NetBox-token bridging via a credential vault keyed by the OIDC `sub`,
+so NetBox's object permissions and changelog attribute each write to the real
+user — not the service account. Writes are enabled only when **all** of the
+following hold, and fail closed otherwise: `nbox serve --allow-writes` (or
+`[serve].allow_writes = true`); the caller's token carries the `nbox:write`
+scope; and a `[serve.vault."<sub>"]` entry maps the caller's `sub` to an env var
+holding that user's NetBox token. The read-only service token is never used for a
+write, and writes are unavailable over stdio / loopback static-bearer auth (no
+per-user identity to bridge). The `nbox_plan_write` / `nbox_apply_write` tools
+expose the same plan → confirm-token → apply lifecycle as the CLI.
 
 ## Operations (HTTP transport)
 
