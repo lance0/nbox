@@ -1951,6 +1951,211 @@ async fn ip_bare_without_address_is_a_usage_error() {
     assert_error_contract(&out, 2, "missing IP address");
 }
 
+// ===== multi-IP ip reserve (--count N) (ADR-0001 follow-on) ================
+//
+// `ip reserve --count N` issues N sequential POSTs to the prefix's
+// `available-ips` endpoint. Each POST creates one IP. A mid-sequence failure
+// returns the k created IPs as a JSON array with `partial: true` and exit 1.
+
+/// Mount N sequential POST responses for multi-IP allocation.
+async fn mount_multi_ip_post(server: &MockServer, prefix_id: u64, addresses: &[&str]) {
+    for (i, addr) in addresses.iter().enumerate() {
+        Mock::given(method("POST"))
+            .and(path(format!(
+                "/api/ipam/prefixes/{prefix_id}/available-ips/"
+            )))
+            .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+                "id": 100 + i,
+                "url": format!("{}/api/ipam/ip-addresses/{}/", server.uri(), 100 + i),
+                "address": addr,
+                "status": {"value": "active", "label": "Active"},
+            })))
+            .up_to_n_times(1)
+            .mount(server)
+            .await;
+    }
+}
+
+#[tokio::test]
+async fn ip_reserve_count_3_sends_three_posts_and_returns_array() {
+    let server = MockServer::start().await;
+    mount_prefix_resolution(&server, 1, "203.0.113.0/24").await;
+    // Advisory: 3 available addresses.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"address": "203.0.113.5/24"},
+            {"address": "203.0.113.6/24"},
+            {"address": "203.0.113.7/24"}
+        ])))
+        .mount(&server)
+        .await;
+    mount_multi_ip_post(
+        &server,
+        1,
+        &["203.0.113.5/24", "203.0.113.6/24", "203.0.113.7/24"],
+    )
+    .await;
+
+    let config = write_config(&server.uri());
+    let out = run_ip_reserve(
+        &config,
+        &["--count", "3", "--allow-writes", "--confirm", "--json"],
+    );
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(post_count(&server).await, 3, "exactly three POSTs");
+    let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
+    assert_eq!(receipt["operation"], json!("allocate"));
+    assert!(
+        receipt.get("partial").is_none(),
+        "partial omitted on full success"
+    );
+    assert_eq!(receipt["requested_count"], json!(3));
+    assert_eq!(receipt["created_count"], json!(3));
+    // object is a JSON array of 3 IpViews
+    let objects = receipt["object"].as_array().expect("object array");
+    assert_eq!(objects.len(), 3);
+    assert_eq!(objects[0]["address"], json!("203.0.113.5/24"));
+    assert_eq!(objects[1]["address"], json!("203.0.113.6/24"));
+    assert_eq!(objects[2]["address"], json!("203.0.113.7/24"));
+}
+
+#[tokio::test]
+async fn ip_reserve_count_3_dry_run_shows_count_in_fields_and_no_posts() {
+    let server = MockServer::start().await;
+    mount_prefix_resolution(&server, 1, "203.0.113.0/24").await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"address": "203.0.113.5/24"},
+            {"address": "203.0.113.6/24"},
+            {"address": "203.0.113.7/24"}
+        ])))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_ip_reserve(&config, &["--count", "3", "--dry-run", "--json"]);
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(post_count(&server).await, 0, "dry-run must not POST");
+    let plan: Value = serde_json::from_str(&out.stdout).expect("plan JSON");
+    assert_eq!(plan["count"], json!(3));
+    // The count appears in the fields diff.
+    let fields = plan["fields"].as_array().expect("fields array");
+    assert!(
+        fields
+            .iter()
+            .any(|f| f["field"] == "count" && f["after"] == 3),
+        "count in fields diff: {plan}"
+    );
+    // The advisory warning mentions 3 addresses.
+    let warnings = plan["warnings"].as_array().expect("warnings array");
+    assert!(
+        warnings
+            .iter()
+            .any(|w| w.as_str().unwrap_or_default().contains("3 addresses")),
+        "multi-IP advisory: {plan}"
+    );
+}
+
+#[tokio::test]
+async fn ip_reserve_count_3_partial_failure_returns_created_and_exit_1() {
+    let server = MockServer::start().await;
+    mount_prefix_resolution(&server, 1, "203.0.113.0/24").await;
+    // Advisory: 3 available.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/prefixes/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"address": "203.0.113.5/24"},
+            {"address": "203.0.113.6/24"},
+            {"address": "203.0.113.7/24"}
+        ])))
+        .mount(&server)
+        .await;
+    // First 2 POSTs succeed, 3rd fails with 409 (exhausted).
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/prefixes/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": 100, "url": "u", "address": "203.0.113.5/24",
+            "status": {"value": "active", "label": "Active"}
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/prefixes/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": 101, "url": "u", "address": "203.0.113.6/24",
+            "status": {"value": "active", "label": "Active"}
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/prefixes/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(409).set_body_string("exhausted"))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_ip_reserve(
+        &config,
+        &["--count", "3", "--allow-writes", "--confirm", "--json"],
+    );
+
+    // Partial: exit 1, but stdout carries the receipt with 2 created IPs.
+    assert_eq!(out.code, Some(1), "stderr: {}", out.stderr);
+    assert_eq!(post_count(&server).await, 3, "three POSTs attempted");
+    let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
+    assert_eq!(receipt["partial"], json!(true));
+    assert_eq!(receipt["requested_count"], json!(3));
+    assert_eq!(receipt["created_count"], json!(2));
+    let objects = receipt["object"].as_array().expect("object array");
+    assert_eq!(objects.len(), 2);
+    assert_eq!(objects[0]["address"], json!("203.0.113.5/24"));
+    assert_eq!(objects[1]["address"], json!("203.0.113.6/24"));
+}
+
+#[tokio::test]
+async fn ip_reserve_count_0_is_a_usage_error() {
+    let server = MockServer::start().await;
+    let config = write_config(&server.uri());
+    let out = run_ip_reserve(&config, &["--count", "0", "--dry-run", "--json"]);
+    assert_error_contract(&out, 2, "count must be at least 1");
+}
+
+#[tokio::test]
+async fn ip_reserve_count_1_is_byte_identical_to_no_count() {
+    // --count 1 should produce the same plan as no --count (count defaults to 1
+    // and is omitted from JSON).
+    let server = MockServer::start().await;
+    mount_prefix_resolution(&server, 1, "203.0.113.0/24").await;
+    mount_available_ips_get(&server, 1, "203.0.113.5/24").await;
+
+    let config = write_config(&server.uri());
+    let out_no_count = run_ip_reserve(&config, &["--dry-run", "--json"]);
+    let out_count_1 = run_ip_reserve(&config, &["--count", "1", "--dry-run", "--json"]);
+
+    assert_eq!(out_no_count.code, Some(0));
+    assert_eq!(out_count_1.code, Some(0));
+    let plan_no_count: Value = serde_json::from_str(&out_no_count.stdout).expect("plan JSON");
+    let plan_count_1: Value = serde_json::from_str(&out_count_1.stdout).expect("plan JSON");
+    // count=1 is the default and is omitted from JSON.
+    assert!(
+        plan_no_count.get("count").is_none(),
+        "default count omitted"
+    );
+    assert!(plan_count_1.get("count").is_none(), "count=1 omitted");
+    // No "count" field in the diff either.
+    let fields = plan_count_1["fields"].as_array().expect("fields");
+    assert!(
+        !fields.iter().any(|f| f["field"] == "count"),
+        "no count in fields"
+    );
+}
+
 // ===== prefix reserve (ADR-0001 follow-on) ================================
 //
 // `prefix reserve` mirrors `ip reserve`: same Allocate/POST pattern, same
@@ -2437,6 +2642,136 @@ async fn ip_range_reserve_audit_logs_names_only_never_values_token_or_message_bo
         !log_text.contains("secret-nbox-token-12345"),
         "token leaked: {log_text}"
     );
+}
+
+// ===== multi-IP ip-range reserve (--count N) (ADR-0001 follow-on) ============
+
+#[tokio::test]
+async fn ip_range_reserve_count_2_sends_two_posts_and_returns_array() {
+    let server = MockServer::start().await;
+    mount_ip_range_resolution(&server, 1, "10.0.0.10", "10.0.0.20").await;
+    // Advisory: 2 available addresses.
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/ip-ranges/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"address": "10.0.0.10/32"},
+            {"address": "10.0.0.11/32"}
+        ])))
+        .mount(&server)
+        .await;
+    // Two POST responses.
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/ip-ranges/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": 100, "url": "u", "address": "10.0.0.10/32",
+            "status": {"value": "active", "label": "Active"}
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/ip-ranges/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": 101, "url": "u", "address": "10.0.0.11/32",
+            "status": {"value": "active", "label": "Active"}
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_ip_range_reserve(
+        &config,
+        &["--count", "2", "--allow-writes", "--confirm", "--json"],
+    );
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(post_count(&server).await, 2, "exactly two POSTs");
+    let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
+    assert!(
+        receipt.get("partial").is_none(),
+        "partial omitted on full success"
+    );
+    assert_eq!(receipt["requested_count"], json!(2));
+    assert_eq!(receipt["created_count"], json!(2));
+    let objects = receipt["object"].as_array().expect("object array");
+    assert_eq!(objects.len(), 2);
+    assert_eq!(objects[0]["address"], json!("10.0.0.10/32"));
+    assert_eq!(objects[1]["address"], json!("10.0.0.11/32"));
+}
+
+#[tokio::test]
+async fn ip_range_reserve_count_2_dry_run_shows_count_in_fields() {
+    let server = MockServer::start().await;
+    mount_ip_range_resolution(&server, 1, "10.0.0.10", "10.0.0.20").await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/ip-ranges/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"address": "10.0.0.10/32"},
+            {"address": "10.0.0.11/32"}
+        ])))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_ip_range_reserve(&config, &["--count", "2", "--dry-run", "--json"]);
+
+    assert_eq!(out.code, Some(0), "stderr: {}", out.stderr);
+    assert_eq!(post_count(&server).await, 0);
+    let plan: Value = serde_json::from_str(&out.stdout).expect("plan JSON");
+    assert_eq!(plan["count"], json!(2));
+    let fields = plan["fields"].as_array().expect("fields array");
+    assert!(
+        fields
+            .iter()
+            .any(|f| f["field"] == "count" && f["after"] == 2),
+        "count in fields diff: {plan}"
+    );
+}
+
+#[tokio::test]
+async fn ip_range_reserve_count_2_partial_failure_returns_created_and_exit_1() {
+    let server = MockServer::start().await;
+    mount_ip_range_resolution(&server, 1, "10.0.0.10", "10.0.0.20").await;
+    Mock::given(method("GET"))
+        .and(path("/api/ipam/ip-ranges/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!([
+            {"address": "10.0.0.10/32"},
+            {"address": "10.0.0.11/32"}
+        ])))
+        .mount(&server)
+        .await;
+    // First POST succeeds, second fails with 409.
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/ip-ranges/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(201).set_body_json(json!({
+            "id": 100, "url": "u", "address": "10.0.0.10/32",
+            "status": {"value": "active", "label": "Active"}
+        })))
+        .up_to_n_times(1)
+        .mount(&server)
+        .await;
+    Mock::given(method("POST"))
+        .and(path("/api/ipam/ip-ranges/1/available-ips/"))
+        .respond_with(ResponseTemplate::new(409).set_body_string("exhausted"))
+        .mount(&server)
+        .await;
+
+    let config = write_config(&server.uri());
+    let out = run_ip_range_reserve(
+        &config,
+        &["--count", "2", "--allow-writes", "--confirm", "--json"],
+    );
+
+    assert_eq!(out.code, Some(1), "stderr: {}", out.stderr);
+    assert_eq!(post_count(&server).await, 2, "two POSTs attempted");
+    let receipt: Value = serde_json::from_str(&out.stdout).expect("receipt JSON");
+    assert_eq!(receipt["partial"], json!(true));
+    assert_eq!(receipt["requested_count"], json!(2));
+    assert_eq!(receipt["created_count"], json!(1));
+    let objects = receipt["object"].as_array().expect("object array");
+    assert_eq!(objects.len(), 1);
+    assert_eq!(objects[0]["address"], json!("10.0.0.10/32"));
 }
 
 // ===== tag add (ADR-0001 follow-on) =====================================

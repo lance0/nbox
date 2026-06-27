@@ -456,10 +456,17 @@ the read tool proves out in practice. Consolidated future scope:
   Server-allocated and race-safe, so the plan carries no client precondition;
   the receipt returns the created IP object. Same gate/confirm/audit lifecycle
   as `ip reserve` and `prefix reserve`.
-- ☐ **IPAM allocate (rest)** — multi-IP allocation (`--count N` on `ip reserve`
-  / `ip-range reserve`), and choosing a specific address/block. The read half
+- ☑ **Multi-IP allocation (`--count N`).** `ip reserve` and `ip-range reserve`
+  accept `--count N` (default 1) to reserve N IP addresses in one invocation.
+  Each IP is a separate `POST` (NetBox has no batch endpoint); the receipt
+  carries a JSON array of created `IpView`s. `count` is bound into the
+  confirmation token. Partial failure (k of N POSTs succeeded) returns the k
+  created IPs with `partial: true` and exit 1; the audit logs `outcome=partial`.
+  `count=1` plans/receipts are byte-identical to existing single-IP ones.
+- ☐ **IPAM allocate (rest)** — choosing a specific address/block. The read half
   (`next-ip` / `next-prefix`, range lookup) and all three allocate writes (`ip
-  reserve`, `prefix reserve`, `ip-range reserve`) landed above.
+  reserve`, `prefix reserve`, `ip-range reserve`) plus multi-IP `--count N`
+  landed above.
 - ☑ `nbox tag add <type> <name> <tag>` — a further write command, reusing the
   same foundation. Adds a tag to any taggable object via a minimal `PATCH` that
   replaces the full `tags` array; a no-op if the tag is already present. The

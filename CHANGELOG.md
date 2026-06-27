@@ -133,6 +133,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     NetBox validation rejection (`400`) surface as clean errors (exit 1, empty
     stdout). The audit logs `operation=allocate`, `http_method=POST`, and field
     names only.
+- **Multi-IP allocation: `ip reserve --count N` and `ip-range reserve --count N`.**
+  Both allocate commands now accept `--count N` (default 1) to reserve N IP
+  addresses in one invocation. Each IP is a separate `POST` (NetBox has no batch
+  allocation endpoint); the receipt carries a JSON array of the created `IpView`s
+  and the plan shows `count` in its fields diff. `count` is bound into the
+  confirmation token so a `count=3` plan can't be replayed as `count=5`.
+  - **Partial failure.** If the k-th `POST` fails (k > 0), the receipt is
+    returned with `partial: true`, `created_count: k`, and the k created IPs in
+    `object`, but the process exits 1 so scripts detect the incomplete
+    allocation. The audit log records `outcome=partial`. A first-POST failure
+    (k=0) is the existing single-reserve error path.
+  - **Backward compatible.** `count=1` (the default) is byte-identical to the
+    existing single-IP plan/receipt — `count`, `partial`, `requested_count`, and
+    `created_count` use `skip_serializing_if` defaults so they're omitted when
+    at their default values.
 
 ### Changed
 

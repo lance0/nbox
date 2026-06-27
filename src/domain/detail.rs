@@ -323,6 +323,7 @@ pub(crate) async fn plan_interface_description_update(
         &precondition,
         &patch,
         &message,
+        mutation::default_count(),
         expires_epoch,
     );
 
@@ -337,6 +338,7 @@ pub(crate) async fn plan_interface_description_update(
         warnings: Vec::new(),
         errors: Vec::new(),
         changelog_message: message,
+        count: mutation::default_count(),
         confirm_token,
         expires_at: mutation::format_iso_utc(expires_epoch),
     })
@@ -406,6 +408,9 @@ pub(crate) async fn apply_interface_description_update(
         etag: new_etag,
         request_id: None,
         object: None,
+        partial: false,
+        requested_count: 0,
+        created_count: 0,
         message: format!(
             "applied: {} {} ({})",
             plan.target.kind,
@@ -429,6 +434,9 @@ pub(crate) fn no_op_receipt(plan: &MutationPlan) -> MutationReceipt {
         etag: None,
         request_id: None,
         object: None,
+        partial: false,
+        requested_count: 0,
+        created_count: 0,
         message: "no change: current value already matches".to_string(),
     }
 }
@@ -562,6 +570,7 @@ pub(crate) async fn plan_device_status_update(
         &precondition,
         &patch,
         &message,
+        mutation::default_count(),
         expires_epoch,
     );
 
@@ -576,6 +585,7 @@ pub(crate) async fn plan_device_status_update(
         warnings: Vec::new(),
         errors: Vec::new(),
         changelog_message: message,
+        count: mutation::default_count(),
         confirm_token,
         expires_at: mutation::format_iso_utc(expires_epoch),
     })
@@ -641,6 +651,9 @@ pub(crate) async fn apply_device_status_update(
         etag: new_etag,
         request_id: None,
         object: None,
+        partial: false,
+        requested_count: 0,
+        created_count: 0,
         message: format!(
             "applied: {} {} ({})",
             plan.target.kind,
@@ -672,6 +685,10 @@ fn device_before_hash(dev: &Device) -> String {
 /// address as an advisory warning: NetBox allocates at apply time, so the applied
 /// address may differ. Only `description` / `dns_name` may be set (the v1 narrow
 /// allow-list — no status/role/tags/assignment).
+///
+/// `count > 1` requests a multi-IP allocation: the plan records the count, the
+/// `fields` diff shows it, and apply issues N sequential POSTs. The confirm token
+/// binds the count so a `count=3` plan cannot be replayed as `count=5`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn plan_ip_reserve(
     client: &NetBoxClient,
@@ -679,6 +696,7 @@ pub(crate) async fn plan_ip_reserve(
     vrf: Option<&str>,
     description: Option<&str>,
     dns_name: Option<&str>,
+    count: u32,
     changelog_message: Option<&str>,
     profile: &str,
     not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
@@ -689,6 +707,13 @@ pub(crate) async fn plan_ip_reserve(
         _ => None,
     };
     mutation::validate_changelog_message(&message)?;
+
+    // Validate count: must be ≥ 1. A count of 0 is a usage error.
+    if count == 0 {
+        return Err(anyhow::Error::new(NboxError::Usage(
+            "count must be at least 1".to_string(),
+        )));
+    }
 
     // Resolve the prefix by CIDR (reuses the read path so ambiguity / not-found /
     // VRF scoping behave exactly like `nbox prefix` / `nbox next-ip`).
@@ -725,31 +750,61 @@ pub(crate) async fn plan_ip_reserve(
             after: serde_json::json!(d),
         });
     }
+    // When allocating more than one IP, surface the count in the diff so the
+    // operator reviews how many addresses will be created. It's advisory only —
+    // not part of the POST body — so it doesn't go in `patch`.
+    if count > 1 {
+        fields.push(FieldChange {
+            field: "count".to_string(),
+            before: Value::Null,
+            after: serde_json::json!(count),
+        });
+    }
     let patch = Value::Object(body);
     let precondition = Precondition::None;
 
-    // Dry-run advisory: the address NetBox would currently hand out. Read-only,
-    // and never part of the body — another client could allocate between this
-    // read and the apply POST, so the applied address may differ.
+    // Dry-run advisory: the address(es) NetBox would currently hand out.
+    // Read-only, never part of the body — another client could allocate
+    // between this read and the apply POST, so the applied address(es) may
+    // differ.
     let mut warnings = Vec::new();
-    match client.prefix_available_ips(prefix_obj.id, 1).await {
-        Ok(list) => match list.first() {
-            Some(next) => warnings.push(format!(
-                "currently next: {} — NetBox allocates at apply; the applied address may differ",
-                next.address
-            )),
-            None => warnings.push(
-                "no available addresses in this prefix — the reserve will fail at apply"
-                    .to_string(),
-            ),
-        },
+    let advisory_limit = count.max(1) as usize;
+    match client
+        .prefix_available_ips(prefix_obj.id, advisory_limit)
+        .await
+    {
+        Ok(list) => {
+            if list.is_empty() {
+                warnings.push(
+                    "no available addresses in this prefix — the reserve will fail at apply"
+                        .to_string(),
+                );
+            } else {
+                let addrs: Vec<&str> = list
+                    .iter()
+                    .take(advisory_limit)
+                    .map(|ip| ip.address.as_str())
+                    .collect();
+                if addrs.len() == 1 {
+                    warnings.push(format!(
+                        "currently next: {} — NetBox allocates at apply; the applied address may differ",
+                        addrs[0]
+                    ));
+                } else {
+                    warnings.push(format!(
+                        "currently next {} addresses: {} — NetBox allocates at apply; the applied addresses may differ",
+                        count,
+                        addrs.join(", ")
+                    ));
+                }
+            }
+        }
         // A failed advisory read must not block planning; the apply POST is the
         // authoritative attempt. Note it and carry on.
         Err(_) => {
             warnings.push("could not read the next available address (advisory only)".to_string());
         }
     }
-
     let expires_epoch = mutation::plan_expiry_epoch(SystemTime::now());
     let confirm_token = mutation::confirm_token(
         &target,
@@ -757,6 +812,7 @@ pub(crate) async fn plan_ip_reserve(
         &precondition,
         &patch,
         &message,
+        count,
         expires_epoch,
     );
 
@@ -771,6 +827,7 @@ pub(crate) async fn plan_ip_reserve(
         warnings,
         errors: Vec::new(),
         changelog_message: message,
+        count,
         confirm_token,
         expires_at: mutation::format_iso_utc(expires_epoch),
     })
@@ -780,40 +837,17 @@ pub(crate) async fn plan_ip_reserve(
 /// confirmation token + expiry, then POST the minimal body to the prefix's
 /// `available-ips` endpoint. NetBox allocates the next free address and returns
 /// the created IP object (`201`), which becomes the receipt's `object`.
+///
+/// For `count > 1` (multi-IP), issues N sequential POSTs to the same endpoint.
+/// On full success, `object` is a JSON array of the created IP views. On partial
+/// failure (k of N succeed), the receipt carries `partial: true`, `object` = the
+/// k created views, and `created_count = k`; the caller surfaces the error so
+/// the exit code is 1 while the receipt still reaches stdout.
 pub(crate) async fn apply_ip_reserve(
     client: &NetBoxClient,
     plan: &MutationPlan,
 ) -> Result<MutationReceipt> {
-    plan.verify()?;
-
-    // The wire body is the minimal create patch plus the opt-in changelog_message
-    // (a NetBox write-only request field, recorded in the object-change entry,
-    // never stored on the object).
-    let mut body = plan.patch.clone();
-    if let Some(msg) = &plan.changelog_message {
-        body["changelog_message"] = serde_json::json!(msg);
-    }
-
-    let (created, status): (IpAddress, u16) = client.post(&plan.target.endpoint, &body).await?;
-    let address = created.address.clone();
-    // Build the created IP's view (no parent-prefix enrichment on the write path —
-    // the reserve returns the bare object) and stash it as the receipt's `object`.
-    let view = IpView::build(created, None);
-    let object = serde_json::to_value(&view).ok();
-
-    Ok(MutationReceipt {
-        schema_version: PLAN_SCHEMA_VERSION,
-        operation: plan.operation,
-        target: plan.target.clone(),
-        fields: plan.fields.clone(),
-        applied: true,
-        no_op: false,
-        status,
-        etag: None,
-        request_id: None,
-        object,
-        message: format!("reserved: {} in {}", address, plan.target.display),
-    })
+    apply_multi_ip_reserve(client, plan).await
 }
 
 /// Plan a `prefix reserve <cidr>` allocation (ADR-0001 §5 steps 1–4): validate
@@ -929,6 +963,7 @@ pub(crate) async fn plan_prefix_reserve(
         &precondition,
         &patch,
         &message,
+        mutation::default_count(),
         expires_epoch,
     );
 
@@ -943,6 +978,7 @@ pub(crate) async fn plan_prefix_reserve(
         warnings,
         errors: Vec::new(),
         changelog_message: message,
+        count: mutation::default_count(),
         confirm_token,
         expires_at: mutation::format_iso_utc(expires_epoch),
     })
@@ -984,6 +1020,9 @@ pub(crate) async fn apply_prefix_reserve(
         etag: None,
         request_id: None,
         object,
+        partial: false,
+        requested_count: 0,
+        created_count: 0,
         message: format!("reserved: {} in {}", created_prefix, plan.target.display),
     })
 }
@@ -1008,12 +1047,17 @@ fn prefix_satisfies_length(cidr: &str, target: u8) -> bool {
 /// *currently* next address as an advisory warning: NetBox allocates at apply
 /// time, so the applied address may differ. Only `description` / `dns_name`
 /// may be set (the v1 narrow allow-list — no status/role/tags/assignment).
+///
+/// `count > 1` requests a multi-IP allocation: the plan records the count, the
+/// `fields` diff shows it, and apply issues N sequential POSTs. The confirm
+/// token binds the count so a `count=3` plan cannot be replayed as `count=5`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn plan_ip_range_reserve(
     client: &NetBoxClient,
     range_ref: &str,
     description: Option<&str>,
     dns_name: Option<&str>,
+    count: u32,
     changelog_message: Option<&str>,
     profile: &str,
     not_found: &(dyn Fn(&str, &str) -> anyhow::Error + Send + Sync),
@@ -1024,6 +1068,13 @@ pub(crate) async fn plan_ip_range_reserve(
         _ => None,
     };
     mutation::validate_changelog_message(&message)?;
+
+    // Validate count: must be ≥ 1. A count of 0 is a usage error.
+    if count == 0 {
+        return Err(anyhow::Error::new(NboxError::Usage(
+            "count must be at least 1".to_string(),
+        )));
+    }
 
     // Resolve the IP range by start address or ID (same resolver as
     // `nbox ip-range`).
@@ -1062,30 +1113,59 @@ pub(crate) async fn plan_ip_range_reserve(
             after: serde_json::json!(d),
         });
     }
+    // When allocating more than one IP, surface the count in the diff so the
+    // operator reviews how many addresses will be created. It's advisory only —
+    // not part of the POST body — so it doesn't go in `patch`.
+    if count > 1 {
+        fields.push(FieldChange {
+            field: "count".to_string(),
+            before: Value::Null,
+            after: serde_json::json!(count),
+        });
+    }
     let patch = Value::Object(body);
     let precondition = Precondition::None;
 
-    // Dry-run advisory: the address NetBox would currently hand out. Read-only,
-    // and never part of the body — another client could allocate between this
-    // read and the apply POST, so the applied address may differ.
+    // Dry-run advisory: the address(es) NetBox would currently hand out.
+    // Read-only, never part of the body — another client could allocate
+    // between this read and the apply POST, so the applied address(es) may
+    // differ.
     let mut warnings = Vec::new();
+    let advisory_limit = count.max(1) as usize;
     // NetBox's IP-range available-ips endpoint returns a bare JSON array.
     match client
         .get::<Vec<AvailableIp>>(
             &format!("/api/ipam/ip-ranges/{}/available-ips/", range.id),
-            &[("limit", "1".to_string())],
+            &[("limit", advisory_limit.to_string())],
         )
         .await
     {
-        Ok(list) => match list.first() {
-            Some(next) => warnings.push(format!(
-                "currently next: {} — NetBox allocates at apply; the applied address may differ",
-                next.address
-            )),
-            None => warnings.push(
-                "no available addresses in this range — the reserve will fail at apply".to_string(),
-            ),
-        },
+        Ok(list) => {
+            if list.is_empty() {
+                warnings.push(
+                    "no available addresses in this range — the reserve will fail at apply"
+                        .to_string(),
+                );
+            } else {
+                let addrs: Vec<&str> = list
+                    .iter()
+                    .take(advisory_limit)
+                    .map(|ip| ip.address.as_str())
+                    .collect();
+                if addrs.len() == 1 {
+                    warnings.push(format!(
+                        "currently next: {} — NetBox allocates at apply; the applied address may differ",
+                        addrs[0]
+                    ));
+                } else {
+                    warnings.push(format!(
+                        "currently next {} addresses: {} — NetBox allocates at apply; the applied addresses may differ",
+                        count,
+                        addrs.join(", ")
+                    ));
+                }
+            }
+        }
         // A failed advisory read must not block planning; the apply POST is the
         // authoritative attempt. Note it and carry on.
         Err(_) => {
@@ -1100,6 +1180,7 @@ pub(crate) async fn plan_ip_range_reserve(
         &precondition,
         &patch,
         &message,
+        count,
         expires_epoch,
     );
 
@@ -1114,6 +1195,7 @@ pub(crate) async fn plan_ip_range_reserve(
         warnings,
         errors: Vec::new(),
         changelog_message: message,
+        count,
         confirm_token,
         expires_at: mutation::format_iso_utc(expires_epoch),
     })
@@ -1124,23 +1206,123 @@ pub(crate) async fn plan_ip_range_reserve(
 /// range's `available-ips` endpoint. NetBox allocates the next free address
 /// and returns the created IP object (`201`), which becomes the receipt's
 /// `object`.
+///
+/// For `count > 1` (multi-IP), issues N sequential POSTs to the same endpoint.
+/// On full success, `object` is a JSON array of the created IP views. On partial
+/// failure (k of N succeed), the receipt carries `partial: true`, `object` = the
+/// k created views, and `created_count = k`; the caller surfaces the error so
+/// the exit code is 1 while the receipt still reaches stdout.
 pub(crate) async fn apply_ip_range_reserve(
+    client: &NetBoxClient,
+    plan: &MutationPlan,
+) -> Result<MutationReceipt> {
+    apply_multi_ip_reserve(client, plan).await
+}
+
+/// Shared apply logic for multi-IP allocate writes (`ip reserve` and
+/// `ip-range reserve`). Both POST to an `available-ips` endpoint that creates
+/// one IP per POST. For `count == 1`, a single POST returns a single object
+/// (byte-identical to the pre-multi-IP receipt). For `count > 1`, N sequential
+/// POSTs; partial failure returns a receipt with `partial: true` and the k
+/// created IP views as a JSON array.
+async fn apply_multi_ip_reserve(
     client: &NetBoxClient,
     plan: &MutationPlan,
 ) -> Result<MutationReceipt> {
     plan.verify()?;
 
-    // The wire body is the minimal create patch plus the opt-in changelog_message.
+    // The wire body is the minimal create patch plus the opt-in changelog_message
+    // (a NetBox write-only request field, recorded in the object-change entry,
+    // never stored on the object).
     let mut body = plan.patch.clone();
     if let Some(msg) = &plan.changelog_message {
         body["changelog_message"] = serde_json::json!(msg);
     }
 
-    let (created, status): (IpAddress, u16) = client.post(&plan.target.endpoint, &body).await?;
-    let address = created.address.clone();
-    let view = IpView::build(created, None);
-    let object = serde_json::to_value(&view).ok();
+    let count = plan.count.max(1) as usize;
 
+    // Single-IP allocation (the common case): one POST, one object.
+    if count == 1 {
+        let (created, status): (IpAddress, u16) = client.post(&plan.target.endpoint, &body).await?;
+        let address = created.address.clone();
+        let view = IpView::build(created, None);
+        let object = serde_json::to_value(&view).ok();
+
+        return Ok(MutationReceipt {
+            schema_version: PLAN_SCHEMA_VERSION,
+            operation: plan.operation,
+            target: plan.target.clone(),
+            fields: plan.fields.clone(),
+            applied: true,
+            no_op: false,
+            status,
+            etag: None,
+            request_id: None,
+            object,
+            partial: false,
+            requested_count: 0,
+            created_count: 0,
+            message: format!("reserved: {} in {}", address, plan.target.display),
+        });
+    }
+
+    // Multi-IP allocation: N sequential POSTs. Each POST creates one IP.
+    // A failure mid-sequence stops — the created IPs are returned in the
+    // receipt's `object` (a JSON array) so the operator knows what succeeded.
+    let mut views: Vec<Value> = Vec::with_capacity(count);
+    let mut last_status: u16 = 201;
+    for i in 0..count {
+        match client.post::<IpAddress>(&plan.target.endpoint, &body).await {
+            Ok((created, status)) => {
+                last_status = status;
+                let view = IpView::build(created, None);
+                if let Ok(v) = serde_json::to_value(&view) {
+                    views.push(v);
+                }
+            }
+            Err(_) => {
+                // Partial failure: k of N succeeded. Return a receipt with
+                // the created IPs so they reach stdout, but mark it partial.
+                let created_count = i as u32;
+                let addresses: Vec<String> = views
+                    .iter()
+                    .filter_map(|v| v.get("address").and_then(|a| a.as_str()).map(String::from))
+                    .collect();
+                return Ok(MutationReceipt {
+                    schema_version: PLAN_SCHEMA_VERSION,
+                    operation: plan.operation,
+                    target: plan.target.clone(),
+                    fields: plan.fields.clone(),
+                    applied: created_count > 0,
+                    no_op: false,
+                    status: last_status,
+                    etag: None,
+                    request_id: None,
+                    object: Some(Value::Array(views)),
+                    partial: true,
+                    requested_count: count as u32,
+                    created_count,
+                    message: format!(
+                        "partially reserved: {}/{} in {} — {}",
+                        created_count,
+                        count,
+                        plan.target.display,
+                        if addresses.is_empty() {
+                            "no addresses created".to_string()
+                        } else {
+                            format!("created: {}", addresses.join(", "))
+                        }
+                    ),
+                });
+            }
+        }
+    }
+
+    // Full success: all N IPs created.
+    let addresses: Vec<String> = views
+        .iter()
+        .filter_map(|v| v.get("address").and_then(|a| a.as_str()).map(String::from))
+        .collect();
     Ok(MutationReceipt {
         schema_version: PLAN_SCHEMA_VERSION,
         operation: plan.operation,
@@ -1148,11 +1330,22 @@ pub(crate) async fn apply_ip_range_reserve(
         fields: plan.fields.clone(),
         applied: true,
         no_op: false,
-        status,
+        status: last_status,
         etag: None,
         request_id: None,
-        object,
-        message: format!("reserved: {} in {}", address, plan.target.display),
+        object: Some(Value::Array(views)),
+        partial: false,
+        requested_count: count as u32,
+        created_count: count as u32,
+        message: format!(
+            "reserved {} in {}",
+            if addresses.len() == 1 {
+                addresses[0].clone()
+            } else {
+                format!("{} addresses: {}", addresses.len(), addresses.join(", "))
+            },
+            plan.target.display
+        ),
     })
 }
 
@@ -1383,6 +1576,7 @@ pub(crate) async fn plan_tag_update(
         &precondition,
         &patch,
         &message,
+        mutation::default_count(),
         expires_epoch,
     );
 
@@ -1397,6 +1591,7 @@ pub(crate) async fn plan_tag_update(
         warnings: Vec::new(),
         errors: Vec::new(),
         changelog_message: message,
+        count: mutation::default_count(),
         confirm_token,
         expires_at: mutation::format_iso_utc(expires_epoch),
     })
@@ -1460,6 +1655,9 @@ pub(crate) async fn apply_tag_update(
         etag: new_etag,
         request_id: None,
         object: None,
+        partial: false,
+        requested_count: 0,
+        created_count: 0,
         message: format!(
             "applied: {} {} ({})",
             plan.target.kind,

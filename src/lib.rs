@@ -333,6 +333,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                 vrf: reserve_vrf,
                 description,
                 dns_name,
+                count,
                 message,
                 dry_run,
                 confirm,
@@ -345,6 +346,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                     effective_vrf,
                     description.as_deref(),
                     dns_name.as_deref(),
+                    count,
                     message.as_deref(),
                     dry_run,
                     confirm,
@@ -431,6 +433,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             Some(crate::cli::IpRangeAction::Reserve {
                 description,
                 dns_name,
+                count,
                 message,
                 dry_run,
                 confirm,
@@ -441,6 +444,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                     &value,
                     description.as_deref(),
                     dns_name.as_deref(),
+                    count,
                     message.as_deref(),
                     dry_run,
                     confirm,
@@ -1545,6 +1549,8 @@ async fn apply_or_preview(
         Ok(receipt) => {
             let outcome = if receipt.no_op {
                 Outcome::NoOp
+            } else if receipt.partial {
+                Outcome::Partial
             } else {
                 Outcome::Applied
             };
@@ -1563,6 +1569,18 @@ async fn apply_or_preview(
                 message_len,
             )
             .emit();
+            // A partial multi-IP allocation returns the receipt (with the k
+            // created IPs) to stdout, then a non-zero exit so scripts know the
+            // allocation was incomplete.
+            if receipt.partial {
+                emit(ctx, &receipt, || render_receipt_plain(&receipt))?;
+                return Err(anyhow::anyhow!(
+                    "partially reserved: {}/{} in {}",
+                    receipt.created_count,
+                    receipt.requested_count,
+                    plan.target.display
+                ));
+            }
             emit(ctx, &receipt, || render_receipt_plain(&receipt))
         }
         Err(e) => {
@@ -1713,6 +1731,7 @@ async fn run_ip_reserve(
     vrf: Option<&str>,
     description: Option<&str>,
     dns_name: Option<&str>,
+    count: u32,
     message: Option<&str>,
     dry_run: bool,
     confirm: bool,
@@ -1733,6 +1752,7 @@ async fn run_ip_reserve(
         vrf,
         description,
         dns_name,
+        count,
         message,
         &profile,
         &not_found,
@@ -1805,6 +1825,7 @@ async fn run_ip_range_reserve(
     range_ref: &str,
     description: Option<&str>,
     dns_name: Option<&str>,
+    count: u32,
     message: Option<&str>,
     dry_run: bool,
     confirm: bool,
@@ -1824,6 +1845,7 @@ async fn run_ip_range_reserve(
         range_ref,
         description,
         dns_name,
+        count,
         message,
         &profile,
         &not_found,
@@ -2005,11 +2027,21 @@ fn render_receipt_plain(receipt: &MutationReceipt) {
             value_or_empty(&f.after)
         );
     }
-    // Allocate receipts carry the created object (an `IpView`); render its
-    // key/values so the operator sees the address NetBox actually assigned.
+    // Allocate receipts carry the created object (an `IpView` for a single IP,
+    // or a JSON array of `IpView`s for a multi-IP allocation); render its
+    // key/values so the operator sees the address(es) NetBox assigned.
     if let Some(serde_json::Value::Object(map)) = &receipt.object {
         for (k, v) in map {
             println!("  {}: {}", k, value_or_empty(v));
+        }
+    } else if let Some(serde_json::Value::Array(items)) = &receipt.object {
+        for (i, item) in items.iter().enumerate() {
+            if let serde_json::Value::Object(map) = item {
+                println!("  [{i}]:");
+                for (k, v) in map {
+                    println!("    {}: {}", k, value_or_empty(v));
+                }
+            }
         }
     }
 }

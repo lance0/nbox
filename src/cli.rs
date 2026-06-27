@@ -832,6 +832,13 @@ pub enum IpAction {
         #[arg(long = "dns-name", value_name = "NAME")]
         dns_name: Option<String>,
 
+        /// How many IP addresses to allocate. Default 1; `>1` issues N
+        /// sequential POSTs to NetBox's `available-ips` endpoint. A
+        /// mid-sequence failure returns the successfully created IPs as a
+        /// JSON array with `partial: true` and exit code 1.
+        #[arg(long, value_name = "N", default_value_t = 1)]
+        count: u32,
+
         /// Record this message in NetBox's object-change entry (a write-only
         /// request field, never stored on the object). Validated to NetBox's
         /// 200-character limit before applying. Optional.
@@ -927,6 +934,13 @@ pub enum IpRangeAction {
         /// Set the new IP's DNS name. Optional.
         #[arg(long = "dns-name", value_name = "NAME")]
         dns_name: Option<String>,
+
+        /// How many IP addresses to allocate. Default 1; `>1` issues N
+        /// sequential POSTs to NetBox's `available-ips` endpoint. A
+        /// mid-sequence failure returns the successfully created IPs as a
+        /// JSON array with `partial: true` and exit code 1.
+        #[arg(long, value_name = "N", default_value_t = 1)]
+        count: u32,
 
         /// Record this message in NetBox's object-change entry (a write-only
         /// request field, never stored on the object). Validated to NetBox's
@@ -1708,6 +1722,7 @@ mod tests {
                 Some(IpRangeAction::Reserve {
                     description: Some(desc),
                     dns_name: Some(dns),
+                    count: 1,
                     message: None,
                     dry_run: true,
                     confirm: false,
@@ -1721,5 +1736,72 @@ mod tests {
         assert_eq!(value, "10.0.0.10");
         assert_eq!(desc, "loopback");
         assert_eq!(dns, "lb.example");
+    }
+
+    #[test]
+    fn ip_reserve_count_parses() {
+        let cmd = Cli::try_parse_from([
+            "nbox",
+            "--no-tui",
+            "ip",
+            "reserve",
+            "10.0.0.0/24",
+            "--count",
+            "5",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Some(Command::Ip {
+            action: Some(IpAction::Reserve { count, .. }),
+            ..
+        }) = cmd.command
+        else {
+            panic!("expected ip reserve");
+        };
+        assert_eq!(count, 5);
+    }
+
+    #[test]
+    fn ip_reserve_count_defaults_to_1() {
+        let cmd = Cli::try_parse_from([
+            "nbox",
+            "--no-tui",
+            "ip",
+            "reserve",
+            "10.0.0.0/24",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Some(Command::Ip {
+            action: Some(IpAction::Reserve { count, .. }),
+            ..
+        }) = cmd.command
+        else {
+            panic!("expected ip reserve");
+        };
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn ip_range_reserve_count_parses() {
+        let cmd = Cli::try_parse_from([
+            "nbox",
+            "--no-tui",
+            "ip-range",
+            "10.0.0.10",
+            "reserve",
+            "--count",
+            "3",
+            "--dry-run",
+        ])
+        .unwrap();
+        let Some(Command::IpRange {
+            action: Some(IpRangeAction::Reserve { count, .. }),
+            ..
+        }) = cmd.command
+        else {
+            panic!("expected ip-range reserve");
+        };
+        assert_eq!(count, 3);
     }
 }

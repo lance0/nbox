@@ -256,8 +256,9 @@ nbox device <name-or-id> [--journal] [--journal-limit N]
   device <name> set status <value>                    # write: status validated live via OPTIONS; --dry-run | --allow-writes --confirm [--message]
 nbox ip <address> [--vrf <name>] [--journal]    # --vrf disambiguates duplicates across VRFs
                                   # shows nat_inside/nat_outside (NetBox 4.6) when set
-  ip reserve <cidr> [--vrf <name>] [--description "…"] [--dns-name "…"]
+  ip reserve <cidr> [--vrf <name>] [--description "…"] [--dns-name "…"] [--count N]
                                   # write: reserve the next available IP (POST available-ips); --dry-run | --allow-writes --confirm [--message]
+                                  # --count N: reserve N IPs (sequential POSTs); partial failure exits 1
 nbox prefix <cidr> [--vrf <name>] [--journal]   # includes utilization + children when present
   prefix reserve [--length L] [--vrf <name>] [--description "…"]
                                   # write: reserve the next available child prefix (POST available-prefixes); --dry-run | --allow-writes --confirm [--message]
@@ -272,9 +273,9 @@ nbox virtual-circuit <cid-or-id>                   # incl. its multi-point termi
 nbox provider <slug-or-name-or-id>
 nbox aggregate <cidr-or-id> [--journal]
 nbox asn <number> [--journal]
-nbox ip-range <start-or-id> [--journal]
-  ip-range reserve [--description "…"] [--dns-name "…"]
+  ip-range reserve [--description "…"] [--dns-name "…"] [--count N]
                                   # write: reserve the next available IP in an IP range (POST available-ips); --dry-run | --allow-writes --confirm [--message]
+                                  # --count N: reserve N IPs (sequential POSTs); partial failure exits 1
 nbox tenant <slug-or-name-or-id>
 nbox contact <name-or-id>
 nbox vm <name-or-id>
