@@ -11,6 +11,23 @@ Terminal UI and CLI for NetBox — fast search, IPAM lookups, and device context
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE-MIT)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-tip-ff5e5b?logo=ko-fi)](https://ko-fi.com/lance0)
 
+## Demo
+
+A ~45s terminal walkthrough — `nbox status`, ranked search, device detail, an
+IP lookup with `--fields` projection, and a `--dry-run` write plan (no mutation):
+
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="docs/demo.gif">
+    <source media="(prefers-color-scheme: light)" srcset="docs/demo.gif">
+    <img src="docs/demo.gif" alt="nbox CLI demo: status, search, device detail, IP lookup, and a dry-run write plan" width="900">
+  </picture>
+</p>
+
+Recorded with [VHS](https://github.com/charmbracelet/vhs) from a declarative
+[`docs/demo.tape`](docs/demo.tape) script — re-render with `vhs docs/demo.tape`
+(the tape drives a throwaway test NetBox instance; no production data is touched).
+
 Ask the questions you actually ask at the terminal — *what is this IP, where is
 this device, what owns this prefix?* — from the shell, a k9s-style TUI, or an MCP
 server for AI agents.
