@@ -54,6 +54,9 @@ pub enum Outcome {
     NoOp,
     /// The `PATCH` was sent and NetBox accepted it.
     Applied,
+    /// A multi-IP allocation succeeded partially: k of N POSTs completed
+    /// before a failure. The receipt carries the k created objects.
+    Partial,
     /// A TTY prompt was declined (or non-interactive apply lacked `--confirm`).
     /// Recorded when the operator explicitly said no; a usage refusal before
     /// any plan is a different path (no audit event).
@@ -71,6 +74,7 @@ impl Outcome {
     fn as_str(self) -> &'static str {
         match self {
             Outcome::DryRun => "dry_run",
+            Outcome::Partial => "partial",
             Outcome::NoOp => "no_op",
             Outcome::Applied => "applied",
             Outcome::NotApplied => "not_applied",

@@ -166,6 +166,12 @@ pub struct MutationPlan {
     /// [`CHANGELOG_MESSAGE_MAX`] characters.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub changelog_message: Option<String>,
+    /// How many resources to allocate. `1` for a single allocation (the
+    /// default — omitted from JSON so existing plans are byte-identical).
+    /// `>1` triggers N sequential POSTs at apply time. Bound into the
+    /// confirmation token so a `count=3` plan cannot be replayed as `count=5`.
+    #[serde(default = "default_count", skip_serializing_if = "is_default_count")]
+    pub count: u32,
     /// Opaque guard that the caller is applying the same scoped plan it
     /// reviewed — NOT an authorization credential (ADR-0001 §5).
     pub confirm_token: String,
@@ -207,6 +213,7 @@ impl MutationPlan {
             &self.precondition,
             &self.patch,
             &self.changelog_message,
+            self.count,
             epoch,
         );
         if expected != self.confirm_token {
@@ -255,6 +262,20 @@ pub struct MutationReceipt {
     /// receipts are byte-identical and `schema_version` stays 1.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object: Option<Value>,
+    /// True when a multi-IP allocation (`count > 1`) succeeded only partially:
+    /// k of N POSTs completed before a failure. The `object` field carries the
+    /// successfully created IPs as a JSON array. Omitted (false) for a full
+    /// success or a single-IP allocation, so existing receipts are byte-identical.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub partial: bool,
+    /// The number of resources requested in a multi-IP allocation (`count`).
+    /// Omitted (0) for single allocations, so existing receipts are byte-identical.
+    #[serde(default, skip_serializing_if = "is_zero_count")]
+    pub requested_count: u32,
+    /// The number of resources successfully created in a multi-IP allocation.
+    /// Omitted (0) for single allocations, so existing receipts are byte-identical.
+    #[serde(default, skip_serializing_if = "is_zero_count")]
+    pub created_count: u32,
     /// The human-readable outcome line per ADR-0001 §8.
     pub message: String,
 }
@@ -262,17 +283,17 @@ pub struct MutationReceipt {
 // --- confirmation token -----------------------------------------------------
 
 /// Derive the opaque confirmation token for a plan. Bound to the target,
-/// operation, precondition, minimal patch, changelog message, profile, and the
-/// plan's expiry epoch so the same plan reapplied within its window verifies,
-/// but a different plan (or one past expiry) does not. SHA-256 over canonical
-/// (sorted-key) JSON. This is a guard, not a MAC: it carries no secret — the
-/// bound inputs are all already visible in the plan (ADR-0001 §5).
+/// operation, precondition, minimal patch, changelog message, allocation count,
+/// profile, and the plan's expiry epoch so the same plan reapplied within its
+/// window verifies, but a different plan (or one past expiry) does not. SHA-256
+/// over canonical (sorted-key) JSON. This is a guard, not a MAC: it carries no
+/// secret — the bound inputs are all already visible in the plan (ADR-0001 §5).
 ///
-/// `operation` and `changelog_message` are bound so a future multi-step flow
-/// (TUI/MCP) that carries a plan across a boundary cannot apply a plan whose
-/// reviewed message or operation was altered between review and apply. In the
-/// one-shot `--confirm` CLI flow plan and apply share one process, so this is
-/// defense-in-depth, not a live fix.
+/// `operation`, `changelog_message`, and `count` are bound so a future
+/// multi-step flow (TUI/MCP) that carries a plan across a boundary cannot
+/// apply a plan whose reviewed message, operation, or allocation count was
+/// altered between review and apply. In the one-shot `--confirm` CLI flow plan
+/// and apply share one process, so this is defense-in-depth, not a live fix.
 #[must_use]
 pub fn confirm_token(
     target: &PlanTarget,
@@ -280,6 +301,7 @@ pub fn confirm_token(
     precondition: &Precondition,
     patch: &Value,
     changelog_message: &Option<String>,
+    count: u32,
     expires_epoch: u64,
 ) -> String {
     let mut map = BTreeMap::new();
@@ -297,6 +319,7 @@ pub fn confirm_token(
         "changelog_message".to_string(),
         serde_json::to_value(changelog_message).unwrap_or(Value::Null),
     );
+    map.insert("count".to_string(), serde_json::json!(count));
     map.insert(
         "expires_epoch".to_string(),
         serde_json::json!(expires_epoch),
@@ -334,6 +357,29 @@ pub fn validate_changelog_message(msg: &Option<String>) -> Result<(), NboxError>
         }
     }
     Ok(())
+}
+
+// --- count helpers (multi-IP allocation) -----------------------------------
+
+/// Default allocation count: 1 (a single allocation). Plans with `count == 1`
+/// omit the field from JSON so existing single-IP plans are byte-identical.
+#[must_use]
+pub fn default_count() -> u32 {
+    1
+}
+
+/// True when the count is the default (1) — used by `skip_serializing_if` so
+/// single-allocation plans omit the field entirely.
+#[must_use]
+pub fn is_default_count(count: &u32) -> bool {
+    *count == 1
+}
+
+/// True when the count is zero — used by `skip_serializing_if` on receipt count
+/// fields so single-allocation receipts omit them entirely.
+#[must_use]
+pub fn is_zero_count(count: &u32) -> bool {
+    *count == 0
 }
 
 // --- time helpers ----------------------------------------------------------
@@ -430,8 +476,8 @@ mod tests {
             etag: "\"abc\"".into(),
         };
         let patch = json!({"description": "up"});
-        let a = confirm_token(&t, Operation::Update, &p, &patch, &None, 1_000);
-        let b = confirm_token(&t, Operation::Update, &p, &patch, &None, 1_000);
+        let a = confirm_token(&t, Operation::Update, &p, &patch, &None, 1, 1_000);
+        let b = confirm_token(&t, Operation::Update, &p, &patch, &None, 1, 1_000);
         assert_eq!(a, b, "same inputs → same token");
         assert_eq!(a.len(), 64, "full SHA-256 hex");
         assert!(a.chars().all(|c| c.is_ascii_hexdigit()));
@@ -444,7 +490,7 @@ mod tests {
             etag: "\"abc\"".into(),
         };
         let patch = json!({"description": "up"});
-        let base = confirm_token(&t, Operation::Update, &p, &patch, &None, 1_000);
+        let base = confirm_token(&t, Operation::Update, &p, &patch, &None, 1, 1_000);
         // Different patch → different token.
         assert_ne!(
             base,
@@ -454,6 +500,7 @@ mod tests {
                 &p,
                 &json!({"description": "down"}),
                 &None,
+                1,
                 1_000
             )
         );
@@ -462,7 +509,7 @@ mod tests {
         t2.id = 43;
         assert_ne!(
             base,
-            confirm_token(&t2, Operation::Update, &p, &patch, &None, 1_000)
+            confirm_token(&t2, Operation::Update, &p, &patch, &None, 1, 1_000)
         );
         // Different precondition → different token.
         assert_ne!(
@@ -475,25 +522,26 @@ mod tests {
                 },
                 &patch,
                 &None,
+                1,
                 1_000
             )
         );
         // Different expiry → different token.
         assert_ne!(
             base,
-            confirm_token(&t, Operation::Update, &p, &patch, &None, 2_000)
+            confirm_token(&t, Operation::Update, &p, &patch, &None, 1, 2_000)
         );
         // Different profile → different token.
         let mut t3 = t.clone();
         t3.profile = "work".into();
         assert_ne!(
             base,
-            confirm_token(&t3, Operation::Update, &p, &patch, &None, 1_000)
+            confirm_token(&t3, Operation::Update, &p, &patch, &None, 1, 1_000)
         );
         // Different operation → different token.
         assert_ne!(
             base,
-            confirm_token(&t, Operation::Allocate, &p, &patch, &None, 1_000)
+            confirm_token(&t, Operation::Allocate, &p, &patch, &None, 1, 1_000)
         );
         // Different changelog message → different token.
         assert_ne!(
@@ -504,6 +552,7 @@ mod tests {
                 &p,
                 &patch,
                 &Some("reviewed change".into()),
+                1,
                 1_000
             )
         );
@@ -570,6 +619,7 @@ mod tests {
             &Precondition::None,
             &patch,
             &None,
+            1,
             1_000,
         );
         let etag_tok = confirm_token(
@@ -580,6 +630,7 @@ mod tests {
             },
             &patch,
             &None,
+            1,
             1_000,
         );
         assert_ne!(none_tok, etag_tok);
@@ -592,6 +643,7 @@ mod tests {
                 &Precondition::None,
                 &patch,
                 &None,
+                1,
                 1_000
             )
         );
@@ -610,6 +662,9 @@ mod tests {
             etag: None,
             request_id: None,
             object: None,
+            partial: false,
+            requested_count: 0,
+            created_count: 0,
             message: "applied".into(),
         };
         // An update receipt has no `object` key (byte-identical to pre-allocate).
@@ -705,6 +760,7 @@ mod tests {
             warnings: vec![],
             errors: vec![],
             changelog_message: None,
+            count: 1,
             confirm_token: String::new(), // filled below
             expires_at: format_iso_utc(exp),
         };
@@ -714,6 +770,7 @@ mod tests {
             &plan.precondition,
             &plan.patch,
             &None,
+            1,
             exp,
         );
         let mut plan = plan;
@@ -740,6 +797,7 @@ mod tests {
             &plan.precondition,
             &plan.patch,
             &None,
+            1,
             1,
         );
         let err = plan.verify().unwrap_err();
@@ -781,6 +839,7 @@ mod tests {
             warnings: vec![],
             errors: vec![],
             changelog_message: None,
+            count: 1,
             confirm_token: confirm_token(
                 &target(),
                 Operation::Update,
@@ -789,6 +848,7 @@ mod tests {
                 },
                 &json!({"description": "up"}),
                 &None,
+                1,
                 epoch,
             ),
             expires_at: format_iso_utc(epoch),

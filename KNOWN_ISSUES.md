@@ -10,10 +10,9 @@ for where they're headed.
 `tag add`, `tag remove`), behind `--allow-writes` + `--confirm` (or `--dry-run`
 to preview). Reads remain the default everywhere.
 
-**Remaining limitations:** Multi-IP allocation (`--count N`), choosing a
-specific address/block, interface/VM assignment, status/tags on reserve, and
-generic create/delete are still deferred (ADR-0001 Decision 6). The MCP server
-stays read-only.
+**Remaining limitations:** Choosing a specific address/block, interface/VM
+assignment, status/tags on reserve, and generic create/delete are still
+deferred (ADR-0001 Decision 6). The MCP server stays read-only.
 
 ---
 
