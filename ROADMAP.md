@@ -388,29 +388,29 @@ reviewable PRs that lock contracts and reduce future change cost.
   (`invalid_params` vs internal errors) are all pinned against direct server/tool calls in
   `src/mcp/tests.rs::contracts` (not brittle protocol snapshots). Keep this number-free so new
   kinds cannot stale the roadmap.
-- ☐ **Fixture migration pass** — move repeated inline NetBox JSON in `search_tests`, `query_tests`,
+- ◐ **Fixture migration pass** — move repeated inline NetBox JSON in `search_tests`, `query_tests`,
   `scope_tests`, MCP tests, and custom-field tests onto `tests/support` builders as those files are
   next touched.
 - ☑ **Compatibility matrix as tests + docs** _(PR #21)_ — `tests/compat_tests.rs` (9 tests) pins the 4.2
   scope model, 4.3 REST-only search, 4.5 client-side utilization + v2 tokens, and version-floor gating;
   `docs/COMPATIBILITY.md` documents the matrix (cross-checked against the official release notes — citing the
   documented changes, marking the prefix-`utilization` absence and `/api/status` auth as observed-not-noted).
-- ☐ **CLI contract harness** — a thin reusable harness for command-level tests that records
+- ☑ **CLI contract harness** — a thin reusable harness for command-level tests that records
   `(args, stdout, stderr, exit_code)` expectations while preserving the stdout-data-only invariant.
 - ☑ **Release smoke checklist automation** — `scripts/smoke.sh` runs the release-critical gate in one
   shot (`fmt`, both clippies, both test modes, `cargo audit`, build smoke, man-page + completion
   generation) before tags move. Referenced from `CONTRIBUTING.md`. (Cross-compiled musl/darwin/windows
   builds stay the release workflow's matrix, not the local smoke.)
-- ☐ **Observability contracts** — pin `nbox status`, MCP status, and selected debug/audit fields so
+- ☑ **Observability contracts** — pin `nbox status`, MCP status, and selected debug/audit fields so
   users and agents can tell backend, version, capability, and failure mode without scraping prose.
 - ◐ **Config migration/compat tests** — token-source precedence (`select_env_token`), the onboarding
   predicate (`needs_onboarding_for`), redaction (`config show`/`Debug`), and format-preserving edits
   (comments + unrelated keys survive; `save_setting_fields` atomic) are locked in `config.rs` tests.
   ☐ Remaining: explicit old/future `config_version` shape fixtures (forward-compat warn is covered; a
   versioned-migration matrix is not yet needed).
-- ☐ **Dependency and feature matrix** — CI or scripted local checks for default, `--no-default-features`,
+- ☑ **Dependency and feature matrix** — CI or scripted local checks for default, `--no-default-features`,
   `http`, and release-musl-relevant feature combinations.
-- ☐ **Performance baseline, narrow** — bench or measured smoke for the known scale paths:
+- ☑ **Performance baseline, narrow** — bench or measured smoke for the known scale paths:
   search fan-out row counts, TUI idle redraw cost, preview fetch count, rack/circuit detail fan-out,
   MCP resource cache reuse, and JSON/CSV output streaming. Keep it small and contract-like: a few
   representative fixture sizes plus "requests made" assertions, not a broad benchmark suite.
@@ -839,7 +839,7 @@ escape hatch, and GraphQL still cannot replace canonical REST `q` search.
   - ☑ VLAN detail: `vlan_prefixes` and `vlan_group_scope` are independent — `try_join!`;
   - circuit path: memo a panel device's front-port list per detail load so A/Z walks or repeated hops through
     the same patch panel do not page the same 1000 front ports more than once.
-- ☐ **Resolver fallback concurrency.** For non-numeric refs, run exact alternatives concurrently where the
+- ☑ **Resolver fallback concurrency.** For non-numeric refs, run exact alternatives concurrently where the
   endpoint supports them (slug/RD/name-exact), preserve precedence, and only issue broad `name__ic` fallback if
   all exact probes miss. Keep numeric id as the fast path. Especially helpful for scope filters before search.
 - ☐ **Version-gated endpoint availability cache.** On NetBox <4.6, search repeatedly probes 4.6-only
@@ -850,7 +850,7 @@ escape hatch, and GraphQL still cannot replace canonical REST `q` search.
 - ☐ **MCP/cache follow-ups.** After a ref load returns a `DetailView`, also populate the id cache key where
   resolver semantics make that safe; consider short-TTL normalized-arg caches for `nbox_search`,
   `nbox_get_interface`, tags/tagged, and journal.
-- ☐ **Output streaming fast path.** JSON/CSV output currently materializes `serde_json::Value`/`String` before
+- ☑ **Output streaming fast path.** JSON/CSV output currently materializes `serde_json::Value`/`String` before
   writing. Fast-path no-shaping JSON (`no --fields`, no envelope changes) to `serde_json::to_writer(_pretty)`
   on locked stdout; stream CSV rows instead of building a full string. This matters most for `raw GET`, tagged,
   VRF/detail dumps, and large agent outputs.
