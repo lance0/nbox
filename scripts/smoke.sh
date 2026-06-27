@@ -45,6 +45,17 @@ step "Build smoke — all features + no default features"
 cargo build --all-features --locked
 cargo build --no-default-features --locked
 
+step "Feature matrix — intermediate combinations"
+# Intermediate feature combinations between all-on and all-off. Mirror the
+# feature-matrix CI job so the pre-tag gate catches the same combos locally.
+for feat in http clipboard updates; do
+    echo "--- smoke: --no-default-features --features $feat ---"
+    cargo build --no-default-features --features "$feat" --locked || exit 1
+done
+# http has feature-gated integration tests (tests/mcp_serve_http_tests.rs).
+echo "--- smoke: test --no-default-features --features http ---"
+cargo test --no-default-features --features http --locked || exit 1
+
 step "Man pages + shell completions generate"
 smoke_dir="$(mktemp -d)"
 trap 'rm -rf "$smoke_dir"' EXIT

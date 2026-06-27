@@ -166,6 +166,55 @@ jobs:
       - name: Run security audit
         run: cargo audit
 
+  feature-matrix:
+    name: feature-matrix (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - features: "http"
+            test: true
+          - features: "clipboard"
+            test: false
+          - features: "updates"
+            test: false
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build (--no-default-features --features ${{ matrix.features }})
+        run: cargo build --no-default-features --features ${{ matrix.features }} --locked --verbose
+
+      - name: Test (--no-default-features --features ${{ matrix.features }})
+        if: matrix.test
+        run: cargo test --no-default-features --features ${{ matrix.features }} --locked --verbose
+
+  musl-lean-check:
+    name: musl-lean-check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Cache cargo artifacts
+        uses: Swatinem/rust-cache@v2
+
+      - name: Install musl tools
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Check lean musl build
+        run: cargo check --no-default-features --locked --target x86_64-unknown-linux-musl
+
   # Decide the cross-compile matrix by event. On a PR, build ONLY linux-musl (the
   # release-critical static target, and the leg that runs on a fast, never-queued
   # ubuntu runner) so the PR gate isn't gated on the slow macOS/Windows runners —
