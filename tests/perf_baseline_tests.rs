@@ -206,7 +206,7 @@ async fn rack_detail_makes_exactly_1_round_trip() {
 // TUI/`load_detail` path, not the CLI command. Exactly 1 request (slug lookup).
 
 #[tokio::test]
-async fn site_detail_makes_exactly_1_round_trip() {
+async fn site_detail_makes_exactly_2_round_trips() {
     let server = MockServer::start().await;
     // Resolution: one site with slug dc1 (id=1).
     mount_page(
@@ -236,9 +236,10 @@ async fn site_detail_makes_exactly_1_round_trip() {
     assert_eq!(out.code, Some(0), "site failed: {}", out.stderr);
     assert_eq!(
         request_count(&server).await,
-        1,
-        "site CLI command must make exactly 1 request (resolve-only); \
-         contained-devices + site-racks fan-out is TUI-only"
+        2,
+        "site CLI command must make exactly 2 requests — the concurrent \
+         slug + name__ie resolution probes (both fire before either can \
+         short-circuit); contained-devices + site-racks fan-out is TUI-only"
     );
 }
 

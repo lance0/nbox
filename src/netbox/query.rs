@@ -380,6 +380,69 @@ impl NetBoxClient {
         .await
     }
 
+    /// Run the exact-match probes concurrently, preserving precedence by
+    /// returning the first non-empty result in priority order. Only fire the
+    /// broad (name-contains) fallback if ALL exact probes miss — the contains
+    /// probe still uses [`ambiguous_or_first`] so a >1 match surfaces as
+    /// `Ambiguous` (exit 5).
+    ///
+    /// Each exact probe treats an HTTP 404 as an empty page: a 404 on a *list*
+    /// endpoint means "this kind/query isn't available" (an older NetBox
+    /// release, or an unmounted mock in tests) — never a per-object miss — so
+    /// swallowing it can't mask a real miss. Other errors (auth, perms, API)
+    /// still propagate and abort the fan-out. This mirrors the search fan-out's
+    /// [`crate::error::is_not_found`] tolerance.
+    ///
+    /// `exact_probes` is ordered by precedence (slug before `name__ie`, etc.);
+    /// the first non-empty page wins, so a slug hit short-circuits past a
+    /// simultaneous `name__ie` hit exactly as the old sequential chain did.
+    async fn resolve_by_concurrent_probes<T>(
+        &self,
+        endpoint: Endpoint,
+        value: &str,
+        exact_probes: Vec<(&str, String)>,
+        broad_probe: (&str, String),
+        noun: &str,
+        label: impl Fn(&T) -> String,
+    ) -> Result<Option<T>>
+    where
+        T: serde::de::DeserializeOwned,
+    {
+        // Fire all exact probes concurrently. A 404 on a list endpoint is
+        // treated as an empty page so one unmounted probe can't abort the
+        // fan-out; any other error propagates through `try_join_all`.
+        let probe_futs = exact_probes.iter().map(|(key, val)| async move {
+            let page = self.list(endpoint, vec![(*key, val.clone())]).await;
+            match page {
+                Ok(p) => Ok(p),
+                Err(e) if crate::error::is_not_found(&e) => Ok(Page {
+                    count: 0,
+                    next: None,
+                    previous: None,
+                    results: Vec::new(),
+                }),
+                Err(e) => Err(e),
+            }
+        });
+        let pages = futures::future::try_join_all(probe_futs).await?;
+
+        // Check the exact-probe results in precedence order — the first
+        // non-empty page wins, so a higher-precedence hit short-circuits past a
+        // simultaneous lower-precedence hit, matching the old sequential chain.
+        for page in pages {
+            if let Some(item) = page.results.into_iter().next() {
+                return Ok(Some(item));
+            }
+        }
+
+        // All exact probes missed — fire the broad contains probe. This keeps
+        // the ambiguous contract: >1 contains match is `Ambiguous` (exit 5).
+        let page: Page<T> = self
+            .list(endpoint, vec![(broad_probe.0, broad_probe.1)])
+            .await?;
+        ambiguous_or_first(noun, value, page.results, label)
+    }
+
     /// Resolve a site by numeric id, then slug, then exact name, then
     /// name-contains. The id fast-path hits the detail endpoint directly; a hit
     /// returns immediately (so `--site 5` resolves), but a 404 FALLS THROUGH to
@@ -393,22 +456,15 @@ impl NetBoxClient {
         {
             return Ok(Some(s));
         }
-        let by_slug: Page<Site> = self
-            .list(Endpoint::Sites, vec![("slug", value.to_string())])
-            .await?;
-        if let Some(s) = by_slug.results.into_iter().next() {
-            return Ok(Some(s));
-        }
-        let exact: Page<Site> = self
-            .list(Endpoint::Sites, vec![("name__ie", value.to_string())])
-            .await?;
-        if let Some(s) = exact.results.into_iter().next() {
-            return Ok(Some(s));
-        }
-        let contains: Page<Site> = self
-            .list(Endpoint::Sites, vec![("name__ic", value.to_string())])
-            .await?;
-        ambiguous_or_first("site", value, contains.results, |s| s.name.clone())
+        self.resolve_by_concurrent_probes(
+            Endpoint::Sites,
+            value,
+            vec![("slug", value.to_string()), ("name__ie", value.to_string())],
+            ("name__ic", value.to_string()),
+            "site",
+            |s: &Site| s.name.clone(),
+        )
+        .await
     }
 
     /// Resolve a region by numeric id, then slug, then exact name, then
@@ -425,22 +481,15 @@ impl NetBoxClient {
         {
             return Ok(Some(r));
         }
-        let by_slug: Page<Region> = self
-            .list(Endpoint::Regions, vec![("slug", value.to_string())])
-            .await?;
-        if let Some(r) = by_slug.results.into_iter().next() {
-            return Ok(Some(r));
-        }
-        let exact: Page<Region> = self
-            .list(Endpoint::Regions, vec![("name__ie", value.to_string())])
-            .await?;
-        if let Some(r) = exact.results.into_iter().next() {
-            return Ok(Some(r));
-        }
-        let contains: Page<Region> = self
-            .list(Endpoint::Regions, vec![("name__ic", value.to_string())])
-            .await?;
-        ambiguous_or_first("region", value, contains.results, |r| r.name.clone())
+        self.resolve_by_concurrent_probes(
+            Endpoint::Regions,
+            value,
+            vec![("slug", value.to_string()), ("name__ie", value.to_string())],
+            ("name__ic", value.to_string()),
+            "region",
+            |r: &Region| r.name.clone(),
+        )
+        .await
     }
 
     /// Resolve a site group by numeric id, then slug, then exact name, then
@@ -457,22 +506,15 @@ impl NetBoxClient {
         {
             return Ok(Some(g));
         }
-        let by_slug: Page<SiteGroup> = self
-            .list(Endpoint::SiteGroups, vec![("slug", value.to_string())])
-            .await?;
-        if let Some(g) = by_slug.results.into_iter().next() {
-            return Ok(Some(g));
-        }
-        let exact: Page<SiteGroup> = self
-            .list(Endpoint::SiteGroups, vec![("name__ie", value.to_string())])
-            .await?;
-        if let Some(g) = exact.results.into_iter().next() {
-            return Ok(Some(g));
-        }
-        let contains: Page<SiteGroup> = self
-            .list(Endpoint::SiteGroups, vec![("name__ic", value.to_string())])
-            .await?;
-        ambiguous_or_first("site group", value, contains.results, |g| g.name.clone())
+        self.resolve_by_concurrent_probes(
+            Endpoint::SiteGroups,
+            value,
+            vec![("slug", value.to_string()), ("name__ie", value.to_string())],
+            ("name__ic", value.to_string()),
+            "site group",
+            |g: &SiteGroup| g.name.clone(),
+        )
+        .await
     }
 
     /// Resolve a location by numeric id, then slug, then exact name, then
@@ -489,22 +531,15 @@ impl NetBoxClient {
         {
             return Ok(Some(l));
         }
-        let by_slug: Page<Location> = self
-            .list(Endpoint::Locations, vec![("slug", value.to_string())])
-            .await?;
-        if let Some(l) = by_slug.results.into_iter().next() {
-            return Ok(Some(l));
-        }
-        let exact: Page<Location> = self
-            .list(Endpoint::Locations, vec![("name__ie", value.to_string())])
-            .await?;
-        if let Some(l) = exact.results.into_iter().next() {
-            return Ok(Some(l));
-        }
-        let contains: Page<Location> = self
-            .list(Endpoint::Locations, vec![("name__ic", value.to_string())])
-            .await?;
-        ambiguous_or_first("location", value, contains.results, |l| l.name.clone())
+        self.resolve_by_concurrent_probes(
+            Endpoint::Locations,
+            value,
+            vec![("slug", value.to_string()), ("name__ie", value.to_string())],
+            ("name__ic", value.to_string()),
+            "location",
+            |l: &Location| l.name.clone(),
+        )
+        .await
     }
 
     /// Resolve a VRF by numeric id, then exact RD, then exact name, then
@@ -521,22 +556,15 @@ impl NetBoxClient {
         {
             return Ok(Some(v));
         }
-        let by_rd: Page<Vrf> = self
-            .list(Endpoint::Vrfs, vec![("rd", value.to_string())])
-            .await?;
-        if let Some(v) = by_rd.results.into_iter().next() {
-            return Ok(Some(v));
-        }
-        let exact: Page<Vrf> = self
-            .list(Endpoint::Vrfs, vec![("name__ie", value.to_string())])
-            .await?;
-        if let Some(v) = exact.results.into_iter().next() {
-            return Ok(Some(v));
-        }
-        let contains: Page<Vrf> = self
-            .list(Endpoint::Vrfs, vec![("name__ic", value.to_string())])
-            .await?;
-        ambiguous_or_first("VRF", value, contains.results, |v| v.name.clone())
+        self.resolve_by_concurrent_probes(
+            Endpoint::Vrfs,
+            value,
+            vec![("rd", value.to_string()), ("name__ie", value.to_string())],
+            ("name__ic", value.to_string()),
+            "VRF",
+            |v: &Vrf| v.name.clone(),
+        )
+        .await
     }
 
     /// Resolve a route target by numeric ID, or by its name (the BGP extended
@@ -800,22 +828,15 @@ impl NetBoxClient {
                 .get_optional(&format!("/api/dcim/rack-groups/{id}/"), &[])
                 .await;
         }
-        let by_slug: Page<RackGroup> = self
-            .list(Endpoint::RackGroups, vec![("slug", value.to_string())])
-            .await?;
-        if let Some(rg) = by_slug.results.into_iter().next() {
-            return Ok(Some(rg));
-        }
-        let exact: Page<RackGroup> = self
-            .list(Endpoint::RackGroups, vec![("name__ie", value.to_string())])
-            .await?;
-        if let Some(rg) = exact.results.into_iter().next() {
-            return Ok(Some(rg));
-        }
-        let contains: Page<RackGroup> = self
-            .list(Endpoint::RackGroups, vec![("name__ic", value.to_string())])
-            .await?;
-        ambiguous_or_first("rack group", value, contains.results, |rg| rg.name.clone())
+        self.resolve_by_concurrent_probes(
+            Endpoint::RackGroups,
+            value,
+            vec![("slug", value.to_string()), ("name__ie", value.to_string())],
+            ("name__ic", value.to_string()),
+            "rack group",
+            |rg: &RackGroup| rg.name.clone(),
+        )
+        .await
     }
 
     /// Resolve a tenant by numeric ID, then slug, then exact name, then
@@ -827,22 +848,15 @@ impl NetBoxClient {
                 .get_optional(&format!("/api/tenancy/tenants/{id}/"), &[])
                 .await;
         }
-        let by_slug: Page<Tenant> = self
-            .list(Endpoint::Tenants, vec![("slug", value.to_string())])
-            .await?;
-        if let Some(t) = by_slug.results.into_iter().next() {
-            return Ok(Some(t));
-        }
-        let exact: Page<Tenant> = self
-            .list(Endpoint::Tenants, vec![("name__ie", value.to_string())])
-            .await?;
-        if let Some(t) = exact.results.into_iter().next() {
-            return Ok(Some(t));
-        }
-        let contains: Page<Tenant> = self
-            .list(Endpoint::Tenants, vec![("name__ic", value.to_string())])
-            .await?;
-        ambiguous_or_first("tenant", value, contains.results, |t| t.name.clone())
+        self.resolve_by_concurrent_probes(
+            Endpoint::Tenants,
+            value,
+            vec![("slug", value.to_string()), ("name__ie", value.to_string())],
+            ("name__ic", value.to_string()),
+            "tenant",
+            |t: &Tenant| t.name.clone(),
+        )
+        .await
     }
 
     /// Resolve a contact by numeric ID, then exact name, then name-contains.
@@ -876,22 +890,15 @@ impl NetBoxClient {
                 .get_optional(&format!("/api/circuits/providers/{id}/"), &[])
                 .await;
         }
-        let by_slug: Page<Provider> = self
-            .list(Endpoint::Providers, vec![("slug", value.to_string())])
-            .await?;
-        if let Some(p) = by_slug.results.into_iter().next() {
-            return Ok(Some(p));
-        }
-        let exact: Page<Provider> = self
-            .list(Endpoint::Providers, vec![("name__ie", value.to_string())])
-            .await?;
-        if let Some(p) = exact.results.into_iter().next() {
-            return Ok(Some(p));
-        }
-        let contains: Page<Provider> = self
-            .list(Endpoint::Providers, vec![("name__ic", value.to_string())])
-            .await?;
-        ambiguous_or_first("provider", value, contains.results, |p| p.name.clone())
+        self.resolve_by_concurrent_probes(
+            Endpoint::Providers,
+            value,
+            vec![("slug", value.to_string()), ("name__ie", value.to_string())],
+            ("name__ic", value.to_string()),
+            "provider",
+            |p: &Provider| p.name.clone(),
+        )
+        .await
     }
 
     /// Resolve a virtual machine by numeric ID, then exact name, then
@@ -940,33 +947,15 @@ impl NetBoxClient {
                 )
                 .await;
         }
-        let by_slug: Page<VirtualMachineType> = self
-            .list(
-                Endpoint::VirtualMachineTypes,
-                vec![("slug", value.to_string())],
-            )
-            .await?;
-        if let Some(t) = by_slug.results.into_iter().next() {
-            return Ok(Some(t));
-        }
-        let exact: Page<VirtualMachineType> = self
-            .list(
-                Endpoint::VirtualMachineTypes,
-                vec![("name__ie", value.to_string())],
-            )
-            .await?;
-        if let Some(t) = exact.results.into_iter().next() {
-            return Ok(Some(t));
-        }
-        let contains: Page<VirtualMachineType> = self
-            .list(
-                Endpoint::VirtualMachineTypes,
-                vec![("name__ic", value.to_string())],
-            )
-            .await?;
-        ambiguous_or_first("virtual machine type", value, contains.results, |t| {
-            t.name.clone()
-        })
+        self.resolve_by_concurrent_probes(
+            Endpoint::VirtualMachineTypes,
+            value,
+            vec![("slug", value.to_string()), ("name__ie", value.to_string())],
+            ("name__ic", value.to_string()),
+            "virtual machine type",
+            |t: &VirtualMachineType| t.name.clone(),
+        )
+        .await
     }
 
     /// Resolve a cluster by numeric ID, then exact name, then name-contains.
