@@ -35,6 +35,9 @@ Notes:
   picks the first fitting block locally with `ipnet`.
 - nbox targets NetBox **4.2+**. REST is canonical; GraphQL is an opt-in
   accelerator for the VRF and route-target views.
+- "Works over SSH with no runtime" is also nbox's agent edge: one static binary,
+  zero runtime, MCP-ready in ~9 ms — versus an interpreter plus packages for a
+  Python MCP server. Measured numbers and method in [BENCHMARKS.md](BENCHMARKS.md).
 
 ## When to use each
 
