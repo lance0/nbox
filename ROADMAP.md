@@ -344,15 +344,14 @@ all read-only. (Market positioning itself stays out of the repo — see private 
   `nbox serve --print-config` helper. (SKILL.md + the README "Add it to Claude" block are the start.)
   `--print-config` now prints the paste-ready `mcpServers` JSON (absolute binary path, echoed
   `--profile`/`--config`, placeholder token) and exits; docs/MCP.md lists the per-host config-file path.
-- ☑ **Per-domain agent-skills catalog (write domain).** The first skill files
-  landed for the write surface, in the standard agent-skills layout
-  (`skills/<domain>/SKILL.md`): `skills/writes/` (the universal lifecycle),
-  `skills/ipam-allocate/`, `skills/tag-writes/`, `skills/patch-writes/`.
-  Flag-free by design — each points at `nbox <cmd> --help` so it can't silently
-  drift; `scripts/lint_skills.sh` + a `skills-lint` CI workflow check the
-  frontmatter shape. The root `SKILL.md` indexes the catalog and now mentions
-  the write surface. ☐ Read-domain skills (search, IPAM read, device/interface
-  context, `serve`) remain — grow the catalog incrementally.
+- ☑ **Per-domain agent-skills catalog (read + write).** Skill files in the
+  standard agent-skills layout (`skills/<domain>/SKILL.md`) now cover both
+  surfaces: writes — `skills/writes/` (the universal lifecycle),
+  `skills/ipam-allocate/`, `skills/tag-writes/`, `skills/patch-writes/`; and
+  reads — `skills/search/`, `skills/ipam-read/`, `skills/device-context/`,
+  `skills/serve/`. Flag-free by design — each points at `nbox <cmd> --help` so it
+  can't silently drift; `scripts/lint_skills.sh` + a `skills-lint` CI workflow
+  check the frontmatter shape. The root `SKILL.md` indexes both domains.
 - ☑ **Read-only history/changelog tool + `--diff`.** `nbox history <kind> <ref>`
   shows the system-recorded create/update/delete timeline for an object (who, when,
   and which fields changed) from `/api/core/object-changes/` (NetBox 4.x), distinct
