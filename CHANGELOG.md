@@ -134,34 +134,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     stdout). The audit logs `operation=allocate`, `http_method=POST`, and field
     names only.
 - **Multi-IP allocation: `ip reserve --count N` and `ip-range reserve --count N`.**
-  Both allocate commands now accept `--count N` (default 1) to reserve N IP
-  addresses in one invocation. The v1 implementation issues each IP as a
-  separate `POST` (one per request); the receipt carries a JSON array of the
-  created `IpView`s
-  and the plan shows `count` in its fields diff. `count` is bound into the
-  confirmation token so a `count=3` plan can't be replayed as `count=5`.
-  - **Partial failure.** If the k-th `POST` fails after `k > 0` already
-    succeeded, the receipt is returned with `partial: true`, `created_count: k`,
-    the k created IPs in `object`, and `status` set to the *failing* `POST`'s
-    HTTP status (e.g. `409` when the range is exhausted mid-run, not the prior
-    success's `201`) — then the process exits 1 so scripts detect the incomplete
-    allocation. The audit log records `outcome=partial`. A first-`POST` failure
-    (k=0, nothing created) is not a partial receipt: it propagates as the plain
-    single-reserve error (exit 1, empty stdout).
-  - **Atomic multi-IP (list-body POST).** `count > 1` first attempts a single
-    list-body `POST` (`[body, body, …]` — N copies of the single-IP create
-    body) so NetBox creates all N or zero IPs in one round-trip; on success the
-    receipt is `partial: false` with all N `IpView`s. Older NetBox that rejects
-    the list shape (HTTP 400/422) falls back to the N sequential `POST`s above
-    (which may still yield `partial: true`). Other atomic-path failures (409
-    exhaustion, 401/403, 412, network) propagate as a plain exit-1 error — no
-    fallback, no orphan IPs, since the list-body request creates zero on
-    rejection. `count == 1` is unchanged (single-object `POST`, byte-identical
-    receipt).
-  - **Backward compatible.** `count=1` (the default) is byte-identical to the
-    existing single-IP plan/receipt — `count`, `partial`, `requested_count`, and
-    `created_count` use `skip_serializing_if` defaults so they're omitted when
-    at their default values.
+  Both allocate commands accept `--count N` (default 1) to reserve N IP addresses
+  in one invocation. `count > 1` sends a single **list-body** `POST`
+  (`[body; N]`) — NetBox's `available-ips` endpoint allocates **all N or zero** in
+  one atomic round-trip (verified down to the 4.2 floor). The receipt's `object`
+  is a JSON array of the created `IpView`s, the plan shows `count` in its fields
+  diff, and `count` is bound into the confirmation token so a `count=3` plan can't
+  be replayed as `count=5`.
+  - **All-or-nothing.** Because the server allocation is atomic, there is no
+    partial-allocation state: any failure (409 exhaustion, validation, auth,
+    network) leaves nothing created and is a plain exit-1 error (empty stdout).
+  - **Backward compatible.** `count=1` (the default) takes the single-object
+    `POST` path and is byte-identical to the existing single-IP plan/receipt;
+    `count` uses a `skip_serializing_if` default so it's omitted at its default.
 - **Agent write ergonomics — per-domain skill files.** The root `SKILL.md`
   now indexes a small catalog of focused, flag-free skill files for the write
   surface, in the standard agent-skills layout (`skills/<domain>/SKILL.md`):

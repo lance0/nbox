@@ -408,9 +408,6 @@ pub(crate) async fn apply_interface_description_update(
         etag: new_etag,
         request_id: None,
         object: None,
-        partial: false,
-        requested_count: 0,
-        created_count: 0,
         message: format!(
             "applied: {} {} ({})",
             plan.target.kind,
@@ -434,9 +431,6 @@ pub(crate) fn no_op_receipt(plan: &MutationPlan) -> MutationReceipt {
         etag: None,
         request_id: None,
         object: None,
-        partial: false,
-        requested_count: 0,
-        created_count: 0,
         message: "no change: current value already matches".to_string(),
     }
 }
@@ -651,9 +645,6 @@ pub(crate) async fn apply_device_status_update(
         etag: new_etag,
         request_id: None,
         object: None,
-        partial: false,
-        requested_count: 0,
-        created_count: 0,
         message: format!(
             "applied: {} {} ({})",
             plan.target.kind,
@@ -687,7 +678,7 @@ fn device_before_hash(dev: &Device) -> String {
 /// allow-list — no status/role/tags/assignment).
 ///
 /// `count > 1` requests a multi-IP allocation: the plan records the count, the
-/// `fields` diff shows it, and apply issues N sequential POSTs. The confirm token
+/// `fields` diff shows it, and apply sends one atomic list-body POST (all N or zero). The confirm token
 /// binds the count so a `count=3` plan cannot be replayed as `count=5`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn plan_ip_reserve(
@@ -838,11 +829,9 @@ pub(crate) async fn plan_ip_reserve(
 /// `available-ips` endpoint. NetBox allocates the next free address and returns
 /// the created IP object (`201`), which becomes the receipt's `object`.
 ///
-/// For `count > 1` (multi-IP), issues N sequential POSTs to the same endpoint.
-/// On full success, `object` is a JSON array of the created IP views. On partial
-/// failure (k of N succeed), the receipt carries `partial: true`, `object` = the
-/// k created views, and `created_count = k`; the caller surfaces the error so
-/// the exit code is 1 while the receipt still reaches stdout.
+/// For `count > 1` (multi-IP), sends one atomic list-body POST: NetBox creates
+/// all N or zero in one round-trip, so `object` is a JSON array of the N created
+/// IP views. Any failure leaves nothing created and propagates as a clean error.
 pub(crate) async fn apply_ip_reserve(
     client: &NetBoxClient,
     plan: &MutationPlan,
@@ -1020,9 +1009,6 @@ pub(crate) async fn apply_prefix_reserve(
         etag: None,
         request_id: None,
         object,
-        partial: false,
-        requested_count: 0,
-        created_count: 0,
         message: format!("reserved: {} in {}", created_prefix, plan.target.display),
     })
 }
@@ -1049,7 +1035,7 @@ fn prefix_satisfies_length(cidr: &str, target: u8) -> bool {
 /// may be set (the v1 narrow allow-list — no status/role/tags/assignment).
 ///
 /// `count > 1` requests a multi-IP allocation: the plan records the count, the
-/// `fields` diff shows it, and apply issues N sequential POSTs. The confirm
+/// `fields` diff shows it, and apply sends one atomic list-body POST (all N or zero). The confirm
 /// token binds the count so a `count=3` plan cannot be replayed as `count=5`.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn plan_ip_range_reserve(
@@ -1207,11 +1193,9 @@ pub(crate) async fn plan_ip_range_reserve(
 /// and returns the created IP object (`201`), which becomes the receipt's
 /// `object`.
 ///
-/// For `count > 1` (multi-IP), issues N sequential POSTs to the same endpoint.
-/// On full success, `object` is a JSON array of the created IP views. On partial
-/// failure (k of N succeed), the receipt carries `partial: true`, `object` = the
-/// k created views, and `created_count = k`; the caller surfaces the error so
-/// the exit code is 1 while the receipt still reaches stdout.
+/// For `count > 1` (multi-IP), sends one atomic list-body POST: NetBox creates
+/// all N or zero in one round-trip, so `object` is a JSON array of the N created
+/// IP views. Any failure leaves nothing created and propagates as a clean error.
 pub(crate) async fn apply_ip_range_reserve(
     client: &NetBoxClient,
     plan: &MutationPlan,
@@ -1221,13 +1205,11 @@ pub(crate) async fn apply_ip_range_reserve(
 
 /// Shared apply logic for multi-IP allocate writes (`ip reserve` and
 /// `ip-range reserve`). Both POST to an `available-ips` endpoint. For
-/// `count == 1`, a single POST returns a single object (byte-identical to the
-/// pre-multi-IP receipt). For `count > 1`, the apply first attempts an atomic
-/// all-or-nothing allocation via a single list-body POST — NetBox's
-/// `available-ips` endpoint accepts a JSON array body (`[{…}, …]`) and creates
-/// either all N or zero IPs in one round-trip (modern NetBox). Older NetBox
-/// that rejects the list shape (HTTP 400/422) falls back to N sequential
-/// POSTs, which may produce a partial state (k of N created → `partial: true`).
+/// `count == 1`, a single POST returns a single object. For `count > 1`, a
+/// single **list body** (`[{…}; N]`) — NetBox's `available-ips` endpoint
+/// allocates **all N or zero** in one atomic round-trip (verified down to the
+/// 4.2 floor), so there is no partial-allocation state and no per-IP fallback;
+/// any failure leaves nothing created and propagates as a clean error.
 async fn apply_multi_ip_reserve(
     client: &NetBoxClient,
     plan: &MutationPlan,
@@ -1262,90 +1244,23 @@ async fn apply_multi_ip_reserve(
             etag: None,
             request_id: None,
             object,
-            partial: false,
-            requested_count: 0,
-            created_count: 0,
             message: format!("reserved: {} in {}", address, plan.target.display),
         });
     }
 
-    // Multi-IP: try the atomic list-body POST first (all-or-nothing in one
-    // round-trip). On a server rejection of the list shape (400/422), fall
-    // back to the sequential POSTs below — the older-NetBox path that may
-    // yield a partial state. Other failures propagate unchanged.
-    match try_atomic_multi_ip_post(client, &plan.target.endpoint, &body, count).await {
-        AtomicResult::Created(created_ips, status) => {
-            return Ok(build_atomic_receipt(plan, created_ips, status));
-        }
-        AtomicResult::ListBodyRejected => {
-            // Fall through to the sequential path below.
-        }
-        AtomicResult::Error(e) => {
-            return Err(e);
-        }
-    }
-
-    // Sequential fallback: N POSTs. Each POST creates one IP. A failure
-    // mid-sequence stops — the created IPs are returned in the receipt's
-    // `object` (a JSON array) so the operator knows what succeeded.
-    let mut views: Vec<Value> = Vec::with_capacity(count);
-    let mut last_status: u16 = 201;
-    for i in 0..count {
-        match client.post::<IpAddress>(&plan.target.endpoint, &body).await {
-            Ok((created, status)) => {
-                last_status = status;
-                let view = IpView::build(created, None);
-                if let Ok(v) = serde_json::to_value(&view) {
-                    views.push(v);
-                }
-            }
-            Err(e) => {
-                if views.is_empty() {
-                    return Err(e);
-                }
-                // Partial failure: k of N succeeded. Return a receipt with
-                // the created IPs so they reach stdout, but mark it partial.
-                let created_count = i as u32;
-                let failure_status = e
-                    .chain()
-                    .find_map(|cause| cause.downcast_ref::<NboxError>())
-                    .and_then(NboxError::http_status)
-                    .unwrap_or(last_status);
-                let addresses: Vec<String> = views
-                    .iter()
-                    .filter_map(|v| v.get("address").and_then(|a| a.as_str()).map(String::from))
-                    .collect();
-                return Ok(MutationReceipt {
-                    schema_version: PLAN_SCHEMA_VERSION,
-                    operation: plan.operation,
-                    target: plan.target.clone(),
-                    fields: plan.fields.clone(),
-                    applied: created_count > 0,
-                    no_op: false,
-                    status: failure_status,
-                    etag: None,
-                    request_id: None,
-                    object: Some(Value::Array(views)),
-                    partial: true,
-                    requested_count: count as u32,
-                    created_count,
-                    message: format!(
-                        "partially reserved: {}/{} in {} — {}",
-                        created_count,
-                        count,
-                        plan.target.display,
-                        if addresses.is_empty() {
-                            "no addresses created".to_string()
-                        } else {
-                            format!("created: {}", addresses.join(", "))
-                        }
-                    ),
-                });
-            }
-        }
-    }
-
-    // Full success: all N IPs created.
+    // Multi-IP: a single atomic list-body POST (`[body; N]`). NetBox's
+    // `available-ips` endpoint allocates all N or zero in one round-trip
+    // (verified down to the 4.2 floor), so there is no partial-allocation state
+    // to reconcile and no per-IP fallback. Any failure (409 exhaustion,
+    // validation, auth, network) propagates as a clean error — nothing created.
+    let list_body = Value::Array(vec![body; count]);
+    let (created, status): (Vec<IpAddress>, u16) =
+        client.post(&plan.target.endpoint, &list_body).await?;
+    let views: Vec<Value> = created
+        .into_iter()
+        .map(|ip| IpView::build(ip, None))
+        .filter_map(|v| serde_json::to_value(&v).ok())
+        .collect();
     let addresses: Vec<String> = views
         .iter()
         .filter_map(|v| v.get("address").and_then(|a| a.as_str()).map(String::from))
@@ -1357,13 +1272,10 @@ async fn apply_multi_ip_reserve(
         fields: plan.fields.clone(),
         applied: true,
         no_op: false,
-        status: last_status,
+        status,
         etag: None,
         request_id: None,
         object: Some(Value::Array(views)),
-        partial: false,
-        requested_count: count as u32,
-        created_count: count as u32,
         message: format!(
             "reserved {} in {}",
             if addresses.len() == 1 {
@@ -1374,99 +1286,6 @@ async fn apply_multi_ip_reserve(
             plan.target.display
         ),
     })
-}
-
-/// The outcome of an atomic list-body POST attempt for multi-IP allocation.
-enum AtomicResult {
-    /// The server created all N IPs (201 with a JSON array body).
-    Created(Vec<IpAddress>, u16),
-    /// The server rejected the list body shape (HTTP 400/422) — the caller
-    /// should fall back to sequential POSTs. No IPs were created.
-    ListBodyRejected,
-    /// Any other failure (409 exhaustion, 401/403, 412, network, decode) —
-    /// propagated as a normal apply error, since none leaves orphan IPs.
-    Error(anyhow::Error),
-}
-
-/// Attempt an atomic all-or-nothing multi-IP allocation: a single list-body
-/// POST (`[body, body, …]` — N copies of the single-IP create body) to the
-/// `available-ips` endpoint. Modern NetBox creates all N or zero in one
-/// round-trip; the response is a `201` with a JSON array of the created IPs.
-///
-/// Older NetBox (or any server that doesn't accept the list shape) responds
-/// `400`/`422`, which we treat as a request to fall back to sequential POSTs —
-/// no IP is created on a 400/422, so the fallback is safe. Other failures
-/// (409 prefix exhausted, 401/403, 412, network, response decode) propagate as
-/// [`AtomicResult::Error`] since they're not a "list body unsupported" signal
-/// and none leaves behind orphan IPs that the sequential fallback would
-/// duplicate.
-async fn try_atomic_multi_ip_post(
-    client: &NetBoxClient,
-    endpoint: &str,
-    body: &Value,
-    count: usize,
-) -> AtomicResult {
-    let list_body = Value::Array(vec![body.clone(); count]);
-    match client.post::<Vec<IpAddress>>(endpoint, &list_body).await {
-        Ok((created, status)) => AtomicResult::Created(created, status),
-        Err(e) => {
-            // A 400/422 specifically signals the list body isn't supported →
-            // fall back. The list-body request creates zero IPs on rejection,
-            // so the sequential fallback never duplicates an allocation.
-            let http_status = e
-                .chain()
-                .find_map(|cause| cause.downcast_ref::<NboxError>())
-                .and_then(NboxError::http_status);
-            if matches!(http_status, Some(400 | 422)) {
-                AtomicResult::ListBodyRejected
-            } else {
-                AtomicResult::Error(e)
-            }
-        }
-    }
-}
-
-/// Build the receipt for a successful atomic list-body allocation: all N IPs
-/// created in one round-trip, so `partial: false` and `created_count == count`.
-fn build_atomic_receipt(
-    plan: &MutationPlan,
-    created_ips: Vec<IpAddress>,
-    status: u16,
-) -> MutationReceipt {
-    let views: Vec<Value> = created_ips
-        .into_iter()
-        .map(|ip| IpView::build(ip, None))
-        .filter_map(|v| serde_json::to_value(&v).ok())
-        .collect();
-    let count = views.len();
-    let addresses: Vec<String> = views
-        .iter()
-        .filter_map(|v| v.get("address").and_then(|a| a.as_str()).map(String::from))
-        .collect();
-    MutationReceipt {
-        schema_version: PLAN_SCHEMA_VERSION,
-        operation: plan.operation,
-        target: plan.target.clone(),
-        fields: plan.fields.clone(),
-        applied: true,
-        no_op: false,
-        status,
-        etag: None,
-        request_id: None,
-        object: Some(Value::Array(views)),
-        partial: false,
-        requested_count: count as u32,
-        created_count: count as u32,
-        message: format!(
-            "reserved {} in {}",
-            if addresses.len() == 1 {
-                addresses[0].clone()
-            } else {
-                format!("{} addresses: {}", addresses.len(), addresses.join(", "))
-            },
-            plan.target.display
-        ),
-    }
 }
 
 // ===== Safe write follow-on: tag add/remove (ADR-0001) ===================
@@ -1775,9 +1594,6 @@ pub(crate) async fn apply_tag_update(
         etag: new_etag,
         request_id: None,
         object: None,
-        partial: false,
-        requested_count: 0,
-        created_count: 0,
         message: format!(
             "applied: {} {} ({})",
             plan.target.kind,

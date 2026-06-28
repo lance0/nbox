@@ -1577,8 +1577,6 @@ async fn apply_or_preview(
         Ok(receipt) => {
             let outcome = if receipt.no_op {
                 Outcome::NoOp
-            } else if receipt.partial {
-                Outcome::Partial
             } else {
                 Outcome::Applied
             };
@@ -1597,18 +1595,6 @@ async fn apply_or_preview(
                 message_len,
             )
             .emit();
-            // A partial multi-IP allocation returns the receipt (with the k
-            // created IPs) to stdout, then a non-zero exit so scripts know the
-            // allocation was incomplete.
-            if receipt.partial {
-                emit(ctx, &receipt, || render_receipt_plain(&receipt))?;
-                return Err(anyhow::anyhow!(
-                    "partially reserved: {}/{} in {}",
-                    receipt.created_count,
-                    receipt.requested_count,
-                    plan.target.display
-                ));
-            }
             emit(ctx, &receipt, || render_receipt_plain(&receipt))
         }
         Err(e) => {

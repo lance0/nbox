@@ -42,7 +42,7 @@ nbox device <name|slug|id>
 nbox ip <address> [--vrf <name|slug|rd>]  # surfaces nat_inside/nat_outside (NetBox 4.6) when set
 nbox ip reserve <cidr> [--vrf <name|slug|rd>] [--description "…"] [--dns-name "…"] [--count N]
                                   # write: reserve the next available IP (POST available-ips); --dry-run | --allow-writes --confirm [--message]
-                                  # --count N: reserve N IPs in one call (N sequential POSTs); partial failure exits 1
+                                  # --count N: reserve N IPs atomically (one list-body POST, all-or-nothing); any failure exits 1, nothing created
 nbox prefix <cidr> [--vrf <name|slug|rd>]
                                   # optional write subcommand:
   prefix <cidr> reserve [--length L] [--vrf <name|slug|rd>] [--description "…"]
@@ -68,7 +68,7 @@ nbox ip-range <start|id>
                                   # optional write subcommand:
   ip-range <start|id> reserve [--description "…"] [--dns-name "…"] [--count N]
                                   # write: reserve the next available IP in an IP range (POST available-ips); --dry-run | --allow-writes --confirm [--message]
-                                  # --count N: reserve N IPs in one call (N sequential POSTs); partial failure exits 1
+                                  # --count N: reserve N IPs atomically (one list-body POST, all-or-nothing); any failure exits 1, nothing created
 nbox tenant <slug|name|id>
 nbox contact <name|id>
 nbox vm <name|id>
@@ -228,9 +228,10 @@ nbox device edge01 --json | jq '.primary_ip4'
   receipt returns the created prefix. For `ip-range reserve`, the body carries
   optional `description` and `dns_name`; the server allocates the address and
   the receipt returns the created IP. `ip reserve` and `ip-range reserve` accept
-  `--count N` to reserve N IPs in one call (N sequential POSTs; `count` is bound
-  into the confirmation token); a partial failure (k of N succeeded) returns the
-  k created IPs with `partial: true` and exit 1. The MCP server is read-only by default; write tools (`nbox_plan_write`/`nbox_apply_write`) require `--allow-writes` + the per-user vault (Pattern 2).
+  `--count N` to reserve N IPs atomically in one call (a single list-body POST —
+  NetBox allocates all N or zero; `count` is bound into the confirmation token);
+  any failure leaves nothing created and exits 1, and the receipt's `object` is a
+  JSON array of the N created IPs. The MCP server is read-only by default; write tools (`nbox_plan_write`/`nbox_apply_write`) require `--allow-writes` + the per-user vault (Pattern 2).
 - Filters that an object type can't satisfy cause that type to be skipped in
   `search` (nbox does not send NetBox unknown query params).
 - `owner` (NetBox 4.5+): a native owner field (user or group) surfaced on most
