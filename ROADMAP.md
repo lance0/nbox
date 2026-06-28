@@ -463,20 +463,13 @@ the read tool proves out in practice. Consolidated future scope:
   as `ip reserve` and `prefix reserve`.
 - ☑ **Multi-IP allocation (`--count N`).** `ip reserve` and `ip-range reserve`
   accept `--count N` (default 1) to reserve N IP addresses in one invocation.
-  The v1 implementation issues N sequential `POST`s (one IP per request); the
-  receipt carries a JSON array of created `IpView`s. `count` is bound into the
-  confirmation token. Partial failure (k of N POSTs succeeded) returns the k
-  created IPs with `partial: true` and exit 1; the audit logs `outcome=partial`.
-  `count=1` plans/receipts are byte-identical to existing single-IP ones.
-- ☑ **Atomic multi-IP allocation (list-body POST).** NetBox's `available-ips`
-  endpoint accepts a JSON list body (`[{…}, …]`) for all-or-nothing allocation
-  in a single round-trip — the server either creates all N or creates zero.
-  `count > 1` now attempts the list-body POST first (one request, all-or-
-  nothing); on a server rejection of the list shape (HTTP 400/422, older
-  NetBox) it falls back to the N sequential POSTs above, which may still yield
-  a partial state (`partial: true` + exit 1). Other atomic-path failures (409
-  exhaustion, 401/403, 412, network) propagate as a plain error — no orphan
-  IPs, since the list-body request creates zero on rejection. `count == 1`
+  `count > 1` sends a single **list-body** `POST` (`[{…}; N]`) — NetBox's
+  `available-ips` endpoint allocates **all N or zero** in one atomic round-trip
+  (verified empirically down to the 4.2 floor, so no per-version fallback is
+  needed). The receipt's `object` is a JSON array of the created `IpView`s, and
+  `count` is bound into the confirmation token. Because the server allocation is
+  atomic, there is no partial state: any failure (409 exhaustion, validation,
+  auth, network) leaves nothing created and is a plain exit-1 error. `count == 1`
   stays on the single-object POST path, byte-identical to existing receipts.
 - ☐ **IPAM allocate (rest)** — choosing a specific address/block. The read half
   (`next-ip` / `next-prefix`, range lookup) and all three allocate writes (`ip

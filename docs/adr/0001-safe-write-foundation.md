@@ -318,23 +318,21 @@ Shipped on this foundation, in order:
 
 - **Multi-IP allocation (`--count N`).** `ip reserve` and `ip-range reserve`
   accept `--count N` (default 1) to reserve N IP addresses in one invocation.
-  The v1 implementation issues each IP as a separate `POST` (one per request);
-  the receipt carries a JSON array of the created `IpView`s in `object`. The `count`
-  is bound into the confirmation token (so a `count=3` plan cannot be replayed
-  as `count=5`) and appears in the plan's fields diff when > 1.
-  - **Partial failure.** If the k-th `POST` fails after `k > 0` already
-    succeeded, the receipt is returned with `partial: true`, `created_count: k`,
-    the k created IPs in `object`, and `status` set to the *failing* `POST`'s
-    HTTP status (e.g. `409`, not the prior success's `201`); the process exits 1
-    (the audit logs `outcome=partial`) so scripts detect the incomplete
-    allocation. A first-`POST` failure (k=0, nothing created) is **not** a
-    partial receipt — it propagates as the plain single-reserve error (exit 1,
-    empty stdout). This is an `allocate`-specific outcome — `update` writes
-    remain atomic single-`PATCH`.
-  - **Backward compatible.** `count=1` (the default) is byte-identical to the
-    existing single-IP plan/receipt: `count`, `partial`, `requested_count`, and
-    `created_count` use `skip_serializing_if` defaults so they're omitted when
-    at their default values. `schema_version` stays `1`.
+  `count > 1` sends a single **list-body** `POST` (`[{…}; N]`) — NetBox's
+  `available-ips` endpoint allocates **all N or zero** in one atomic round-trip
+  (verified empirically down to the 4.2 floor, so no per-version fallback is
+  needed). The receipt's `object` is a JSON array of the created `IpView`s. The
+  `count` is bound into the confirmation token (so a `count=3` plan cannot be
+  replayed as `count=5`) and appears in the plan's fields diff when > 1.
+  - **All-or-nothing.** Because the allocation is atomic server-side, there is no
+    partial-allocation state to reconcile: any failure (409 exhaustion, a
+    validation rejection, auth, network) leaves **nothing** created and
+    propagates as the plain single-reserve error (exit 1, empty stdout). `update`
+    writes likewise remain atomic single-`PATCH`.
+  - **Backward compatible.** `count=1` (the default) takes the single-object
+    `POST` path and is byte-identical to the existing single-IP plan/receipt:
+    `count` uses a `skip_serializing_if` default so it's omitted at its default.
+    `schema_version` stays `1`.
 
 Still deferred per Decision 6: choosing a specific address/block, interface/VM
 assignment, status/tags on reserve, generic create/delete, and `nbox raw` write

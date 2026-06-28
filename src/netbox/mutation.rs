@@ -260,22 +260,10 @@ pub struct MutationReceipt {
     /// view) so scripts get its address/id/status without a follow-up read. An
     /// `update` omits it (the field diff is the result), so existing update
     /// receipts are byte-identical and `schema_version` stays 1.
+    /// A multi-IP allocation (`count > 1`) carries a JSON **array** of the
+    /// created IP views here; a single allocation carries the one created view.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object: Option<Value>,
-    /// True when a multi-IP allocation (`count > 1`) succeeded only partially:
-    /// k of N POSTs completed before a failure. The `object` field carries the
-    /// successfully created IPs as a JSON array. Omitted (false) for a full
-    /// success or a single-IP allocation, so existing receipts are byte-identical.
-    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
-    pub partial: bool,
-    /// The number of resources requested in a multi-IP allocation (`count`).
-    /// Omitted (0) for single allocations, so existing receipts are byte-identical.
-    #[serde(default, skip_serializing_if = "is_zero_count")]
-    pub requested_count: u32,
-    /// The number of resources successfully created in a multi-IP allocation.
-    /// Omitted (0) for single allocations, so existing receipts are byte-identical.
-    #[serde(default, skip_serializing_if = "is_zero_count")]
-    pub created_count: u32,
     /// The human-readable outcome line per ADR-0001 §8.
     pub message: String,
 }
@@ -373,13 +361,6 @@ pub fn default_count() -> u32 {
 #[must_use]
 pub fn is_default_count(count: &u32) -> bool {
     *count == 1
-}
-
-/// True when the count is zero — used by `skip_serializing_if` on receipt count
-/// fields so single-allocation receipts omit them entirely.
-#[must_use]
-pub fn is_zero_count(count: &u32) -> bool {
-    *count == 0
 }
 
 // --- time helpers ----------------------------------------------------------
@@ -662,9 +643,6 @@ mod tests {
             etag: None,
             request_id: None,
             object: None,
-            partial: false,
-            requested_count: 0,
-            created_count: 0,
             message: "applied".into(),
         };
         // An update receipt has no `object` key (byte-identical to pre-allocate).

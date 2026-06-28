@@ -886,10 +886,10 @@ pub enum IpAction {
         #[arg(long = "dns-name", value_name = "NAME")]
         dns_name: Option<String>,
 
-        /// How many IP addresses to allocate. Default 1; `>1` issues N
-        /// sequential POSTs to NetBox's `available-ips` endpoint. A
-        /// mid-sequence failure returns the successfully created IPs as a
-        /// JSON array with `partial: true` and exit code 1.
+        /// How many IP addresses to allocate. Default 1; `>1` sends one atomic
+        /// list-body POST to NetBox's `available-ips` endpoint — all N are
+        /// created or none are (the receipt's `object` is a JSON array of the N
+        /// created IPs). Any failure leaves nothing created (clean error).
         #[arg(long, value_name = "N", default_value_t = 1)]
         count: u32,
 
@@ -989,10 +989,10 @@ pub enum IpRangeAction {
         #[arg(long = "dns-name", value_name = "NAME")]
         dns_name: Option<String>,
 
-        /// How many IP addresses to allocate. Default 1; `>1` issues N
-        /// sequential POSTs to NetBox's `available-ips` endpoint. A
-        /// mid-sequence failure returns the successfully created IPs as a
-        /// JSON array with `partial: true` and exit code 1.
+        /// How many IP addresses to allocate. Default 1; `>1` sends one atomic
+        /// list-body POST to NetBox's `available-ips` endpoint — all N are
+        /// created or none are (the receipt's `object` is a JSON array of the N
+        /// created IPs). Any failure leaves nothing created (clean error).
         #[arg(long, value_name = "N", default_value_t = 1)]
         count: u32,
 

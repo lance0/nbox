@@ -275,7 +275,7 @@ nbox ip <address> [--vrf <name>] [--journal]    # --vrf disambiguates duplicates
                                   # shows nat_inside/nat_outside (NetBox 4.6) when set
   ip reserve <cidr> [--vrf <name>] [--description "…"] [--dns-name "…"] [--count N]
                                   # write: reserve the next available IP (POST available-ips); --dry-run | --allow-writes --confirm [--message]
-                                  # --count N: reserve N IPs (sequential POSTs); partial failure exits 1
+                                  # --count N: reserve N IPs atomically (one list-body POST, all-or-nothing); any failure exits 1
 nbox prefix <cidr> [--vrf <name>] [--journal]   # includes utilization + children when present
   prefix reserve [--length L] [--vrf <name>] [--description "…"]
                                   # write: reserve the next available child prefix (POST available-prefixes); --dry-run | --allow-writes --confirm [--message]
@@ -292,7 +292,7 @@ nbox aggregate <cidr-or-id> [--journal]
 nbox asn <number> [--journal]
   ip-range reserve [--description "…"] [--dns-name "…"] [--count N]
                                   # write: reserve the next available IP in an IP range (POST available-ips); --dry-run | --allow-writes --confirm [--message]
-                                  # --count N: reserve N IPs (sequential POSTs); partial failure exits 1
+                                  # --count N: reserve N IPs atomically (one list-body POST, all-or-nothing); any failure exits 1
 nbox tenant <slug-or-name-or-id>
 nbox contact <name-or-id>
 nbox vm <name-or-id>
