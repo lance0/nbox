@@ -71,17 +71,12 @@ Sleep 600ms
 Down
 Sleep 600ms
 Down
-Sleep 1800ms
+Sleep 2200ms          # final hold on the prefix tree — the GIF ends on this frame
 
-# Quit.
-Type "q"
-Sleep 1200ms
-
-# ---------------------------------------------------------------------------
-# Hidden teardown: drop the temp config.
-# ---------------------------------------------------------------------------
+# Quit + teardown OFF-camera (inside Hide) so the last rendered frame is the
+# prefix tree, not the shell prompt the TUI exits to.
 Hide
+Type "q"
+Sleep 500ms
 Type "rm -rf $(dirname $NBOX_CONFIG); unset NBOX_CONFIG"
 Enter
-Show
-Sleep 300ms
