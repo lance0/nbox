@@ -2,8 +2,8 @@
 //! ladder; see `DESIGN.md` §24).
 //!
 //! This is an *alternate transport* for the exact same [`NboxMcp`] server the
-//! stdio path serves — the handler, tool router, and eight read-only tools are
-//! reused unchanged. rmcp's Streamable HTTP server ([`StreamableHttpService`] +
+//! stdio path serves — the handler, tool router, and tools are reused
+//! unchanged. rmcp's Streamable HTTP server ([`StreamableHttpService`] +
 //! [`LocalSessionManager`]) is mounted at `/mcp` on an axum router.
 //!
 //! Two modes, chosen at startup:
@@ -219,7 +219,7 @@ pub struct ServeOptions {
     pub profile: String,
 }
 
-/// Serve the read-only MCP server over HTTP until interrupted.
+/// Serve the MCP server over HTTP until interrupted.
 ///
 /// Without `opts.oidc`, `addr` must be a loopback socket address (rung 2): the
 /// trust boundary is loopback, plus the optional static `opts.token`. With

@@ -1,10 +1,11 @@
-//! Read-only MCP server (stdio transport).
+//! The NetBox MCP server (read-only by default).
 //!
 //! A third front-end beside the CLI and TUI. It exposes nbox's existing NetBox
-//! read-only lookups as MCP tools, so an agent can drive the same query +
+//! read lookups as MCP tools, so an agent can drive the same query +
 //! domain-view layer the CLI handlers use. Each tool is a thin adapter: it calls
 //! the same query helpers, builds the same view model, and returns it as
-//! structured JSON.
+//! structured JSON. Two opt-in write tools (`nbox_plan_write` / `nbox_apply_write`)
+//! are gated by `--allow-writes` plus the per-user credential vault (Pattern 2).
 //!
 //! stdout carries the JSON-RPC stream and nothing else — logging goes to stderr
 //! (see [`crate::init_logging`]), and the connect path here prints nothing.
@@ -39,7 +40,7 @@ use crate::netbox::client::NetBoxClient;
 use crate::netbox::search::{SearchFilters, SearchRequest, SearchResult};
 use crate::netbox::status::AuthCheck;
 
-/// The read-only NetBox MCP server.
+/// The NetBox MCP server (read-only by default; write tools gated by the vault).
 #[derive(Clone)]
 pub struct NboxMcp {
     client: Arc<NetBoxClient>,

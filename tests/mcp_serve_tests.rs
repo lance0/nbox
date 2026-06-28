@@ -1,4 +1,4 @@
-//! End-to-end test of `nbox serve` — the read-only MCP server over stdio.
+//! End-to-end test of `nbox serve` — the MCP server (read-only by default) over stdio.
 //!
 //! This launches the *real* compiled binary (`env!("CARGO_BIN_EXE_nbox")`) with
 //! `serve`, then speaks newline-delimited JSON-RPC over its stdin/stdout. It
