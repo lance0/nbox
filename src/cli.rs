@@ -672,6 +672,91 @@ pub enum ExportAction {
         #[arg(long, value_name = "PORT", default_value_t = crate::export::DEFAULT_PORT)]
         port: u16,
     },
+
+    /// Emit a firewall/blocklist address list — the CIDRs of IPs assigned in a
+    /// prefix, or the IPs *and* prefixes carrying a tag. Host IPs render as `/32`
+    /// (`/128`); `--summarize` aggregates contiguous entries into the minimal
+    /// covering set. Default output is a JSON array of CIDR strings; `--format
+    /// plain` is newline-delimited for ipset/nftables/pf includes.
+    AddressList {
+        /// Source prefix in CIDR notation: its assigned IPs become host entries.
+        /// Mutually exclusive with `--tag`.
+        #[arg(long, value_name = "CIDR")]
+        prefix: Option<String>,
+
+        /// Source tag slug (or name): IPs and prefixes carrying this tag become
+        /// entries. Mutually exclusive with `--prefix`.
+        #[arg(long, value_name = "SLUG")]
+        tag: Option<String>,
+
+        /// Disambiguate the prefix by VRF (name, slug, or RD) when the CIDR
+        /// exists in more than one VRF. Ignored with `--tag`.
+        #[arg(long, value_name = "VRF")]
+        vrf: Option<String>,
+
+        /// Keep only one IP family: `4` (IPv4) or `6` (IPv6). Both by default.
+        #[arg(long, value_name = "4|6")]
+        family: Option<u8>,
+
+        /// Aggregate the result into the minimal set of covering networks
+        /// (contiguous entries collapse, e.g. two /25s → one /24).
+        #[arg(long)]
+        summarize: bool,
+
+        /// Output format: `json` (a JSON array of CIDR strings, default) or
+        /// `plain` (one CIDR per line).
+        #[arg(long, value_enum, default_value = "json")]
+        format: AddressListFormat,
+    },
+
+    /// Emit a device inventory — one record per device (name, status, role,
+    /// site, model, platform, serial, asset tag, rack, primary IP, tenant,
+    /// tags), filtered by any combination of `--site` / `--role` / `--tag` /
+    /// `--status` / `--manufacturer` (all by slug/value, ANDed). Default output
+    /// is a JSON array; `--format csv` emits a spreadsheet-ready table.
+    DeviceInventory {
+        /// Filter by site slug.
+        #[arg(long, value_name = "SLUG")]
+        site: Option<String>,
+
+        /// Filter by device-role slug.
+        #[arg(long, value_name = "SLUG")]
+        role: Option<String>,
+
+        /// Filter by tag slug.
+        #[arg(long, value_name = "SLUG")]
+        tag: Option<String>,
+
+        /// Filter by status value (e.g. `active`, `offline`).
+        #[arg(long, value_name = "VALUE")]
+        status: Option<String>,
+
+        /// Filter by manufacturer slug.
+        #[arg(long, value_name = "SLUG")]
+        manufacturer: Option<String>,
+
+        /// Output format: `json` (a JSON array of records, default) or `csv`.
+        #[arg(long, value_enum, default_value = "json")]
+        format: InventoryFormat,
+    },
+}
+
+/// Output format for `nbox export address-list`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum AddressListFormat {
+    /// A JSON array of CIDR strings (`["10.0.0.0/24", "10.0.0.5/32"]`).
+    Json,
+    /// One CIDR per line — for ipset/nftables/pf include files.
+    Plain,
+}
+
+/// Output format for `nbox export device-inventory`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum InventoryFormat {
+    /// A JSON array of inventory records.
+    Json,
+    /// A CSV table (header + one row per device).
+    Csv,
 }
 
 /// `nbox tag` write actions (ADR-0001 safe-write foundation). Add and remove

@@ -2572,16 +2572,42 @@ async fn run_tagged(ctx: &Ctx, tag: &str, limit: usize) -> Result<()> {
 /// view layer) — `--json`/`--output` are accepted (global flags) but have no
 /// effect: the export's format is fixed by its consumer.
 async fn run_export(ctx: &Ctx, action: crate::cli::ExportAction) -> Result<()> {
-    use crate::cli::ExportAction::PrometheusSd;
+    use crate::cli::ExportAction::{AddressList, DeviceInventory, PrometheusSd};
+    match action {
+        PrometheusSd {
+            prefix,
+            tag,
+            vrf,
+            port,
+        } => run_export_prometheus_sd(ctx, prefix, tag, vrf, port).await,
+        AddressList {
+            prefix,
+            tag,
+            vrf,
+            family,
+            summarize,
+            format,
+        } => run_export_address_list(ctx, prefix, tag, vrf, family, summarize, format).await,
+        DeviceInventory {
+            site,
+            role,
+            tag,
+            status,
+            manufacturer,
+            format,
+        } => run_export_device_inventory(ctx, site, role, tag, status, manufacturer, format).await,
+    }
+}
+
+async fn run_export_prometheus_sd(
+    ctx: &Ctx,
+    prefix: Option<String>,
+    tag: Option<String>,
+    vrf: Option<String>,
+    port: u16,
+) -> Result<()> {
     use crate::export::{ExportIp, prometheus_sd, strip_prefix_len};
     use crate::netbox::models::ipam::IpAddress;
-
-    let PrometheusSd {
-        prefix,
-        tag,
-        vrf,
-        port,
-    } = action;
 
     // Exactly one source — `--prefix` xor `--tag`.
     match (prefix.as_deref(), tag.as_deref()) {
@@ -2689,6 +2715,11 @@ async fn run_export(ctx: &Ctx, action: crate::cli::ExportAction) -> Result<()> {
 /// can't stream unbounded work into one export.
 const EXPORT_IP_CAP: usize = 5_000;
 
+/// Cap on the number of devices a `device-inventory` export gathers. Generous
+/// for a mid-size DCIM, but bounded so an unfiltered export of a huge fleet
+/// can't stream unbounded work into one command.
+const EXPORT_DEVICE_CAP: usize = 10_000;
+
 /// Resolve the distinct devices an IP set is assigned to, in one
 /// `?id__in=…` fetch. Returns an empty map when no IP has an assigned device
 /// (or NetBox omits the nested device brief). Stale/missing device ids are
@@ -2733,6 +2764,152 @@ fn assigned_device(ip: &crate::netbox::models::ipam::IpAddress) -> (Option<u64>,
             .or_else(|| d.get("display").and_then(serde_json::Value::as_str))
     });
     (id, name.map(str::to_string))
+}
+
+/// `nbox export address-list` — gather source networks (a prefix's assigned IPs,
+/// or the IPs and prefixes carrying a tag), build the de-duplicated/sorted/
+/// optionally-summarized list, and emit JSON or newline-delimited CIDRs.
+async fn run_export_address_list(
+    ctx: &Ctx,
+    prefix: Option<String>,
+    tag: Option<String>,
+    vrf: Option<String>,
+    family: Option<u8>,
+    summarize: bool,
+    format: crate::cli::AddressListFormat,
+) -> Result<()> {
+    use crate::cli::AddressListFormat;
+    use crate::export::{build_address_list, ip_host_net, parse_net};
+    use crate::netbox::endpoints::Endpoint;
+    use crate::netbox::models::ipam::{IpAddress, Prefix};
+
+    if let Some(f) = family
+        && f != 4
+        && f != 6
+    {
+        return Err(error::NboxError::Usage("--family must be 4 or 6".to_string()).into());
+    }
+
+    // Exactly one source — `--prefix` xor `--tag` (mirrors prometheus-sd).
+    match (prefix.as_deref(), tag.as_deref()) {
+        (Some(_), Some(_)) => {
+            return Err(error::NboxError::Usage(
+                "--prefix and --tag are mutually exclusive — pass one".to_string(),
+            )
+            .into());
+        }
+        (None, None) => {
+            return Err(error::NboxError::Usage(
+                "pass --prefix <cidr> or --tag <slug>".to_string(),
+            )
+            .into());
+        }
+        _ => {}
+    }
+
+    let client = connect(ctx)?;
+
+    // Gather source networks. The prefix path lists the prefix's assigned IPs as
+    // host entries. The tag path takes both IPs (as hosts) and whole prefixes
+    // carrying the tag — a tag spans object types, the `netbox-lists` behavior.
+    let mut nets: Vec<ipnet::IpNet> = Vec::new();
+    if let Some(cidr) = prefix.as_deref() {
+        let p = detail::resolve_prefix(&client, cidr, vrf.as_deref(), &not_found).await?;
+        let vrf_id = p.vrf.as_ref().map(|v| v.id);
+        let ips = client.prefix_ips(cidr, vrf_id, EXPORT_IP_CAP).await?;
+        nets.extend(ips.iter().filter_map(|ip| ip_host_net(&ip.address)));
+    } else {
+        let tag_slug = tag.as_deref().unwrap();
+        let tag_info = client
+            .tag_by_ref(tag_slug)
+            .await?
+            .ok_or_else(|| not_found("tag", tag_slug))?;
+        let ips: Vec<IpAddress> = client
+            .list_all(
+                Endpoint::IpAddresses,
+                vec![("tag", tag_info.slug.clone())],
+                EXPORT_IP_CAP,
+            )
+            .await?;
+        nets.extend(ips.iter().filter_map(|ip| ip_host_net(&ip.address)));
+        let prefixes: Vec<Prefix> = client
+            .list_all(
+                Endpoint::Prefixes,
+                vec![("tag", tag_info.slug.clone())],
+                EXPORT_IP_CAP,
+            )
+            .await?;
+        nets.extend(prefixes.iter().filter_map(|p| parse_net(&p.prefix)));
+    }
+
+    let list = build_address_list(&nets, family, summarize);
+    let cidrs: Vec<String> = list.iter().map(ToString::to_string).collect();
+    match format {
+        // Compact JSON array on one line — pipe-safe, no envelope.
+        AddressListFormat::Json => {
+            let json = serde_json::to_string(&cidrs).context("serializing address list JSON")?;
+            println!("{json}");
+        }
+        AddressListFormat::Plain => {
+            for cidr in &cidrs {
+                println!("{cidr}");
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `nbox export device-inventory` — list devices (filtered by any of
+/// site/role/tag/status/manufacturer), project them to inventory records, and
+/// emit JSON or CSV.
+async fn run_export_device_inventory(
+    ctx: &Ctx,
+    site: Option<String>,
+    role: Option<String>,
+    tag: Option<String>,
+    status: Option<String>,
+    manufacturer: Option<String>,
+    format: crate::cli::InventoryFormat,
+) -> Result<()> {
+    use crate::cli::InventoryFormat;
+    use crate::export::{device_inventory, inventory_csv};
+    use crate::netbox::endpoints::Endpoint;
+    use crate::netbox::models::dcim::Device;
+
+    let client = connect(ctx)?;
+
+    // All filters are optional and ANDed; none → every device (capped).
+    let mut filters: Vec<(&str, String)> = Vec::new();
+    if let Some(s) = site {
+        filters.push(("site", s));
+    }
+    if let Some(r) = role {
+        filters.push(("role", r));
+    }
+    if let Some(t) = tag {
+        filters.push(("tag", t));
+    }
+    if let Some(st) = status {
+        filters.push(("status", st));
+    }
+    if let Some(m) = manufacturer {
+        filters.push(("manufacturer", m));
+    }
+
+    let devices: Vec<Device> = client
+        .list_all(Endpoint::Devices, filters, EXPORT_DEVICE_CAP)
+        .await?;
+    let records = device_inventory(&devices);
+
+    match format {
+        InventoryFormat::Json => {
+            let json = serde_json::to_string(&records).context("serializing inventory JSON")?;
+            println!("{json}");
+        }
+        // `to_csv` already terminates with a newline.
+        InventoryFormat::Csv => print!("{}", inventory_csv(&records)?),
+    }
+    Ok(())
 }
 
 /// `nbox journal <kind> <ref>` — recent journal entries for an object.

@@ -365,11 +365,14 @@ all read-only. (Market positioning itself stays out of the repo — see private 
   per row — the full JSON for a single change (CLI `--diff` implies `--limit 1`),
   closing the loop on the compact `fields_changed` summary. Answers agent "what
   happened to this prefix?" queries.
-- ◐ **Structured read-only exports.** `nbox export prometheus-sd` ships
-  Prometheus file-SD JSON sourced from a prefix or a tag — reuses the read
-  engine, enriches each IP with its device's site/role/status, and groups targets
-  by device. ☐ Remaining on the same export surface: firewall address-lists and
-  device inventories (the `netbox-lists` niche, as one fast binary).
+- ☑ **Structured read-only exports.** Three exporters on one surface, each
+  reusing the read engine: `nbox export prometheus-sd` (Prometheus file-SD JSON
+  from a prefix or tag, targets grouped by device); `nbox export address-list`
+  (a firewall/blocklist list — host IPs as `/32`/`/128`, or the IPs and prefixes
+  carrying a tag; `--summarize` aggregates to the minimal covering set; JSON or
+  newline-delimited `plain`); and `nbox export device-inventory` (one record per
+  device, filtered by site/role/tag/status/manufacturer; JSON or CSV). Covers the
+  `netbox-lists` niche as one fast binary.
 
 ---
 
