@@ -9,6 +9,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Structured exports, two more on the same surface.** Alongside `nbox export
+  prometheus-sd`, the export surface now covers the `netbox-lists` niche as one
+  fast binary:
+  - **`nbox export address-list`** — a firewall/blocklist address list. A
+    `--prefix` source lists the prefix's assigned IPs as host entries (`/32`,
+    `/128`; the interface mask is dropped); a `--tag` source lists the IPs *and*
+    whole prefixes carrying the tag. Entries are de-duplicated and sorted;
+    `--family 4|6` keeps one IP family; `--summarize` aggregates contiguous
+    entries into the minimal covering set (two /25s → one /24). Output is a JSON
+    array of CIDR strings, or `--format plain` (one per line) for
+    ipset/nftables/pf includes.
+  - **`nbox export device-inventory`** — one record per device (`name`,
+    `status`, `role`, `site`, `model`, `platform`, `serial`, `asset_tag`,
+    `rack`, `primary_ip`, `tenant`, `tags`), filtered by any combination of
+    `--site` / `--role` / `--tag` / `--status` / `--manufacturer` (ANDed). JSON
+    array (default) or `--format csv`; the JSON keys and CSV columns align
+    one-to-one, and CSV reuses the shared writer so quoting matches `-o csv`.
 - **MCP field projection (`fields`).** The `nbox_search` and `nbox_get` MCP tools
   accept an optional `fields` array to keep only those top-level keys (per hit for
   search; on the object for get), trimming response tokens for agents that only
