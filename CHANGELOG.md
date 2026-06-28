@@ -9,6 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **MCP field projection (`fields`).** The `nbox_search` and `nbox_get` MCP tools
+  accept an optional `fields` array to keep only those top-level keys (per hit for
+  search; on the object for get), trimming response tokens for agents that only
+  need a slice of a fat view model. Unknown keys are silently ignored — the same
+  projection the CLI `--fields` flag uses (now a shared `output::json::select_fields`).
+  Omitting `fields` returns the full shape, byte-identical to before. Projection
+  runs after the read cache, so callers asking for different subsets share one fetch.
 - **Safe write foundation (ADR-0001) — the first write.** nbox is no longer
   strictly read-only: a shared `MutationPlan` / `MutationReceipt` engine backs a
   narrow, operation- and field-specific pilot, `nbox interface <device> <iface>
