@@ -66,10 +66,16 @@ the HTTP method/path, the status, and the latency. An opt-in `--message` is
 recorded as a `message_present` flag + length — **never the message body**. The
 token never appears in the audit log.
 
-## The MCP server stays read-only
+## MCP writes are a separate opt-in
 
-No write tools are exposed over MCP. Per-user NetBox write identity (Pattern 2
-vault) is a prerequisite before MCP writes can ship. See ADR-0001 Decision 7.
+The MCP server is read-only by default. The same planner/applier backs two MCP
+write tools, `nbox_plan_write` and `nbox_apply_write`, exposed **only** with
+`nbox serve --http --allow-writes` plus a `[serve.vault]` config mapping each
+caller's OIDC `sub` to a per-user NetBox token (each write runs as the calling
+user, and the caller's token must carry the `nbox:write` scope). Stdio and
+unauthenticated transports stay read-only; without `--allow-writes` the write
+tools reject with "writes disabled". See the [serve skill](../serve/SKILL.md)
+and ADR-0001 Decision 7 (Implemented).
 
 ## Reference
 

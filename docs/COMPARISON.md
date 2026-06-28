@@ -3,8 +3,10 @@
 nbox is a fast read path into NetBox, not a replacement for it. It answers the
 questions you ask at the terminal — *what is this IP, where is this device, what
 owns this prefix?* — from the shell, a TUI, or an MCP server, against the same
-NetBox you already run. It does not write: reserve, allocate, and edit still
-belong to the web UI or a Python client. The tables below compare nbox against
+NetBox you already run. Reads are the default; nbox also performs a small set
+of safe writes — interface/device field edits, IP/prefix/IP-range reservation,
+and tag add/remove — each gated behind `--allow-writes` + confirmation with a
+default `--dry-run` preview. The tables below compare nbox against
 the alternatives a NetBox user already has — the NetBox web UI, raw REST over
 `curl`, and `pynetbox` (the official Python client) — and say when to reach for
 which.
@@ -22,14 +24,15 @@ which.
 | Works over SSH with no runtime | ✓ (single static binary) | ✗ (needs a browser) | ◐ (only if curl present) | ✗ (needs Python + the package) |
 | Machine output (JSON/CSV) + stable exit codes | ✓ (built in) | ✗ | ◐ (you build it) | ◐ (you build it) |
 | Built-in AI-agent access (MCP) | ✓ (`nbox serve`) | ✗ | ✗ | ✗ |
-| Reserve / allocate / edit (writes) | ✗ (read-only today) | ✓ | ✓ | ✓ |
+| Reserve / allocate / edit (writes) | ✓ (gated: `--allow-writes` + `--confirm`, default `--dry-run`) | ✓ | ✓ | ✓ |
 | Cross-object navigation (device ↔ IP ↔ prefix ↔ VLAN) | ✓ (TUI `R`; resolved inline in CLI) | ✓ (links) | ✗ (you chase ids) | ✗ (you chase ids) |
 | Learning curve | low (subcommands + flags) | low (point and click) | high (endpoints, filters, joins) | medium (object model, Python) |
 
 Notes:
 
-- nbox is **read-only** today — writes are deferred. For anything that mutates
-  NetBox, use the web UI or pynetbox.
+- nbox is **read-only by default**. A small set of safe writes is available
+  behind `--allow-writes` + confirmation (with `--dry-run`); for bulk/admin
+  mutation use the web UI or pynetbox.
 - `next-ip` / `next-prefix` query NetBox's available-IPs / available-prefixes
   endpoints (read-only; nothing is reserved in NetBox); `next-prefix --length L`
   picks the first fitting block locally with `ipnet`.
@@ -46,16 +49,20 @@ Notes:
 - Fast single-object lookups from the shell — `device`, `ip`, `prefix`, `vlan`,
   and the rest, each a one-liner that resolves related objects inline.
 - One query across object types — `search` runs in parallel over devices,
-  sites, racks, IPs, prefixes, VLANs, circuits, aggregates, ASNs, IP ranges,
-  tenants, contacts, providers, VMs, clusters, VRFs, and route targets, then
-  returns ranked, deduped hits.
+  sites, racks, rack groups, IPs, prefixes, VLANs, circuits, virtual circuits,
+  aggregates, ASNs, IP ranges, tenants, contacts, providers, VMs, VM types,
+  clusters, VRFs, and route targets, then returns ranked, deduped hits.
 - Over SSH on a jump host — one static binary, no Python or browser to install.
 - Scripting and CI — `--json`/`-o csv`, `--fields`, `--envelope`, and stable
   exit codes (`0` ok, `1` generic/API, `2` usage, `3` auth, `4` not found, `5`
   ambiguous); stdout stays clean, logs go to stderr.
-- Feeding an AI agent — `nbox serve` is a read-only MCP server (nine tools,
+- Structured exports — `nbox export prometheus-sd | address-list |
+  device-inventory` emit fixed structured shapes for downstream tooling.
+- Feeding an AI agent — `nbox serve` is read-only by default (11 read tools,
   stdio or loopback HTTP with OIDC) returning the same JSON view models the CLI
-  does.
+  does, and can expose 2 write tools (`nbox_plan_write` / `nbox_apply_write`)
+  when `[serve].allow_writes` is set over the authenticated HTTP/OIDC transport;
+  stdio and unauthenticated transports stay read-only.
 
 ### The NetBox web UI
 

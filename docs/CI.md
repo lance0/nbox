@@ -16,21 +16,26 @@ PRs run these checks:
 - `msrv-check`
 - `generated-artifacts`
 - `security-audit`
+- `feature-matrix (http)`
+- `feature-matrix (clipboard)`
+- `feature-matrix (updates)`
+- `musl-lean-check`
 - `platform-build (x86_64-unknown-linux-musl)`
-- `platform-build (aarch64-apple-darwin)`
-- `platform-build (x86_64-apple-darwin)`
-- `platform-build (x86_64-pc-windows-msvc)`
 - `live NetBox 4.2 end-to-end`
 - `live NetBox 4.5 GraphQL backend`
+- `live NetBox 4.6 compatibility`
 
-The platform lanes are build-only on PRs. Linux remains the full test platform so
-PR feedback stays close to the current wall time while still catching platform
-compile failures before release.
+PRs build only the musl platform lane; the macOS and Windows platform builds
+(`aarch64-apple-darwin`, `x86_64-apple-darwin`, `x86_64-pc-windows-msvc`) run on
+master pushes, with release.yml as the final pre-tag gate. The platform lanes are
+build-only on PRs. Linux remains the full test platform so PR feedback stays close
+to the current wall time while still catching platform compile failures before
+release.
 
 ## Scheduled checks
 
-- `NetBox Integration` runs nightly and adds `live NetBox 4.6 compatibility` to
-  catch supported-version drift against the pinned 4.6 fixture.
+- `NetBox Integration` runs nightly to additionally catch image drift for the
+  pinned 4.2/4.5/4.6 fixtures that already gate every PR.
 - `Security` runs weekly and executes `cargo audit` plus `cargo deny check
   advisories bans sources licenses` against `deny.toml`.
 

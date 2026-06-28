@@ -71,9 +71,9 @@ matches the question:
 - [Device context](skills/device-context/SKILL.md) — `nbox device` /
   `interface` (the cable-path A↔Z trace) / `mac` reverse-resolve, plus
   `rack` / `site` context
-- [MCP server](skills/serve/SKILL.md) — `nbox serve` as the read-only MCP server:
-  stdio vs HTTP+OIDC, the read tools and resources, the prompts catalog, and
-  `--print-config`
+- [MCP server](skills/serve/SKILL.md) — `nbox serve` as the MCP server (read-only
+  by default; optional `--allow-writes` write tools): stdio vs HTTP+OIDC, the read
+  tools and resources, the prompts catalog, and `--print-config`
 
 ## Safe writes
 

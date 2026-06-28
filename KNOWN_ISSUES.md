@@ -12,7 +12,10 @@ to preview). Reads remain the default everywhere.
 
 **Remaining limitations:** Choosing a specific address/block, interface/VM
 assignment, status/tags on reserve, and generic create/delete are still
-deferred (ADR-0001 Decision 6). The MCP server stays read-only.
+deferred (ADR-0001 Decision 6). MCP writes are similarly opt-in: the server is
+read-only by default and over stdio, exposing `nbox_plan_write` /
+`nbox_apply_write` only with `[serve].allow_writes`, the `nbox:write` scope, and
+a per-user `[serve.vault]` entry.
 
 ---
 
@@ -61,8 +64,8 @@ its numeric id — `nbox search` and `nbox device` show the canonical name. A
 
 ### Sub-resource lists are capped
 
-**Issue:** Device interfaces/IPs/services and prefix children/IPs are capped
-(200 and 50 respectively) per request.
+**Issue:** Device interfaces/IPs/services and prefix children are capped at 200;
+a prefix's contained IPs at 512, per request.
 
 **Impact:** Very large devices/prefixes show a truncated section.
 

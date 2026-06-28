@@ -46,10 +46,12 @@ behavior should get an ADR before it becomes a public contract.
 - **`cache/`** — a small, bounded, in-memory per-profile read cache (one short
   TTL, clamped 5–300s) so a burst of identical reads (TUI back-navigation, a
   chatty agent) doesn't re-hit NetBox; re-keyed/cleared on profile switch.
-- **`mcp/`** — the read-only MCP server (`nbox serve`): stdio plus a loopback
-  HTTP transport (OIDC resource-server auth, audit log, per-caller rate limit),
-  exposing the same query + view layer as nine tools and `nbox://{kind}/{ref}`
-  resources.
+- **`mcp/`** — the MCP server (`nbox serve`, read-only by default): stdio plus a
+  loopback HTTP transport (OIDC resource-server auth, audit log, per-caller rate
+  limit), exposing the same query + view layer as thirteen tools (eleven read
+  tools plus the `nbox_plan_write`/`nbox_apply_write` write pair, the latter
+  enabled only with `--allow-writes`/`[serve].allow_writes` + a per-user vault
+  and never over stdio), `nbox://{kind}/{ref}` resources, and a prompts catalog.
 
 ## Data flow
 

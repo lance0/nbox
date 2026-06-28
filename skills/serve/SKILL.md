@@ -1,9 +1,9 @@
 ---
 name: nbox-serve
-description: Run nbox as a read-only MCP server so an agent host can query NetBox over JSON-RPC — stdio or HTTP+OIDC transport, the read tools (search/get/get_interface/history/…), the nbox://{kind}/{ref} resource template, the investigation prompts catalog, and --print-config for install recipes. Use when the user wants to wire NetBox into an MCP host or stand up the server.
+description: Run nbox as an MCP server (read-only by default) so an agent host can query NetBox over JSON-RPC — stdio or HTTP+OIDC transport, the read tools (search/get/get_interface/history/…), the nbox://{kind}/{ref} resource template, the investigation prompts catalog, and --print-config for install recipes. Use when the user wants to wire NetBox into an MCP host or stand up the server.
 ---
 
-# nbox serve (read-only MCP)
+# nbox serve (MCP server, read-only by default)
 
 `nbox serve` exposes nbox's read layer as an MCP server. The tools reuse the
 CLI's query + view layer, so they return the same JSON view models as the

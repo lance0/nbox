@@ -8,7 +8,7 @@ Worked examples and ready-to-copy snippets for nbox.
 
 ## MCP host config
 
-Register the read-only MCP server with an MCP host. Claude Code:
+Register the MCP server (read-only by default) with an MCP host. Claude Code:
 
 ```bash
 claude mcp add nbox -e NBOX_TOKEN=nbt_xxx.yyy -- nbox serve

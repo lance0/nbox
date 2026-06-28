@@ -153,9 +153,14 @@ api route_target  graphql
 
 ## UI settings
 
-The `[ui]` table holds TUI preferences. Three are editable in-app from the Config
-modal's **Settings** section (`Tab` to it; `↑`/`↓` move between fields; `Enter` or
-`Ctrl+S` saves) — saving writes them back to `config.toml` format-preserving:
+The `[ui]` table holds TUI preferences. The Config modal's **Settings** section is
+a two-pane editor (`Tab` to reach it; categories on the left selected with `↑`/`↓`,
+`→` enters the fields on the right where `↑`/`↓` move between them; `Enter` or
+`Ctrl+S` saves the whole form format-preserving). It edits more than `[ui]`:
+Appearance (`theme`), Behavior (`refresh_secs`, `open_browser_command`), Connection
+(`page_size`, `timeout_secs`, `exclude_config_context`, api `vrf`, api
+`route_target`), Cache (`enabled`, `ttl_secs`), and Logging (`log_level`,
+`log_file`) — saving writes each back to `config.toml`. The `[ui]` keys:
 
 - `theme` — the TUI color theme. Cycle it in the Settings section (`←`/`→`/Space,
   applied live), with the `t` key, or the palette `:theme <name>` verb. Disabled
@@ -185,6 +190,9 @@ NetBox. It lives only in the running process; nothing is written to disk.
 enabled = true      # master switch; when off, every read goes straight to NetBox
 ttl_secs = 30       # reuse window in seconds (clamped to 5–300 by the engine)
 ```
+
+Both keys are also editable in-app from the Config modal's **Settings** section
+("Cache" category) and hot-applied on save.
 
 `ttl_secs` is a short **de-dupe** window, not a freshness guarantee — it's how long
 an assembled view is reused before the next fetch. The cache is keyed per profile

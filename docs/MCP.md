@@ -1,10 +1,13 @@
 # MCP server
 
-`nbox serve` runs a read-only [MCP](https://modelcontextprotocol.io) (Model
-Context Protocol) server over the stdio transport. An MCP host launches the
-`nbox` binary as a subprocess and speaks JSON-RPC over its stdin/stdout; the
-tools reuse the same NetBox query + view layer as the CLI, so they return the
-same JSON view models. Nothing is ever written.
+`nbox serve` runs an [MCP](https://modelcontextprotocol.io) (Model
+Context Protocol) server that is read-only by default, over the stdio transport.
+An MCP host launches the `nbox` binary as a subprocess and speaks JSON-RPC over
+its stdin/stdout; the tools reuse the same NetBox query + view layer as the CLI,
+so they return the same JSON view models. The default tools never write. Opt-in
+write tools are available over the HTTP+OIDC transport with `--allow-writes` and
+a per-user credential vault — see the **Writes** subsection under
+[OIDC resource-server auth](#oidc-resource-server-auth-network-reachable).
 
 ## Prerequisites
 
@@ -121,7 +124,8 @@ nbox serve --http 127.0.0.1:8080
 (The transport lives behind the `http` cargo feature, which is on by default;
 `cargo install nbox --no-default-features` gives a lean stdio-only build.)
 
-The same eleven tools are mounted at `/mcp` (Streamable HTTP). It binds **only**
+The same thirteen tools are mounted at `/mcp` (Streamable HTTP) — the 11 read
+tools plus the two write tools, which reject unless writes are enabled. It binds **only**
 loopback: a non-loopback address (e.g. `0.0.0.0:8080`) is a usage error unless
 the OIDC resource-server auth mode is configured (see below) — there is no other
 bypass flag. The trust boundary is the loopback interface; the same profile/token
@@ -217,7 +221,8 @@ header (tokens in the query string are rejected); the JWT signature against the
 issuer's JWKS, selected by `kid`, with an explicit algorithm allowlist
 (RS256/ES256 — the token's own `alg` is never trusted, `none` is rejected); `iss`
 exact-match; `aud` contains the configured audience; and `exp` in the future (with
-a ≤120 s clock-skew leeway). The 10 read-only tools require the `nbox:read` scope.
+a ≤120 s clock-skew leeway). Every tool call requires the `nbox:read` scope; the
+two write tools additionally require `nbox:write`.
 JWKS is cached by `kid` (an unknown `kid` triggers a single rate-limited refresh,
 then rejects; a transient JWKS outage keeps serving from the cache).
 
@@ -371,7 +376,10 @@ rate_limit = 120   # requests per caller per minute; 0/absent = disabled
 
 ## Tools
 
-All tools are annotated read-only.
+There are 13 tools. The 11 read tools are annotated read-only
+(`read_only_hint = true`); the two write tools (`nbox_plan_write` /
+`nbox_apply_write`) are annotated `read_only_hint = false` and are described in
+the **Write tools** subsection below.
 
 | Tool | Purpose |
 | ---- | ------- |
@@ -397,6 +405,22 @@ ip, a VID or name for vlan, the AS number for asn, a name/RD/ID for vrf, a name 
 `nbox_get` also accepts `ip_address` as an alias for `ip` — that's the `kind` a
 `nbox_search` result carries, so a search → get chain can pass the hit's `kind`
 through unchanged (it's the one kind whose spelling differs between the two).
+
+### Write tools
+
+| Tool | Purpose |
+| ---- | ------- |
+| `nbox_plan_write` | Plan a NetBox write (interface description, device status, IP/prefix/IP-range reserve, tag add/remove). Builds a `MutationPlan` — a before/after diff plus a confirm token — without mutating NetBox. Annotated `read_only_hint = false`. |
+| `nbox_apply_write` | Apply a previously planned write. Pass the full `MutationPlan` JSON from `nbox_plan_write`; the confirm token is verified, then the write runs under the caller's per-user NetBox identity, returning a `MutationReceipt`. Annotated `read_only_hint = false`. |
+
+Both write tools are exposed only with `--allow-writes` (or
+`[serve].allow_writes`) over the HTTP+OIDC transport, and require the caller's
+`nbox:write` scope plus a `[serve.vault."<sub>"]` entry mapping the caller's OIDC
+`sub` to that user's NetBox token. Without writes enabled they reject with
+"writes disabled"; they are rejected over stdio / unauthenticated transports (no
+per-user identity to bridge). See the **Writes** subsection under
+[OIDC resource-server auth](#oidc-resource-server-auth-network-reachable) for the
+full gating.
 
 ## Resources
 
@@ -449,9 +473,11 @@ prompts.
 
 ## Security and behavior
 
-- **Use a read-only NetBox token.** The server exposes no write path, but a
-  read-only token is the real safety boundary — scope the token to what you want
-  an agent to see.
+- **Use a read-only NetBox token.** By default the server exposes no write path;
+  writes are opt-in (`--allow-writes`, the `nbox:write` scope, and a per-user
+  vault) and run as the calling user, never the read-only service token. For the
+  default read-only deployment the token is the real safety boundary — scope it to
+  what you want an agent to see.
 - **stdout carries only the JSON-RPC stream.** All logging goes to stderr, so it
   never corrupts the protocol.
 - **The token is never logged.** Request logging shows only the auth scheme

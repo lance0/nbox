@@ -165,10 +165,15 @@ docker run --rm -e NBOX_TOKEN=... \
 
 ## For AI agents (MCP)
 
-`nbox serve` is a read-only MCP server. An MCP host launches it as a subprocess
+`nbox serve` is read-only by default. An MCP host launches it as a subprocess
 and speaks JSON-RPC over stdin/stdout (logs stay on stderr). The tools reuse the
 CLI's query and view layer, so they return the exact same JSON view models the
-CLI prints — an agent gets the structured data, not screen-scraped text.
+CLI prints — an agent gets the structured data, not screen-scraped text. Run
+with `--allow-writes` (HTTP + OIDC only) to additionally expose the
+`nbox_plan_write`/`nbox_apply_write` tools, each running under the caller's
+per-user NetBox identity via the `[serve.vault]` mapping; stdio and
+unauthenticated transports stay read-only. See [MCP.md](MCP.md) for the
+write/vault details.
 
 Local stdio host (Claude Code):
 
@@ -190,7 +195,7 @@ Generic MCP host config (e.g. Claude Desktop's JSON):
 }
 ```
 
-The eleven tools, all annotated read-only:
+The eleven read tools, all annotated read-only:
 
 | Tool | What |
 |------|------|
@@ -205,6 +210,10 @@ The eleven tools, all annotated read-only:
 | `nbox_list_tags` | List tags (name, slug, color, usage count). |
 | `nbox_tagged` | Objects carrying a tag, across kinds (NetBox 4.3+); `tag` (id\|name\|slug). |
 | `nbox_cache_clear` | Drop nbox's local read cache so the next reads fetch fresh. |
+
+Two more tools — `nbox_plan_write` and `nbox_apply_write` (`read_only_hint =
+false`) — are exposed only with `--allow-writes` over the HTTP + OIDC transport;
+see [MCP.md](MCP.md).
 
 The same objects are also exposed as MCP resources via one template,
 `nbox://{kind}/{ref}` (e.g. `nbox://device/edge01`) — reading one returns the
