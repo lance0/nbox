@@ -56,6 +56,25 @@ stdout carries only the requested data; logs/diagnostics/errors go to stderr. Ex
 codes are stable: `3` auth, `4` not-found, `5` ambiguous. Full command + flag
 reference: [AGENTS.md](https://github.com/lance0/nbox/blob/master/AGENTS.md).
 
+## Read domains
+
+The read surface is split into focused skill files — reach for the one that
+matches the question:
+
+- [Search](skills/search/SKILL.md) — ranked, deduped cross-kind `nbox search`:
+  the entry point when the kind or exact reference isn't known yet; the
+  one-scope-filter-at-a-time rule and the search→detail-lookup chain
+- [IPAM read](skills/ipam-read/SKILL.md) — `nbox ip` / `prefix` / `vlan` /
+  `ip-range` / `aggregate` / `vrf` / `route-target`, prefix utilization and the
+  tree, the read-only `next-ip` / `next-prefix` previews, and `--vrf`
+  disambiguation
+- [Device context](skills/device-context/SKILL.md) — `nbox device` /
+  `interface` (the cable-path A↔Z trace) / `mac` reverse-resolve, plus
+  `rack` / `site` context
+- [MCP server](skills/serve/SKILL.md) — `nbox serve` as the read-only MCP server:
+  stdio vs HTTP+OIDC, the read tools and resources, the prompts catalog, and
+  `--print-config`
+
 ## Safe writes
 
 `nbox` can modify NetBox through seven plan-first, dry-run/confirm-gated write
