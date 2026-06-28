@@ -334,8 +334,12 @@ all read-only. (Market positioning itself stays out of the repo — see private 
   tools. `enable_prompts()` capability advertised; the catalog is static (no NetBox
   round-trip). Wired the same way as the manual `list_resources` path (the
   `#[tool_handler]` macro only emits tool methods).
-- ☐ **Token-budget discipline as a headline.** Lean default view models + `--fields` across CLI/MCP;
-  document per-tool token footprints (the official server's headline is ~90% reduction via field filtering).
+- ☑ **Token-budget discipline as a headline.** `--fields` projection now spans
+  **both** front-ends: the CLI `--fields` flag and the MCP `fields` parameter on
+  `nbox_search` (per hit) and `nbox_get` (per object), sharing one
+  `output::json::select_fields`. Absent/empty `fields` is byte-identical to the
+  full shape; projection runs after the read cache. ☐ Remaining (optional):
+  publish per-tool token footprints.
 - ☑ **First-class install recipes.** Copy-paste MCP config for Claude Code / Desktop / Cursor, plus an
   `nbox serve --print-config` helper. (SKILL.md + the README "Add it to Claude" block are the start.)
   `--print-config` now prints the paste-ready `mcpServers` JSON (absolute binary path, echoed
@@ -359,8 +363,11 @@ all read-only. (Market positioning itself stays out of the repo — see private 
   per row — the full JSON for a single change (CLI `--diff` implies `--limit 1`),
   closing the loop on the compact `fields_changed` summary. Answers agent "what
   happened to this prefix?" queries.
-- ☐ **Structured read-only exports.** An export mode producing Prometheus targets / firewall
-  address-lists / device inventories from live NetBox (the `netbox-lists` niche, as one fast binary).
+- ◐ **Structured read-only exports.** `nbox export prometheus-sd` ships
+  Prometheus file-SD JSON sourced from a prefix or a tag — reuses the read
+  engine, enriches each IP with its device's site/role/status, and groups targets
+  by device. ☐ Remaining on the same export surface: firewall address-lists and
+  device inventories (the `netbox-lists` niche, as one fast binary).
 
 ---
 
