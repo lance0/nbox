@@ -57,8 +57,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
     `nbox::write_audit`) with an allow-list of fields — changed field **names**
     (never values), outcome, HTTP method/path, status, latency. No token, raw
     patch, full object, or `--message` body is ever logged.
-  - **MCP stays read-only.** No write tools are exposed; per-user NetBox write
-    identity (Pattern 2) is a prerequisite for MCP writes.
 - **`nbox device <name> set status <value>` — the second safe write.** Reuses
   the ADR-0001 foundation (the same `MutationPlan`/`MutationReceipt` engine,
   `--dry-run` / `--allow-writes --confirm` / `--message` gate, `ETag`+`If-Match`
@@ -182,6 +180,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the skills can't silently drift as the CLI evolves. A `scripts/lint_skills.sh`
   script + a `skills-lint` CI workflow validate the frontmatter shape (`name` +
   `description`) on every `skills/*/SKILL.md`.
+- **Write-capable MCP tools + per-user credential vault (Pattern 2).** `nbox
+  serve` can expose the safe-write commands as MCP tools — off by default, behind
+  `[serve].allow_writes`. Each write runs as the **calling user**, not the
+  server: the OIDC `sub` from the validated bearer token is mapped to that user's
+  own NetBox token via a configured credential vault (`[serve.vault.<sub>]` with
+  `token_env`) and bridged into the write at request time, so the same
+  `nbox:write` scope and ADR-0001 plan/confirm/audit lifecycle apply per
+  identity. It is fail-closed: a `sub` with no vault entry, or a token without
+  `nbox:write`, is refused, and the stdio / unauthenticated transports expose no
+  write tools at all. An end-to-end harness exercises the path by minting a JWT
+  through the real OIDC → vault → write stack.
 
 ### Changed
 
