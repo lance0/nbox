@@ -323,8 +323,11 @@ read-only MCP in one (Rust) binary**. The benchmark competitor is the official
 `netboxlabs/netbox-mcp-server` (read-only, Python, 3 generic tools). These items widen the lead;
 all read-only. (Market positioning itself stays out of the repo — see private notes.)
 
-- ☐ **Lean into "the agent-native NetBox binary."** One static musl binary, zero runtime, drops into
-  any agent sandbox — vs the all-Python MCP field. Worth a measured cold-start/latency comparison.
+- ☑ **Lean into "the agent-native NetBox binary."** One static musl binary, zero runtime, drops into
+  any agent sandbox — vs the all-Python MCP field. Measured: `nbox serve` is MCP-ready in ~9 ms,
+  before a Python NetBox MCP server finishes importing its dependencies (~292 ms) — a ~30× cold-start
+  gap, paid on every agent session. One 17 MB file vs a 60 MB venv + interpreter. Reproducible via
+  `scripts/bench-coldstart.sh`; numbers and method in [docs/BENCHMARKS.md](docs/BENCHMARKS.md).
 - ☑ **MCP prompts catalog.** Curated read-only prompt templates for common
   investigations advertised via `prompts/list` + `prompts/get`: `ip_utilization_audit`,
   `cable_path_trace`, `find_stale_prefixes`, `object_change_review`. Each returns a
