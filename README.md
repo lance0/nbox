@@ -3,30 +3,17 @@
 Terminal UI and CLI for NetBox — fast search, IPAM lookups, and device context.
 
 <p align="center">
-  <img src="nbox-ss.png" alt="nbox TUI — a three-pane browser: navigation rail, results, and a live detail pane" width="900">
+  <img src="docs/demo.gif" alt="nbox TUI walkthrough — ranked search, a device's interfaces and IP addresses, and the hierarchical prefix tree" width="900">
+</p>
+
+<p align="center">
+  <sub>The k9s-style TUI: search → device detail → prefix tree. Recorded with <a href="https://github.com/charmbracelet/vhs">VHS</a> from <a href="docs/demo.tape"><code>docs/demo.tape</code></a> against a throwaway test NetBox — re-render with <code>vhs docs/demo.tape</code>.</sub>
 </p>
 
 [![Crates.io](https://img.shields.io/crates/v/nbox.svg)](https://crates.io/crates/nbox)
 [![CI](https://github.com/lance0/nbox/actions/workflows/ci.yml/badge.svg)](https://github.com/lance0/nbox/actions/workflows/ci.yml)
 [![License](https://img.shields.io/badge/license-MIT%2FApache--2.0-blue.svg)](LICENSE-MIT)
 [![Ko-fi](https://img.shields.io/badge/Ko--fi-tip-ff5e5b?logo=ko-fi)](https://ko-fi.com/lance0)
-
-## Demo
-
-A ~45s terminal walkthrough — `nbox status`, ranked search, device detail, an
-IP lookup with `--fields` projection, and a `--dry-run` write plan (no mutation):
-
-<p align="center">
-  <picture>
-    <source media="(prefers-color-scheme: dark)" srcset="docs/demo.gif">
-    <source media="(prefers-color-scheme: light)" srcset="docs/demo.gif">
-    <img src="docs/demo.gif" alt="nbox CLI demo: status, search, device detail, IP lookup, and a dry-run write plan" width="900">
-  </picture>
-</p>
-
-Recorded with [VHS](https://github.com/charmbracelet/vhs) from a declarative
-[`docs/demo.tape`](docs/demo.tape) script — re-render with `vhs docs/demo.tape`
-(the tape drives a throwaway test NetBox instance; no production data is touched).
 
 Ask the questions you actually ask at the terminal — *what is this IP, where is
 this device, what owns this prefix?* — from the shell, a k9s-style TUI, or an MCP

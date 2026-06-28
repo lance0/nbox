@@ -1,118 +1,87 @@
-# nbox — README demo cassette
+# nbox — README demo cassette (TUI walkthrough)
 #
 # Rendered with VHS (https://github.com/charmbracelet/vhs):
 #   vhs docs/demo.tape
 #
-# This tape drives a ~45s walkthrough of nbox's key flows:
-#   status → search → device detail → IP lookup → dry-run write plan.
+# A ~25s walk through the k9s-style TUI: launch → search → device detail →
+# overview dashboard → hierarchical prefix tree.
 #
-# The commands run against a throwaway test NetBox instance. A hidden setup
-# block (below) writes a temporary config pointing nbox at it and exports a
-# read-only token, so the recording is reproducible and never touches a real
-# production NetBox. Re-record after wiring a test instance: set the URL/token
-# in the Hide block, then `vhs docs/demo.tape`.
+# Reproduce: boot the integration fixture
+#   docker compose -f tests/integration/docker-compose.yml up -d
+#   ./tests/integration/wait-for-ready.sh && ./tests/integration/seed.py
+# then export that instance's token and render:
+#   export NBOX_TOKEN=<token>; vhs docs/demo.tape
+# The token is read from the environment, so it never lands in this file, and the
+# recording only ever touches the throwaway test instance.
 
 Output docs/demo.gif
-Output docs/demo.webm
 
-# A clean, fixed-size terminal. 1200x600 fits the widest device/IP detail
-# without wrapping, and renders legibly at README width.
-Set Width 1200
-Set Height 600
-Set FontSize 16
-Set FontFamily "JetBrains Mono"
-Set Padding 20
+# A clean, fixed-size terminal sized for the three-pane TUI at README width.
+Set Width 1280
+Set Height 760
+Set FontSize 15
+Set Padding 16
 Set Theme "Catppuccin Mocha"
 Set CursorBlink false
 
-# Required programs — fail fast in CI if nbox or jq are missing.
 Require nbox
-Require jq
 
 # ---------------------------------------------------------------------------
-# Hidden setup: point nbox at a test NetBox instance for the duration of the
-# recording. Nothing here is captured in the GIF. Swap the URL/token for your
-# test instance before re-recording.
+# Hidden setup: a temp config pointing the TUI at the test NetBox. NBOX_TOKEN is
+# inherited from the environment vhs runs in (so no token lands in the GIF or
+# this file).
 # ---------------------------------------------------------------------------
 Hide
-Type `export NBOX_CONFIG=$(mktemp -d)/demo.toml NBOX_TOKEN=nbt_demo_readonly NBOX_TEST_URL=http://localhost:8000 && printf '%s\n' 'config_version = 1' 'active_profile = "demo"' '' '[profiles.demo]' 'url = "http://localhost:8000"' 'token_env = "NBOX_TOKEN"' 'auth_scheme = "auto"' 'verify_tls = true' 'timeout_secs = 15' > $NBOX_CONFIG`
+Type `export NBOX_CONFIG=$(mktemp -d)/demo.toml && printf '%s\n' 'config_version = 1' 'active_profile = "demo"' '' '[profiles.demo]' 'url = "http://localhost:8000"' 'token_env = "NBOX_TOKEN"' 'auth_scheme = "auto"' 'verify_tls = true' 'timeout_secs = 15' > $NBOX_CONFIG`
 Enter
-Sleep 500ms
-Type "echo 'nbox demo — profile ready against test NetBox at '$NBOX_TEST_URL"
+Sleep 400ms
+Type "clear"
 Enter
-Sleep 500ms
+Sleep 400ms
 Show
 
-# Clear the prompt so the recording opens clean.
-Type "clear"
+# Launch the interactive TUI (bare `nbox`; --config points it at the test data).
+Type@50ms "nbox --config $NBOX_CONFIG"
 Enter
-Sleep 500ms
+Sleep 3500ms
+
+# Search across object kinds.
+Type "/"
+Sleep 700ms
+Type@90ms "ci-dev1"
+Sleep 1200ms
+Enter
+Sleep 3000ms
+
+# Open the device → one lookup, all the context (interfaces / IPs / cables /
+# VLANs / services on tabs).
+Enter
+Sleep 3500ms
+Tab
+Sleep 2200ms
+Tab
+Sleep 2200ms
+
+# The hierarchical prefix tree (T): the /16 with its 25 children and live
+# utilization bars. Give the fetch time to land, then scroll a little.
+Type "T"
+Sleep 5500ms
+Down
+Sleep 600ms
+Down
+Sleep 600ms
+Down
+Sleep 1800ms
+
+# Quit.
+Type "q"
+Sleep 1200ms
 
 # ---------------------------------------------------------------------------
-# 1. Connection + versions
-# ---------------------------------------------------------------------------
-Type@40ms "nbox --config $NBOX_CONFIG status"
-Sleep 500ms
-Enter
-Sleep 3s
-
-Type "clear"
-Enter
-Sleep 500ms
-
-# ---------------------------------------------------------------------------
-# 2. Ranked, deduped search across object kinds
-# ---------------------------------------------------------------------------
-Type@40ms "nbox --config $NBOX_CONFIG search edge --json | jq '.[0:3] | map({kind, display})'"
-Sleep 500ms
-Enter
-Sleep 3s
-
-Type "clear"
-Enter
-Sleep 500ms
-
-# ---------------------------------------------------------------------------
-# 3. Device detail (plain text — one lookup, all the context)
-# ---------------------------------------------------------------------------
-Type@40ms "nbox --config $NBOX_CONFIG device edge01"
-Sleep 500ms
-Enter
-Sleep 3s
-
-Type "clear"
-Enter
-Sleep 500ms
-
-# ---------------------------------------------------------------------------
-# 4. IP lookup with --fields projection (only the columns you want)
-# ---------------------------------------------------------------------------
-Type@40ms "nbox --config $NBOX_CONFIG ip 10.44.208.55 --fields address,parent_prefix,scope --json"
-Sleep 500ms
-Enter
-Sleep 3s
-
-Type "clear"
-Enter
-Sleep 500ms
-
-# ---------------------------------------------------------------------------
-# 5. Safe write: dry-run plan + diff (no mutation)
-#    --dry-run previews the PATCH without --allow-writes or confirmation.
-# ---------------------------------------------------------------------------
-Type@40ms "nbox --config $NBOX_CONFIG device edge01 set status active --dry-run --json"
-Sleep 500ms
-Enter
-Sleep 3s
-
-# ---------------------------------------------------------------------------
-# Hidden teardown: drop the temp config so nothing leaks out of the recording.
+# Hidden teardown: drop the temp config.
 # ---------------------------------------------------------------------------
 Hide
-Type "rm -f $NBOX_CONFIG && unset NBOX_TOKEN NBOX_TEST_URL NBOX_CONFIG"
+Type "rm -rf $(dirname $NBOX_CONFIG); unset NBOX_CONFIG"
 Enter
-Sleep 500ms
 Show
-
-# Final beat.
-Sleep 2s
+Sleep 300ms
