@@ -25,6 +25,7 @@ fn get_args(kind: GetKind, reference: &str) -> GetArgs {
         vrf: None,
         site: None,
         group: None,
+        fields: None,
     }
 }
 
@@ -371,11 +372,58 @@ async fn get_device_returns_device_view() {
             vrf: None,
             site: None,
             group: None,
+            fields: None,
         }))
         .await
         .expect("device lookup");
 
     assert_eq!(value["name"], "edge01");
+}
+
+#[tokio::test]
+async fn get_with_fields_projects_to_requested_keys() {
+    // `fields` trims the returned object to the requested top-level keys (token
+    // economy); an unknown key is silently ignored, and the projection happens
+    // after the cache so it doesn't change what's fetched.
+    let mock = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/"))
+        .and(query_param("name__ie", "edge01"))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 1, "url": "http://nb/api/dcim/devices/1/", "name": "edge01",
+                "status": {"value": "active", "label": "Active"}
+            }]
+        })))
+        .mount(&mock)
+        .await;
+    for p in [
+        "/api/dcim/interfaces/",
+        "/api/ipam/ip-addresses/",
+        "/api/ipam/services/",
+    ] {
+        Mock::given(method("GET"))
+            .and(path(p))
+            .respond_with(ResponseTemplate::new(200).set_body_json(empty_page()))
+            .mount(&mock)
+            .await;
+    }
+
+    let Json(value) = server_for(&mock)
+        .nbox_get(Parameters(GetArgs {
+            kind: GetKind::Device,
+            reference: "edge01".to_string(),
+            vrf: None,
+            site: None,
+            group: None,
+            fields: Some(vec!["name".to_string(), "nope".to_string()]),
+        }))
+        .await
+        .expect("device lookup");
+
+    // Only the requested, present key survives; the unknown `nope` is dropped.
+    assert_eq!(value, json!({"name": "edge01"}));
 }
 
 #[tokio::test]
@@ -396,6 +444,7 @@ async fn get_missing_device_is_invalid_params() {
             vrf: None,
             site: None,
             group: None,
+            fields: None,
         }))
         .await
     {
@@ -464,6 +513,7 @@ async fn search_returns_results_and_errors() {
             owner: None,
             owner_group: None,
             vrf: None,
+            fields: None,
         }))
         .await
         .expect("search");
@@ -579,6 +629,7 @@ async fn search_reports_partial_endpoint_errors() {
             owner: None,
             owner_group: None,
             vrf: None,
+            fields: None,
         }))
         .await
         .expect("search");
@@ -840,6 +891,7 @@ async fn get_vlan_disambiguated_by_site_resolves() {
             vrf: None,
             site: Some("sfo1".to_string()),
             group: None,
+            fields: None,
         }))
         .await
         .expect("vlan disambiguated by site");
@@ -888,6 +940,7 @@ async fn get_vlan_site_disambiguation_prefers_exact_slug_over_prefix_sibling() {
             vrf: None,
             site: Some("ci-site".to_string()),
             group: None,
+            fields: None,
         }))
         .await
         .expect("ci-site disambiguates to ci-vlan");
@@ -903,6 +956,7 @@ async fn get_vlan_site_disambiguation_prefers_exact_slug_over_prefix_sibling() {
             vrf: None,
             site: Some("ci-site2".to_string()),
             group: None,
+            fields: None,
         }))
         .await
         .expect("ci-site2 disambiguates to ci-vlan2");
@@ -2180,6 +2234,7 @@ mod contracts {
             owner: None,
             owner_group: None,
             vrf: None,
+            fields: None,
         }
     }
 
@@ -2301,6 +2356,39 @@ mod contracts {
         // Exact-match query ranks highest.
         assert_eq!(hit["score"], 100);
         // Every endpoint succeeded → errors present and empty (fail-closed shape).
+        assert!(value["errors"].as_array().expect("errors array").is_empty());
+    }
+
+    /// `nbox_search` with `fields` trims each hit in `results` to the requested
+    /// top-level keys (token economy), while leaving the `errors` array intact so
+    /// partial-failure reporting still comes through.
+    #[tokio::test]
+    async fn search_with_fields_projects_each_hit() {
+        let mock = MockServer::start().await;
+        mount_one(
+            &mock,
+            "/api/dcim/devices/",
+            json!({
+                "id": 7, "url": "http://nb/api/dcim/devices/7/", "name": "edge01",
+                "site": {"id": 1, "display": "den1"}
+            }),
+        )
+        .await;
+        mount_search_endpoints_empty(&mock).await;
+
+        let mut args = search_args("edge01");
+        args.fields = Some(vec!["kind".to_string(), "display".to_string()]);
+        let Json(value) = server_for(&mock)
+            .nbox_search(Parameters(args))
+            .await
+            .expect("search");
+
+        // The hit is trimmed to exactly the two requested keys.
+        let hit = &value["results"][0];
+        assert_keys(hit, &["kind", "display"]);
+        assert_eq!(hit["kind"], "device");
+        assert_eq!(hit["display"], "edge01");
+        // `errors` is not projected away — fail-closed reporting survives.
         assert!(value["errors"].as_array().expect("errors array").is_empty());
     }
 

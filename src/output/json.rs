@@ -73,8 +73,10 @@ pub fn print_streaming<T: Serialize>(value: &T, opts: &JsonOptions) -> Result<()
     Ok(())
 }
 
-/// Keep only `fields` on objects (recursing into array elements).
-fn select_fields(value: Value, fields: &[String]) -> Value {
+/// Keep only `fields` on objects (recursing into array elements). Shared by the
+/// CLI `--fields` flag and the MCP `fields` parameter — one source of truth for
+/// field projection. Unknown keys are silently ignored.
+pub fn select_fields(value: Value, fields: &[String]) -> Value {
     match value {
         Value::Object(map) => Value::Object(
             map.into_iter()

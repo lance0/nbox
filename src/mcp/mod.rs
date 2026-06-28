@@ -208,6 +208,11 @@ pub struct SearchArgs {
     /// Filter by VRF (id, RD, or name). Applies to IP and prefix results; other
     /// object kinds carry no VRF and are unaffected.
     pub vrf: Option<String>,
+    /// Keep only these top-level keys in each search hit (applied per hit;
+    /// unknown keys are silently ignored). Omit to return the full hit shape. A
+    /// token-economy lever for agents that only need, e.g. `["kind","display"]`.
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
 }
 
 /// Arguments for `nbox_get`.
@@ -228,6 +233,11 @@ pub struct GetArgs {
     pub site: Option<String>,
     /// Disambiguate by VLAN group (name or slug) when a VID exists in several.
     pub group: Option<String>,
+    /// Keep only these top-level keys in the returned object (unknown keys are
+    /// silently ignored). Omit to return the full object. A token-economy lever
+    /// for agents that only need a slice of a fat view model.
+    #[serde(default)]
+    pub fields: Option<Vec<String>>,
 }
 
 /// Arguments for `nbox_get_interface`.
@@ -372,6 +382,28 @@ fn to_mcp_error(err: anyhow::Error) -> ErrorData {
         }
         _ => ErrorData::internal_error(msg, None),
     }
+}
+
+/// Serialize a [`SearchReport`] to JSON, then trim each hit in `results` to the
+/// requested top-level keys (`fields`). The `errors` array is left intact so
+/// partial-failure reporting still comes through. Unknown field names are
+/// silently ignored, matching the CLI `--fields` semantics.
+fn project_search_hits(report: SearchReport, fields: &[String]) -> serde_json::Value {
+    // `SearchReport` is plain `Serialize` with no fallible fields; degrade an
+    // (effectively impossible) failure to an empty object rather than panic in a
+    // long-lived server.
+    let mut value = serde_json::to_value(report)
+        .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()));
+    if let Some(results) = value
+        .as_object_mut()
+        .and_then(|obj| obj.get_mut("results"))
+        .and_then(serde_json::Value::as_array_mut)
+    {
+        for hit in results.iter_mut() {
+            *hit = crate::output::json::select_fields(hit.take(), fields);
+        }
+    }
+    value
 }
 
 /// Extract the write caller's authorization facts from the tool-call request
@@ -569,13 +601,15 @@ impl NboxMcp {
     /// aggregates, ASNs, and IP ranges.
     #[tool(
         name = "nbox_search",
-        description = "Search across devices, sites, racks, rack groups, IP addresses, prefixes, VLANs, circuits, virtual circuits, aggregates, ASNs, IP ranges, tenants, contacts, providers, virtual machines, virtual machine types, clusters, VRFs, and route targets by free text. Returns ranked hits with kind, display name, and URL. Use this to find an object's exact reference before nbox_get. Optional filters narrow by status/site/tenant/role/tag/owner; vrf (id|rd|name) narrows IP and prefix results.",
+        description = "Search across devices, sites, racks, rack groups, IP addresses, prefixes, VLANs, circuits, virtual circuits, aggregates, ASNs, IP ranges, tenants, contacts, providers, virtual machines, virtual machine types, clusters, VRFs, and route targets by free text. Returns ranked hits with kind, display name, and URL. Use this to find an object's exact reference before nbox_get. Optional filters narrow by status/site/tenant/role/tag/owner; vrf (id|rd|name) narrows IP and prefix results. Pass `fields` (e.g. [\"kind\",\"display\"]) to keep only those top-level keys per hit and trim tokens.",
+        output_schema = output_schema(),
         annotations(read_only_hint = true)
     )]
     async fn nbox_search(
         &self,
         Parameters(args): Parameters<SearchArgs>,
-    ) -> Result<Json<SearchReport>, ErrorData> {
+    ) -> Result<Json<serde_json::Value>, ErrorData> {
+        let fields = args.fields;
         let outcome = Box::pin(self.client.search(SearchRequest {
             query: args.query,
             limit: args.limit.unwrap_or(25),
@@ -598,10 +632,18 @@ impl NboxMcp {
 
         // Fail-closed reporting: surface partial-failure endpoints alongside the
         // results so the agent can decide whether the set is trustworthy.
-        Ok(Json(SearchReport {
+        let report = SearchReport {
             results: outcome.results,
             errors: outcome.errors,
-        }))
+        };
+        // `fields` projection (token economy): trim each hit to the requested
+        // top-level keys. Absent/empty `fields` returns the full report shape,
+        // byte-identical to the previous `Json<SearchReport>` contract.
+        let value = match fields.filter(|f| !f.is_empty()) {
+            Some(fields) => project_search_hits(report, &fields),
+            None => serde_json::to_value(report).map_err(|e| to_mcp_error(e.into()))?,
+        };
+        Ok(Json(value))
     }
 
     /// Look up a single NetBox object by kind and reference.
@@ -618,7 +660,16 @@ impl NboxMcp {
         &self,
         Parameters(args): Parameters<GetArgs>,
     ) -> Result<Json<serde_json::Value>, ErrorData> {
-        self.get_cached(args).await.map_err(to_mcp_error)
+        let fields = args.fields.clone();
+        let Json(value) = self.get_cached(args).await.map_err(to_mcp_error)?;
+        // `fields` projection is applied AFTER the cache (the cache stores the
+        // full object keyed by ref/scope only), so two callers asking for
+        // different field subsets share one fetch.
+        let value = match fields.filter(|f| !f.is_empty()) {
+            Some(fields) => crate::output::json::select_fields(value, &fields),
+            None => value,
+        };
+        Ok(Json(value))
     }
 
     /// Drop nbox's local read cache so the next reads fetch fresh from NetBox.
@@ -991,6 +1042,7 @@ impl NboxMcp {
                 vrf: None,
                 site: None,
                 group: None,
+                fields: None,
             })
             .await
             .map_err(to_mcp_error)?;
