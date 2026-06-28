@@ -551,7 +551,8 @@ pub enum Command {
         out_dir: Option<PathBuf>,
     },
 
-    /// Run the read-only MCP server (for AI agents / MCP clients).
+    /// Run the MCP server for AI agents / MCP clients (read-only by default;
+    /// `--allow-writes` enables the opt-in write tools).
     ///
     /// Defaults to the stdio transport: an MCP host launches `nbox serve` as a
     /// subprocess and speaks JSON-RPC over its stdin/stdout. Passing `--http`

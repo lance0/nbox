@@ -753,7 +753,7 @@ struct ServeFlags {
     print_config: bool,
 }
 
-/// `nbox serve` — run the read-only MCP server.
+/// `nbox serve` — run the MCP server (read-only by default).
 ///
 /// Stdio is the zero-config default. `--http <ADDR>` (or `[serve].http` in the
 /// config) switches to the opt-in HTTP transport, which requires the `http`

@@ -1,5 +1,6 @@
-//! End-to-end test of `nbox serve --http` — the read-only MCP server over the
-//! opt-in loopback HTTP transport (rung 2 of the transport ladder; DESIGN §24).
+//! End-to-end test of `nbox serve --http` — the MCP server (read-only by default,
+//! plus the OIDC-gated per-user write path) over the opt-in loopback HTTP
+//! transport (rung 2 of the transport ladder; DESIGN §24).
 //!
 //! Gated behind the `http` feature: the whole file compiles only when the
 //! transport is built in (the binary it drives must understand `--http`). It
