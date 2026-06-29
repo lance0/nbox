@@ -411,11 +411,12 @@ through unchanged (it's the one kind whose spelling differs between the two).
 | Tool | Purpose |
 | ---- | ------- |
 | `nbox_plan_write` | Plan a NetBox write (interface description, device status, IP/prefix/IP-range reserve, tag add/remove). Builds a `MutationPlan` — a before/after diff plus a confirm token — without mutating NetBox. Annotated `read_only_hint = false`. |
-| `nbox_apply_write` | Apply a previously planned write. Pass the full `MutationPlan` JSON from `nbox_plan_write`; the confirm token is verified, then the write runs under the caller's per-user NetBox identity, returning a `MutationReceipt`. Annotated `read_only_hint = false`. |
+| `nbox_apply_write` | Apply a previously planned write. Pass back the `MutationPlan` from `nbox_plan_write`; its `confirm_token` looks up the plan the server stored at plan time and applies **that** stored plan (the submitted contents are not trusted — a forged or edited plan, or one issued for a different caller, is rejected). Runs under the caller's per-user NetBox identity, returning a `MutationReceipt`. Annotated `read_only_hint = false`. |
 
-Both write tools are exposed only with `--allow-writes` (or
-`[serve].allow_writes`) over the HTTP+OIDC transport, and require the caller's
-`nbox:write` scope plus a `[serve.vault."<sub>"]` entry mapping the caller's OIDC
+Both write tools are **always registered** (discoverable in `tools/list`); what's
+gated is execution. A call is rejected unless writes are enabled (`--allow-writes`
+or `[serve].allow_writes`) over the HTTP+OIDC transport AND the caller carries the
+`nbox:write` scope with a `[serve.vault."<sub>"]` entry mapping the caller's OIDC
 `sub` to that user's NetBox token. Without writes enabled they reject with
 "writes disabled"; they are rejected over stdio / unauthenticated transports (no
 per-user identity to bridge). See the **Writes** subsection under

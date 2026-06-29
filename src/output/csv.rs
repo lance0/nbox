@@ -36,10 +36,13 @@ pub fn print_streaming<T: Serialize>(value: &T, cols: Option<&[String]>) -> Resu
     let mut lock = stdout.lock();
     match &v {
         Value::Array(items) => {
-            // Two-pass: infer columns first (needed before writing header), then stream rows.
+            // Two-pass: pick columns first (needed before writing header), then
+            // stream rows. Match `array_csv` exactly (byte-identical contract):
+            // `Some(cols)` is used verbatim — including an explicit empty list —
+            // and only `None` infers from the rows.
             let columns = match cols {
-                Some(c) if !c.is_empty() => c.to_vec(),
-                _ => infer_columns(items),
+                Some(c) => c.to_vec(),
+                None => infer_columns(items),
             };
             write_header(&mut lock, &columns)?;
             for item in items {

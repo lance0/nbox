@@ -7,9 +7,9 @@ description: Run nbox as an MCP server (read-only by default) so an agent host c
 
 `nbox serve` exposes nbox's read layer as an MCP server. The tools reuse the
 CLI's query + view layer, so they return the same JSON view models as the
-equivalent `nbox <cmd>`. **Read-only is the default** — no write tools are
-exposed unless writes are explicitly opted in (see below). For the flags, run
-`nbox serve --help` — this skill is flag-free by design.
+equivalent `nbox <cmd>`. **Read-only is the default** — the write tools are always
+listed but reject at call time unless writes are explicitly opted in (see below).
+For the flags, run `nbox serve --help` — this skill is flag-free by design.
 
 ## Two transports
 
@@ -76,11 +76,14 @@ nbox serve --http 127.0.0.1:8080    # loopback HTTP, read-only
 
 ## Writes are a separate opt-in
 
-The MCP server stays read-only by default. Write tools (`nbox_plan_write` /
-`nbox_apply_write`) are exposed **only** with `nbox serve --http --allow-writes`
-plus a `[serve.vault]` config mapping each caller's OIDC `sub` to a per-user
-NetBox token — writes require the HTTP transport (OIDC identity); stdio stays
-read-only. For that lifecycle, see the [safe writes](../writes/SKILL.md) skill.
+The MCP server is read-only by default. The write tools (`nbox_plan_write` /
+`nbox_apply_write`) are always registered, but a call only **executes** with
+`nbox serve --http --allow-writes` plus the caller's `nbox:write` scope and a
+`[serve.vault]` entry mapping their OIDC `sub` to a per-user NetBox token — writes
+require the HTTP+OIDC transport; stdio stays read-only. `nbox_apply_write` applies
+the plan the server stored at plan time (looked up by the `confirm_token` from
+`nbox_plan_write`), not the plan you resubmit. For that lifecycle, see the
+[safe writes](../writes/SKILL.md) skill.
 
 ## Reference
 

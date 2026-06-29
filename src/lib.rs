@@ -1921,7 +1921,7 @@ async fn run_tag_write(
 /// (412 or pre-4.6 before-hash mismatch) is a recoverable refusal; a 400 is a
 /// NetBox validation rejection; anything else (network, auth, 5xx) is a plain
 /// error. Walks the chain so a `.context(...)`-wrapped typed error still maps.
-fn classify_apply_error(e: &anyhow::Error) -> (write_audit::Outcome, u16) {
+pub(crate) fn classify_apply_error(e: &anyhow::Error) -> (write_audit::Outcome, u16) {
     use crate::netbox::write_audit::Outcome;
     // Walk the chain for the most specific typed error. The first NboxError
     // that maps to an outcome wins; its HTTP status (if any) is recorded in
@@ -1947,7 +1947,7 @@ fn classify_apply_error(e: &anyhow::Error) -> (write_audit::Outcome, u16) {
 /// `http` vs `https`, non-default ports, and same-host lab instances; empty
 /// when the base URL has no host (matching the previous `host_str().unwrap_or("")`
 /// fallback). No path is logged — a token could ride a query string.
-fn audit_origin(base: &reqwest::Url) -> String {
+pub(crate) fn audit_origin(base: &reqwest::Url) -> String {
     if base.host_str().is_some() {
         base.origin().ascii_serialization()
     } else {
@@ -1961,7 +1961,7 @@ fn audit_origin(base: &reqwest::Url) -> String {
 /// byte length. `None` (an empty/normalized-away message) is 0. Extracted so the
 /// policy (chars, not bytes) is pinned by a unit test with a non-ASCII message.
 #[must_use]
-fn message_audit_len(msg: Option<&str>) -> usize {
+pub(crate) fn message_audit_len(msg: Option<&str>) -> usize {
     msg.map_or(0, |m| m.chars().count())
 }
 
@@ -2650,12 +2650,12 @@ async fn run_export_prometheus_sd(
             )
             .await?
     };
+    warn_if_export_truncated(ips.len(), EXPORT_IP_CAP, "IPs");
 
     // Enrich: resolve the distinct assigned devices in one `id__in` fetch so
     // site/role/status come from the device (the IP's `assigned_object`
     // interface brief carries a nested device id but not site/role). IPs
-    // without an assigned device keep `device=None` and fall back to per-site
-    // grouping in [`prometheus_sd`].
+    // without an assigned device keep `device=None`.
     let device_map = resolve_assigned_devices(&client, &ips).await?;
 
     let export_ips: Vec<ExportIp> = ips
@@ -2686,12 +2686,18 @@ async fn run_export_prometheus_sd(
                     ip.status.as_ref().map(|c| c.value.clone()),
                     Vec::new(),
                 ));
-            // Prefer the device's tags when a device resolved; else the IP's own tags.
-            let tags = if dev_tags.is_empty() {
-                ip.tags.into_iter().map(|t| t.slug).collect::<Vec<_>>()
-            } else {
-                dev_tags.into_iter().map(|t| t.slug).collect()
-            };
+            // Union the IP's own tags with its device's tags (de-duplicated):
+            // dropping either set loses signal — e.g. a `--tag` source tag rides
+            // on the IP, so preferring device tags would erase the very tag the
+            // export was filtered by. `prometheus_sd` re-unions across the group.
+            let mut tags: Vec<String> = ip
+                .tags
+                .into_iter()
+                .map(|t| t.slug)
+                .chain(dev_tags.into_iter().map(|t| t.slug))
+                .collect();
+            tags.sort();
+            tags.dedup();
             ExportIp {
                 address: strip_prefix_len(&ip.address),
                 device: device_name,
@@ -2714,6 +2720,20 @@ async fn run_export_prometheus_sd(
 /// 254 addresses — but bounded so a misconfigured `--tag` over a huge table
 /// can't stream unbounded work into one export.
 const EXPORT_IP_CAP: usize = 5_000;
+
+/// Warn (to stderr via the log layer) when an export gather came back at its cap,
+/// so a silently truncated export is visible rather than quietly incomplete. The
+/// heuristic — a full page at the cap — can occasionally false-positive when the
+/// source has *exactly* `cap` rows, which is the safe direction (a spurious
+/// notice, never a silent omission). Stdout (the JSON/list) stays clean.
+fn warn_if_export_truncated(len: usize, cap: usize, what: &str) {
+    if len >= cap {
+        tracing::warn!(
+            "export truncated at {cap} {what}; some may be omitted — narrow the source \
+             (a smaller --prefix/--tag or more device filters)"
+        );
+    }
+}
 
 /// Cap on the number of devices a `device-inventory` export gathers. Generous
 /// for a mid-size DCIM, but bounded so an unfiltered export of a huge fleet
@@ -2817,6 +2837,7 @@ async fn run_export_address_list(
         let p = detail::resolve_prefix(&client, cidr, vrf.as_deref(), &not_found).await?;
         let vrf_id = p.vrf.as_ref().map(|v| v.id);
         let ips = client.prefix_ips(cidr, vrf_id, EXPORT_IP_CAP).await?;
+        warn_if_export_truncated(ips.len(), EXPORT_IP_CAP, "IPs");
         nets.extend(ips.iter().filter_map(|ip| ip_host_net(&ip.address)));
     } else {
         let tag_slug = tag.as_deref().unwrap();
@@ -2831,6 +2852,7 @@ async fn run_export_address_list(
                 EXPORT_IP_CAP,
             )
             .await?;
+        warn_if_export_truncated(ips.len(), EXPORT_IP_CAP, "IPs");
         nets.extend(ips.iter().filter_map(|ip| ip_host_net(&ip.address)));
         let prefixes: Vec<Prefix> = client
             .list_all(
@@ -2839,6 +2861,7 @@ async fn run_export_address_list(
                 EXPORT_IP_CAP,
             )
             .await?;
+        warn_if_export_truncated(prefixes.len(), EXPORT_IP_CAP, "prefixes");
         nets.extend(prefixes.iter().filter_map(|p| parse_net(&p.prefix)));
     }
 
@@ -2899,6 +2922,7 @@ async fn run_export_device_inventory(
     let devices: Vec<Device> = client
         .list_all(Endpoint::Devices, filters, EXPORT_DEVICE_CAP)
         .await?;
+    warn_if_export_truncated(devices.len(), EXPORT_DEVICE_CAP, "devices");
     let records = device_inventory(&devices);
 
     match format {

@@ -91,6 +91,12 @@ nbox history <kind> <ref> [--diff]  # system audit log (create/update/delete, wh
                                   # (operator notes). `--diff` shows the full before/after JSON for the
                                   # newest change (implies --limit 1). Same kind set as `journal`.
 nbox open <kind>/<ref>
+nbox export prometheus-sd (--prefix <cidr> [--vrf <name|slug|rd>] | --tag <slug>) [--port N]
+                                  # structured read-only export: Prometheus file-SD JSON, targets grouped by device
+nbox export address-list (--prefix <cidr> [--vrf <name|slug|rd>] | --tag <slug>) [--family 4|6] [--summarize] [--format json|plain]
+                                  # firewall/blocklist address list (host IPs as /32 or /128, plus tagged prefixes)
+nbox export device-inventory [--site <slug>] [--role <slug>] [--tag <slug>] [--status <value>] [--manufacturer <slug>] [--format json|csv]
+                                  # one record per device (name/status/role/site/model/serial/primary_ip/tags/…)
 nbox raw GET <api-path>          # path with or without /api/, e.g. dcim/devices/?limit=1
 nbox status                       # NetBox/Django/Python versions, api routing,
                                   # capabilities, and a token-validity preflight

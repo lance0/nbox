@@ -30,16 +30,20 @@ use crate::netbox::mutation::Operation;
 pub const AUDIT_TARGET: &str = "nbox::write_audit";
 
 /// Which nbox surface issued the write (recorded so a CLI/TUI/MCP write is
-/// distinguishable in the log). v1 is `cli`; TUI and MCP writes are deferred.
+/// distinguishable in the log). `cli` and `mcp` ship; TUI writes are deferred.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Surface {
     Cli,
+    /// A write driven through `nbox serve` (an MCP `nbox_apply_write` call),
+    /// attributed to the calling user's OIDC `sub` via the per-user vault.
+    Mcp,
 }
 
 impl Surface {
     fn as_str(self) -> &'static str {
         match self {
             Surface::Cli => "cli",
+            Surface::Mcp => "mcp",
         }
     }
 }

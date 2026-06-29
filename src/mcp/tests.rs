@@ -4131,45 +4131,298 @@ async fn plan_write_device_status_produces_plan() {
     assert!(!plan.confirm_token.is_empty());
 }
 
-#[tokio::test]
-async fn apply_write_rejects_tampered_plan() {
-    // A plan whose confirm_token doesn't match its contents must be rejected.
-    let mock = MockServer::start().await;
-    let server = server_for(&mock); // vault doesn't matter — verify is first
-
-    // Build a fake plan with a bad confirm_token.
-    let plan = crate::netbox::mutation::MutationPlan {
-        schema_version: 1,
-        operation: crate::netbox::mutation::Operation::Update,
-        target: crate::netbox::mutation::PlanTarget {
-            kind: "device".into(),
-            r#ref: "edge01".into(),
-            id: 1,
-            display: "edge01".into(),
-            endpoint: "/api/dcim/devices/1/".into(),
-            profile: "test-profile".into(),
+/// A write-enabled server whose `sub` resolves to a per-user token via `env_name`
+/// — distinct env var per test so the (process-global) var can't race.
+fn write_server_with_env(mock: &MockServer, sub: &str, env_name: &str) -> NboxMcp {
+    let profile = ProfileConfig {
+        url: mock.uri(),
+        ..Default::default()
+    };
+    let mut entries = std::collections::BTreeMap::new();
+    entries.insert(
+        sub.to_string(),
+        crate::mcp::vault::VaultEntry {
+            token_env: env_name.to_string(),
         },
-        precondition: crate::netbox::mutation::Precondition::None,
+    );
+    let vault = crate::mcp::vault::CredentialVault::new(entries, true);
+    NboxMcp::new(
+        NetBoxClient::new(&profile, None).unwrap(),
+        crate::cache::Cache::disabled(),
+        Some(vault),
+        "test-profile".to_string(),
+    )
+}
+
+#[tokio::test]
+async fn apply_write_rejects_forged_plan_never_issued() {
+    // The headline forgery guard: a write-scoped caller forges a *self-consistent*
+    // plan (a valid confirm_token over an arbitrary endpoint + patch) the server
+    // never issued. `plan.verify()` passes — the token is a non-secret hash — but
+    // apply must still reject it, because the server only applies plans IT stored.
+    unsafe {
+        std::env::set_var("NBOX_VAULT_FORGE", "nbt_per_user_token");
+    }
+    let mock = MockServer::start().await;
+    let server = write_server_with_env(&mock, "alice", "NBOX_VAULT_FORGE");
+
+    use crate::netbox::mutation::{
+        MutationPlan, Operation, PlanTarget, Precondition, confirm_token, parse_iso_utc_to_epoch,
+    };
+    let target = PlanTarget {
+        kind: "device".into(),
+        r#ref: "edge01".into(),
+        id: 1,
+        display: "edge01".into(),
+        // An endpoint nbox's narrow surface would never target with this patch.
+        endpoint: "/api/dcim/devices/1/".into(),
+        profile: "test-profile".into(),
+    };
+    let precondition = Precondition::Etag {
+        etag: "\"v1\"".into(),
+    };
+    let patch = json!({"name": "pwned", "status": "decommissioning"});
+    let expires_at = "2999-01-01T00:00:00Z";
+    let epoch = parse_iso_utc_to_epoch(expires_at).unwrap();
+    let token = confirm_token(
+        &target,
+        Operation::Update,
+        &precondition,
+        &patch,
+        &None,
+        1,
+        epoch,
+    );
+    let forged = MutationPlan {
+        schema_version: 1,
+        operation: Operation::Update,
+        target,
+        precondition,
         fields: vec![],
-        patch: json!({}),
-        no_op: true,
+        patch,
+        no_op: false,
         warnings: vec![],
         errors: vec![],
         changelog_message: None,
         count: 1,
-        confirm_token: "tampered_token".into(),
-        expires_at: "2999-01-01T00:00:00Z".into(),
+        confirm_token: token,
+        expires_at: expires_at.into(),
     };
+    // The forged plan IS internally consistent — the old guard would let it pass.
+    assert!(forged.verify().is_ok(), "forged plan is self-consistent");
 
     let result = server
-        .apply_write_impl(crate::mcp::write::ApplyWriteArgs { plan }, None)
+        .apply_write_impl(
+            crate::mcp::write::ApplyWriteArgs { plan: forged },
+            Some(caller("alice", true)),
+        )
         .await;
-    assert!(result.is_err(), "should reject tampered plan");
-    let err = result.err().unwrap();
-
+    unsafe {
+        std::env::remove_var("NBOX_VAULT_FORGE");
+    }
+    let err = result.err().expect("a never-issued plan must be rejected");
     assert!(
-        err.message.contains("confirmation token"),
-        "error should mention confirm token: {}",
+        err.message.contains("no write plan matches"),
+        "forged plan should be rejected as not-issued (no NetBox write happens): {}",
         err.message
     );
+    // No PATCH/POST endpoint was ever mounted — the rejection precedes any write.
+}
+
+#[tokio::test]
+async fn apply_write_device_status_applies_through_the_plan_store() {
+    // Plan-then-apply happy path through the new store: the plan is recorded on
+    // plan_write and applied on apply_write. Also proves the caller's submitted
+    // plan contents are ignored — we tamper the resubmitted plan's endpoint/patch
+    // but keep its token, and the STORED plan (devices/1/, status=active) is what
+    // executes (only that endpoint is mounted).
+    unsafe {
+        std::env::set_var("NBOX_VAULT_HAPPY", "nbt_per_user_token");
+    }
+    let mock = MockServer::start().await;
+
+    mount_one(
+        &mock,
+        "/api/dcim/devices/",
+        json!({
+            "id": 1, "name": "edge01", "slug": "edge01",
+            "status": {"value": "planned", "label": "Planned"},
+            "display": "edge01", "url": "u", "custom_fields": {}
+        }),
+    )
+    .await;
+    mock.register(
+        wiremock::Mock::given(wiremock::matchers::method("OPTIONS"))
+            .and(wiremock::matchers::path("/api/dcim/devices/"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "name": "Device",
+                "actions": {"POST": {"status": {"type": "choice", "label": "Status",
+                    "choices": [{"value": "active", "display": "Active"},
+                                {"value": "planned", "display": "Planned"}]}}}
+            }))),
+    )
+    .await;
+    mock.register(
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/api/dcim/devices/1/"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({
+                        "id": 1, "name": "edge01", "slug": "edge01",
+                        "status": {"value": "planned", "label": "Planned"},
+                        "display": "edge01", "url": "u", "custom_fields": {}
+                    }))
+                    .insert_header("ETag", "\"v1\""),
+            ),
+    )
+    .await;
+    // The only write endpoint mounted is the STORED plan's: devices/1/.
+    mock.register(
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/api/dcim/devices/1/"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({
+                        "id": 1, "name": "edge01", "slug": "edge01",
+                        "status": {"value": "active", "label": "Active"},
+                        "display": "edge01", "url": "u", "custom_fields": {}
+                    }))
+                    .insert_header("ETag", "\"v2\""),
+            ),
+    )
+    .await;
+
+    let server = write_server_with_env(&mock, "alice", "NBOX_VAULT_HAPPY");
+    let plan = server
+        .plan_write_impl(
+            crate::mcp::write::PlanWriteArgs {
+                operation: crate::mcp::write::WriteOperation::DeviceStatus {
+                    device: "edge01".into(),
+                    status: "active".into(),
+                },
+            },
+            Some(caller("alice", true)),
+        )
+        .await
+        .expect("plan should succeed")
+        .0;
+
+    // Resubmit a TAMPERED copy: same confirm_token, but a malicious endpoint and
+    // patch. The store keys on the token and applies the STORED plan, so the
+    // tamper is inert (devices/999/ is not even mounted).
+    let mut tampered = plan.clone();
+    tampered.target.endpoint = "/api/dcim/devices/999/".into();
+    tampered.patch = json!({"name": "pwned"});
+
+    let receipt = server
+        .apply_write_impl(
+            crate::mcp::write::ApplyWriteArgs { plan: tampered },
+            Some(caller("alice", true)),
+        )
+        .await
+        .expect("apply of a server-issued plan should succeed")
+        .0;
+    unsafe {
+        std::env::remove_var("NBOX_VAULT_HAPPY");
+    }
+    assert!(receipt.applied, "the stored plan should have applied");
+    assert_eq!(receipt.target.endpoint, "/api/dcim/devices/1/");
+    assert_eq!(receipt.status, 200);
+}
+
+#[tokio::test]
+async fn apply_write_tag_on_prefix_routes_to_tag_applier() {
+    // Regression for the dispatch bug: a tag plan's target.kind is the object's
+    // kind ("prefix"), which the old apply matched against {interface,device,tag}
+    // and fell through to "unknown update target kind". With the applier recorded
+    // at plan time, a prefix tag write routes to apply_tag_update and succeeds.
+    unsafe {
+        std::env::set_var("NBOX_VAULT_TAG", "nbt_per_user_token");
+    }
+    let mock = MockServer::start().await;
+
+    // Tag resolution.
+    mock.register(
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/api/extras/tags/"))
+            .respond_with(wiremock::ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{"id": 7, "name": "prod", "slug": "prod"}]
+            }))),
+    )
+    .await;
+    // Prefix resolution (list) → carries the detail URL the planner strips.
+    let prefix_url = format!("{}/api/ipam/prefixes/5/", mock.uri());
+    mount_one(
+        &mock,
+        "/api/ipam/prefixes/",
+        json!({"id": 5, "url": prefix_url, "prefix": "10.0.0.0/24",
+               "display": "10.0.0.0/24", "custom_fields": {}}),
+    )
+    .await;
+    // Prefix detail (read-before-write) with no current tags + an ETag.
+    mock.register(
+        wiremock::Mock::given(wiremock::matchers::method("GET"))
+            .and(wiremock::matchers::path("/api/ipam/prefixes/5/"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({
+                        "id": 5, "url": "u", "prefix": "10.0.0.0/24",
+                        "display": "10.0.0.0/24", "tags": [], "custom_fields": {}
+                    }))
+                    .insert_header("ETag", "\"v1\""),
+            ),
+    )
+    .await;
+    // The PATCH the tag applier sends.
+    mock.register(
+        wiremock::Mock::given(wiremock::matchers::method("PATCH"))
+            .and(wiremock::matchers::path("/api/ipam/prefixes/5/"))
+            .respond_with(
+                wiremock::ResponseTemplate::new(200)
+                    .set_body_json(json!({
+                        "id": 5, "url": "u", "prefix": "10.0.0.0/24",
+                        "display": "10.0.0.0/24",
+                        "tags": [{"id": 7, "name": "prod", "slug": "prod"}],
+                        "custom_fields": {}
+                    }))
+                    .insert_header("ETag", "\"v2\""),
+            ),
+    )
+    .await;
+
+    let server = write_server_with_env(&mock, "alice", "NBOX_VAULT_TAG");
+    let plan = server
+        .plan_write_impl(
+            crate::mcp::write::PlanWriteArgs {
+                operation: crate::mcp::write::WriteOperation::TagAdd {
+                    object_type: "prefix".into(),
+                    object_ref: "10.0.0.0/24".into(),
+                    tag: "prod".into(),
+                },
+            },
+            Some(caller("alice", true)),
+        )
+        .await
+        .expect("tag plan should succeed")
+        .0;
+    assert_eq!(
+        plan.target.kind, "prefix",
+        "tag plan records the object kind"
+    );
+
+    let receipt = server
+        .apply_write_impl(
+            crate::mcp::write::ApplyWriteArgs { plan },
+            Some(caller("alice", true)),
+        )
+        .await
+        .expect("prefix tag apply must route to the tag applier, not error")
+        .0;
+    unsafe {
+        std::env::remove_var("NBOX_VAULT_TAG");
+    }
+    assert!(receipt.applied);
+    assert_eq!(receipt.target.kind, "prefix");
+    assert_eq!(receipt.status, 200);
 }

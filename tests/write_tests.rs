@@ -2058,7 +2058,25 @@ async fn ip_reserve_count_0_is_a_usage_error() {
     let server = MockServer::start().await;
     let config = write_config(&server.uri());
     let out = run_ip_reserve(&config, &["--count", "0", "--dry-run", "--json"]);
-    assert_error_contract(&out, 2, "count must be at least 1");
+    assert_error_contract(&out, 2, "count must be between 1 and 1000");
+}
+
+#[tokio::test]
+async fn ip_reserve_count_over_cap_is_a_usage_error_pre_network() {
+    // An unbounded count would build a giant list body before the POST. The
+    // planner rejects > MAX_ALLOCATION_COUNT pre-network (no NetBox call), exit 2.
+    let server = MockServer::start().await;
+    let config = write_config(&server.uri());
+    let out = run_ip_reserve(
+        &config,
+        &["--count", "100000", "--allow-writes", "--confirm", "--json"],
+    );
+    assert_error_contract(&out, 2, "count must be between 1 and 1000");
+    assert_eq!(
+        server.received_requests().await.unwrap().len(),
+        0,
+        "an over-cap count must be rejected before any NetBox request"
+    );
 }
 
 #[tokio::test]

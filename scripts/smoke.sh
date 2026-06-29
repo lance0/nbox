@@ -45,6 +45,19 @@ step "Build smoke — all features + no default features"
 cargo build --all-features --locked
 cargo build --no-default-features --locked
 
+step "Lean musl build check (musl-lean-check)"
+# Mirrors the CI musl-lean-check job: the stdio-only build must compile for the
+# musl release target. `cargo check` needs no musl linker; skip cleanly if the
+# target isn't installed locally (CI always runs it).
+if rustup target list --installed 2>/dev/null | grep -q '^x86_64-unknown-linux-musl$'; then
+    cargo check --no-default-features --locked --target x86_64-unknown-linux-musl
+else
+    echo "skip: x86_64-unknown-linux-musl not installed (rustup target add x86_64-unknown-linux-musl)"
+fi
+
+step "Agent skills lint (skills-lint)"
+bash scripts/lint_skills.sh
+
 step "Feature matrix — intermediate combinations"
 # Intermediate feature combinations between all-on and all-off. Mirror the
 # feature-matrix CI job so the pre-tag gate catches the same combos locally.

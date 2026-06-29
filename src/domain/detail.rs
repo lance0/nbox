@@ -73,6 +73,14 @@ const DETAIL_SECTION_CAP: usize = 200;
 /// Prefix detail's contained-address tab needs room for a full IPv4 `/24` while
 /// still staying bounded and below NetBox's `MAX_PAGE_SIZE` (1000).
 const PREFIX_CONTAINED_IP_CAP: usize = 512;
+
+/// Upper bound on a single multi-allocation `--count`. Apply builds an N-element
+/// list body (`vec![body; count]`) before the POST, so an unbounded count would
+/// allocate unbounded memory client-side before NetBox is ever contacted. 1000
+/// matches NetBox's `MAX_PAGE_SIZE` and is far above any realistic single
+/// reservation; an over-cap request is a usage error (exit 2), rejected
+/// pre-network like a count of 0.
+const MAX_ALLOCATION_COUNT: u32 = 1000;
 /// How many recent journal entries to fold into a detail view with `--journal`.
 pub const JOURNAL_INLINE_MAX: usize = 5;
 
@@ -699,11 +707,13 @@ pub(crate) async fn plan_ip_reserve(
     };
     mutation::validate_changelog_message(&message)?;
 
-    // Validate count: must be ≥ 1. A count of 0 is a usage error.
-    if count == 0 {
-        return Err(anyhow::Error::new(NboxError::Usage(
-            "count must be at least 1".to_string(),
-        )));
+    // Validate count: 1..=MAX_ALLOCATION_COUNT. Both bounds are usage errors
+    // (exit 2), checked pre-network — an unbounded count would build a giant
+    // list body before the POST.
+    if count == 0 || count > MAX_ALLOCATION_COUNT {
+        return Err(anyhow::Error::new(NboxError::Usage(format!(
+            "count must be between 1 and {MAX_ALLOCATION_COUNT}"
+        ))));
     }
 
     // Resolve the prefix by CIDR (reuses the read path so ambiguity / not-found /
@@ -1055,11 +1065,13 @@ pub(crate) async fn plan_ip_range_reserve(
     };
     mutation::validate_changelog_message(&message)?;
 
-    // Validate count: must be ≥ 1. A count of 0 is a usage error.
-    if count == 0 {
-        return Err(anyhow::Error::new(NboxError::Usage(
-            "count must be at least 1".to_string(),
-        )));
+    // Validate count: 1..=MAX_ALLOCATION_COUNT. Both bounds are usage errors
+    // (exit 2), checked pre-network — an unbounded count would build a giant
+    // list body before the POST.
+    if count == 0 || count > MAX_ALLOCATION_COUNT {
+        return Err(anyhow::Error::new(NboxError::Usage(format!(
+            "count must be between 1 and {MAX_ALLOCATION_COUNT}"
+        ))));
     }
 
     // Resolve the IP range by start address or ID (same resolver as
