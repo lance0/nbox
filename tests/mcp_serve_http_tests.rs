@@ -631,6 +631,67 @@ async fn mount_jwks(idp: &TestIdp) -> MockServer {
     jwks
 }
 
+#[test]
+fn http_local_writes_is_rejected_without_oidc() {
+    // ADR-0002 first cut is stdio-only. Even loopback HTTP must not get
+    // profile-token writes from --local-writes.
+    let port = free_port();
+    let addr = format!("127.0.0.1:{port}");
+    let mut config = NamedTempFile::new().expect("create temp config");
+    write!(
+        config,
+        "active_profile = \"test\"\n\
+         \n\
+         [profiles.test]\n\
+         url = \"http://127.0.0.1:1/\"\n"
+    )
+    .expect("write temp config");
+    config.flush().expect("flush temp config");
+
+    let mut child = Command::new(env!("CARGO_BIN_EXE_nbox"))
+        .arg("--config")
+        .arg(config.path())
+        .arg("serve")
+        .arg("--http")
+        .arg(&addr)
+        .arg("--local-writes")
+        .env("NBOX_TOKEN", "dummy")
+        .env_remove("NBOX_SERVE_TOKEN")
+        .env_remove("NBOX_LOG")
+        .env_remove("RUST_LOG")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .expect("spawn nbox serve --http --local-writes");
+
+    for _ in 0..100 {
+        if child.try_wait().expect("poll child").is_some() {
+            let out = child.wait_with_output().expect("collect output");
+            assert_eq!(out.status.code(), Some(2), "stderr: {:?}", out.stderr);
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            assert!(
+                stderr.contains("--local-writes") && stderr.contains("stdio"),
+                "stderr should explain stdio-only local writes: {stderr}"
+            );
+            assert!(
+                out.stdout.is_empty(),
+                "usage failure must keep stdout clean: {:?}",
+                out.stdout
+            );
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+    let _ = child.kill();
+    let out = child.wait_with_output().expect("collect killed output");
+    panic!(
+        "nbox serve --http --local-writes did not fail fast; status={:?} stderr={}",
+        out.status,
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 #[tokio::test]
 async fn oidc_write_bridges_caller_identity_to_per_user_token() {
     let idp = make_idp();

@@ -69,13 +69,13 @@ token never appears in the audit log.
 ## MCP writes are a separate opt-in
 
 The MCP server is read-only by default. The same planner/applier backs two MCP
-write tools, `nbox_plan_write` and `nbox_apply_write`, exposed **only** with
-`nbox serve --http --allow-writes` plus a `[serve.vault]` config mapping each
-caller's OIDC `sub` to a per-user NetBox token (each write runs as the calling
-user, and the caller's token must carry the `nbox:write` scope). Stdio and
-unauthenticated transports stay read-only; without `--allow-writes` the write
-tools reject with "writes disabled". See the [serve skill](../serve/SKILL.md)
-and ADR-0001 Decision 7 (Implemented).
+write tools, `nbox_plan_write` and `nbox_apply_write`. They execute only in one
+explicit mode: local stdio `nbox serve --local-writes`, which uses the active
+profile token, or shared HTTP/OIDC `nbox serve --http --allow-writes` plus a
+`[serve.vault]` config mapping each caller's OIDC `sub` to a per-user NetBox
+token (each shared write runs as the calling user, and the caller's token must
+carry the `nbox:write` scope). HTTP local writes are deferred. See the
+[serve skill](../serve/SKILL.md), ADR-0001, and ADR-0002.
 
 ## Reference
 

@@ -65,8 +65,9 @@ tokens (unknown keys ignored).
 ## Install recipe
 
 `nbox serve --print-config` prints the paste-ready `mcpServers` JSON (absolute
-binary path, echoed `--profile`/`--config`, placeholder token) and exits — no
-server start, no NetBox connection. Drop it into the host's MCP config.
+binary path, echoed `--profile`/`--config`/`--local-writes`, placeholder token)
+and exits — no server start, no NetBox connection. Drop it into the host's MCP
+config.
 
 ```bash
 nbox serve --print-config           # paste-ready mcpServers JSON, then exit
@@ -78,14 +79,13 @@ nbox serve --http 127.0.0.1:8080    # loopback HTTP, read-only
 
 The MCP server is read-only by default. The write tools (`nbox_plan_write` /
 `nbox_apply_write`) are always registered, but a call only **executes** with
-`nbox serve --http --allow-writes` plus the caller's `nbox:write` scope and a
-`[serve.vault]` entry mapping their OIDC `sub` to a per-user NetBox token — writes
-require the HTTP+OIDC transport; stdio stays read-only. `nbox_apply_write` applies
-the plan the server stored at plan time (looked up by the `confirm_token` from
-`nbox_plan_write`), not the plan you resubmit. For local, single-user writes (the
-stdio setup), use the equivalent **CLI** command instead — it writes with the
-local profile token, no IdP. For that lifecycle, see the
-[safe writes](../writes/SKILL.md) skill.
+one explicit write mode: local stdio `nbox serve --local-writes`, which uses the
+active profile token, or shared HTTP/OIDC `nbox serve --http --allow-writes` plus
+the caller's `nbox:write` scope and a `[serve.vault]` entry mapping their OIDC
+`sub` to a per-user NetBox token. HTTP local writes are deferred in this release.
+`nbox_apply_write` applies the plan the server stored at plan time (looked up by
+the `confirm_token` from `nbox_plan_write`), not the plan you resubmit. For that
+lifecycle, see the [safe writes](../writes/SKILL.md) skill.
 
 ## Reference
 

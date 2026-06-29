@@ -27,6 +27,8 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 use tempfile::NamedTempFile;
+use wiremock::matchers::{header, method, path};
+use wiremock::{Mock, MockServer, ResponseTemplate};
 
 /// The protocol version the server advertises (`ProtocolVersion::LATEST` in
 /// `src/mcp/mod.rs`). The server negotiates down to the client's version if it
@@ -74,25 +76,32 @@ impl ServeChild {
     /// URL is unreachable on purpose: the initialize/tools/list handshake never
     /// makes a network call, so the bogus URL is fine and keeps the test offline.
     fn spawn() -> Self {
+        Self::spawn_with("http://127.0.0.1:1/", &[], "dummy")
+    }
+
+    /// Spawn `nbox serve` against a caller-provided NetBox base URL and extra
+    /// serve args. Used by tests that need the real stdio transport plus a
+    /// wiremock NetBox.
+    fn spawn_with(url: &str, serve_args: &[&str], token: &str) -> Self {
         let mut config = NamedTempFile::new().expect("create temp config");
         write!(
             config,
             "active_profile = \"test\"\n\
              \n\
              [profiles.test]\n\
-             url = \"http://127.0.0.1:1/\"\n\
+             url = \"{url}\"\n\
              token_env = \"NBOX_TEST_TOKEN_UNUSED\"\n"
         )
         .expect("write temp config");
         config.flush().expect("flush temp config");
 
-        let mut child = Command::new(env!("CARGO_BIN_EXE_nbox"))
-            .arg("--config")
-            .arg(config.path())
-            .arg("serve")
-            // The direct-override token env so `connect()` finds a token without
-            // a real secret; nothing authenticates during the handshake.
-            .env("NBOX_TOKEN", "dummy")
+        let mut command = Command::new(env!("CARGO_BIN_EXE_nbox"));
+        command.arg("--config").arg(config.path()).arg("serve");
+        command.args(serve_args);
+        let mut child = command
+            // The direct-override token env so `connect()` finds a token. Tests
+            // that hit wiremock can require this exact token on every request.
+            .env("NBOX_TOKEN", token)
             // Pin logging quiet and to stderr regardless of the caller's env, so
             // the stdout-cleanliness assertion isn't perturbed by NBOX_LOG/RUST_LOG.
             .env_remove("NBOX_LOG")
@@ -194,6 +203,105 @@ impl Drop for ServeChild {
         let _ = self.child.kill();
         let _ = self.child.wait();
     }
+}
+
+async fn mount_device_status_update_requiring_token(mock: &MockServer, token: &str) {
+    let auth = format!("Bearer {token}");
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/"))
+        .and(header("authorization", auth.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1,
+            "next": null,
+            "previous": null,
+            "results": [{
+                "id": 1,
+                "name": "edge01",
+                "slug": "edge01",
+                "status": {"value": "planned", "label": "Planned"},
+                "display": "edge01",
+                "url": "u",
+                "custom_fields": {}
+            }]
+        })))
+        .mount(mock)
+        .await;
+    Mock::given(method("OPTIONS"))
+        .and(path("/api/dcim/devices/"))
+        .and(header("authorization", auth.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "Device",
+            "actions": {
+                "POST": {
+                    "status": {
+                        "type": "choice",
+                        "label": "Status",
+                        "choices": [
+                            {"value": "active", "display": "Active"},
+                            {"value": "planned", "display": "Planned"}
+                        ]
+                    }
+                }
+            }
+        })))
+        .mount(mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/1/"))
+        .and(header("authorization", auth.as_str()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({
+                    "id": 1,
+                    "name": "edge01",
+                    "slug": "edge01",
+                    "status": {"value": "planned", "label": "Planned"},
+                    "display": "edge01",
+                    "url": "u",
+                    "custom_fields": {}
+                }))
+                .insert_header("ETag", "\"v1\""),
+        )
+        .mount(mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/dcim/devices/1/"))
+        .and(header("authorization", auth.as_str()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({
+                    "id": 1,
+                    "name": "edge01",
+                    "slug": "edge01",
+                    "status": {"value": "active", "label": "Active"},
+                    "display": "edge01",
+                    "url": "u",
+                    "custom_fields": {}
+                }))
+                .insert_header("ETag", "\"v2\""),
+        )
+        .mount(mock)
+        .await;
+}
+
+/// Extract a successful tool's structured payload (the `Json<T>` it returns).
+fn tool_payload(msg: &Value) -> Value {
+    assert!(msg.get("error").is_none(), "tool returned an error: {msg}");
+    let result = &msg["result"];
+    assert_ne!(
+        result["isError"],
+        json!(true),
+        "tool execution error: {msg}"
+    );
+    if let Some(sc) = result.get("structuredContent")
+        && !sc.is_null()
+    {
+        return sc.clone();
+    }
+    let text = result["content"][0]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("tool result has no structuredContent/text: {msg}"));
+    serde_json::from_str(text).unwrap_or_else(|_| panic!("tool result text not JSON: {text}"))
 }
 
 #[test]
@@ -376,5 +484,78 @@ fn serve_handshake_lists_all_tools_with_clean_stdout() {
     );
 
     // Close stdin and make sure the process exits (killed as a backstop).
+    server.shutdown();
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn local_stdio_writes_plan_and_apply_through_json_rpc() {
+    let netbox = MockServer::start().await;
+    mount_device_status_update_requiring_token(&netbox, "nbt_profile.key").await;
+    let mut server = ServeChild::spawn_with(&netbox.uri(), &["--local-writes"], "nbt_profile.key");
+
+    server.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": PROTOCOL_VERSION,
+            "capabilities": {},
+            "clientInfo": { "name": "nbox-local-write-e2e-test", "version": "0.0.0" }
+        }
+    }));
+    let init = server.read_response(1);
+    assert!(
+        init["result"]["instructions"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Local writes are enabled"),
+        "initialize instructions should describe local writes: {init}"
+    );
+    server.send(&json!({
+        "jsonrpc": "2.0",
+        "method": "notifications/initialized"
+    }));
+
+    server.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 2,
+        "method": "tools/call",
+        "params": {
+            "name": "nbox_plan_write",
+            "arguments": {
+                "operation": {
+                    "kind": "device_status",
+                    "device": "edge01",
+                    "status": "active"
+                }
+            }
+        }
+    }));
+    let plan_msg = server.read_response(2);
+    let plan = tool_payload(&plan_msg);
+    assert_eq!(plan["target"]["kind"], "device", "plan: {plan}");
+    assert_eq!(plan["patch"], json!({"status": "active"}), "plan: {plan}");
+    assert!(
+        !plan["confirm_token"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
+        "plan carries a confirm token"
+    );
+
+    server.send(&json!({
+        "jsonrpc": "2.0",
+        "id": 3,
+        "method": "tools/call",
+        "params": {
+            "name": "nbox_apply_write",
+            "arguments": { "plan": plan }
+        }
+    }));
+    let receipt_msg = server.read_response(3);
+    let receipt = tool_payload(&receipt_msg);
+    assert_eq!(receipt["applied"], true, "receipt: {receipt}");
+    assert_eq!(receipt["status"], 200, "receipt: {receipt}");
+
     server.shutdown();
 }

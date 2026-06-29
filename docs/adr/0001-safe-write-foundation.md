@@ -148,35 +148,40 @@ Current nbox constraints also matter:
    and no `nbox raw POST|PATCH|DELETE` should ship until they are built on the
    same planner, diff, confirmation, concurrency, and audit contracts.
 
-7. **MCP writes require per-user identity (Pattern 2).** ✅ **Implemented.** The
-   `nbox_plan_write` and `nbox_apply_write` MCP tools are backed by the per-user
-   credential vault (`src/mcp/vault.rs`). The validated OIDC `Identity` (`sub` +
-   scopes) is plumbed from the auth gate into the request `Parts`, which the
-   Streamable-HTTP transport nests into the rmcp `RequestContext`; the write tools
-   read the caller's `sub` from there and the vault maps it to a per-user NetBox
-   token (env var), bridged at request time via `NetBoxClient::with_token` so the
-   write `PATCH`/`POST` hits NetBox under the caller's identity. The design
-   follows the constraints below:
+7. **MCP writes use an explicit write mode.** ✅ **Implemented, amended by
+   ADR-0002.** The `nbox_plan_write` and `nbox_apply_write` MCP tools are backed
+   by the same safe-write engine as the CLI and execute only in one of two
+   explicit modes. Shared HTTP/OIDC deployments use the per-user credential vault
+   (`src/mcp/vault.rs`): the validated OIDC `Identity` (`sub` + scopes) is
+   plumbed from the auth gate into the request `Parts`, the Streamable-HTTP
+   transport nests it into the rmcp `RequestContext`, and the vault maps the
+   caller's `sub` to a per-user NetBox token (env var), bridged at request time
+   via `NetBoxClient::with_token` so the write `PATCH`/`POST` hits NetBox under
+   the caller's identity. Local stdio deployments can instead opt into
+   `[serve].local_writes` / `--local-writes`, which uses the active profile token
+   and binds the plan to a synthetic local actor. The design follows the
+   constraints below:
 
    - ✅ operation-specific, not a generic raw mutation tool;
-   - ✅ require `--allow-writes` on `nbox serve` **and** the caller's token
-     carrying the `nbox:write` scope. Scope is enforced **in the write tools**
-     (per request), not the HTTP gate — the gate deliberately does not parse the
+   - ✅ require either local stdio `--local-writes` / `[serve].local_writes`, or
+     shared HTTP/OIDC `--allow-writes` plus the caller's token carrying the
+     `nbox:write` scope. HTTP scope is enforced **in the write tools** (per
+     request), not the HTTP gate — the gate deliberately does not parse the
      JSON-RPC method (that would mean buffering the streaming body), so it cannot
      tell a read tool from a write one. Both `nbox_plan_write` and
      `nbox_apply_write` are advertised `read_only_hint = false`: planning is part
-     of the write flow (it requires the same gate + scope + per-user identity),
-     so a host's "auto-run read-only tools" policy must not auto-invoke it.
+     of the write flow, so a host's "auto-run read-only tools" policy must not
+     auto-invoke it.
    - ✅ return a plan/diff first and require an explicit apply call carrying the
      confirmation token;
    - ✅ use the same mutation engine as the CLI;
-   - ✅ require Pattern 2 per-user NetBox credential bridging. Authorization fails
-     closed, in order: writes disabled (`--allow-writes` / `[serve.vault]` absent)
-     → no authenticated caller identity (stdio / loopback static-bearer carry
-     none — writes need HTTP+OIDC) → missing `nbox:write` scope → no
-     `[serve.vault]` entry for the caller's `sub`. The service token is never used
-     for writes, and the no-identity case is its own distinct error that never
-     suggests mapping a placeholder `sub`.
+   - ✅ fail closed by mode. With an authenticated OIDC caller, authorization is:
+     shared writes enabled (`--allow-writes` / `[serve.vault]`) → `nbox:write`
+     scope → vault entry for the caller's `sub`. With no caller, authorization is
+     stdio transport plus explicit `--local-writes` / `[serve].local_writes`;
+     HTTP and static-bearer transports remain rejected in ADR-0002's first cut.
+     The service/profile token is never used for shared HTTP writes, only for
+     explicit local stdio writes.
 
 8. **Use clear audit and status wording.** Write logs and user-visible messages
    should describe facts, not magic:

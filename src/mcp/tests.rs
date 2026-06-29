@@ -7,7 +7,7 @@ use rmcp::ErrorData;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{ErrorCode, ResourceContents};
 use serde_json::json;
-use wiremock::matchers::{method, path, query_param};
+use wiremock::matchers::{header, method, path, query_param};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
 use super::{
@@ -3871,6 +3871,77 @@ fn write_server_for(mock: &MockServer) -> NboxMcp {
     )
 }
 
+/// A stdio-mode server with ADR-0002 local writes toggled, using `token` as the
+/// active profile token. This exercises the local single-user path (no OIDC
+/// identity, no vault).
+fn local_stdio_server_for(mock: &MockServer, local_writes: bool, token: &str) -> NboxMcp {
+    let profile = ProfileConfig {
+        url: mock.uri(),
+        ..Default::default()
+    };
+    NboxMcp::new_stdio(
+        NetBoxClient::new(&profile, Some(token.to_string())).unwrap(),
+        crate::cache::Cache::disabled(),
+        local_writes,
+    )
+}
+
+async fn mount_device_status_update_requiring_token(mock: &MockServer, token: &str) {
+    let auth = format!("Bearer {token}");
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/"))
+        .and(header("authorization", auth.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "count": 1, "next": null, "previous": null,
+            "results": [{
+                "id": 1, "name": "edge01", "slug": "edge01",
+                "status": {"value": "planned", "label": "Planned"},
+                "display": "edge01", "url": "u", "custom_fields": {}
+            }]
+        })))
+        .mount(mock)
+        .await;
+    Mock::given(method("OPTIONS"))
+        .and(path("/api/dcim/devices/"))
+        .and(header("authorization", auth.as_str()))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "name": "Device",
+            "actions": {"POST": {"status": {"type": "choice", "label": "Status",
+                "choices": [{"value": "active", "display": "Active"},
+                            {"value": "planned", "display": "Planned"}]}}}
+        })))
+        .mount(mock)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/api/dcim/devices/1/"))
+        .and(header("authorization", auth.as_str()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({
+                    "id": 1, "name": "edge01", "slug": "edge01",
+                    "status": {"value": "planned", "label": "Planned"},
+                    "display": "edge01", "url": "u", "custom_fields": {}
+                }))
+                .insert_header("ETag", "\"v1\""),
+        )
+        .mount(mock)
+        .await;
+    Mock::given(method("PATCH"))
+        .and(path("/api/dcim/devices/1/"))
+        .and(header("authorization", auth.as_str()))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .set_body_json(json!({
+                    "id": 1, "name": "edge01", "slug": "edge01",
+                    "status": {"value": "active", "label": "Active"},
+                    "display": "edge01", "url": "u", "custom_fields": {}
+                }))
+                .insert_header("ETag", "\"v2\""),
+        )
+        .mount(mock)
+        .await;
+}
+
 /// A write caller (the per-request authz facts the tool layer extracts from the
 /// OIDC identity), for driving `plan_write_impl`/`apply_write_impl` directly.
 fn caller(sub: &str, has_write_scope: bool) -> crate::mcp::write::WriteCaller {
@@ -3984,6 +4055,213 @@ async fn plan_write_rejects_when_no_caller_identity() {
         err.message.contains("authenticated OIDC caller"),
         "error should name the missing identity: {}",
         err.message
+    );
+}
+
+#[tokio::test]
+async fn plan_write_rejects_stdio_without_local_writes() {
+    // Stdio without ADR-0002 local_writes stays read-only. No OIDC identity, no
+    // vault, and no local fallback means no NetBox request is made.
+    let mock = MockServer::start().await;
+    let server = local_stdio_server_for(&mock, false, "nbt_profile.key");
+    let result = server
+        .plan_write_impl(
+            crate::mcp::write::PlanWriteArgs {
+                operation: crate::mcp::write::WriteOperation::DeviceStatus {
+                    device: "edge01".into(),
+                    status: "active".into(),
+                },
+            },
+            None,
+        )
+        .await;
+    let err = result
+        .err()
+        .expect("stdio without local_writes must reject");
+    assert!(
+        err.message.contains("local stdio writes"),
+        "error should point at local_writes: {}",
+        err.message
+    );
+    assert!(
+        mock.received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty(),
+        "a local-writes gate refusal must not touch NetBox"
+    );
+}
+
+#[tokio::test]
+async fn local_stdio_plan_apply_uses_profile_token() {
+    // ADR-0002 local mode: no OIDC caller and no vault, but local_writes=true
+    // lets stdio writes use the active profile token. Every mock endpoint
+    // requires that token, so the test fails if the path tries a vault token or
+    // no token.
+    let mock = MockServer::start().await;
+    mount_device_status_update_requiring_token(&mock, "nbt_profile.key").await;
+    let server = local_stdio_server_for(&mock, true, "nbt_profile.key");
+
+    let plan = server
+        .plan_write_impl(
+            crate::mcp::write::PlanWriteArgs {
+                operation: crate::mcp::write::WriteOperation::DeviceStatus {
+                    device: "edge01".into(),
+                    status: "active".into(),
+                },
+            },
+            None,
+        )
+        .await
+        .expect("local stdio plan should use profile token")
+        .0;
+    assert_eq!(plan.target.kind, "device");
+
+    let receipt = server
+        .apply_write_impl(crate::mcp::write::ApplyWriteArgs { plan }, None)
+        .await
+        .expect("local stdio apply should use the stored plan")
+        .0;
+    assert!(receipt.applied);
+    assert_eq!(receipt.status, 200);
+}
+
+#[tokio::test]
+async fn local_stdio_forged_plan_is_rejected() {
+    // Local writes get the same plan-store protection as OIDC writes: a
+    // self-consistent, never-issued plan is rejected before any NetBox write.
+    let mock = MockServer::start().await;
+    let server = local_stdio_server_for(&mock, true, "nbt_profile.key");
+
+    use crate::netbox::mutation::{
+        MutationPlan, Operation, PlanTarget, Precondition, confirm_token, parse_iso_utc_to_epoch,
+    };
+    let target = PlanTarget {
+        kind: "device".into(),
+        r#ref: "edge01".into(),
+        id: 1,
+        display: "edge01".into(),
+        endpoint: "/api/dcim/devices/1/".into(),
+        profile: String::new(),
+    };
+    let precondition = Precondition::Etag {
+        etag: "\"v1\"".into(),
+    };
+    let patch = json!({"name": "pwned"});
+    let expires_at = "2999-01-01T00:00:00Z";
+    let epoch = parse_iso_utc_to_epoch(expires_at).unwrap();
+    let token = confirm_token(
+        &target,
+        Operation::Update,
+        &precondition,
+        &patch,
+        &None,
+        1,
+        epoch,
+    );
+    let forged = MutationPlan {
+        schema_version: 1,
+        operation: Operation::Update,
+        target,
+        precondition,
+        fields: vec![],
+        patch,
+        no_op: false,
+        warnings: vec![],
+        errors: vec![],
+        changelog_message: None,
+        count: 1,
+        confirm_token: token,
+        expires_at: expires_at.into(),
+    };
+    assert!(forged.verify().is_ok(), "forged plan is self-consistent");
+
+    let result = server
+        .apply_write_impl(crate::mcp::write::ApplyWriteArgs { plan: forged }, None)
+        .await;
+    let err = result.err().expect("forged local plan must be rejected");
+    assert!(
+        err.message.contains("no write plan matches"),
+        "unexpected error: {}",
+        err.message
+    );
+    assert!(
+        mock.received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty(),
+        "forged plan rejection must not touch NetBox"
+    );
+}
+
+#[tokio::test]
+async fn local_stdio_plan_is_one_shot() {
+    let mock = MockServer::start().await;
+    mount_device_status_update_requiring_token(&mock, "nbt_profile.key").await;
+    let server = local_stdio_server_for(&mock, true, "nbt_profile.key");
+
+    let plan = server
+        .plan_write_impl(
+            crate::mcp::write::PlanWriteArgs {
+                operation: crate::mcp::write::WriteOperation::DeviceStatus {
+                    device: "edge01".into(),
+                    status: "active".into(),
+                },
+            },
+            None,
+        )
+        .await
+        .expect("local plan")
+        .0;
+
+    server
+        .apply_write_impl(
+            crate::mcp::write::ApplyWriteArgs { plan: plan.clone() },
+            None,
+        )
+        .await
+        .expect("first apply succeeds");
+    let replay = server
+        .apply_write_impl(crate::mcp::write::ApplyWriteArgs { plan }, None)
+        .await;
+    let err = replay.err().expect("second apply must be rejected");
+    assert!(
+        err.message.contains("no write plan matches"),
+        "replay should miss the consumed plan: {}",
+        err.message
+    );
+}
+
+#[tokio::test]
+async fn local_writes_do_not_bypass_oidc_vault_path() {
+    // Presence of an OIDC caller disambiguates to Pattern 2. Even on a stdio
+    // server with local_writes=true, a caller identity must satisfy the vault
+    // path; it must not silently fall back to the profile token.
+    let mock = MockServer::start().await;
+    let server = local_stdio_server_for(&mock, true, "nbt_profile.key");
+    let result = server
+        .plan_write_impl(
+            crate::mcp::write::PlanWriteArgs {
+                operation: crate::mcp::write::WriteOperation::DeviceStatus {
+                    device: "edge01".into(),
+                    status: "active".into(),
+                },
+            },
+            Some(caller("alice", true)),
+        )
+        .await;
+    let err = result.err().expect("OIDC caller must require vault");
+    assert!(
+        err.message.contains("shared writes are not enabled"),
+        "identity-present path should not use local_writes: {}",
+        err.message
+    );
+    assert!(
+        mock.received_requests()
+            .await
+            .unwrap_or_default()
+            .is_empty(),
+        "vault refusal must not touch NetBox"
     );
 }
 

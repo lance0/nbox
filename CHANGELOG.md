@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Local stdio MCP writes (ADR-0002).** `nbox serve --local-writes` and
+  `[serve].local_writes = true` enable the existing safe MCP write tools
+  (`nbox_plan_write` / `nbox_apply_write`) for the common local subprocess setup,
+  using the active profile token and the MCP host's approval prompt as the human
+  gate. The server-issued plan store remains authoritative: forged, edited, or
+  replayed plans are rejected. Shared/network HTTP writes remain on the existing
+  `--allow-writes` + OIDC + `[serve.vault]` path, and HTTP profile-token writes
+  are intentionally deferred.
 - **Structured exports, two more on the same surface.** Alongside `nbox export
   prometheus-sd`, the export surface now covers the `netbox-lists` niche as one
   fast binary:
