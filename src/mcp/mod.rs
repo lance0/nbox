@@ -10,7 +10,7 @@
 //! stdout carries the JSON-RPC stream and nothing else — logging goes to stderr
 //! (see [`crate::init_logging`]), and the connect path here prints nothing.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
@@ -54,6 +54,11 @@ pub struct NboxMcp {
     /// The active profile name — bound into the confirmation token so a plan
     /// from one profile can't be applied under another. Empty for stdio.
     profile: String,
+    /// Write plans this server has issued but not yet applied. `nbox_apply_write`
+    /// applies the STORED plan for a token, never the caller's submitted plan
+    /// contents — the `confirm_token` is a non-secret hash, so a forged plan must
+    /// not be trusted. Shared across this long-lived server's clones (`Arc`).
+    plans: Arc<Mutex<write::PlanStore>>,
     tool_router: ToolRouter<Self>,
 }
 
@@ -565,6 +570,7 @@ impl NboxMcp {
             cache,
             vault: vault.map(Arc::new),
             profile,
+            plans: Arc::new(Mutex::new(write::PlanStore::default())),
             tool_router: Self::tool_router(),
         }
     }
@@ -1118,16 +1124,25 @@ impl ServerHandler for NboxMcp {
             .enable_resources()
             .enable_prompts()
             .build();
-        info.instructions = Some(
+        // The write note reflects THIS instance: write tools are advertised only
+        // when writes are enabled (a vault is configured); otherwise the server
+        // is read-only and says so.
+        let write_note = if self.vault.is_some() {
+            "Writes are opt-in: a caller with the nbox:write scope and a per-user vault entry can \
+             nbox_plan_write (review the before/after diff + confirm token) then nbox_apply_write \
+             to mutate NetBox under their own identity; everything else is read-only."
+        } else {
+            "Nothing is ever written (this instance is read-only)."
+        };
+        info.instructions = Some(format!(
             "Read-only NetBox lookups: search, devices, IPs, prefixes, VLANs, sites, racks, \
              circuits, journals, tags, and the change-history (audit log). Use nbox_search to \
              find an object's reference, then nbox_get to fetch it; nbox_history for what changed \
-             and nbox_journal for operator notes. Objects are also exposed as nbox://{kind}/{ref} \
+             and nbox_journal for operator notes. Objects are also exposed as nbox://{{kind}}/{{ref}} \
              resources (same view as nbox_get). Curated investigation prompts (IP utilization \
              audit, cable path trace, stale-prefix sweep, object change review) are available \
-             via prompts/list. Nothing is ever written."
-                .into(),
-        );
+             via prompts/list. {write_note}"
+        ));
         info
     }
 

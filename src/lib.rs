@@ -1921,7 +1921,7 @@ async fn run_tag_write(
 /// (412 or pre-4.6 before-hash mismatch) is a recoverable refusal; a 400 is a
 /// NetBox validation rejection; anything else (network, auth, 5xx) is a plain
 /// error. Walks the chain so a `.context(...)`-wrapped typed error still maps.
-fn classify_apply_error(e: &anyhow::Error) -> (write_audit::Outcome, u16) {
+pub(crate) fn classify_apply_error(e: &anyhow::Error) -> (write_audit::Outcome, u16) {
     use crate::netbox::write_audit::Outcome;
     // Walk the chain for the most specific typed error. The first NboxError
     // that maps to an outcome wins; its HTTP status (if any) is recorded in
@@ -1947,7 +1947,7 @@ fn classify_apply_error(e: &anyhow::Error) -> (write_audit::Outcome, u16) {
 /// `http` vs `https`, non-default ports, and same-host lab instances; empty
 /// when the base URL has no host (matching the previous `host_str().unwrap_or("")`
 /// fallback). No path is logged — a token could ride a query string.
-fn audit_origin(base: &reqwest::Url) -> String {
+pub(crate) fn audit_origin(base: &reqwest::Url) -> String {
     if base.host_str().is_some() {
         base.origin().ascii_serialization()
     } else {
@@ -1961,7 +1961,7 @@ fn audit_origin(base: &reqwest::Url) -> String {
 /// byte length. `None` (an empty/normalized-away message) is 0. Extracted so the
 /// policy (chars, not bytes) is pinned by a unit test with a non-ASCII message.
 #[must_use]
-fn message_audit_len(msg: Option<&str>) -> usize {
+pub(crate) fn message_audit_len(msg: Option<&str>) -> usize {
     msg.map_or(0, |m| m.chars().count())
 }
 
