@@ -10,3 +10,4 @@ pub mod binary;
 pub mod fixtures;
 pub mod json_contract;
 pub mod netbox;
+pub mod serve;

@@ -26,8 +26,12 @@
 use std::io::Write;
 use std::process::{Command, Output};
 
-use serde_json::Value;
+use serde_json::{Value, json};
 use tempfile::NamedTempFile;
+
+mod support;
+
+use support::serve::{ServeChild, tool_error, tool_payload};
 
 /// The seeded API token's default — kept in sync with `docker-compose.yml`'s
 /// `SUPERUSER_API_TOKEN` and `seed.py`. `NETBOX_TOKEN` overrides it.
@@ -41,6 +45,16 @@ fn netbox_url() -> String {
 /// Read `NETBOX_TOKEN`, or fall back to the seeded default.
 fn netbox_token() -> String {
     std::env::var("NETBOX_TOKEN").unwrap_or_else(|_| DEFAULT_TOKEN.to_string())
+}
+
+/// A serve config (TOML string) pointing at the live NetBox. The token rides in
+/// via `NBOX_TOKEN` (the harness sets it), so `token_env` is just a placeholder.
+fn serve_config_toml() -> String {
+    format!(
+        "active_profile = \"ci\"\n\n[profiles.ci]\nurl = \"{url}\"\n\
+         token_env = \"NETBOX_TOKEN_UNUSED\"\nverify_tls = false\n",
+        url = netbox_url(),
+    )
 }
 
 /// A throwaway config file holding one profile that points at the live NetBox.
@@ -763,4 +777,97 @@ fn next_prefix_length_too_large_is_graceful_empty() {
         available.is_empty(),
         "no /24 fits in a /28 — expected empty available: {v}"
     );
+}
+
+// ===== live MCP server end-to-end (read / local write / negative) ===========
+//
+// Drive the real `nbox serve` stdio transport against the seeded live NetBox via
+// JSON-RPC (the `support::serve` harness), covering ADR-0002 local single-user
+// writes end to end: a read, a write that actually mutates NetBox and is
+// verified, and the negative (the write is refused without the opt-in).
+
+#[test]
+#[ignore = "requires a live NetBox (netbox-integration workflow)"]
+fn mcp_read_returns_live_data() {
+    let mut server = ServeChild::spawn(&serve_config_toml(), &[], &netbox_token());
+    let init = server.handshake();
+    assert_eq!(
+        init["result"]["protocolVersion"], "2025-11-25",
+        "initialize: {init}"
+    );
+
+    // nbox_status: a live read confirming the connection (no error payload).
+    let _status = tool_payload(&server.call(2, "nbox_status", json!({})));
+
+    // nbox_get device: the seeded ci-dev1 resolves with its (active) status.
+    let dev =
+        tool_payload(&server.call(3, "nbox_get", json!({"kind": "device", "ref": "ci-dev1"})));
+    assert_eq!(dev["status"], "active", "device read: {dev}");
+
+    server.shutdown();
+}
+
+#[test]
+#[ignore = "requires a live NetBox (netbox-integration workflow)"]
+fn mcp_local_write_reserves_ip_and_verifies() {
+    let mut server = ServeChild::spawn(&serve_config_toml(), &["--local-writes"], &netbox_token());
+    server.handshake();
+
+    // Plan an IP reservation in a seeded child prefix.
+    let plan = tool_payload(&server.call(
+        2,
+        "nbox_plan_write",
+        json!({"operation": {"kind": "ip_reserve", "prefix": "10.10.1.0/24"}}),
+    ));
+    assert_eq!(plan["operation"], "allocate", "plan: {plan}");
+    assert!(
+        !plan["confirm_token"]
+            .as_str()
+            .unwrap_or_default()
+            .is_empty(),
+        "plan carries a confirm token: {plan}"
+    );
+
+    // Apply it — a real POST to NetBox under the profile token (local_writes).
+    let receipt = tool_payload(&server.call(3, "nbox_apply_write", json!({"plan": plan})));
+    assert_eq!(receipt["applied"], true, "receipt: {receipt}");
+    assert_eq!(receipt["status"], 201, "receipt: {receipt}");
+    let address = receipt["object"]["address"]
+        .as_str()
+        .unwrap_or_else(|| panic!("receipt has no created address: {receipt}"));
+    assert!(
+        address.starts_with("10.10.1."),
+        "reserved address should be in the prefix: {address}"
+    );
+
+    // Verify the mutation landed: read the new IP back through MCP.
+    let host = address.split('/').next().unwrap_or(address);
+    let ip = tool_payload(&server.call(4, "nbox_get", json!({"kind": "ip", "ref": host})));
+    assert_eq!(
+        ip["address"].as_str().unwrap_or("").split('/').next(),
+        Some(host),
+        "the reserved IP must now exist in NetBox: {ip}"
+    );
+
+    server.shutdown();
+}
+
+#[test]
+#[ignore = "requires a live NetBox (netbox-integration workflow)"]
+fn mcp_write_refused_without_local_writes() {
+    // The opt-in actually gates: a plain stdio server (no --local-writes) must
+    // refuse a write with a message pointing at local_writes.
+    let mut server = ServeChild::spawn(&serve_config_toml(), &[], &netbox_token());
+    server.handshake();
+    let msg = server.call(
+        2,
+        "nbox_plan_write",
+        json!({"operation": {"kind": "ip_reserve", "prefix": "10.10.1.0/24"}}),
+    );
+    let err = tool_error(&msg).unwrap_or_else(|| panic!("write should be refused, got: {msg}"));
+    assert!(
+        err.contains("local_writes") || err.contains("not enabled"),
+        "refusal should point at local_writes: {err}"
+    );
+    server.shutdown();
 }
