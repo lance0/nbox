@@ -38,10 +38,11 @@ What each row is:
   top — so comparing nbox's *full* MCP-ready time against this *imports-only*
   floor understates nbox's lead, not the reverse.
 
-## Results
+## Historical Results
 
-Host: AMD Ryzen Threadripper 7970X, Linux 6.17 x86_64. nbox 0.13.0 (static musl),
-Python 3.12.3, `mcp` + `pynetbox` from PyPI.
+Host: AMD Ryzen Threadripper 7970X, Linux 6.17 x86_64. nbox release build
+(static musl; measured from a 0.13.0-era build), Python 3.12.3,
+`mcp` + `pynetbox` from PyPI.
 
 | Cold start (lower is better)        | median  | min     |
 |-------------------------------------|--------:|--------:|

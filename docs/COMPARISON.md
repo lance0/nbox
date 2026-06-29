@@ -5,8 +5,8 @@ questions you ask at the terminal — *what is this IP, where is this device, wh
 owns this prefix?* — from the shell, a TUI, or an MCP server, against the same
 NetBox you already run. Reads are the default; nbox also performs a small set
 of safe writes — interface/device field edits, IP/prefix/IP-range reservation,
-and tag add/remove — each gated behind `--allow-writes` + confirmation with a
-default `--dry-run` preview. The tables below compare nbox against
+and tag add/remove — with an explicit `--dry-run` preview and apply gated behind
+`--allow-writes` + confirmation. The tables below compare nbox against
 the alternatives a NetBox user already has — the NetBox web UI, raw REST over
 `curl`, and `pynetbox` (the official Python client) — and say when to reach for
 which.
@@ -24,14 +24,14 @@ which.
 | Works over SSH with no runtime | ✓ (single static binary) | ✗ (needs a browser) | ◐ (only if curl present) | ✗ (needs Python + the package) |
 | Machine output (JSON/CSV) + stable exit codes | ✓ (built in) | ✗ | ◐ (you build it) | ◐ (you build it) |
 | Built-in AI-agent access (MCP) | ✓ (`nbox serve`) | ✗ | ✗ | ✗ |
-| Reserve / allocate / edit (writes) | ✓ (gated: `--allow-writes` + `--confirm`, default `--dry-run`) | ✓ | ✓ | ✓ |
+| Reserve / allocate / edit (writes) | ✓ (explicit `--dry-run`; apply with `--allow-writes` + `--confirm`) | ✓ | ✓ | ✓ |
 | Cross-object navigation (device ↔ IP ↔ prefix ↔ VLAN) | ✓ (TUI `R`; resolved inline in CLI) | ✓ (links) | ✗ (you chase ids) | ✗ (you chase ids) |
 | Learning curve | low (subcommands + flags) | low (point and click) | high (endpoints, filters, joins) | medium (object model, Python) |
 
 Notes:
 
 - nbox is **read-only by default**. A small set of safe writes is available
-  behind `--allow-writes` + confirmation (with `--dry-run`); for bulk/admin
+  behind `--allow-writes` + confirmation (preview with explicit `--dry-run`); for bulk/admin
   mutation use the web UI or pynetbox.
 - `next-ip` / `next-prefix` query NetBox's available-IPs / available-prefixes
   endpoints (read-only; nothing is reserved in NetBox); `next-prefix --length L`
@@ -61,8 +61,9 @@ Notes:
 - Feeding an AI agent — `nbox serve` is read-only by default (11 read tools,
   stdio or loopback HTTP with OIDC) returning the same JSON view models the CLI
   does, and can expose 2 write tools (`nbox_plan_write` / `nbox_apply_write`)
-  with local stdio `--local-writes` or shared HTTP/OIDC `[serve].allow_writes`
-  plus a per-user vault; unauthenticated HTTP stays read-only.
+  with local stdio `--local-writes` or shared HTTP/OIDC `[serve].allow_writes`,
+  caller `nbox:write`, and a per-user vault; unauthenticated HTTP stays
+  read-only.
 
 ### The NetBox web UI
 

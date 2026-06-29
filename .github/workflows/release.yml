@@ -90,8 +90,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       # The default feature set IS the canonical single binary (clipboard, http,
-      # keyring, updates) — every platform ships the same features, no variants.
-      # `keyring-secret-service` (D-Bus) stays off so the musl build links static.
+      # updates) — every platform ships the same features, no variants.
       - name: Build (native)
         if: ${{ !matrix.cross }}
         run: cargo build --release --locked --target ${{ matrix.target }}

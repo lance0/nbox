@@ -161,15 +161,16 @@ subprocess and speaks JSON-RPC over stdin/stdout; the tools reuse the CLI's quer
 stderr; URL/token from the active profile (same `-p`/`--config` flags). The read
 tools are annotated read-only; the write tools (`nbox_plan_write`/`nbox_apply_write`)
 are not and execute only with local stdio `--local-writes` or shared HTTP/OIDC
-`--allow-writes` plus a vault. `nbox serve --print-config` prints the paste-ready
+`--allow-writes` plus caller `nbox:write` and a vault.
+`nbox serve --print-config` prints the paste-ready
 `mcpServers` JSON (absolute binary path, echoed `--profile`/`--config`/
-`--local-writes`, placeholder token) and exits — no server start, no connection; see docs/MCP.md for the per-host
-config-file path.
+`--local-writes`, placeholder token) and exits — no server start, no connection;
+see docs/MCP.md for the per-host config-file path.
 
 | Tool | What |
 | ---- | ---- |
 | `nbox_status` | Connection + active backend capabilities + NetBox/Django/Python versions + a token-validity preflight (`token`: `valid`/`invalid`/`unverified`; NetBox 4.5+). |
-| `nbox_search` | Search devices/sites/racks/IPs/prefixes/VLANs/circuits/virtual-circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers/VMs/clusters/VRFs/route-targets; `query`, `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `owner`/`owner_group` (4.5+; user/group by name), `vrf` (id\|rd\|name; IP/prefix only). |
+| `nbox_search` | Search devices/sites/racks/rack-groups/IPs/prefixes/VLANs/circuits/virtual-circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers/VMs/VM-types/clusters/VRFs/route-targets; `query`, `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `owner`/`owner_group` (4.5+; user/group by name), `vrf` (id\|rd\|name; IP/prefix only). |
 | `nbox_get` | One object by `kind` (device, ip, prefix, vlan, site, rack, rack_group, circuit, virtual_circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, vm_type, cluster, vrf, route_target, mac, interface) + `ref`; `vrf`/`site`/`group` disambiguate. |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |
 | `nbox_next_ip` | Next available address(es) in a prefix. |

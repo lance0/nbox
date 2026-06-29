@@ -1,23 +1,22 @@
 # Roadmap
 
-nbox is a **read-first** NetBox CLI, TUI, and MCP server. The near-term goal is the **best
-possible read experience** — fast, correct, and pleasant both in the terminal and to agents.
-write engine, with seven commands landed — `interface <device> <iface> set
+nbox is a **read-first** NetBox CLI, TUI, and MCP server. The near-term goal is
+the **best possible read experience** — fast, correct, and pleasant both in the
+terminal and to agents — with a narrow, opt-in safe-write surface that widens
+deliberately. Seven write commands have landed: `interface <device> <iface> set
 description` and `device <name> set status <value>` (`PATCH`), `ip reserve
 <prefix>` / `prefix reserve <cidr>` / `ip-range reserve <start|id>` (three
-`allocate` `POST`s to `available-ips` / `available-prefixes`), and `tag add` /
-`tag remove <type> <name> <tag>` (a `PATCH` to the `tags` array on any object
-kind). Reads stay the default everywhere and the write surface widens only as
-the read tool proves out in practice (see
-[Writes](#writes--deferred-later-track)).
+server-side allocation `POST`s), and `tag add` / `tag remove <type> <name>
+<tag>` (tag-array `PATCH`). Reads stay the default everywhere (see
+[Writes](#writes--safe-opt-in-track)).
 
 Legend: ☐ planned · ◐ in progress · ☑ done
 
 ## Principles
 
 - **Read-first; writes are narrow and opt-in.** Reads are the bulk of the product and get polished
-  first. The first writes have landed as a gated `PATCH`-based foundation (ADR-0001): minimal-diff,
-  before/after-previewed, confirmable, behind `--allow-writes` + confirmation — never the default.
+  first. The shipped writes reuse the ADR-0001 plan/confirm/audit foundation:
+  before/after-previewed, confirmable, behind explicit gates — never the default.
 - **Agent-first.** CLI, TUI, and `nbox serve` (MCP) run off one command core; `--json`/`--envelope`/
   `--fields`/`--raw` + `AGENTS.md` make every read scriptable, and the same views back the MCP tools.
 - **Correctness over breadth.** Typed errors, real-NetBox integration CI, and ambiguity surfaced
@@ -25,7 +24,7 @@ Legend: ☐ planned · ◐ in progress · ☑ done
 
 ---
 
-## Shipped — the read-only product
+## Shipped — the read-first product
 
 The read surface is broad and stable today (full history in `CHANGELOG.md`):
 
@@ -41,8 +40,10 @@ The read surface is broad and stable today (full history in `CHANGELOG.md`):
   trace, VRF-scoped child prefixes + contained IPs.
 - **Output:** `-o plain|json|csv`, `--raw`, `--envelope`, `--fields`, `--cols`; stable exit codes.
 - **MCP server (`nbox serve`):** stdio **and** HTTP (Streamable HTTP), OAuth 2.1 OIDC resource-server
-  mode (RFC 9728 metadata, audit log, per-caller rate limit), 11 read tools + a `nbox://{kind}/{ref}`
-  resource template (DESIGN §24; read-only Pattern 3).
+  mode (RFC 9728 metadata, audit log, per-caller rate limit), 11 read tools,
+  two opt-in write tools, and a `nbox://{kind}/{ref}` resource template (DESIGN
+  §24). Local writes use stdio `--local-writes`; shared HTTP writes use
+  `--allow-writes` + OIDC `nbox:write` + `[serve.vault]`.
 - **TUI:** list/preview split with focus, scrolling + position cues, 12 themes, command palette,
   fuzzy filter, recents, auto-refresh, device tabs, open-in-browser/copy, profile switcher
   (`P`/`Ctrl+P`), and an in-app **Config modal** (`S`) — profile editor (add/edit/select/delete),
@@ -56,9 +57,10 @@ The read surface is broad and stable today (full history in `CHANGELOG.md`):
 
 ---
 
-## Now — best-in-class read-only UX (current focus)
+## Now — best-in-class read-first UX (current focus)
 
-Polish the read experience. No writes here.
+Polish the read experience while keeping writes narrow, explicit, and covered by
+the shared safe-write rails.
 
 - ☑ **TUI search filters** — surface the CLI's `--status` / `--site` / scope / `--vrf` filters in the
   TUI (filter chips + palette + `f` modal) so the TUI is as capable a search as the CLI.
@@ -254,8 +256,8 @@ Polish the read experience. No writes here.
 ## Keeping current with NetBox (4.6 → 4.7)
 
 NetBox has moved to 4.6 (tick-tock cadence; 4.7 "tock" — may break — is the next watch).
-A 2026-06 feature scan surfaced read-only, non-goal-respecting surface nbox doesn't yet
-cover. All of these stay within the read-only product and the explicit non-goals.
+A 2026-06 feature scan surfaced read-side, non-goal-respecting surface nbox doesn't yet
+cover. All of these stay within the read-first product and the explicit non-goals.
 
 - ☑ **MAC addresses as a first-class kind** _(NetBox 4.2)_. `nbox mac <addr>`
   reverse-resolves a MAC to the interface(s)/device(s) that carry it — a top
@@ -400,6 +402,10 @@ reviewable PRs that lock contracts and reduce future change cost.
   (`invalid_params` vs internal errors) are all pinned against direct server/tool calls in
   `src/mcp/tests.rs::contracts` (not brittle protocol snapshots). Keep this number-free so new
   kinds cannot stale the roadmap.
+- ☑ **Live MCP E2E in the NetBox integration lane** — the ignored live suite
+  launches the compiled `nbox serve` over stdio and verifies read, local
+  `--local-writes` reserve/apply/readback, and the no-`--local-writes` refusal
+  against the ephemeral NetBox fixture.
 - ◐ **Fixture migration pass** — move repeated inline NetBox JSON in `search_tests`, `query_tests`,
   `scope_tests`, MCP tests, and custom-field tests onto `tests/support` builders as those files are
   next touched.
@@ -429,18 +435,20 @@ reviewable PRs that lock contracts and reduce future change cost.
 
 ---
 
-## Writes — deferred (later track)
+## Writes — safe opt-in track
 
-The safe-write **foundation** has landed ([ADR-0001](docs/adr/0001-safe-write-foundation.md)): the
-shared `MutationPlan`/`MutationReceipt` engine plus the narrow `interface … set description` pilot,
-gated behind `--allow-writes` + confirmation, `PATCH`-based with a before/after diff, read staying the
-default everywhere. The **broader** write surface stays a deliberate later track — it widens only as
-the read tool proves out in practice. Consolidated future scope:
+The safe-write **foundation** has landed ([ADR-0001](docs/adr/0001-safe-write-foundation.md)):
+shared `MutationPlan`/`MutationReceipt`, explicit dry-run/confirm flow,
+`--allow-writes` gate for CLI apply, ETag/`If-Match` on NetBox 4.6+ with a
+pre-4.6 read-before-write fallback, names-only audit events, and stdout/stderr
+contract tests. The shipped write surface is deliberately narrow: two in-place
+`PATCH` edits, three server-side allocation `POST`s, and tag add/remove. Reads
+stay the default everywhere; future write work should continue widening by
+specific safe operations rather than broad arbitrary editing.
 
-- ☑ **Safe `PATCH` engine** — minimal diff, before/after preview, confirmation; agent-safe
-  read-only default. The ADR-0001 foundation landed: a shared `MutationPlan` /
-  `MutationReceipt` engine + the `nbox interface <device> <iface> set description
-  "…"` pilot (`--allow-writes` + `--confirm`/`--dry-run`, `ETag`/`If-Match` on
+- ☑ **Safe write engine** — minimal diff, before/after preview, confirmation;
+  agent-safe read-first default. The ADR-0001 foundation covers both in-place
+  `PATCH` writes and server-authoritative allocation `POST`s.
 - ☑ `nbox interface <device> <iface> set description "…"` — the first write
   command (on the ADR-0001 foundation).
 - ☑ `nbox device <name> set status <value>` — the second write command,

@@ -95,11 +95,12 @@ $ nbox serve --print-config
 ```
 
 The `command` is the absolute path to this `nbox` binary (so the host finds it
-even if `nbox` isn't on its `PATH`); `args` echoes any `--profile`/`--config`
-you passed so the snippet reproduces your invocation; and `NBOX_TOKEN` is a
-placeholder — set it there, export it in your shell, or drop the `env` block
-entirely if `nbox config init` already holds the token. (This prints the stdio
-recipe; the HTTP/OIDC transport is configured separately — see below.)
+even if `nbox` isn't on its `PATH`); `args` echoes any `--profile`/`--config`/
+`--local-writes` you passed so the snippet reproduces your invocation; and
+`NBOX_TOKEN` is a placeholder — set it there, export it in your shell, or drop
+the `env` block entirely if `nbox config init` already holds the token. (This
+prints the stdio recipe; the HTTP/OIDC transport is configured separately — see
+below.)
 
 ### Where each host reads it
 
@@ -127,11 +128,13 @@ nbox serve --http 127.0.0.1:8080
 (The transport lives behind the `http` cargo feature, which is on by default;
 `cargo install nbox --no-default-features` gives a lean stdio-only build.)
 
-The same thirteen tools are mounted at `/mcp` (Streamable HTTP) — the 11 read
-tools plus the two write tools, which reject unless writes are enabled. It binds **only**
-loopback: a non-loopback address (e.g. `0.0.0.0:8080`) is a usage error unless
-the OIDC resource-server auth mode is configured (see below) — there is no other
-bypass flag. The trust boundary is the loopback interface; the same profile/token
+The same thirteen tools are mounted at `/mcp` (Streamable HTTP). The two write
+tools are discoverable there too, but on HTTP they execute only in shared
+OIDC/vault mode (`--allow-writes`, caller `nbox:write`, and a vault entry);
+loopback/static-bearer profile-token writes reject. It binds **only** loopback:
+a non-loopback address (e.g. `0.0.0.0:8080`) is a usage error unless the OIDC
+resource-server auth mode is configured (see below) — there is no other bypass
+flag. The trust boundary is the loopback interface; the same profile/token
 resolution and `-p`/`--config` flags apply.
 
 Security on the HTTP path:

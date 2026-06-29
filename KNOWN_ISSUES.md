@@ -13,9 +13,10 @@ to preview). Reads remain the default everywhere.
 **Remaining limitations:** Choosing a specific address/block, interface/VM
 assignment, status/tags on reserve, and generic create/delete are still
 deferred (ADR-0001 Decision 6). MCP writes are similarly opt-in: the server is
-read-only by default and over stdio, exposing `nbox_plan_write` /
-`nbox_apply_write` only with `[serve].allow_writes`, the `nbox:write` scope, and
-a per-user `[serve.vault]` entry.
+read-only by default. Local stdio writes require `--local-writes` /
+`[serve].local_writes` and use the active profile token; shared HTTP/OIDC writes
+require `[serve].allow_writes`, caller `nbox:write`, and a per-user
+`[serve.vault]` entry. HTTP/static-bearer profile-token writes are rejected.
 
 ---
 

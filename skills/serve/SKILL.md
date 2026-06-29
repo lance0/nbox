@@ -1,6 +1,6 @@
 ---
 name: nbox-serve
-description: Run nbox as an MCP server (read-only by default) so an agent host can query NetBox over JSON-RPC — stdio or HTTP+OIDC transport, the read tools (search/get/get_interface/history/…), the nbox://{kind}/{ref} resource template, the investigation prompts catalog, and --print-config for install recipes. Use when the user wants to wire NetBox into an MCP host or stand up the server.
+description: Run nbox as an MCP server (read-only by default; optional local stdio writes with --local-writes, or shared HTTP/OIDC writes with --allow-writes + nbox:write + [serve.vault]) so an agent host can query NetBox over JSON-RPC — stdio or HTTP+OIDC transport, the read tools (search/get/get_interface/history/…), the nbox://{kind}/{ref} resource template, the investigation prompts catalog, and --print-config for install recipes. Use when the user wants to wire NetBox into an MCP host or stand up the server.
 ---
 
 # nbox serve (MCP server, read-only by default)
@@ -16,7 +16,9 @@ For the flags, run `nbox serve --help` — this skill is flag-free by design.
 - **stdio (default).** An MCP host launches `nbox serve` as a subprocess and
   speaks JSON-RPC over stdin/stdout. JSON-RPC on stdout, logs on stderr;
   URL/token come from the active profile (same `--profile` / `--config` flags).
-  Always read-only.
+  Read-only by default; enable local single-user MCP writes with
+  `nbox serve --local-writes` or `[serve].local_writes = true`, using the active
+  profile token.
 - **HTTP** — `nbox serve --http 127.0.0.1:8080`, same tools mounted at `/mcp`,
   loopback only with `Origin`/`Host` validation and an optional static bearer.
   Add `--oidc-issuer <URL>` + `--audience <VALUE>` for OAuth 2.1
@@ -82,7 +84,8 @@ The MCP server is read-only by default. The write tools (`nbox_plan_write` /
 one explicit write mode: local stdio `nbox serve --local-writes`, which uses the
 active profile token, or shared HTTP/OIDC `nbox serve --http --allow-writes` plus
 the caller's `nbox:write` scope and a `[serve.vault]` entry mapping their OIDC
-`sub` to a per-user NetBox token. HTTP local writes are deferred in this release.
+`sub` to a per-user NetBox token. HTTP/static-bearer profile-token writes reject
+in this release.
 `nbox_apply_write` applies the plan the server stored at plan time (looked up by
 the `confirm_token` from `nbox_plan_write`), not the plan you resubmit. For that
 lifecycle, see the [safe writes](../writes/SKILL.md) skill.

@@ -129,9 +129,9 @@ claude mcp add nbox -e NBOX_TOKEN=nbt_xxx.yyy -- nbox serve
 ```
 
 `nbox serve` is a read-first MCP server (read-only by default; writes are opt-in
-with local stdio `--local-writes` or shared HTTP/OIDC `--allow-writes` + a
-per-user vault); an MCP host launches it as a subprocess and gets the same JSON
-view models the CLI returns. See [docs/MCP.md](docs/MCP.md).
+with local stdio `--local-writes` or shared HTTP/OIDC `--allow-writes` + caller
+`nbox:write` + a per-user vault); an MCP host launches it as a subprocess and
+gets the same JSON view models the CLI returns. See [docs/MCP.md](docs/MCP.md).
 
 ## Installation
 

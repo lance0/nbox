@@ -3,7 +3,8 @@
 End-to-end checks that run the compiled `nbox` binary against real, pinned NetBox
 fixtures. This catches what the offline wiremock suite can't: polymorphic scope
 filters, pagination offset windows, available-prefix/IP shapes, GraphQL schema
-drift, and the serializer/detail-model shapes of the live API.
+drift, MCP stdio read/local-write/refusal behavior, and the serializer/detail-model
+shapes of the live API.
 
 These are heavy, so they live behind a separate workflow
 (`.github/workflows/netbox-integration.yml`) and the Rust tests are all
@@ -62,6 +63,10 @@ export NETBOX_TOKEN="$(./tests/integration/resolve-token.sh)"
 - IP `10.10.0.5/24` on that interface, set as the device's primary IPv4
 - 25 child prefixes `10.10.1.0/24 .. 10.10.25.0/24` nested under the /16, to
   force multi-page pagination on the prefix detail's child-prefix list
+
+The ignored live test suite also launches the compiled `nbox serve` over stdio
+and verifies MCP read, local `--local-writes` reserve/apply/readback, and the
+no-`--local-writes` refusal. That path mutates only the ephemeral fixture.
 
 ## Run it locally
 
