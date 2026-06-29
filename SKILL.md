@@ -5,7 +5,7 @@ description: Query and modify NetBox (DCIM/IPAM) from the shell with the `nbox` 
 
 # nbox — NetBox from the shell
 
-`nbox` is a CLI / TUI / MCP client for [NetBox](https://github.com/netbox-community/netbox)
+`nbox` is a CLI / TUI / MCP server for [NetBox](https://github.com/netbox-community/netbox)
 (DCIM + IPAM). Use it to answer questions about network inventory and addressing
 without clicking through the NetBox web UI. Reads are the default; seven safe-write
 commands (interface description, device status, IP/prefix/ip-range reserve, tag
@@ -72,8 +72,10 @@ matches the question:
   `interface` (the cable-path A↔Z trace) / `mac` reverse-resolve, plus
   `rack` / `site` context
 - [MCP server](skills/serve/SKILL.md) — `nbox serve` as the MCP server (read-only
-  by default; optional `--allow-writes` write tools): stdio vs HTTP+OIDC, the read
-  tools and resources, the prompts catalog, and `--print-config`
+  by default; local stdio writes use `--local-writes`; shared HTTP/OIDC writes
+  use `--allow-writes` + caller `nbox:write` + `[serve.vault]`; HTTP
+  local/profile-token writes are rejected): stdio vs HTTP+OIDC, the read tools
+  and resources, the prompts catalog, and `--print-config`
 
 ## Safe writes
 

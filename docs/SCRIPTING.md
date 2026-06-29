@@ -198,7 +198,7 @@ The eleven read tools, all annotated read-only:
 
 | Tool | What |
 |------|------|
-| `nbox_status` | Connection + backend capabilities + NetBox/Django/Python versions (call first). |
+| `nbox_status` | Connection + backend capabilities + NetBox/Django/Python versions + token preflight (`valid`/`invalid`/`unverified`; user on valid). Call first. |
 | `nbox_search` | Search across object types; `query` (required) plus scope/filter args. |
 | `nbox_get` | Fetch one object by `kind` + `ref` (`vrf`/`site`/`group` disambiguate). |
 | `nbox_get_interface` | One interface on a device, with its cable-path trace. |
@@ -212,7 +212,7 @@ The eleven read tools, all annotated read-only:
 
 Two more tools — `nbox_plan_write` and `nbox_apply_write` (`read_only_hint =
 false`) — execute only with local stdio `--local-writes` or shared HTTP/OIDC
-`--allow-writes`; see [MCP.md](MCP.md).
+`--allow-writes` plus caller `nbox:write` and a vault entry; see [MCP.md](MCP.md).
 
 The same objects are also exposed as MCP resources via one template,
 `nbox://{kind}/{ref}` (e.g. `nbox://device/edge01`) — reading one returns the

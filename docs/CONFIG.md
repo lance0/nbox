@@ -219,7 +219,9 @@ file with `--config <path>`.
 ## MCP server (`[serve]`)
 
 The optional `[serve]` table holds defaults for `nbox serve` (the MCP server).
-Absent ⇒ stdio (no HTTP). The matching CLI flags always override these keys.
+Absent ⇒ stdio (no HTTP). For single-value settings, CLI flags override config.
+`allowed_hosts` is additive, and boolean gates (`allow_writes`,
+`local_writes`) are enabled if either the flag or config key is true.
 
 | Key | Effect | Flag |
 |-----|--------|------|
@@ -248,7 +250,14 @@ http = "127.0.0.1:8080"
 # local_writes = true
 # shared HTTP/OIDC writes:
 # allow_writes = true
+
+# [serve.vault."alice@example.com"]
+# token_env = "NETBOX_TOKEN_ALICE"
 ```
+
+Each `[serve.vault."<sub>"]` entry maps an OIDC `sub` to an environment variable
+containing that user's NetBox token. nbox stores only the environment variable
+name, never the token value.
 
 See [docs/MCP.md](MCP.md) for the full server story.
 

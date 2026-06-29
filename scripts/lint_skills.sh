@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Lint the skills/ catalog shape: each skills/*/SKILL.md must have YAML
-# frontmatter with a non-empty `name` and `description`. Flag-free by design —
-# the lint checks the file structure, not the flag content (flags live in
-# `nbox <cmd> --help` and can't drift here).
+# Lint the agent skill catalog shape: root SKILL.md and each skills/*/SKILL.md
+# must have YAML frontmatter with a non-empty `name` and `description`.
+# Flag-free by design — the lint checks the file structure, not the flag content
+# (flags live in `nbox <cmd> --help` and can't drift here).
 #
 # Usage: scripts/lint_skills.sh
 # Exit 0 if all skill files pass, 1 otherwise.
@@ -18,7 +18,7 @@ if [ ! -d "$skills_dir" ]; then
     exit 1
 fi
 
-# Find every SKILL.md under skills/.
+# Check the root skill plus every SKILL.md under skills/.
 while IFS= read -r -d '' skill_file; do
     # Must start with `---` frontmatter.
     if ! head -1 "$skill_file" | grep -q '^---$'; then
@@ -41,7 +41,10 @@ while IFS= read -r -d '' skill_file; do
         echo "error: $skill_file: frontmatter missing non-empty 'description:'" >&2
         errors=$((errors + 1))
     fi
-done < <(find "$skills_dir" -name 'SKILL.md' -print0)
+done < <(
+    printf '%s\0' "$root/SKILL.md"
+    find "$skills_dir" -name 'SKILL.md' -print0
+)
 
 if [ "$errors" -gt 0 ]; then
     echo "error: $errors skill file(s) failed lint" >&2

@@ -4,11 +4,13 @@ on:
   push:
     branches: [master]
     paths:
+      - 'SKILL.md'
       - 'skills/**'
       - 'scripts/lint_skills.sh'
       - '.github/workflows/skills-lint.yml'
   pull_request:
     paths:
+      - 'SKILL.md'
       - 'skills/**'
       - 'scripts/lint_skills.sh'
       - '.github/workflows/skills-lint.yml'

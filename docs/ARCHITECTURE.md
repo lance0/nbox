@@ -10,13 +10,18 @@ behavior should get an ADR before it becomes a public contract.
 ## Layers
 
 - **`netbox/`** — NetBox clients and wire types. REST is canonical and powers
-  search, identity resolution, detail lookups, journals, `raw`, and the
-  available-IP/prefix math; GraphQL is an opt-in accelerator for the VRF and
+  search, identity resolution, detail lookups, journals, `raw`, available
+  previews, and safe writes; GraphQL is an opt-in accelerator for the VRF and
   route-target views.
   - `client.rs` — auth, paging, timeouts; retries HTTP 429 (`Retry-After` +
     backoff); maps statuses to typed errors (401→auth, 403→perms, 404→not-found).
-    The same authenticated client owns `/graphql/` POSTs. Holds the profile's
-    per-surface `ApiConfig` and exposes `api_preference`/`effective_backend`.
+    The same authenticated client owns `/graphql/` POSTs plus write `PATCH`/`POST`
+    calls. Holds the profile's per-surface `ApiConfig` and exposes
+    `api_preference`/`effective_backend`.
+  - `mutation.rs` — ADR-0001 `MutationPlan` / `MutationReceipt`, operation kind,
+    scoped before/after diffs, confirmation token, and write preconditions.
+  - `write_audit.rs` — one names-only tracing event per write outcome; never logs
+    raw patches, full objects, tokens, or message bodies.
   - `endpoints.rs` — endpoint paths.
   - `pagination.rs` — `Page<T>`; `list` is one offset page, `list_all` follows the server's `next` link across pages.
   - `query.rs` — per-object resolvers (`*_by_ref`, candidates, scope labels).
@@ -50,8 +55,9 @@ behavior should get an ADR before it becomes a public contract.
   loopback HTTP transport (OIDC resource-server auth, audit log, per-caller rate
   limit), exposing the same query + view layer as thirteen tools (eleven read
   tools plus the `nbox_plan_write`/`nbox_apply_write` write pair, enabled only by
-  local stdio `--local-writes` or shared HTTP/OIDC `--allow-writes` plus a
-  per-user vault), `nbox://{kind}/{ref}` resources, and a prompts catalog.
+  local stdio `--local-writes` or shared HTTP/OIDC `--allow-writes` plus caller
+  `nbox:write` and a per-user vault), `nbox://{kind}/{ref}` resources, and a
+  prompts catalog.
 
 ## Data flow
 
@@ -66,6 +72,23 @@ CLI args ─► lib::run ─► query/search ─► netbox::client ─► NetBox
 
 The TUI replaces the last step with the ratatui render loop, reusing the same
 `domain` view models via `domain::detail`.
+
+Safe writes use the same identity and view layer but split planning from apply:
+
+```
+write intent ─► domain planner ─► MutationPlan ─► gate / confirm
+                                                     │
+                                                     ▼
+                                      netbox::client PATCH/POST ─► NetBox REST
+                                                     │
+                                                     ▼
+                                      MutationReceipt + write_audit event
+```
+
+In-place updates (`PATCH`) carry an `ETag`/`If-Match` precondition on NetBox 4.6+
+or a conservative `last_updated` + before-hash re-read on 4.2–4.5. Allocation
+writes (`available-ips` / `available-prefixes` POSTs) are server-authoritative
+and carry no client precondition.
 
 ## Output contracts
 

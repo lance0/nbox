@@ -16,22 +16,22 @@ flag, and the per-surface backend routing.
 
 ## Matrix
 
-| Concern | 4.2 | 4.3 | 4.5 / 4.6 |
-|---|---|---|---|
-| Scope model | polymorphic `scope` (`scope_type` + `scope_id`); prefix `site` FK dropped ¹ | same | same |
-| Search backend | REST `q=` fan-out | REST (GraphQL has no `q`) | REST (GraphQL has no `q`) |
-| GraphQL filtering | per-field input objects | advanced per-field lookups (AND/OR, custom fields) ² | same; 4.6 adds a query-depth cap ⁴ |
-| Prefix `utilization` | returned by the REST API | returned by the REST API | not returned → computed client-side ³ |
-| `/api/status/` auth | open by default | open by default | requires auth ³ |
-| Token scheme | v1 `Authorization: Token` | v1 `Token` | v1 `Token` **+ v2 `Authorization: Bearer nbt_…`** ¹ |
-| Write concurrency | no `ETag`/`If-Match`; read-before-write fallback ⁵ | same | **`ETag` + `If-Match` (412)**; 4.2–4.5 keep the fallback ⁵ |
+| Concern | 4.2 | 4.3 | 4.5 | 4.6 |
+|---|---|---|---|---|
+| Scope model | polymorphic `scope` (`scope_type` + `scope_id`); prefix `site` FK dropped ¹ | same | same | same |
+| Search backend | REST `q=` fan-out | REST (GraphQL has no `q`) | REST (GraphQL has no `q`) | REST (GraphQL has no `q`) |
+| GraphQL filtering | per-field input objects | advanced per-field lookups (AND/OR, custom fields) ² | same | same + query-depth cap ⁴ |
+| Prefix `utilization` | returned by the REST API | returned by the REST API | not returned → computed client-side ³ | not returned → computed client-side ³ |
+| `/api/status/` auth | open by default | open by default | requires auth ³ | requires auth ³ |
+| Token scheme | v1 `Authorization: Token` | v1 `Token` | v1 `Token` **+ v2 `Authorization: Bearer nbt_…`** ¹ | v1 `Token` **+ v2 `Bearer nbt_…`** ¹ |
+| Write concurrency | no `ETag`/`If-Match`; read-before-write fallback ⁵ | same | same | **`ETag` + `If-Match` (412)** ⁵ |
 
 ¹ In the official NetBox release notes — the `4.2.0` scope change (Jan 2025) and the `4.5` v2 tokens (HMAC, `nbt_` prefix, `Bearer`). v1 tokens are **deprecated but retained through the 4.x line; removal is planned for v5.0** (4.6 pushed this out from the originally-announced 4.7). nbox auto-detects the scheme, so the timeline doesn't affect it.
 
 ² NetBox [#7598](https://github.com/netbox-community/netbox/issues/7598), "adopt advanced query filtering in GraphQL." GraphQL never had a REST-style full-text `q`; this rework is why a per-kind GraphQL search can't stand in for REST search.
 ³ **Observed** against live instances (4.2 vs 4.5.10), **not called out in the release notes** — so treat as empirical, not a documented contract. `/api/status/` auth may reflect instance `LOGIN_REQUIRED`-style config rather than a strict version change; either way nbox authenticates **every** request (including the version probe), so it is unaffected.
 ⁴ NetBox 4.6 adds `GRAPHQL_MAX_QUERY_DEPTH`. nbox's GraphQL accelerators (the VRF and route-target bundles) issue nested queries; unsupported schemas resolve to REST in `nbox status`, and a runtime bundle failure (including a low depth cap) retries the same detail over REST with a warning. Search is REST regardless, so it's unaffected.
-⁵ NetBox 4.6 returns an `ETag` on REST object-detail responses and honors `If-Match` on writes (a stale object yields `412 Precondition Failed`). The safe-write engine (ADR-0001 §3) records the `ETag` on the read-before-write and sends `If-Match` on apply when present; on 4.2–4.5 (no `ETag`) it falls back to a `last_updated` + before-hash read-before-write check. So 4.6+ gets race protection in one `PATCH`; older releases get a conservative re-read guard. This concurrency story is for in-place (`PATCH`) writes; the allocate write (`ip reserve` → `POST …/available-ips/`) is the exception — the endpoint is server-side race-safe on every supported release (NetBox never hands out the same address twice, returning `201` with the created object or `409` when exhausted), so it carries no client precondition on any version. Writes are off by default behind `--allow-writes` + confirmation.
+⁵ NetBox 4.6 returns an `ETag` on REST object-detail responses and honors `If-Match` on writes (a stale object yields `412 Precondition Failed`). The safe-write engine (ADR-0001 §3) records the `ETag` on the read-before-write and sends `If-Match` on apply when present; on 4.2–4.5 (no `ETag`) it falls back to a `last_updated` + before-hash read-before-write check. So 4.6+ gets race protection in one `PATCH`; older releases get a conservative re-read guard. This concurrency story is for in-place (`PATCH`) writes; allocate writes (`ip reserve`, `prefix reserve`, `ip-range reserve`) are the exception — NetBox's `available-ips` / `available-prefixes` endpoints are server-side race-safe on every supported release (returning `201` with the created object or `409` when exhausted), so they carry no client precondition on any version. Writes are off by default behind `--allow-writes` + confirmation.
 
 ## How nbox adapts
 

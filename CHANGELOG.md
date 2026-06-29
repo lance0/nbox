@@ -16,7 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   gate. The server-issued plan store remains authoritative: forged, edited, or
   replayed plans are rejected. Shared/network HTTP writes remain on the existing
   `--allow-writes` + OIDC + `[serve.vault]` path, and HTTP profile-token writes
-  are intentionally deferred.
+  are intentionally deferred. Live NetBox CI now launches real stdio
+  `nbox serve` and verifies the read path, a `--local-writes` reserve/apply/readback,
+  and the no-`--local-writes` refusal.
 - **Structured exports, two more on the same surface.** Alongside `nbox export
   prometheus-sd`, the export surface now covers the `netbox-lists` niche as one
   fast binary:
@@ -195,13 +197,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   own NetBox token via a configured credential vault (`[serve.vault.<sub>]` with
   `token_env`) and bridged into the write at request time, so the same
   `nbox:write` scope and ADR-0001 plan/confirm/audit lifecycle apply per
-  identity. It is fail-closed: a `sub` with no vault entry, or a token without
-  `nbox:write`, is refused, and every write is rejected over the stdio /
-  unauthenticated transports (no per-user identity to bridge) — for local,
-  single-user writes, use the equivalent CLI command (`nbox ip reserve …`,
-  `nbox … set …`) instead. Apply trusts only plans the server itself issued:
-  `nbox_apply_write` uses the submitted `confirm_token` to look up the plan the
-  server stored at plan time and applies that stored plan — never the
+  identity. It is fail-closed for the shared path: a `sub` with no vault entry,
+  or a token without `nbox:write`, is refused. Stdio writes are handled
+  separately by the ADR-0002 local mode above; HTTP/static-bearer
+  profile-token writes remain rejected in this release. Apply trusts only plans
+  the server itself issued: `nbox_apply_write` uses the submitted
+  `confirm_token` to look up the plan the server stored at plan time and applies
+  that stored plan — never the
   caller-submitted contents — so a forged or edited plan (the `confirm_token` is
   not a secret MAC) is rejected. An end-to-end harness exercises the path by
   minting a JWT through the real OIDC → vault → write stack.

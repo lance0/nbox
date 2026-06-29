@@ -17,9 +17,10 @@ Every write follows the same path, so an agent can learn it once:
    diff, performs no mutation. Needs neither `--allow-writes` nor `--confirm`.
    With `--json`, returns the stable `MutationPlan` JSON (schema_version 1).
 
-2. **Apply** (`--allow-writes --confirm`) — builds the same plan, checks the
-   precondition (ETag/If-Match on 4.6+, last_updated on pre-4.6), and applies
-   it. With `--json`, returns a `MutationReceipt` (schema_version 1).
+2. **Apply** (`--allow-writes --confirm`) — builds the same plan and applies it.
+   PATCH writes check the precondition (ETag/If-Match on 4.6+, last_updated on
+   pre-4.6); allocate POSTs are server-authoritative and carry no client
+   precondition. With `--json`, returns a `MutationReceipt` (schema_version 1).
 
 3. **Refusal** — `--confirm` without `--allow-writes` is a usage error (exit 2,
    empty stdout). Non-TTY / `--json` / `--no-tui` never prompts.
@@ -74,8 +75,8 @@ explicit mode: local stdio `nbox serve --local-writes`, which uses the active
 profile token, or shared HTTP/OIDC `nbox serve --http --allow-writes` plus a
 `[serve.vault]` config mapping each caller's OIDC `sub` to a per-user NetBox
 token (each shared write runs as the calling user, and the caller's token must
-carry the `nbox:write` scope). HTTP local writes are deferred. See the
-[serve skill](../serve/SKILL.md), ADR-0001, and ADR-0002.
+carry the `nbox:write` scope). HTTP/static-bearer profile-token writes reject.
+See the [serve skill](../serve/SKILL.md), ADR-0001, and ADR-0002.
 
 ## Reference
 
