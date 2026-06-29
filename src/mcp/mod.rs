@@ -895,12 +895,13 @@ impl NboxMcp {
         self.plan_write_impl(args, write_caller(&ctx)).await
     }
 
-    /// Apply a previously planned write. Verifies the plan's confirm token,
-    /// then executes the write under the caller's per-user NetBox identity.
-    /// Returns a `MutationReceipt` with the outcome.
+    /// Apply a previously planned write. The submitted plan's `confirm_token`
+    /// looks up the plan this server stored at plan time, and that stored plan is
+    /// executed under the caller's per-user NetBox identity — the submitted plan
+    /// contents are not trusted. Returns a `MutationReceipt`.
     #[tool(
         name = "nbox_apply_write",
-        description = "Apply a previously planned write. Pass the full MutationPlan JSON from nbox_plan_write. The confirm token is verified, then the write executes under the caller's per-user NetBox identity. Returns a MutationReceipt. Requires writes enabled.",
+        description = "Apply a previously planned write. Pass back the MutationPlan from nbox_plan_write; its confirm_token looks up the plan this server stored at plan time and applies THAT (the plan contents you submit are not trusted — a forged or edited plan, or one issued for a different caller, is rejected). Executes under the caller's per-user NetBox identity, returning a MutationReceipt. Same gating as nbox_plan_write: writes enabled (--allow-writes), the caller's nbox:write scope, and a [serve.vault] entry for the caller's OIDC sub; rejected over stdio.",
         annotations(read_only_hint = false)
     )]
     async fn nbox_apply_write(

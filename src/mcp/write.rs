@@ -251,9 +251,10 @@ pub enum WriteOperation {
 /// it received from `nbox_plan_write`.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ApplyWriteArgs {
-    /// The full `MutationPlan` JSON returned by `nbox_plan_write`. The plan's
-    /// `confirm_token` is verified against its own contents — a tampered plan
-    /// is rejected.
+    /// The `MutationPlan` returned by `nbox_plan_write`. Only its `confirm_token`
+    /// is used — to look up the plan this server issued and stored at plan time;
+    /// that stored plan is what executes. The rest of the JSON is not trusted, so
+    /// a forged or edited plan has no matching stored entry and is rejected.
     pub plan: MutationPlan,
 }
 

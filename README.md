@@ -509,11 +509,14 @@ and token come from the active profile / env, and it takes the same `-p`/`--conf
 flags. JSON-RPC goes to stdout; all logging stays on stderr.
 
 The eleven read tools below are annotated read-only (`read_only_hint = true`). Two
-write tools — `nbox_plan_write` / `nbox_apply_write` — are also registered, but
-exposed only when `--allow-writes` (or `[serve].allow_writes`) is set: they require
-an OIDC-authenticated caller plus a `[serve.vault]` entry mapping the caller's `sub`
-to a per-user NetBox token, run as that user, and reject over stdio. Without
-`--allow-writes` they reject with "writes disabled".
+write tools — `nbox_plan_write` / `nbox_apply_write` — are **always registered** (so
+they show up in `tools/list`), but execution is gated: a call is rejected unless
+writes are enabled (`--allow-writes` / `[serve].allow_writes`) AND the caller is an
+OIDC-authenticated identity carrying the `nbox:write` scope with a `[serve.vault]`
+entry mapping its `sub` to a per-user NetBox token. The write then runs as that user
+(never over stdio; without writes enabled the tools reject with "writes disabled").
+`nbox_apply_write` applies the plan the server stored at plan time — looked up by the
+`confirm_token` you pass back — not the plan JSON itself, so a forged plan is rejected.
 
 | Tool | What |
 |------|------|
