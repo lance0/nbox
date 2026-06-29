@@ -390,7 +390,9 @@ impl NetBoxClient {
     /// endpoint means "this kind/query isn't available" (an older NetBox
     /// release, or an unmounted mock in tests) — never a per-object miss — so
     /// swallowing it can't mask a real miss. Other errors (auth, perms, API)
-    /// still propagate and abort the fan-out. This mirrors the search fan-out's
+    /// still propagate, but only at their precedence point — a higher-precedence
+    /// hit short-circuits past a lower-precedence probe's error, matching the old
+    /// sequential chain. This mirrors the search fan-out's
     /// [`crate::error::is_not_found`] tolerance.
     ///
     /// `exact_probes` is ordered by precedence (slug before `name__ie`, etc.);
@@ -424,12 +426,16 @@ impl NetBoxClient {
                 Err(e) => Err(e),
             }
         });
-        let pages = futures::future::try_join_all(probe_futs).await?;
-
-        // Check the exact-probe results in precedence order — the first
-        // non-empty page wins, so a higher-precedence hit short-circuits past a
-        // simultaneous lower-precedence hit, matching the old sequential chain.
+        // Collect every probe's result — NOT `try_join_all`, which propagates
+        // ANY probe's error and would discard a higher-precedence hit when a
+        // lower-precedence probe errors. Then walk the results in precedence
+        // order: a non-empty page wins immediately, and a probe's error surfaces
+        // only once every higher-precedence probe came back empty. That is
+        // exactly the old sequential chain — a slug hit short-circuits and
+        // returns before a lower-precedence `name__ie` probe could error.
+        let pages = futures::future::join_all(probe_futs).await;
         for page in pages {
+            let page = page?;
             if let Some(item) = page.results.into_iter().next() {
                 return Ok(Some(item));
             }
@@ -1164,6 +1170,38 @@ mod tests {
             .region_by_ref("us east")
             .await
             .expect("region lookup")
+            .expect("region present");
+        assert_eq!(region.id, 9);
+    }
+
+    #[tokio::test]
+    async fn region_by_ref_higher_precedence_hit_wins_over_lower_precedence_error() {
+        // Regression: the slug probe hits while the concurrent name__ie probe
+        // errors (a 500, not a 404). The resolver must return the slug hit — a
+        // lower-precedence probe's error must never discard a higher-precedence
+        // hit. The old sequential chain short-circuited on the slug hit and never
+        // ran name__ie; the concurrent fan-out must match that.
+        let server = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/regions/"))
+            .and(query_param("slug", "us-east"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "count": 1, "next": null, "previous": null,
+                "results": [{"id": 9, "name": "US East", "slug": "us-east"}]
+            })))
+            .mount(&server)
+            .await;
+        Mock::given(method("GET"))
+            .and(path("/api/dcim/regions/"))
+            .and(query_param("name__ie", "us-east"))
+            .respond_with(ResponseTemplate::new(500))
+            .mount(&server)
+            .await;
+
+        let region = client_for(&server)
+            .region_by_ref("us-east")
+            .await
+            .expect("a slug hit must win over a concurrent lower-precedence 500")
             .expect("region present");
         assert_eq!(region.id, 9);
     }

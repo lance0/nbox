@@ -16,7 +16,7 @@ transports stay read-only.
 
 | Command | What |
 | ------- | ---- |
-| `nbox search <q>` | Parallel search across devices/sites/racks/IPs/prefixes/VLANs/circuits/virtual-circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers/VMs/clusters/VRFs/route-targets. Filters: `--status/--site/--region/--site-group/--location/--tenant/--role/--tag/--owner/--owner-group/--vrf`, `--limit`, `--cols`, `--partial`. |
+| `nbox search <q>` | Parallel search across devices/sites/racks/rack-groups/IPs/prefixes/VLANs/circuits/virtual-circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers/VMs/VM-types/clusters/VRFs/route-targets. Filters: `--status/--site/--region/--site-group/--location/--tenant/--role/--tag/--owner/--owner-group/--vrf`, `--limit`, `--cols`, `--partial`. |
 | `nbox device <name\|slug\|id> [--journal]` | Device + interfaces, IPs, cables, VLANs, services. `set status <value>` is a safe write (ADR-0001): status validated live via OPTIONS, behind `--allow-writes` + confirm. |
 | `nbox interface <device> <iface>` | One interface: type, MTU, MAC, mode, VLANs, cable, **cable path** (an A↔Z trace diagram naming the device at each end), addresses. `set description "…"` is a safe write (ADR-0001), behind `--allow-writes` + confirm. |
 | `nbox ip <addr> [--vrf] [--journal]` | IP + most-specific parent prefix (VRF-scoped) and its VLAN plus the prefix's `scope`/`scope_type` (site, location, region, …); surfaces `nat_inside`/`nat_outside` (NetBox 4.6) when set. `reserve <prefix> [--description] [--dns-name] [--count N]` is a safe write (ADR-0001): `POST` to `available-ips`, behind `--allow-writes` + confirm. `--count N` allocates N IPs atomically (one list-body POST, all-or-nothing); any failure exits 1. `--dry-run` previews the candidate; the receipt's `object` is the created IP (or array for `--count > 1`). |
@@ -53,11 +53,15 @@ transports stay read-only.
 | `nbox export address-list (--prefix <cidr> [--vrf] \| --tag <slug>) [--family 4\|6] [--summarize] [--format json\|plain]` | Emit a firewall/blocklist address list. A prefix source lists its assigned IPs as host entries (`/32`, `/128` — the interface mask is dropped); a tag source lists the IPs *and* whole prefixes carrying the tag. Entries are de-duplicated and sorted; `--summarize` aggregates contiguous entries into the minimal covering set (e.g. two /25s → one /24); `--family` keeps one IP family. Output is a JSON array of CIDR strings (default) or `--format plain` (one per line) for ipset/nftables/pf includes. |
 | `nbox export device-inventory [--site] [--role] [--tag] [--status] [--manufacturer] [--format json\|csv]` | Emit a device inventory — one record per device (`name`, `status`, `role`, `site`, `model`, `platform`, `serial`, `asset_tag`, `rack`, `primary_ip`, `tenant`, `tags`), filtered by any combination of the slug/value flags (ANDed). JSON array (default) or `--format csv` for spreadsheets. The JSON keys and the CSV columns line up one-to-one. |
 
-Targets are `ip:port` (default port `9100`, the conventional `node_exporter`
-port). Labels per group: `device`, `site`, `role`, `status`, `tags` (comma-
-joined, de-duplicated, sorted). IPs without an assigned device group by site
-(or a single `device=""` group). `--prefix` and `--tag` are mutually
-exclusive. Output is a compact JSON array on stdout — pipe-safe, no envelope.
+Targets are `host:port` (default port `9100`, the conventional `node_exporter`
+port; IPv6 hosts are bracketed, `[2001:db8::1]:9100`). Labels per group:
+`device`, `site`, `role`, `status`, `tags` (comma-joined, de-duplicated, sorted;
+the union of each IP's own tags and its device's). `site`/`role`/`status` come
+from the IP's assigned device, so IPs with no assigned device form a single
+`device=""` group (no `site` — there is no device to derive one from). `--prefix`
+and `--tag` are mutually exclusive. A source larger than the gather cap
+(5000 IPs) is truncated with a warning on stderr. Output is a compact JSON array
+on stdout — pipe-safe, no envelope.
 
 Every detail lookup surfaces the object's `tags` (joined slugs in plain output, a
 `tags` array in `--json`), dropped when the object has none, plus its non-empty

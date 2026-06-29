@@ -64,6 +64,19 @@ pub struct TargetGroup {
 /// `node_exporter` port — the common ops default for a Prometheus host target.
 pub const DEFAULT_PORT: u16 = 9100;
 
+/// Format one `host:port` Prometheus target. IPv6 hosts are bracketed
+/// (`[2001:db8::1]:9100`) so the address colons aren't confused with the
+/// port separator; IPv4 / hostnames are left bare (`10.0.0.5:9100`). The
+/// address is the bare host (mask already stripped by [`strip_prefix_len`]).
+#[must_use]
+fn sd_target(address: &str, port: u16) -> String {
+    if address.contains(':') {
+        format!("[{address}]:{port}")
+    } else {
+        format!("{address}:{port}")
+    }
+}
+
 /// Strip a `/prefixlen` suffix from a NetBox address (`10.0.0.5/24` →
 /// `10.0.0.5`). Passes through unchanged when there is no slash (an address
 /// already given without a mask, or an IPv6 with no trailing length).
@@ -75,12 +88,14 @@ pub fn strip_prefix_len(address: &str) -> String {
 /// Build Prometheus service-discovery target groups from enriched IPs.
 ///
 /// Targets are grouped by device: every IP sharing a device lands in one group
-/// whose `targets` is the device's `ip:port` list and whose `labels` carry the
-/// shared device/site/role/status. Per-IP tags are unioned (de-duplicated,
-/// sorted) into a single comma-joined `tags` label so a group with mixed tags
-/// still surfaces all of them. IPs without an assigned device form per-site
-/// groups (or a single `device=""` group when site is unknown), so unassigned
-/// addresses aren't silently dropped.
+/// whose `targets` is the device's `host:port` list (IPv6 bracketed) and whose
+/// `labels` carry the shared device/site/role/status. Per-IP tags are unioned
+/// (de-duplicated, sorted) into a single comma-joined `tags` label so a group
+/// with mixed tags still surfaces all of them. IPs that carry no assigned device
+/// have no derived `site` (site comes from the device), so in practice they all
+/// fall into one `device=""` group rather than being silently dropped — the
+/// grouping key still includes `site`, so a caller that *does* supply a site for
+/// a deviceless IP gets per-site groups.
 ///
 /// Groups are returned in a stable order: assigned-device groups sorted by
 /// device name, then unassigned groups sorted by site (with the empty-site
@@ -107,7 +122,7 @@ pub fn prometheus_sd(ips: &[ExportIp], port: u16) -> Vec<TargetGroup> {
 
         let targets: Vec<String> = members
             .iter()
-            .map(|ip| format!("{}:{}", ip.address, port))
+            .map(|ip| sd_target(&ip.address, port))
             .collect();
 
         // Shared labels: device/site/role/status come from the (constant across
@@ -439,6 +454,25 @@ mod tests {
     fn empty_input_yields_empty_array() {
         let groups = prometheus_sd(&[], 9100);
         assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn ipv6_targets_are_bracketed_ipv4_is_bare() {
+        let ips = vec![
+            ip("2001:db8::1", Some("edge01"), None),
+            ip("10.0.0.5", Some("edge01"), None),
+        ];
+        let groups = prometheus_sd(&ips, 9100);
+        assert_eq!(groups.len(), 1, "{groups:?}");
+        let targets = &groups[0].targets;
+        assert!(
+            targets.contains(&"[2001:db8::1]:9100".to_string()),
+            "IPv6 must be bracketed: {targets:?}"
+        );
+        assert!(
+            targets.contains(&"10.0.0.5:9100".to_string()),
+            "IPv4 stays bare: {targets:?}"
+        );
     }
 
     #[test]

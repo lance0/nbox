@@ -278,6 +278,7 @@ nbox virtual-circuit <cid-or-id>                   # incl. its multi-point termi
 nbox provider <slug-or-name-or-id>
 nbox aggregate <cidr-or-id> [--journal]
 nbox asn <number> [--journal]
+nbox ip-range <start-or-id> [--journal]
   ip-range reserve [--description "…"] [--dns-name "…"] [--count N]
                                   # write: reserve the next available IP in an IP range (POST available-ips); --dry-run | --allow-writes --confirm [--message]
                                   # --count N: reserve N IPs atomically (one list-body POST, all-or-nothing); any failure exits 1
