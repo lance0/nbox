@@ -82,7 +82,9 @@ The MCP server is read-only by default. The write tools (`nbox_plan_write` /
 `[serve.vault]` entry mapping their OIDC `sub` to a per-user NetBox token — writes
 require the HTTP+OIDC transport; stdio stays read-only. `nbox_apply_write` applies
 the plan the server stored at plan time (looked up by the `confirm_token` from
-`nbox_plan_write`), not the plan you resubmit. For that lifecycle, see the
+`nbox_plan_write`), not the plan you resubmit. For local, single-user writes (the
+stdio setup), use the equivalent **CLI** command instead — it writes with the
+local profile token, no IdP. For that lifecycle, see the
 [safe writes](../writes/SKILL.md) skill.
 
 ## Reference

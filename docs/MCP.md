@@ -423,6 +423,15 @@ per-user identity to bridge). See the **Writes** subsection under
 [OIDC resource-server auth](#oidc-resource-server-auth-network-reachable) for the
 full gating.
 
+There is no MCP write path without OIDC — the per-user identity is the point, so
+the shared profile token is never used to write. For **local, single-user
+writes** (the common stdio `claude mcp add nbox -- nbox serve` setup), use the
+equivalent **CLI** command instead — `nbox ip reserve …`, `nbox interface … set
+description …`, `nbox device … set status …` — which writes with the local
+profile token behind `--allow-writes` + confirmation, no IdP required. The MCP
+write tools are for a multi-user, network-reachable deployment where NetBox must
+attribute each change to a real user.
+
 ## Resources
 
 The same objects are also exposed as MCP **resources**, for hosts that browse or

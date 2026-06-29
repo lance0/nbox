@@ -188,9 +188,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `token_env`) and bridged into the write at request time, so the same
   `nbox:write` scope and ADR-0001 plan/confirm/audit lifecycle apply per
   identity. It is fail-closed: a `sub` with no vault entry, or a token without
-  `nbox:write`, is refused, and the stdio / unauthenticated transports expose no
-  write tools at all. An end-to-end harness exercises the path by minting a JWT
-  through the real OIDC → vault → write stack.
+  `nbox:write`, is refused, and every write is rejected over the stdio /
+  unauthenticated transports (no per-user identity to bridge) — for local,
+  single-user writes, use the equivalent CLI command (`nbox ip reserve …`,
+  `nbox … set …`) instead. Apply trusts only plans the server itself issued:
+  `nbox_apply_write` uses the submitted `confirm_token` to look up the plan the
+  server stored at plan time and applies that stored plan — never the
+  caller-submitted contents — so a forged or edited plan (the `confirm_token` is
+  not a secret MAC) is rejected. An end-to-end harness exercises the path by
+  minting a JWT through the real OIDC → vault → write stack.
 
 ### Changed
 
