@@ -61,8 +61,8 @@ Notes:
 - Feeding an AI agent — `nbox serve` is read-only by default (11 read tools,
   stdio or loopback HTTP with OIDC) returning the same JSON view models the CLI
   does, and can expose 2 write tools (`nbox_plan_write` / `nbox_apply_write`)
-  when `[serve].allow_writes` is set over the authenticated HTTP/OIDC transport;
-  stdio and unauthenticated transports stay read-only.
+  with local stdio `--local-writes` or shared HTTP/OIDC `[serve].allow_writes`
+  plus a per-user vault; unauthenticated HTTP stays read-only.
 
 ### The NetBox web UI
 

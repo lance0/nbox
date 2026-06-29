@@ -146,6 +146,12 @@ pub struct ServeConfig {
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub allow_writes: bool,
 
+    /// Whether to enable local single-user MCP writes over stdio. This is
+    /// separate from `allow_writes`: it uses the active profile token and never
+    /// enables HTTP writes. Overridden by `--local-writes`.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub local_writes: bool,
+
     /// Per-user credential vault: maps OIDC `sub` → env var name holding a
     /// per-user NetBox token. See [`crate::mcp::vault::CredentialVault`]. Only
     /// consulted when `allow_writes` is `true`.
@@ -169,6 +175,7 @@ impl std::fmt::Debug for ServeConfig {
             .field("allowed_hosts", &self.allowed_hosts)
             .field("rate_limit", &self.rate_limit)
             .field("allow_writes", &self.allow_writes)
+            .field("local_writes", &self.local_writes)
             .field("vault_entries", &self.vault.len())
             .finish()
     }
@@ -1558,6 +1565,8 @@ search = "graphql"
         assert_eq!(bare.serve.jwks_url, None);
         assert!(bare.serve.allowed_hosts.is_empty());
         assert_eq!(bare.serve.rate_limit, None);
+        assert!(!bare.serve.allow_writes);
+        assert!(!bare.serve.local_writes);
 
         // A present `[serve]` populates the fields.
         let with: Config = toml::from_str(
@@ -1567,6 +1576,7 @@ search = "graphql"
              http = \"127.0.0.1:8080\"\n\
              http_token = \"local-secret\"\n\
              rate_limit = 120\n\
+             local_writes = true\n\
              \n\
              [profiles.work]\n\
              url = \"https://netbox.example.com\"\n",
@@ -1575,6 +1585,24 @@ search = "graphql"
         assert_eq!(with.serve.http.as_deref(), Some("127.0.0.1:8080"));
         assert_eq!(with.serve.http_token.as_deref(), Some("local-secret"));
         assert_eq!(with.serve.rate_limit, Some(120));
+        assert!(with.serve.local_writes);
+        assert!(!with.serve.allow_writes);
+
+        let allow_only: Config = toml::from_str(
+            "active_profile = \"work\"\n\
+             \n\
+             [serve]\n\
+             allow_writes = true\n\
+             \n\
+             [profiles.work]\n\
+             url = \"https://netbox.example.com\"\n",
+        )
+        .unwrap();
+        assert!(allow_only.serve.allow_writes);
+        assert!(
+            !allow_only.serve.local_writes,
+            "allow_writes must not imply local_writes"
+        );
 
         // The OIDC resource-server fields parse onto the same section.
         let oidc: Config = toml::from_str(

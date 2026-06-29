@@ -5,9 +5,10 @@ Context Protocol) server that is read-only by default, over the stdio transport.
 An MCP host launches the `nbox` binary as a subprocess and speaks JSON-RPC over
 its stdin/stdout; the tools reuse the same NetBox query + view layer as the CLI,
 so they return the same JSON view models. The default tools never write. Opt-in
-write tools are available over the HTTP+OIDC transport with `--allow-writes` and
-a per-user credential vault — see the **Writes** subsection under
-[OIDC resource-server auth](#oidc-resource-server-auth-network-reachable).
+write tools support two explicit modes: local stdio writes with `--local-writes`
+(the active profile token), or shared HTTP/OIDC writes with `--allow-writes` and
+a per-user credential vault. HTTP profile-token writes are not enabled in this
+first cut, even on loopback.
 
 ## Prerequisites
 
@@ -76,7 +77,9 @@ host's MCP documentation; the object shape above is what they consume.
 
 Rather than hand-write the block, ask nbox for it — `--print-config` emits the
 `mcpServers` JSON to stdout and exits, without starting the server or connecting
-to NetBox (so it works before you've even set a token):
+to NetBox (so it works before you've even set a token). It echoes any
+`--profile`, `--config`, or `--local-writes` flag you passed into the generated
+`args`:
 
 ```bash
 $ nbox serve --print-config
@@ -277,17 +280,19 @@ Run **reads** in this mode only for a **trusted, read-only, ideally single-team*
 deployment. Use a NetBox token scoped to exactly what an agent should see
 (read-only); that token is the real privilege boundary for reads.
 
-**Writes** are a separate, opt-in **Pattern 2** path (DESIGN §24): per-user
+**Writes** are a separate opt-in. Local single-user MCP writes use stdio plus
+`nbox serve --local-writes` (or `[serve].local_writes = true`) and run under the
+active profile token, with the MCP host's tool-approval prompt as the human gate.
+Shared/network writes remain the **Pattern 2** path (DESIGN §24): per-user
 identity → NetBox-token bridging via a credential vault keyed by the OIDC `sub`,
 so NetBox's object permissions and changelog attribute each write to the real
-user — not the service account. Writes are enabled only when **all** of the
-following hold, and fail closed otherwise: `nbox serve --allow-writes` (or
-`[serve].allow_writes = true`); the caller's token carries the `nbox:write`
-scope; and a `[serve.vault."<sub>"]` entry maps the caller's `sub` to an env var
-holding that user's NetBox token. The read-only service token is never used for a
-write, and writes are unavailable over stdio / loopback static-bearer auth (no
-per-user identity to bridge). The `nbox_plan_write` / `nbox_apply_write` tools
-expose the same plan → confirm-token → apply lifecycle as the CLI.
+user. Shared HTTP writes are enabled only when **all** of the following hold, and
+fail closed otherwise: `nbox serve --allow-writes` (or `[serve].allow_writes =
+true`); the caller's token carries the `nbox:write` scope; and a
+`[serve.vault."<sub>"]` entry maps the caller's `sub` to an env var holding that
+user's NetBox token. HTTP/static-bearer transports cannot use `local_writes` in
+this release. The `nbox_plan_write` / `nbox_apply_write` tools expose the same
+plan → confirm-token → apply lifecycle as the CLI.
 
 ## Operations (HTTP transport)
 
@@ -411,26 +416,21 @@ through unchanged (it's the one kind whose spelling differs between the two).
 | Tool | Purpose |
 | ---- | ------- |
 | `nbox_plan_write` | Plan a NetBox write (interface description, device status, IP/prefix/IP-range reserve, tag add/remove). Builds a `MutationPlan` — a before/after diff plus a confirm token — without mutating NetBox. Annotated `read_only_hint = false`. |
-| `nbox_apply_write` | Apply a previously planned write. Pass back the `MutationPlan` from `nbox_plan_write`; its `confirm_token` looks up the plan the server stored at plan time and applies **that** stored plan (the submitted contents are not trusted — a forged or edited plan, or one issued for a different caller, is rejected). Runs under the caller's per-user NetBox identity, returning a `MutationReceipt`. Annotated `read_only_hint = false`. |
+| `nbox_apply_write` | Apply a previously planned write. Pass back the `MutationPlan` from `nbox_plan_write`; its `confirm_token` looks up the plan the server stored at plan time and applies **that** stored plan (the submitted contents are not trusted — a forged or edited plan, one issued for a different actor, or a replay is rejected). Runs under the configured write mode, returning a `MutationReceipt`. Annotated `read_only_hint = false`. |
 
 Both write tools are **always registered** (discoverable in `tools/list`); what's
-gated is execution. A call is rejected unless writes are enabled (`--allow-writes`
-or `[serve].allow_writes`) over the HTTP+OIDC transport AND the caller carries the
-`nbox:write` scope with a `[serve.vault."<sub>"]` entry mapping the caller's OIDC
-`sub` to that user's NetBox token. Without writes enabled they reject with
-"writes disabled"; they are rejected over stdio / unauthenticated transports (no
-per-user identity to bridge). See the **Writes** subsection under
-[OIDC resource-server auth](#oidc-resource-server-auth-network-reachable) for the
-full gating.
+gated is execution:
 
-There is no MCP write path without OIDC — the per-user identity is the point, so
-the shared profile token is never used to write. For **local, single-user
-writes** (the common stdio `claude mcp add nbox -- nbox serve` setup), use the
-equivalent **CLI** command instead — `nbox ip reserve …`, `nbox interface … set
-description …`, `nbox device … set status …` — which writes with the local
-profile token behind `--allow-writes` + confirmation, no IdP required. The MCP
-write tools are for a multi-user, network-reachable deployment where NetBox must
-attribute each change to a real user.
+- **Local stdio:** `nbox serve --local-writes` or `[serve].local_writes = true`.
+  The tools use the active profile token and bind plans to a synthetic local actor.
+- **Shared HTTP/OIDC:** `nbox serve --http … --allow-writes` or
+  `[serve].allow_writes = true`, the caller carries `nbox:write`, and
+  `[serve.vault."<sub>"]` maps the caller's OIDC `sub` to that user's NetBox token.
+
+Without one of those modes the tools reject before touching NetBox. If an OIDC
+identity is present, the shared/vault path always wins; `local_writes` never
+bypasses `nbox:write` or the vault. HTTP local writes, including loopback
+profile-token writes, are deferred until a separate guard decision.
 
 ## Resources
 
@@ -483,11 +483,11 @@ prompts.
 
 ## Security and behavior
 
-- **Use a read-only NetBox token.** By default the server exposes no write path;
-  writes are opt-in (`--allow-writes`, the `nbox:write` scope, and a per-user
-  vault) and run as the calling user, never the read-only service token. For the
-  default read-only deployment the token is the real safety boundary — scope it to
-  what you want an agent to see.
+- **Use a read-only NetBox token by default.** By default the server exposes no
+  write path. Local stdio writes are opt-in (`--local-writes`) and run as the
+  active profile token; shared HTTP writes are opt-in (`--allow-writes`,
+  `nbox:write`, and a per-user vault) and run as the calling user. Scope every
+  token to what the agent may read or change.
 - **stdout carries only the JSON-RPC stream.** All logging goes to stderr, so it
   never corrupts the protocol.
 - **The token is never logged.** Request logging shows only the auth scheme

@@ -49,9 +49,9 @@ behavior should get an ADR before it becomes a public contract.
 - **`mcp/`** — the MCP server (`nbox serve`, read-only by default): stdio plus a
   loopback HTTP transport (OIDC resource-server auth, audit log, per-caller rate
   limit), exposing the same query + view layer as thirteen tools (eleven read
-  tools plus the `nbox_plan_write`/`nbox_apply_write` write pair, the latter
-  enabled only with `--allow-writes`/`[serve].allow_writes` + a per-user vault
-  and never over stdio), `nbox://{kind}/{ref}` resources, and a prompts catalog.
+  tools plus the `nbox_plan_write`/`nbox_apply_write` write pair, enabled only by
+  local stdio `--local-writes` or shared HTTP/OIDC `--allow-writes` plus a
+  per-user vault), `nbox://{kind}/{ref}` resources, and a prompts catalog.
 
 ## Data flow
 

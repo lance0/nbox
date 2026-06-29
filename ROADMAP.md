@@ -499,7 +499,12 @@ the read tool proves out in practice. Consolidated future scope:
 - ☑ **Write-capable MCP tools + per-user credential vault (Pattern 2)** — `nbox_plan_write` and
   `nbox_apply_write` tools reuse the CLI's ADR-0001 safe-write engine; the `[serve.vault]` config maps
   OIDC `sub` → per-user NetBox token (env var), bridged at request time via `NetBoxClient::with_token`.
-  Writes require `--allow-writes` + HTTP transport (OIDC identity); stdio stays read-only.
+  Shared HTTP writes require `--allow-writes`, OIDC identity, `nbox:write`, and a vault entry.
+- ☑ **Local stdio MCP writes (ADR-0002)** — `nbox serve --local-writes` /
+  `[serve].local_writes = true` enables the same `nbox_plan_write` /
+  `nbox_apply_write` tools for the local subprocess case, using the active
+  profile token and binding plans to a synthetic local actor. HTTP local writes
+  remain deferred until a separate guard decision.
 - ☐ TUI edit mode (`e` / `d` / confirm).
 - ☐ `nbox raw POST|PATCH|DELETE`; OPTIONS write-capability discovery (optional `schema` command; would
   also enable value-level filter validation beyond today's typed allowlist, netbox#6489).

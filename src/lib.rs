@@ -599,6 +599,7 @@ pub async fn run(cli: Cli) -> Result<()> {
             allowed_host,
             rate_limit,
             allow_writes,
+            local_writes,
             print_config,
         }) => {
             run_serve(
@@ -612,6 +613,7 @@ pub async fn run(cli: Cli) -> Result<()> {
                     allowed_host,
                     rate_limit,
                     allow_writes,
+                    local_writes,
                     print_config,
                 },
             )
@@ -750,6 +752,9 @@ struct ServeFlags {
     /// `--allow-writes`: enable MCP write tools (Pattern 2). `false` (the
     /// default) keeps the server read-only.
     allow_writes: bool,
+    /// `--local-writes`: enable local single-user MCP writes over stdio using
+    /// the active profile token. Separate from `--allow-writes`.
+    local_writes: bool,
     print_config: bool,
 }
 
@@ -765,7 +770,7 @@ async fn run_serve(ctx: &Ctx, flags: ServeFlags) -> Result<()> {
     // before resolving any serve config or connecting to NetBox. Works with no
     // config file and no token — run it anytime to get the paste-ready block.
     if flags.print_config {
-        let cfg = build_mcp_config(ctx);
+        let cfg = build_mcp_config(ctx, flags.local_writes);
         // stdout carries only the JSON (data); pretty-printed for pasteability.
         serde_json::to_writer_pretty(std::io::stdout(), &cfg).context("writing MCP config")?;
         println!();
@@ -789,9 +794,12 @@ async fn run_serve(ctx: &Ctx, flags: ServeFlags) -> Result<()> {
     // Per-caller rate limit: flag wins, then config, then off (0). Absent / 0 =
     // disabled, so existing behavior is unchanged unless the operator opts in.
     let rate_limit = flags.rate_limit.or(serve_cfg.rate_limit).unwrap_or(0);
-    // Write tools require both the flag/config gate AND the HTTP transport
-    // (writes need OIDC identity → per-user token resolution via the vault).
+    // Shared HTTP writes require both the flag/config gate and the HTTP
+    // transport (OIDC identity → per-user token resolution via the vault).
     let allow_writes = flags.allow_writes || serve_cfg.allow_writes;
+    // Local single-user writes are stdio-only in ADR-0002's first cut. Keep the
+    // knob distinct from allow_writes: neither implies the other.
+    let local_writes = flags.local_writes || serve_cfg.local_writes;
 
     // OIDC resource-server mode is enabled by the issuer's presence; the audience
     // is then required (RFC 8707 — without an expected `aud`, nbox can't bind a
@@ -811,15 +819,23 @@ async fn run_serve(ctx: &Ctx, flags: ServeFlags) -> Result<()> {
         (None, _) => None,
     };
 
+    if http.is_some() && local_writes {
+        return Err(error::NboxError::Usage(
+            "`--local-writes` / [serve].local_writes is only supported on the stdio MCP \
+             transport in this release; HTTP writes require --allow-writes plus OIDC/vault"
+                .to_string(),
+        )
+        .into());
+    }
+
     let client = connect(ctx)?;
     // The long-lived server shares a read cache across tool calls (chatty agents
     // re-read the same object graph); agents can drop it with `nbox_cache_clear`.
     let cache = serve_cache(ctx, &client);
 
-    // Build the per-user credential vault when writes are enabled. The vault
-    // maps OIDC `sub` → env var name holding a per-user NetBox token. Writes
-    // require the HTTP transport (OIDC identity); stdio has no caller identity,
-    // so writes on stdio are rejected by the vault being `None`.
+    // Build the per-user credential vault for the shared HTTP/OIDC write path.
+    // The vault maps OIDC `sub` → env var name holding a per-user NetBox token.
+    // Local stdio writes intentionally do not use the vault.
     let vault = if allow_writes && http.is_some() {
         Some(mcp::vault::CredentialVault::new(serve_cfg.vault, true))
     } else {
@@ -827,7 +843,7 @@ async fn run_serve(ctx: &Ctx, flags: ServeFlags) -> Result<()> {
     };
 
     match http {
-        None => mcp::serve(client, cache).await,
+        None => mcp::serve(client, cache, local_writes).await,
         Some(addr) => {
             serve_http_or_explain(
                 client,
@@ -858,13 +874,16 @@ async fn run_serve(ctx: &Ctx, flags: ServeFlags) -> Result<()> {
 /// so the snippet reproduces the invocation. `env.NBOX_TOKEN` is a placeholder
 /// — the operator sets it (or removes the block if `nbox config init` holds the
 /// token). Never echoes a real token.
-fn build_mcp_config(ctx: &Ctx) -> serde_json::Value {
+fn build_mcp_config(ctx: &Ctx, local_writes: bool) -> serde_json::Value {
     let command = std::env::current_exe()
         .ok()
         .and_then(|p| p.to_str().map(str::to_string))
         .unwrap_or_else(|| "nbox".to_string());
 
     let mut args = vec!["serve".to_string()];
+    if local_writes {
+        args.push("--local-writes".to_string());
+    }
     if let Some(profile) = &ctx.profile {
         args.push("--profile".to_string());
         args.push(profile.clone());
@@ -3216,7 +3235,7 @@ mod tests {
 
     #[test]
     fn build_mcp_config_emits_stdio_recipe_with_placeholder_token() {
-        let cfg = build_mcp_config(&ctx_for(None, None));
+        let cfg = build_mcp_config(&ctx_for(None, None), false);
         let nbox = &cfg["mcpServers"]["nbox"];
         // `command` is an absolute path to this binary (resolves in the test run).
         let command = nbox["command"].as_str().expect("command present");
@@ -3230,7 +3249,7 @@ mod tests {
 
     #[test]
     fn build_mcp_config_echoes_profile_and_config_flags() {
-        let cfg = build_mcp_config(&ctx_for(Some("work"), Some("/tmp/nb.toml")));
+        let cfg = build_mcp_config(&ctx_for(Some("work"), Some("/tmp/nb.toml")), false);
         let args: Vec<String> = nbox_args(&cfg);
         assert_eq!(
             args,
@@ -3241,9 +3260,26 @@ mod tests {
     #[test]
     fn build_mcp_config_omits_profile_when_unset() {
         // Only `--config` set → no `--profile` pair in args.
-        let cfg = build_mcp_config(&ctx_for(None, Some("/tmp/nb.toml")));
+        let cfg = build_mcp_config(&ctx_for(None, Some("/tmp/nb.toml")), false);
         let args: Vec<String> = nbox_args(&cfg);
         assert_eq!(args, vec!["serve", "--config", "/tmp/nb.toml"]);
+    }
+
+    #[test]
+    fn build_mcp_config_echoes_local_writes_when_requested() {
+        let cfg = build_mcp_config(&ctx_for(Some("work"), Some("/tmp/nb.toml")), true);
+        let args: Vec<String> = nbox_args(&cfg);
+        assert_eq!(
+            args,
+            vec![
+                "serve",
+                "--local-writes",
+                "--profile",
+                "work",
+                "--config",
+                "/tmp/nb.toml",
+            ]
+        );
     }
 
     fn nbox_args(cfg: &serde_json::Value) -> Vec<String> {

@@ -118,14 +118,15 @@ the CLI's query + view layer, so they return the same JSON view models. URL/toke
 come from the active profile (same `--profile` / `--config` flags). JSON-RPC is on
 stdout; logs go to stderr. Read tools are annotated `read_only_hint = true`.
 
-**Write tools (Pattern 2, opt-in):** `nbox_plan_write` and `nbox_apply_write` are
-available when `nbox serve --http --allow-writes` is set and a `[serve.vault]`
-config maps each caller's OIDC `sub` to a per-user NetBox token (env var). They
-reuse the CLI's ADR-0001 safe-write engine: plan-first, confirm-token-gated,
-per-user identity. Writes require the HTTP transport (OIDC identity); stdio
-stays read-only. `nbox serve --print-config` prints the
-paste-ready `mcpServers` JSON (absolute binary path, echoed `--profile`/`--config`,
-placeholder token) and exits — no server start, no NetBox connection.
+**Write tools (opt-in):** `nbox_plan_write` and `nbox_apply_write` reuse the
+CLI's ADR-0001 safe-write engine: plan-first, confirm-token-gated, and backed by
+the server-issued plan store. Local stdio writes require `nbox serve
+--local-writes` / `[serve].local_writes` and use the active profile token. Shared
+HTTP/OIDC writes require `nbox serve --http --allow-writes` plus a
+`[serve.vault]` mapping each caller's OIDC `sub` to a per-user NetBox token (env
+var) and the caller's `nbox:write` scope. `nbox serve --print-config` prints the
+paste-ready `mcpServers` JSON (absolute binary path, echoed `--profile`/`--config`/
+`--local-writes`, placeholder token) and exits — no server start, no NetBox connection.
 
 | Tool | Purpose |
 | ---- | ------- |
@@ -140,8 +141,8 @@ placeholder token) and exits — no server start, no NetBox connection.
 | `nbox_list_tags` | List tags (name, slug, color, usage count) — valid `tag` values for `nbox_search`. |
 | `nbox_tagged` | Objects carrying a tag, across kinds (NetBox 4.3+); `tag` (id\|name\|slug). Cross-kind reverse lookup — unlike `nbox_search --tag`, which narrows a free-text search per-endpoint. |
 | `nbox_cache_clear` | Drop nbox's local read cache so the next lookups fetch fresh from NetBox (read-only w.r.t. NetBox; idempotent). |
-| `nbox_plan_write` | Plan a write operation (interface description, device status, IP/prefix/IP-range reserve, tag add/remove). Builds a `MutationPlan` with a before/after diff and confirm token, without mutating. Review the plan, then call `nbox_apply_write`. Requires `--allow-writes` + `[serve.vault]` per-user credential mapping. |
-| `nbox_apply_write` | Apply a previously planned write. Pass the full `MutationPlan` JSON from `nbox_plan_write`. The confirm token is verified, then the write executes under the caller's per-user NetBox identity. Returns a `MutationReceipt`. Requires `--allow-writes`. |
+| `nbox_plan_write` | Plan a write operation (interface description, device status, IP/prefix/IP-range reserve, tag add/remove). Builds a `MutationPlan` with a before/after diff and confirm token, without mutating. Review the plan, then call `nbox_apply_write`. Requires local stdio `--local-writes`, or shared HTTP/OIDC `--allow-writes` + `[serve.vault]` per-user credential mapping. |
+| `nbox_apply_write` | Apply a previously planned write. Pass the full `MutationPlan` JSON from `nbox_plan_write`. The confirm token looks up the server-stored plan; forged, edited, or replayed plans are rejected. Returns a `MutationReceipt`. Same gating as `nbox_plan_write`. |
 
 The same objects are also exposed as MCP **resources** via one template,
 `nbox://{kind}/{ref}` (e.g. `nbox://device/edge01`, `nbox://ip/10.0.0.1`), for
@@ -238,7 +239,7 @@ nbox device edge01 --json | jq '.primary_ip4'
   `--count N` to reserve N IPs atomically in one call (a single list-body POST —
   NetBox allocates all N or zero; `count` is bound into the confirmation token);
   any failure leaves nothing created and exits 1, and the receipt's `object` is a
-  JSON array of the N created IPs. The MCP server is read-only by default; write tools (`nbox_plan_write`/`nbox_apply_write`) require `--allow-writes` + the per-user vault (Pattern 2).
+  JSON array of the N created IPs. The MCP server is read-only by default; write tools (`nbox_plan_write`/`nbox_apply_write`) require either local stdio `--local-writes` or shared HTTP/OIDC `--allow-writes` + the per-user vault.
 - Filters that an object type can't satisfy cause that type to be skipped in
   `search` (nbox does not send NetBox unknown query params).
 - `owner` (NetBox 4.5+): a native owner field (user or group) surfaced on most

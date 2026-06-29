@@ -1,6 +1,6 @@
 # ADR-0002: Local single-user MCP writes
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-06-29
 **Amends:** ADR-0001 §7 (MCP writes require per-user identity)
 
@@ -36,8 +36,9 @@ documented — local users are told to use the equivalent CLI command.
 
 Add an explicit, opt-in **single-user local write mode**, gated by a new, distinct
 config key **`[serve].local_writes`** (with a `--local-writes` CLI flag). When
-enabled, `nbox serve` accepts MCP writes that carry **no per-user identity** and
-executes them under the **profile token** — the same token reads already use.
+enabled on the **stdio** transport, `nbox serve` accepts MCP writes that carry
+**no per-user identity** and executes them under the **profile token** — the same
+token reads already use.
 
 It is deliberately separate from the Pattern 2 path (`[serve].allow_writes` +
 `[serve.vault]` + OIDC), which is unchanged. A write is authorized if **either**:
@@ -45,8 +46,7 @@ It is deliberately separate from the Pattern 2 path (`[serve].allow_writes` +
 - **Pattern 2 (multi-user, unchanged):** an OIDC caller `sub` carrying the
   `nbox:write` scope with a `[serve.vault]` entry → that user's per-user token; or
 - **Single-user local (new):** `[serve].local_writes = true`, the request carries
-  **no** OIDC identity, and the transport is **stdio or a loopback HTTP bind** →
-  the profile token.
+  **no** OIDC identity, and the transport is **stdio** → the profile token.
 
 The presence of an OIDC identity disambiguates the two: an authenticated request
 always takes the Pattern 2 path (and still needs the scope + a vault entry);
@@ -55,10 +55,11 @@ multi-user path.
 
 Hard safety rules:
 
-1. **Loopback / stdio only.** `local_writes` never applies to a non-loopback
-   bind. A routable HTTP server already *requires* OIDC; profile-token writes must
-   never be reachable over the network. `--http <non-loopback>` with `local_writes`
-   and no OIDC is a **startup usage error**.
+1. **Stdio only in the first cut.** `local_writes` never applies to HTTP, even
+   loopback. A routable HTTP server already *requires* OIDC; profile-token writes
+   must never be reachable over the network. Loopback local writes are deferred
+   until there is a separate HTTP-local guard decision (for example requiring a
+   static bearer plus loopback).
 2. **Explicit, off by default.** `local_writes` is its own key, never implied by
    `allow_writes`. An operator turns it on deliberately. There is no token/scope
    to check in this mode — the opt-in flag *is* the authorization, and the host's
@@ -73,7 +74,7 @@ Hard safety rules:
 
 This amends ADR-0001 §7: "the service token is never used for writes" becomes
 "the service token is never used for writes **except** in the explicit,
-loopback/stdio-only `local_writes` single-user mode."
+stdio-only `local_writes` single-user mode."
 
 ## Consequences
 
@@ -92,31 +93,33 @@ Negative / trade-offs:
   scope that token to what the agent may change (the same defense-in-depth advice
   as for reads).
 - No per-user attribution in this mode — acceptable by definition (one user). The
-  write audit records `surface=mcp`, the profile, and the operation, with `sub`
-  recorded as `local`.
+  write audit records `surface=mcp`, the profile, and the operation. Internally
+  the server-issued plan store binds local plans to the stable pseudo-principal
+  `local`.
 - Two write-enable knobs (`allow_writes`, `local_writes`), kept distinct on purpose
   so the multi-user and single-user paths never blur.
 
 Neutral:
 
-- A non-loopback bind is unaffected (still OIDC-only).
-- Not in 0.14.0 — ships as a focused fast-follow so it gets its own review.
+- HTTP is unaffected (still OIDC/vault-only for writes).
 
 ## Implementation sketch
 
 - `config.rs`: add `ServeConfig.local_writes: bool`. `cli.rs`: add `--local-writes`.
-- Startup (`http.rs`): a non-loopback bind with `local_writes` and no OIDC is a
-  usage error (exit 2), mirroring the existing non-loopback-needs-OIDC check.
+- Startup: any HTTP bind with `local_writes` is a usage error (exit 2) in this
+  first cut; use stdio for local writes or OIDC/vault for HTTP writes.
 - `write.rs::bridged_client`: when the caller is `None` (no OIDC identity),
-  `local_writes` is enabled, and the transport is stdio / loopback, return the
+  `local_writes` is enabled, and the transport is stdio, return the
   profile client (`self.client` clone) instead of rejecting. The `Some(caller)`
   (Pattern 2) path is unchanged. The plan store, scope-on-the-Pattern-2-path, and
   audit are untouched.
-- Audit: record `sub = "local"` for the single-user path.
+- Plan store: bind plans to an internal write actor (`sub:<oidc-sub>` or
+  `local`) so local plans remain one-shot and cannot be replayed by another
+  actor.
 - Tests: `local_writes` enables a stdio write end to end through the plan store; a
-  non-loopback bind + `local_writes` is a startup error; `local_writes` does not
-  bypass the plan store (a forged plan is still rejected); the OIDC/Pattern 2 path
-  is unchanged; with no `local_writes`, stdio writes still reject.
+  HTTP bind + `local_writes` is a startup error; `local_writes` does not bypass
+  the plan store (a forged plan is still rejected); the OIDC/Pattern 2 path is
+  unchanged; with no `local_writes`, stdio writes still reject.
 
 ## Alternatives considered
 

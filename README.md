@@ -59,7 +59,7 @@ See [Installation](#installation) below for setup instructions.
 
 - **IPAM-aware** — IP → most-specific parent prefix → VLAN → scope resolution, prefix utilization and children, a navigable prefix tree, and `next-ip` / `next-prefix` to preview free addresses and blocks (read-only). To actually claim one, `nbox ip reserve <prefix>` allocates the next available IP from a prefix, `nbox prefix reserve <cidr>` allocates the next available child prefix, and `nbox ip-range reserve <start|id>` allocates the next available IP from an IP range (safe writes — ADR-0001).
 - **A k9s-style TUI** — a three-pane home (navigation rail → results → live preview), an overview dashboard, a hierarchical prefix tree, cross-object navigation between related objects (every detail's related-object tabs are navigable — open an interface from a device and see its cable path drawn as an A↔Z diagram), fuzzy filters, server-side name filtering on the browse list, recents, and an in-app profile + settings editor. Twelve themes; `NO_COLOR` honored.
-- **Agent-ready** — `nbox serve` is a read-first MCP server (read-only by default): the same lookups exposed as eleven read tools (plus every object as an `nbox://{kind}/{ref}` resource), returning the exact JSON view models the CLI does, so AI agents (Claude Code, Claude Desktop, …) query NetBox safely. Two opt-in write tools (`nbox_plan_write` / `nbox_apply_write`) are exposed only behind `--allow-writes` + a per-user OIDC vault. Stdio for a local subprocess, or a loopback HTTP transport with OIDC resource-server auth for a network-reachable deployment. Being one static binary with zero runtime, it cold-starts MCP-ready in ~9 ms — before a Python NetBox MCP server finishes importing its dependencies ([benchmarks](docs/BENCHMARKS.md)). See [docs/MCP.md](docs/MCP.md); [SKILL.md](SKILL.md) is an installable Agent Skill that drives the CLI on matching requests.
+- **Agent-ready** — `nbox serve` is a read-first MCP server (read-only by default): the same lookups exposed as eleven read tools (plus every object as an `nbox://{kind}/{ref}` resource), returning the exact JSON view models the CLI does, so AI agents (Claude Code, Claude Desktop, …) query NetBox safely. Two opt-in write tools (`nbox_plan_write` / `nbox_apply_write`) support local stdio writes with `--local-writes` (profile token) or shared HTTP/OIDC writes with `--allow-writes` + a per-user vault. Being one static binary with zero runtime, it cold-starts MCP-ready in ~9 ms — before a Python NetBox MCP server finishes importing its dependencies ([benchmarks](docs/BENCHMARKS.md)). See [docs/MCP.md](docs/MCP.md); [SKILL.md](SKILL.md) is an installable Agent Skill that drives the CLI on matching requests.
 - **Scriptable** — `-o plain|json|csv`, `--fields`, `--raw`, versioned `--envelope`, and stable exit codes; stdout stays clean for piping, logs go to stderr. Plus structured exports — `nbox export prometheus-sd | address-list | device-inventory` emit fixed shapes for Prometheus SD, firewall/blocklist address lists, and device inventories. See [docs/SCRIPTING.md](docs/SCRIPTING.md).
 - **Fast on repeat** — a small in-memory read cache (per profile, ~30s) keeps TUI back-navigation and chatty agents from re-hitting NetBox; the detail footer shows "cached Ns ago" and `nbox_cache_clear` busts it.
 - **Multi-instance** — profiles for several NetBox instances (switch live in the TUI), journals folded into detail lookups, open-in-browser and copy, and tag listing.
@@ -129,8 +129,9 @@ claude mcp add nbox -e NBOX_TOKEN=nbt_xxx.yyy -- nbox serve
 ```
 
 `nbox serve` is a read-first MCP server (read-only by default; writes are opt-in
-behind `--allow-writes` + a per-user OIDC vault); an MCP host launches it as a
-subprocess and gets the same JSON view models the CLI returns. See [docs/MCP.md](docs/MCP.md).
+with local stdio `--local-writes` or shared HTTP/OIDC `--allow-writes` + a
+per-user vault); an MCP host launches it as a subprocess and gets the same JSON
+view models the CLI returns. See [docs/MCP.md](docs/MCP.md).
 
 ## Installation
 
@@ -309,7 +310,8 @@ nbox export <prometheus-sd|address-list|device-inventory>
                                   # structured read-only exports (Prometheus SD JSON, firewall/blocklist
                                   # address list, device inventory) — fixed shapes for scripting
 nbox serve [--http <addr>]        # read-first MCP server for AI agents (read-only by default;
-                                  # --allow-writes enables write tools over OIDC HTTP); stdio, or loopback/OIDC HTTP
+                                  # --local-writes enables local stdio writes;
+                                  # --allow-writes enables shared HTTP/OIDC writes)
                                   # --print-config prints the paste-ready mcpServers JSON and exits
 nbox config <init|path|show|token>    # token: status reports the resolved source (never echoed)
 nbox profile <add|use|remove|list|show>
@@ -510,13 +512,13 @@ flags. JSON-RPC goes to stdout; all logging stays on stderr.
 
 The eleven read tools below are annotated read-only (`read_only_hint = true`). Two
 write tools — `nbox_plan_write` / `nbox_apply_write` — are **always registered** (so
-they show up in `tools/list`), but execution is gated: a call is rejected unless
-writes are enabled (`--allow-writes` / `[serve].allow_writes`) AND the caller is an
-OIDC-authenticated identity carrying the `nbox:write` scope with a `[serve.vault]`
-entry mapping its `sub` to a per-user NetBox token. The write then runs as that user
-(never over stdio; without writes enabled the tools reject with "writes disabled").
-`nbox_apply_write` applies the plan the server stored at plan time — looked up by the
-`confirm_token` you pass back — not the plan JSON itself, so a forged plan is rejected.
+they show up in `tools/list`), but execution is gated. Local stdio writes require
+`--local-writes` / `[serve].local_writes` and run under the active profile token.
+Shared HTTP/OIDC writes require `--allow-writes` / `[serve].allow_writes`, an
+OIDC-authenticated caller carrying `nbox:write`, and a `[serve.vault]` entry mapping
+the caller's `sub` to a per-user NetBox token. `nbox_apply_write` applies the plan
+the server stored at plan time — looked up by the `confirm_token` you pass back —
+not the plan JSON itself, so a forged plan is rejected.
 
 | Tool | What |
 |------|------|
@@ -557,7 +559,7 @@ claude mcp add nbox -- nbox serve
 
 Or skip the hand-editing — `nbox serve --print-config` prints the ready-to-paste
 `mcpServers` object (with the absolute binary path and any `--profile`/`--config`
-you passed echoed into `args`); see [docs/MCP.md](docs/MCP.md) for the exact
+or `--local-writes` you passed echoed into `args`); see [docs/MCP.md](docs/MCP.md) for the exact
 config-file path per host (Claude Code, Claude Desktop, Cursor).
 
 Both reuse the same `config.toml` / `NBOX_TOKEN` as the CLI. Prefer driving the CLI
@@ -592,11 +594,12 @@ single profile token, so scope that token read-only. An audit log
 (`nbox::audit`) and an optional per-caller rate limit (`--rate-limit`) round it
 out. Full setup, security model, and IdP notes: [docs/MCP.md](docs/MCP.md).
 
-Per-user NetBox identity bridging (so NetBox sees the real caller) and the safe
-MCP write tools have shipped: a `[serve.vault]` mapping each caller's OIDC `sub`
-to a per-user NetBox token (via `token_env`), and `nbox_plan_write` /
-`nbox_apply_write` behind `--allow-writes`. Only a raw escape-hatch MCP tool comes
-later.
+For local single-user MCP writes, use stdio plus `--local-writes`; the write tools
+reuse the profile token and the MCP host's tool-approval prompt is the human gate.
+For shared/network writes where NetBox must see the real caller, use
+`--allow-writes` plus `[serve.vault]` to map each caller's OIDC `sub` to a per-user
+NetBox token (via `token_env`). HTTP profile-token writes are intentionally
+deferred; only a raw escape-hatch MCP tool comes later.
 
 ## NetBox Compatibility
 

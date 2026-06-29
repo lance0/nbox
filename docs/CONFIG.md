@@ -230,6 +230,8 @@ Absent ⇒ stdio (no HTTP). The matching CLI flags always override these keys.
 | `jwks_url` | JWKS URL override; absent ⇒ discover from the issuer. | `--oidc-jwks-url` |
 | `allowed_hosts` | Extra hostnames for the DNS-rebinding allow-list (OIDC/routable mode only), on top of the audience host + loopback. | `--allowed-host` |
 | `rate_limit` | Per-caller request cap on `/mcp`, in requests per minute. Absent / `0` ⇒ disabled. | `--rate-limit` |
+| `local_writes` | Enable local single-user MCP writes over stdio using the active profile token. Separate from `allow_writes`; rejected with HTTP in this release. | `--local-writes` |
+| `allow_writes` | Enable shared HTTP/OIDC MCP writes when paired with `[serve.vault]` and callers carrying `nbox:write`. Does not imply `local_writes`. | `--allow-writes` |
 
 ```toml
 [serve]
@@ -242,6 +244,10 @@ http = "127.0.0.1:8080"
 # jwks_url      = "https://idp.example.com/keys"
 # allowed_hosts = ["nbox.example.com"]
 # rate_limit    = 120
+# local stdio writes:
+# local_writes = true
+# shared HTTP/OIDC writes:
+# allow_writes = true
 ```
 
 See [docs/MCP.md](MCP.md) for the full server story.

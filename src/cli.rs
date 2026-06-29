@@ -617,6 +617,12 @@ pub enum Command {
         #[arg(long = "allow-writes")]
         allow_writes: bool,
 
+        /// Enable local single-user MCP writes over stdio. Uses the active
+        /// profile token and the MCP host's tool approval; not valid for HTTP
+        /// in this first cut. Also read from `[serve].local_writes`.
+        #[arg(long = "local-writes")]
+        local_writes: bool,
+
         /// Print a copy-paste MCP server config (the `mcpServers` JSON object
         /// most hosts read) to stdout and exit, without starting the server or
         /// connecting to NetBox. The `command` is the absolute path to this
@@ -1423,6 +1429,8 @@ mod tests {
                 oidc_jwks_url: None,
                 ref allowed_host,
                 rate_limit: None,
+                local_writes: false,
+                allow_writes: false,
                 print_config: false,
                 ..
             }) if allowed_host.is_empty()
@@ -1441,6 +1449,27 @@ mod tests {
             http.command,
             Some(Command::Serve { http: Some(a), http_token: Some(t), print_config: false, .. })
                 if a == "127.0.0.1:8080" && t == "abc123"
+        ));
+
+        let local = Cli::try_parse_from(["nbox", "serve", "--local-writes"]).unwrap();
+        assert!(matches!(
+            local.command,
+            Some(Command::Serve {
+                local_writes: true,
+                allow_writes: false,
+                http: None,
+                ..
+            })
+        ));
+
+        let shared = Cli::try_parse_from(["nbox", "serve", "--allow-writes"]).unwrap();
+        assert!(matches!(
+            shared.command,
+            Some(Command::Serve {
+                allow_writes: true,
+                local_writes: false,
+                ..
+            })
         ));
     }
 

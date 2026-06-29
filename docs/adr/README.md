@@ -9,7 +9,7 @@ contributors understand why the design exists, not just what changed.
 | ADR | Title | Status | Date |
 |-----|-------|--------|------|
 | [0001](0001-safe-write-foundation.md) | Safe write foundation | Accepted | 2026-06-26 |
-| [0002](0002-local-single-user-mcp-writes.md) | Local single-user MCP writes | Proposed | 2026-06-29 |
+| [0002](0002-local-single-user-mcp-writes.md) | Local single-user MCP writes | Accepted | 2026-06-29 |
 
 ## Template
 

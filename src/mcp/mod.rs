@@ -5,7 +5,8 @@
 //! domain-view layer the CLI handlers use. Each tool is a thin adapter: it calls
 //! the same query helpers, builds the same view model, and returns it as
 //! structured JSON. Two opt-in write tools (`nbox_plan_write` / `nbox_apply_write`)
-//! are gated by `--allow-writes` plus the per-user credential vault (Pattern 2).
+//! are gated either by local stdio `--local-writes` (single-user profile-token
+//! mode) or by `--allow-writes` plus the per-user credential vault (Pattern 2).
 //!
 //! stdout carries the JSON-RPC stream and nothing else — logging goes to stderr
 //! (see [`crate::init_logging`]), and the connect path here prints nothing.
@@ -40,7 +41,7 @@ use crate::netbox::client::NetBoxClient;
 use crate::netbox::search::{SearchFilters, SearchRequest, SearchResult};
 use crate::netbox::status::AuthCheck;
 
-/// The NetBox MCP server (read-only by default; write tools gated by the vault).
+/// The NetBox MCP server (read-only by default; write tools are explicitly gated).
 #[derive(Clone)]
 pub struct NboxMcp {
     client: Arc<NetBoxClient>,
@@ -49,8 +50,11 @@ pub struct NboxMcp {
     /// drop it with `nbox_cache_clear`.
     cache: Cache,
     /// Per-user credential vault for write tools (Pattern 2). Absent ⇒ writes
-    /// are disabled (the read-only default). See [`vault::CredentialVault`].
+    /// cannot use the shared HTTP/OIDC path. See [`vault::CredentialVault`].
     vault: Option<Arc<vault::CredentialVault>>,
+    /// Transport/write-mode facts for the write tools. Local writes are allowed
+    /// only for stdio servers with `local_writes = true`.
+    write_mode: write::WriteMode,
     /// The active profile name — bound into the confirmation token so a plan
     /// from one profile can't be applied under another. Empty for stdio.
     profile: String,
@@ -565,10 +569,33 @@ impl NboxMcp {
         vault: Option<vault::CredentialVault>,
         profile: String,
     ) -> Self {
+        Self::new_with_write_mode(client, cache, vault, profile, write::WriteMode::Http)
+    }
+
+    /// Build a stdio server. `local_writes` is the ADR-0002 single-user mode:
+    /// when true, write tools with no OIDC identity use the active profile token.
+    pub fn new_stdio(client: NetBoxClient, cache: Cache, local_writes: bool) -> Self {
+        Self::new_with_write_mode(
+            client,
+            cache,
+            None,
+            String::new(),
+            write::WriteMode::stdio(local_writes),
+        )
+    }
+
+    fn new_with_write_mode(
+        client: NetBoxClient,
+        cache: Cache,
+        vault: Option<vault::CredentialVault>,
+        profile: String,
+        write_mode: write::WriteMode,
+    ) -> Self {
         Self {
             client: Arc::new(client),
             cache,
             vault: vault.map(Arc::new),
+            write_mode,
             profile,
             plans: Arc::new(Mutex::new(write::PlanStore::default())),
             tool_router: Self::tool_router(),
@@ -881,10 +908,10 @@ impl NboxMcp {
 
     /// Plan a write operation. Builds a `MutationPlan` (the reviewable diff +
     /// confirm token) without mutating NetBox. The agent reviews the plan,
-    /// then calls `nbox_apply_write` to execute it. Requires writes enabled.
+    /// then calls `nbox_apply_write` to execute it. Requires one write mode.
     #[tool(
         name = "nbox_plan_write",
-        description = "Plan a NetBox write operation (interface description, device status, IP/prefix/IP-range reserve, tag add/remove). Builds a MutationPlan with a before/after diff and a confirm token, without mutating. Review the plan, then call nbox_apply_write to execute. Requires writes enabled (--allow-writes), the caller's token carrying the nbox:write scope, and a [serve.vault] mapping for the caller's OIDC sub; rejected over stdio (no per-user identity).",
+        description = "Plan a NetBox write operation (interface description, device status, IP/prefix/IP-range reserve, tag add/remove). Builds a MutationPlan with a before/after diff and a confirm token, without mutating. Review the plan, then call nbox_apply_write to execute. Execution is gated: local stdio servers need --local-writes / [serve].local_writes and use the active profile token; shared HTTP/OIDC servers need --allow-writes, the caller's nbox:write scope, and a [serve.vault] mapping for the caller's OIDC sub.",
         annotations(read_only_hint = false)
     )]
     async fn nbox_plan_write(
@@ -897,11 +924,11 @@ impl NboxMcp {
 
     /// Apply a previously planned write. The submitted plan's `confirm_token`
     /// looks up the plan this server stored at plan time, and that stored plan is
-    /// executed under the caller's per-user NetBox identity — the submitted plan
-    /// contents are not trusted. Returns a `MutationReceipt`.
+    /// executed under the same write actor — the submitted plan contents are not
+    /// trusted. Returns a `MutationReceipt`.
     #[tool(
         name = "nbox_apply_write",
-        description = "Apply a previously planned write. Pass back the MutationPlan from nbox_plan_write; its confirm_token looks up the plan this server stored at plan time and applies THAT (the plan contents you submit are not trusted — a forged or edited plan, or one issued for a different caller, is rejected). Executes under the caller's per-user NetBox identity, returning a MutationReceipt. Same gating as nbox_plan_write: writes enabled (--allow-writes), the caller's nbox:write scope, and a [serve.vault] entry for the caller's OIDC sub; rejected over stdio.",
+        description = "Apply a previously planned write. Pass back the MutationPlan from nbox_plan_write; its confirm_token looks up the plan this server stored at plan time and applies THAT (the plan contents you submit are not trusted — a forged or edited plan, one issued for a different actor, or a replay is rejected). Same gating as nbox_plan_write: local stdio uses --local-writes / [serve].local_writes and the active profile token; shared HTTP/OIDC uses --allow-writes, the caller's nbox:write scope, and a [serve.vault] entry for the caller's OIDC sub.",
         annotations(read_only_hint = false)
     )]
     async fn nbox_apply_write(
@@ -1125,10 +1152,16 @@ impl ServerHandler for NboxMcp {
             .enable_resources()
             .enable_prompts()
             .build();
-        // The write note reflects THIS instance: write tools are advertised only
-        // when writes are enabled (a vault is configured); otherwise the server
-        // is read-only and says so.
-        let write_note = if self.vault.is_some() {
+        // The write note reflects THIS instance: tools are always advertised,
+        // but execution depends on the selected write mode.
+        let write_note = if matches!(
+            self.write_mode,
+            write::WriteMode::Stdio { local_writes: true }
+        ) {
+            "Local writes are enabled: nbox_plan_write reviews the before/after diff + confirm \
+             token, then nbox_apply_write mutates NetBox under the active profile token; forged \
+             or replayed plans are rejected."
+        } else if self.vault.is_some() {
             "Writes are opt-in: a caller with the nbox:write scope and a per-user vault entry can \
              nbox_plan_write (review the before/after diff + confirm token) then nbox_apply_write \
              to mutate NetBox under their own identity; everything else is read-only."
@@ -1207,8 +1240,8 @@ impl ServerHandler for NboxMcp {
 /// Serve the MCP server over stdio until the client disconnects.
 ///
 /// stdout is reserved for the JSON-RPC stream; this prints nothing else.
-pub async fn serve(client: NetBoxClient, cache: Cache) -> anyhow::Result<()> {
-    let service = NboxMcp::new(client, cache, None, String::new())
+pub async fn serve(client: NetBoxClient, cache: Cache, local_writes: bool) -> anyhow::Result<()> {
+    let service = NboxMcp::new_stdio(client, cache, local_writes)
         .serve(stdio())
         .await?;
     service.waiting().await?;

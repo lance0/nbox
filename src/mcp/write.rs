@@ -1,4 +1,5 @@
-//! MCP write tools (Pattern 2, DESIGN §24) — plan-first, per-user identity.
+//! MCP write tools — plan-first writes over either local stdio or Pattern 2
+//! per-user identity.
 //!
 //! Two operation-specific tools mirror the CLI's two-step safe-write flow:
 //!
@@ -8,13 +9,15 @@
 //! 2. `nbox_apply_write` — verifies the plan's confirm token and applies it,
 //!    returning a [`MutationReceipt`].
 //!
-//! Per-user identity bridging: the caller's OIDC `sub` is resolved to a
-//! per-user NetBox token via [`crate::mcp::vault::CredentialVault`], then
-//! bridged into a temporary [`NetBoxClient`] via [`NetBoxClient::with_token`]
-//! so the write hits NetBox under the caller's identity.
+//! In shared HTTP/OIDC mode, the caller's OIDC `sub` is resolved to a per-user
+//! NetBox token via [`crate::mcp::vault::CredentialVault`], then bridged into a
+//! temporary [`NetBoxClient`] via [`NetBoxClient::with_token`] so the write hits
+//! NetBox under the caller's identity. In ADR-0002 local stdio mode, there is no
+//! OIDC caller; the write uses the active profile token and binds the stored plan
+//! to a synthetic local actor.
 //!
 //! The tools reuse the exact same `plan_*`/`apply_*` engine the CLI uses
-//! (ADR-0001) — no separate write path. The vault is the only new layer.
+//! (ADR-0001) — no separate write path.
 
 use std::collections::HashMap;
 
@@ -50,6 +53,39 @@ pub(crate) enum ApplierKind {
     Tag,
 }
 
+/// The principal a write plan is issued to. OIDC writes bind to the caller's
+/// stable subject; local stdio writes bind to one synthetic single-user
+/// principal. The key is internal to the plan store, not exposed as a credential.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum WriteActor {
+    Oidc { sub: String },
+    Local,
+}
+
+impl WriteActor {
+    pub(crate) fn key(&self) -> String {
+        match self {
+            WriteActor::Oidc { sub } => format!("sub:{sub}"),
+            WriteActor::Local => "local".to_string(),
+        }
+    }
+}
+
+/// Transport/write-mode facts known by the server instance. ADR-0002's first
+/// cut enables local writes only for stdio; HTTP no-identity writes remain
+/// rejected, even on loopback.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum WriteMode {
+    Http,
+    Stdio { local_writes: bool },
+}
+
+impl WriteMode {
+    pub(crate) fn stdio(local_writes: bool) -> Self {
+        Self::Stdio { local_writes }
+    }
+}
+
 /// Server-issued write plans awaiting `nbox_apply_write`.
 ///
 /// A plan's `confirm_token` is a non-secret SHA over the plan's own fields
@@ -70,8 +106,8 @@ pub(crate) struct PlanStore {
 
 struct StoredPlan {
     plan: MutationPlan,
-    /// The OIDC `sub` that planned it — apply must come from the same caller.
-    sub: String,
+    /// Internal write-actor key that planned it — apply must come from the same actor.
+    actor_key: String,
     applier: ApplierKind,
     /// Monotonic issue order, for capacity eviction (oldest first).
     seq: u64,
@@ -90,7 +126,7 @@ const PLAN_STORE_CAP: usize = 256;
 
 impl PlanStore {
     /// Record a freshly issued plan, evicting the oldest when at capacity.
-    pub(crate) fn record(&mut self, plan: MutationPlan, sub: String, applier: ApplierKind) {
+    pub(crate) fn record(&mut self, plan: MutationPlan, actor: &WriteActor, applier: ApplierKind) {
         if self.issued.len() >= PLAN_STORE_CAP
             && !self.issued.contains_key(&plan.confirm_token)
             && let Some(oldest) = self
@@ -107,26 +143,27 @@ impl PlanStore {
             plan.confirm_token.clone(),
             StoredPlan {
                 plan,
-                sub,
+                actor_key: actor.key(),
                 applier,
                 seq,
             },
         );
     }
 
-    /// Consume the plan this server issued for `token`, requiring the same caller
-    /// `sub`. One-shot: a matched plan is removed (no replay). The caller's own
+    /// Consume the plan this server issued for `token`, requiring the same write
+    /// actor. One-shot: a matched plan is removed (no replay). The caller's own
     /// plan contents are never trusted — only its token keys the lookup.
     pub(crate) fn consume(
         &mut self,
         token: &str,
-        sub: &str,
+        actor: &WriteActor,
     ) -> Result<(MutationPlan, ApplierKind), ConsumeError> {
+        let actor_key = actor.key();
         match self.issued.get(token) {
             None => Err(ConsumeError::NotFound),
-            // A mismatched caller must not consume (the rightful caller can still
+            // A mismatched actor must not consume (the rightful actor can still
             // apply) — reject without removing.
-            Some(s) if s.sub != sub => Err(ConsumeError::WrongCaller),
+            Some(s) if s.actor_key != actor_key => Err(ConsumeError::WrongCaller),
             Some(_) => {
                 let s = self.issued.remove(token).expect("just checked present");
                 Ok((s.plan, s.applier))
@@ -145,7 +182,7 @@ impl ConsumeError {
                 None,
             ),
             ConsumeError::WrongCaller => ErrorData::invalid_params(
-                "this write plan was issued for a different caller identity; re-plan with \
+                "this write plan was issued for a different write actor; re-plan with \
                  nbox_plan_write",
                 None,
             ),
@@ -276,54 +313,70 @@ pub(crate) struct WriteCaller {
 }
 
 impl NboxMcp {
-    /// Resolve the caller's per-user NetBox client via the vault, or reject
-    /// with a clear error if writes are disabled or the caller has no vault
-    /// entry. Returns a short-lived `NetBoxClient` clone with the per-user
-    /// token swapped in.
-    /// Resolve the caller's per-user NetBox client, enforcing the full write
-    /// authorization ladder — fail-closed at every step (ADR-0001 §7):
+    /// Resolve the NetBox client and write actor for an MCP write, enforcing the
+    /// appropriate gate for the request shape:
     ///
-    /// 1. writes enabled at all (`[serve].allow_writes` → a vault is present);
-    /// 2. the request carried an authenticated caller (HTTP+OIDC; stdio and
-    ///    loopback static-bearer have no per-user identity → rejected);
-    /// 3. the caller's token carries the `nbox:write` scope;
-    /// 4. the caller's `sub` maps to a provisioned per-user NetBox token.
+    /// - OIDC caller present: Pattern 2, unchanged — require `nbox:write`, a
+    ///   vault entry, and use the per-user NetBox token.
+    /// - No caller + stdio + `local_writes`: ADR-0002 local single-user mode —
+    ///   use the active profile token and bind the plan to the synthetic `local`
+    ///   actor.
+    /// - Everything else rejects clearly before touching NetBox.
     ///
-    /// The service token is never used for writes. A `None` caller (no identity)
-    /// gets a distinct error that never suggests mapping a placeholder `sub`.
-    fn bridged_client(&self, caller: Option<WriteCaller>) -> Result<NetBoxClient, ErrorData> {
+    /// The profile token is used for writes only in explicit stdio local mode.
+    fn write_client(
+        &self,
+        caller: Option<WriteCaller>,
+    ) -> Result<(NetBoxClient, WriteActor), ErrorData> {
+        if let Some(caller) = caller {
+            let vault = self.vault.as_ref().ok_or_else(|| {
+                ErrorData::invalid_params(
+                    "MCP shared writes are not enabled on this nbox serve instance; \
+                     set [serve].allow_writes = true or pass --allow-writes, \
+                     and provision [serve.vault] entries for each caller's OIDC sub",
+                    None,
+                )
+            })?;
+            if !caller.has_write_scope {
+                return Err(ErrorData::invalid_params(
+                    format!(
+                        "the caller's token is missing the required `{}` scope for MCP writes",
+                        crate::mcp::SCOPE_WRITE
+                    ),
+                    None,
+                ));
+            }
+            let token = vault
+                .resolve(&caller.sub)
+                .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
+            return Ok((
+                (*self.client)
+                    .clone()
+                    .with_token(token.as_str().to_string()),
+                WriteActor::Oidc { sub: caller.sub },
+            ));
+        }
+
+        if matches!(self.write_mode, WriteMode::Stdio { local_writes: true }) {
+            return Ok(((*self.client).clone(), WriteActor::Local));
+        }
+
         let vault = self.vault.as_ref().ok_or_else(|| {
             ErrorData::invalid_params(
                 "MCP writes are not enabled on this nbox serve instance; \
-                 set [serve].allow_writes = true or pass --allow-writes, \
-                 and provision [serve.vault] entries for each caller's OIDC sub",
+                 for local stdio writes set [serve].local_writes = true or pass --local-writes; \
+                 for shared HTTP writes set [serve].allow_writes = true or pass --allow-writes \
+                 and provision [serve.vault] entries",
                 None,
             )
         })?;
-        let caller = caller.ok_or_else(|| {
-            ErrorData::invalid_params(
-                "MCP writes require an authenticated OIDC caller identity; this request \
-                 carried none. Writes are unavailable over the stdio transport and over \
-                 loopback static-bearer auth — use the HTTP transport with OIDC so each \
-                 write is attributed to a real NetBox user.",
-                None,
-            )
-        })?;
-        if !caller.has_write_scope {
-            return Err(ErrorData::invalid_params(
-                format!(
-                    "the caller's token is missing the required `{}` scope for MCP writes",
-                    crate::mcp::SCOPE_WRITE
-                ),
-                None,
-            ));
-        }
-        let token = vault
-            .resolve(&caller.sub)
-            .map_err(|e| ErrorData::invalid_params(e.to_string(), None))?;
-        Ok((*self.client)
-            .clone()
-            .with_token(token.as_str().to_string()))
+        let _ = vault;
+        Err(ErrorData::invalid_params(
+            "MCP shared writes require an authenticated OIDC caller identity; this request \
+             carried none. HTTP and static-bearer transports cannot use local_writes in this \
+             release.",
+            None,
+        ))
     }
 
     /// Plan a write operation. Builds a `MutationPlan` without mutating.
@@ -332,10 +385,7 @@ impl NboxMcp {
         args: PlanWriteArgs,
         caller: Option<WriteCaller>,
     ) -> Result<Json<MutationPlan>, ErrorData> {
-        // Capture the planner's identity before the caller is consumed by the
-        // auth ladder — apply requires the same `sub` to apply this plan.
-        let planner_sub = caller.as_ref().map(|c| c.sub.clone());
-        let client = self.bridged_client(caller)?;
+        let (client, actor) = self.write_client(caller)?;
         let profile = self.profile.as_str();
         let (applier, plan_result) = match args.operation {
             WriteOperation::InterfaceDescription {
@@ -461,12 +511,10 @@ impl NboxMcp {
         let plan = plan_result.map_err(super::to_mcp_error)?;
         // Record the server-issued plan so apply can trust it — the caller's
         // submitted plan contents are never used beyond the confirm_token.
-        if let Some(sub) = planner_sub {
-            self.plans
-                .lock()
-                .expect("plan store mutex poisoned")
-                .record(plan.clone(), sub, applier);
-        }
+        self.plans
+            .lock()
+            .expect("plan store mutex poisoned")
+            .record(plan.clone(), &actor, applier);
         Ok(Json(plan))
     }
 
@@ -479,12 +527,7 @@ impl NboxMcp {
         args: ApplyWriteArgs,
         caller: Option<WriteCaller>,
     ) -> Result<Json<MutationReceipt>, ErrorData> {
-        // Capture the caller's identity, then enforce the full write
-        // authorization ladder (writes enabled, authenticated caller, write
-        // scope, vault entry) and bind the per-user NetBox token.
-        let caller_sub = caller.as_ref().map(|c| c.sub.clone());
-        let client = self.bridged_client(caller)?;
-        let sub = caller_sub.expect("bridged_client succeeded ⇒ caller present");
+        let (client, actor) = self.write_client(caller)?;
 
         // Apply the plan this server issued for the token — never the caller's
         // contents. A forged/tampered plan has no matching server-stored entry.
@@ -492,7 +535,7 @@ impl NboxMcp {
             .plans
             .lock()
             .expect("plan store mutex poisoned")
-            .consume(&args.plan.confirm_token, &sub)
+            .consume(&args.plan.confirm_token, &actor)
             .map_err(ConsumeError::into_mcp)?;
 
         // Defense in depth: the stored plan must still pass its own integrity +

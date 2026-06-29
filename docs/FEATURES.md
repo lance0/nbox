@@ -7,10 +7,10 @@ description` and `device … set status` (`PATCH`), `ip reserve <prefix>` /
 `prefix reserve <cidr>` / `ip-range reserve <start|id>` (three `allocate`
 `POST`s), and `tag add`/`remove <type> <name> <tag>` (a `PATCH` to the `tags`
 array on any object). The same safe-write foundation is also exposed as MCP
-write tools (`nbox_plan_write`/`nbox_apply_write`) over the authenticated
-HTTP+OIDC transport when `[serve].allow_writes` is set, gated by the per-user
-credential vault and running as the calling user; stdio and unauthenticated
-transports stay read-only.
+write tools (`nbox_plan_write`/`nbox_apply_write`) in two explicit modes: local
+stdio with `[serve].local_writes` / `--local-writes` using the active profile
+token, or shared HTTP/OIDC with `[serve].allow_writes` / `--allow-writes` plus
+the per-user credential vault.
 
 ## Lookups
 
@@ -159,10 +159,11 @@ Twelve themes (`NO_COLOR` honored); `?`/`F1` shows the full keymap.
 subprocess and speaks JSON-RPC over stdin/stdout; the tools reuse the CLI's query
 + view layer and return the same JSON view models. JSON-RPC on stdout, logs on
 stderr; URL/token from the active profile (same `-p`/`--config` flags). The read
-tools are annotated read-only; the write tools (`nbox_plan_write`/`nbox_apply_write`,
-exposed only over HTTP+OIDC with `--allow-writes`) are not. `nbox serve --print-config` prints the paste-ready
-`mcpServers` JSON (absolute binary path, echoed `--profile`/`--config`, placeholder
-token) and exits — no server start, no connection; see docs/MCP.md for the per-host
+tools are annotated read-only; the write tools (`nbox_plan_write`/`nbox_apply_write`)
+are not and execute only with local stdio `--local-writes` or shared HTTP/OIDC
+`--allow-writes` plus a vault. `nbox serve --print-config` prints the paste-ready
+`mcpServers` JSON (absolute binary path, echoed `--profile`/`--config`/
+`--local-writes`, placeholder token) and exits — no server start, no connection; see docs/MCP.md for the per-host
 config-file path.
 
 | Tool | What |
@@ -178,8 +179,8 @@ config-file path.
 | `nbox_list_tags` | List tags. |
 | `nbox_tagged` | Objects carrying a tag, across kinds (NetBox 4.3+); `tag` (id\|name\|slug). Cross-kind reverse lookup. |
 | `nbox_cache_clear` | Drop nbox's local read cache so the next lookups fetch fresh (read-only w.r.t. NetBox). |
-| `nbox_plan_write` | Plan a safe write (interface description, device status, IP/prefix/IP-range reserve, tag add/remove): builds a before/after diff and a confirm token without mutating. Requires `--allow-writes`, the caller's `nbox:write` scope, and a `[serve.vault]` mapping for the caller's OIDC `sub`; rejected over stdio. |
-| `nbox_apply_write` | Apply a previously planned write (verifies the confirm token, then executes under the caller's per-user NetBox identity). Same gating as `nbox_plan_write`. |
+| `nbox_plan_write` | Plan a safe write (interface description, device status, IP/prefix/IP-range reserve, tag add/remove): builds a before/after diff and a confirm token without mutating. Requires local stdio `--local-writes`, or shared HTTP/OIDC `--allow-writes` plus `nbox:write` and a `[serve.vault]` mapping for the caller's OIDC `sub`. |
+| `nbox_apply_write` | Apply a previously planned write (verifies the confirm token, then executes the server-stored plan under the same write mode). Same gating as `nbox_plan_write`. |
 
 A loopback HTTP transport ships in the default build (behind the `http` cargo
 feature, on by default; `--no-default-features` for stdio-only):
@@ -189,9 +190,10 @@ feature, on by default; `--no-default-features` for stdio-only):
 Protected Resource Metadata, routable bind allowed) — accountability, not per-user
 RBAC. See [docs/MCP.md](MCP.md). The same objects are also exposed as MCP
 **resources** via one `nbox://{kind}/{ref}` template (the view `nbox_get`
-returns). Per-user NetBox identity bridging ships as the credential vault
-(`[serve.vault.<sub>]` maps each caller's OIDC `sub` to a per-user NetBox
-token), and the MCP **prompts** catalog ships a curated set of read-only
+returns). Local stdio MCP writes ship behind `--local-writes`; per-user NetBox
+identity bridging ships as the credential vault (`[serve.vault.<sub>]` maps each
+caller's OIDC `sub` to a per-user NetBox token) for shared HTTP/OIDC writes. The
+MCP **prompts** catalog ships a curated set of read-only
 investigation prompts (`ip_utilization_audit`, `cable_path_trace`,
 `find_stale_prefixes`, `object_change_review`). A raw escape-hatch MCP tool is
 later.
