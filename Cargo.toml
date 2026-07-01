@@ -95,7 +95,7 @@ ipnet = "2"
 update-informer = { version = "1", default-features = false, features = ["github", "ureq", "rustls-tls"], optional = true }
 
 # MCP server (`nbox serve`) — read-only tools over stdio
-rmcp = { version = "1.7", default-features = false, features = ["server", "macros", "transport-io"] }
+rmcp = { version = "2.0", default-features = false, features = ["server", "macros", "transport-io"] }
 
 # Optional loopback HTTP transport for `nbox serve --http` (behind the `http`
 # feature). Pulls in the rmcp Streamable HTTP server plus an axum router to mount
