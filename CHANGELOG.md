@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.14.1] - 2026-07-31
+
 ### Fixed
 
 - Bump `crossbeam-epoch` 0.9.18 → 0.9.20 to clear RUSTSEC-2026-0204 (invalid
