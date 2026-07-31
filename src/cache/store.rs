@@ -88,12 +88,9 @@ impl CacheStore for MemoryStore {
     fn get(&self, profile: &str, key: &str, now: UnixSecs) -> Option<CacheEntry> {
         let mut map = self.entries.lock().unwrap();
         let k = (profile.to_string(), key.to_string());
-        if let Some(e) = map.get(&k) {
-            if e.live(now) {
-                return Some(e.clone());
-            }
-        } else {
-            return None;
+        let e = map.get(&k)?;
+        if e.live(now) {
+            return Some(e.clone());
         }
         // Present but expired: drop it (lazy expiry) and report a miss.
         map.remove(&k);
