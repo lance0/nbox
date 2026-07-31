@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Bump `crossbeam-epoch` 0.9.18 → 0.9.20 to clear RUSTSEC-2026-0204 (invalid
+  pointer dereference in its `fmt::Pointer` impl; a transitive dependency, not
+  on a reachable nbox code path).
+- Satisfy the stricter `clippy::question_mark` lint in `MemoryStore::get`
+  introduced by rustc 1.97.0; no behavior change.
+
 ## [0.14.0] - 2026-06-29
 
 ### Added
