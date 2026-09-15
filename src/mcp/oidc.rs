@@ -291,7 +291,7 @@ pub async fn validate_bearer(
 
     // 4) Validate signature + claims. The alg allowlist was enforced in step 2
     //    (`header.alg` is provably one of `ALLOWED_ALGS`), so `algorithms` here is
-    //    that single verified alg — jsonwebtoken 10 requires the validation algs
+    //    that single verified alg — jsonwebtoken requires the validation algs
     //    to match the key's family, and an RSA key can't carry both RS256+ES256.
     //    `none`/alg-confusion never reaches this point. Plus `iss` exact-match,
     //    `aud` contains the configured audience, and `exp` with the skew leeway.
