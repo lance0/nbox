@@ -1139,6 +1139,10 @@ impl NboxMcp {
     }
 }
 
+// rmcp's `ServerHandler` methods are async by contract, and `#[tool_handler]`
+// emits async methods too; the static ones (list_*, get_prompt) have nothing to
+// await.
+#[allow(clippy::unused_async_trait_impl)]
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for NboxMcp {
     fn get_info(&self) -> ServerInfo {

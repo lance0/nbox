@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Bump `h2` 0.4.15 → 0.4.19 (RUSTSEC-2026-0258, unbounded empty DATA frames) and
+  `rustls` 0.23.40 → 0.23.45 (RUSTSEC-2026-0285, TLS 1.3 handshake messages
+  accepted across encryption levels).
+- Bump `lru` 0.18.0 → 0.18.4 (RUSTSEC-2026-0253, unsound `LruCache::pop`), and
+  move off yanked `chacha20` 0.10.0 and `spin` 0.9.8.
+- Allow `clippy::unused_async_trait_impl` (new in rustc 1.98) on the MCP
+  `ServerHandler` impl, whose methods are async by the rmcp trait contract.
+
 ## [0.14.1] - 2026-07-31
 
 ### Fixed
