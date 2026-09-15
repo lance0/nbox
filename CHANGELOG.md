@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Upgrade the MCP SDK `rmcp` 1.8 → 3.3. No change to the tools, resources,
+  prompts, or negotiated protocol version (`2025-11-25`); the resource-template
+  and prompt-message types and the `read_resource` / `get_prompt` handler
+  returns moved to their rmcp 3 shapes.
+
 ### Fixed
 
 - Bump `h2` 0.4.15 → 0.4.19 (RUSTSEC-2026-0258, unbounded empty DATA frames) and

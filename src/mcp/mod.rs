@@ -16,10 +16,10 @@ use std::sync::{Arc, Mutex};
 use rmcp::handler::server::router::tool::ToolRouter;
 use rmcp::handler::server::wrapper::{Json, Parameters};
 use rmcp::model::{
-    AnnotateAble, GetPromptRequestParams, GetPromptResult, JsonObject, ListPromptsResult,
+    GetPromptRequestParams, GetPromptResponse, JsonObject, ListPromptsResult,
     ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParams, ProtocolVersion,
-    RawResourceTemplate, ReadResourceRequestParams, ReadResourceResult, ResourceContents,
-    ServerCapabilities, ServerInfo,
+    ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, ResourceContents,
+    ResourceTemplate, ServerCapabilities, ServerInfo,
 };
 use rmcp::service::RequestContext;
 use rmcp::{
@@ -521,7 +521,7 @@ fn parse_resource_uri(uri: &str) -> Result<(GetKind, String), ErrorData> {
 /// covering every [`GetKind`]. A template, not a static list — enumerating every
 /// NetBox object would mean walking the whole instance.
 fn resource_templates() -> ListResourceTemplatesResult {
-    let template = RawResourceTemplate::new("nbox://{kind}/{ref}", "NetBox object")
+    let template = ResourceTemplate::new("nbox://{kind}/{ref}", "NetBox object")
         .with_title("NetBox object")
         .with_description(
             "Read one NetBox object as JSON. `kind` is one of device, ip, prefix, vlan, \
@@ -531,8 +531,7 @@ fn resource_templates() -> ListResourceTemplatesResult {
              `<device>/<name>` for interface, taken verbatim after the device since names may contain slashes). \
              Percent-encode a `ref` that contains '/'. Same view as the nbox_get tool.",
         )
-        .with_mime_type("application/json")
-        .no_annotation();
+        .with_mime_type("application/json");
     ListResourceTemplatesResult::with_all_items(vec![template])
 }
 
@@ -1211,8 +1210,8 @@ impl ServerHandler for NboxMcp {
         &self,
         request: ReadResourceRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<ReadResourceResult, ErrorData> {
-        self.read_resource_impl(&request.uri).await
+    ) -> Result<ReadResourceResponse, ErrorData> {
+        self.read_resource_impl(&request.uri).await.map(Into::into)
     }
 
     // Curated investigation prompts (ROADMAP "MCP prompts catalog"). The catalog
@@ -1236,8 +1235,8 @@ impl ServerHandler for NboxMcp {
         &self,
         request: GetPromptRequestParams,
         _context: RequestContext<RoleServer>,
-    ) -> Result<GetPromptResult, ErrorData> {
-        prompts::render_prompt(request)
+    ) -> Result<GetPromptResponse, ErrorData> {
+        prompts::render_prompt(request).map(Into::into)
     }
 }
 
