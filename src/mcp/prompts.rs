@@ -20,7 +20,7 @@
 use rmcp::ErrorData;
 use rmcp::model::{
     GetPromptRequestParams, GetPromptResult, JsonObject, Prompt, PromptArgument, PromptMessage,
-    PromptMessageRole,
+    Role,
 };
 
 /// The argument name → string value extractor for prompt arguments. MCP prompt
@@ -126,7 +126,7 @@ pub fn render_prompt(request: GetPromptRequestParams) -> Result<GetPromptResult,
             ));
         }
     };
-    let messages = vec![PromptMessage::new_text(PromptMessageRole::User, plan)];
+    let messages = vec![PromptMessage::new_text(Role::User, plan)];
     Ok(GetPromptResult::new(messages))
 }
 
@@ -295,7 +295,7 @@ mod tests {
         for p in prompts() {
             let result = render_prompt(request(&p.name)).expect("render");
             assert_eq!(result.messages.len(), 1, "{} returned >1 message", p.name);
-            assert_eq!(result.messages[0].role, PromptMessageRole::User);
+            assert_eq!(result.messages[0].role, Role::User);
         }
     }
 
@@ -312,7 +312,7 @@ mod tests {
         for (prompt, tool) in cases {
             let result = render_prompt(request(prompt)).unwrap();
             let text = match &result.messages[0].content {
-                rmcp::model::PromptMessageContent::Text { text } => text.as_str(),
+                rmcp::model::ContentBlock::Text(t) => t.text.as_str(),
                 _ => panic!("{prompt} returned non-text content"),
             };
             assert!(
@@ -330,7 +330,7 @@ mod tests {
         ))
         .unwrap();
         let text = match &result.messages[0].content {
-            rmcp::model::PromptMessageContent::Text { text } => text.as_str(),
+            rmcp::model::ContentBlock::Text(t) => t.text.as_str(),
             _ => panic!("non-text content"),
         };
         assert!(
@@ -369,7 +369,7 @@ mod tests {
         // (scoped to "all prefixes"), not an error.
         let result = render_prompt(request("ip_utilization_audit")).unwrap();
         let text = match &result.messages[0].content {
-            rmcp::model::PromptMessageContent::Text { text } => text.as_str(),
+            rmcp::model::ContentBlock::Text(t) => t.text.as_str(),
             _ => panic!("non-text content"),
         };
         assert!(
@@ -382,7 +382,7 @@ mod tests {
     fn plan_text(name: &str) -> String {
         let result = render_prompt(request(name)).expect("render");
         match &result.messages[0].content {
-            rmcp::model::PromptMessageContent::Text { text } => text.clone(),
+            rmcp::model::ContentBlock::Text(t) => t.text.clone(),
             other => panic!("{name} returned non-text content: {other:?}"),
         }
     }

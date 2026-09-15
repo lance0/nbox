@@ -1942,7 +1942,7 @@ fn one_text(result: &super::ReadResourceResult, expect_uri: &str) -> serde_json:
             assert_eq!(mime_type.as_deref(), Some("application/json"));
             serde_json::from_str(text).expect("content is JSON")
         }
-        ResourceContents::BlobResourceContents { .. } => panic!("expected text content"),
+        _ => panic!("expected text content"),
     }
 }
 
