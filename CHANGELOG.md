@@ -13,6 +13,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   prompts, or negotiated protocol version (`2025-11-25`); the resource-template
   and prompt-message types and the `read_resource` / `get_prompt` handler
   returns moved to their rmcp 3 shapes.
+- Dependency refresh: `jsonwebtoken` 10 → 11, `base64` 0.22 → 0.23, `dirs`
+  6 → 7, and semver-compatible updates across the tree (tokio, clap, serde,
+  time, futures, …). No behavior change: the OIDC algorithm allowlist is
+  unchanged, and `dirs` 7 only moves the Windows preference directory, which
+  nbox does not use (config paths are the same on every platform).
 
 ### Fixed
 
