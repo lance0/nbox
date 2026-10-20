@@ -414,7 +414,7 @@ mod tests {
         ];
 
         let view = InterfaceView::build(iface, ips, vec![]);
-        assert!(view.trace.is_empty());
+        assert_eq!(view.trace, [] as [String; 0]);
         assert_eq!(view.device.as_deref(), Some("edge01"));
         assert_eq!(view.type_.as_deref(), Some("SFP+ (10GE)"));
         assert_eq!(view.mode.as_deref(), Some("Tagged"));
@@ -436,7 +436,7 @@ mod tests {
         let iface: Interface =
             serde_json::from_value(json!({"id": 1, "url": "u", "name": "xe-0/0/0"})).unwrap();
         let view = InterfaceView::build(iface, vec![], vec![]);
-        assert!(view.tags.is_empty());
+        assert_eq!(view.tags, [] as [String; 0]);
         let value = serde_json::to_value(&view).unwrap();
         assert!(value.get("tags").is_none());
         assert!(!view.to_plain().contains("tags:"));

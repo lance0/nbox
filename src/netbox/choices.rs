@@ -380,12 +380,15 @@ mod tests {
     #[test]
     fn extract_choices_returns_empty_when_field_or_choices_absent() {
         let body = json!({"actions": {"POST": {"body": {"name": {"type": "string"}}}}});
-        assert!(extract_choices(&body, "status").is_empty());
+        assert_eq!(extract_choices(&body, "status"), [] as [ChoiceOption; 0]);
         // Field present but no `choices` array.
         let body = json!({"actions": {"POST": {"body": {"status": {"type": "choice"}}}}});
-        assert!(extract_choices(&body, "status").is_empty());
+        assert_eq!(extract_choices(&body, "status"), [] as [ChoiceOption; 0]);
         // No `actions` key at all.
-        assert!(extract_choices(&json!({"renders": []}), "status").is_empty());
+        assert_eq!(
+            extract_choices(&json!({"renders": []}), "status"),
+            [] as [ChoiceOption; 0]
+        );
     }
 
     #[test]

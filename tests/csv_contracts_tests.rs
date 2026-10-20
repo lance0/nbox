@@ -142,7 +142,7 @@ fn cols_parsing_trims_whitespace_and_drops_empty_fields() {
     // per item — it does not fall back to inferred columns. (`None` is the
     // inferring case, covered by the default-columns test.)
     let empty = parse_cols(" , , ");
-    assert!(empty.is_empty());
+    assert_eq!(empty, [] as [std::string::String; 0]);
     assert_eq!(to_csv(&value, Some(&empty)).unwrap(), "\n\n");
 }
 

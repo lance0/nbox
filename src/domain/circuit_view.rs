@@ -401,7 +401,7 @@ mod tests {
         assert_eq!(view.commit_rate_kbps, Some(1_000_000));
         assert_eq!(view.tags, vec!["transit"]);
         assert!(view.terminations.is_empty());
-        assert!(view.diagram.is_empty());
+        assert_eq!(view.diagram, [] as [String; 0]);
 
         let plain = view.to_plain();
         assert!(plain.starts_with("cid: ACME-1234"));
@@ -415,7 +415,7 @@ mod tests {
     fn tags_dropped_when_empty() {
         let c = circuit(json!({"id": 3, "url": "u", "cid": "ACME-1234"}));
         let view = CircuitView::from_model(c);
-        assert!(view.tags.is_empty());
+        assert_eq!(view.tags, [] as [String; 0]);
         let value = serde_json::to_value(&view).unwrap();
         assert!(value.get("tags").is_none());
         assert!(!view.to_key_values().render().contains("tags:"));

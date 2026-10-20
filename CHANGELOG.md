@@ -28,6 +28,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   move off yanked `chacha20` 0.10.0 and `spin` 0.9.8.
 - Allow `clippy::unused_async_trait_impl` (new in rustc 1.98) on the MCP
   `ServerHandler` impl, whose methods are async by the rmcp trait contract.
+- Bump `rustls` 0.23.45 → 0.23.46 (RUSTSEC-2026-0346, -0347, -0348, -0349:
+  `Debug` impls exposing session secrets, ECH-rejection data leak, brotli
+  certificate decompression allocation, ServerHello key-exchange downgrade).
+- Satisfy the `clippy::assert_is_empty` lint (new in rustc 1.99) in tests:
+  `assert!(x.is_empty())` → `assert_eq!`; no behavior change.
 
 ## [0.14.1] - 2026-07-31
 

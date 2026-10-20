@@ -1563,7 +1563,7 @@ search = "graphql"
         assert_eq!(bare.serve.oidc_issuer, None);
         assert_eq!(bare.serve.audience, None);
         assert_eq!(bare.serve.jwks_url, None);
-        assert!(bare.serve.allowed_hosts.is_empty());
+        assert_eq!(bare.serve.allowed_hosts, [] as [String; 0]);
         assert_eq!(bare.serve.rate_limit, None);
         assert!(!bare.serve.allow_writes);
         assert!(!bare.serve.local_writes);

@@ -3365,7 +3365,7 @@ mod tests {
         let (ver, msg, sev) =
             tui_startup_status(Err(anyhow::anyhow!("authentication failed (HTTP 401)")))
                 .expect("recoverable");
-        assert!(ver.is_empty());
+        assert_eq!(ver, "");
         assert!(msg.contains("authentication failed"), "got: {msg}");
         assert!(msg.contains("Press S to edit the profile"), "got: {msg}");
         assert!(matches!(sev, Severity::Error));

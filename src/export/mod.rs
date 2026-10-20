@@ -453,7 +453,7 @@ mod tests {
     #[test]
     fn empty_input_yields_empty_array() {
         let groups = prometheus_sd(&[], 9100);
-        assert!(groups.is_empty());
+        assert_eq!(groups, [] as [TargetGroup; 0]);
     }
 
     #[test]

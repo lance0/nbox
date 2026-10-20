@@ -132,7 +132,7 @@ mod tests {
         }))
         .unwrap();
         let view = DeviceView::from_model(device);
-        assert!(view.tags.is_empty());
+        assert_eq!(view.tags, [] as [String; 0]);
         let value = serde_json::to_value(&view).unwrap();
         assert!(value.get("tags").is_none());
         assert!(!view.to_key_values().render().contains("tags:"));

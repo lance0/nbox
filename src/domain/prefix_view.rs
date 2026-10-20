@@ -258,7 +258,7 @@ mod tests {
         let p: Prefix =
             serde_json::from_value(json!({"id": 5, "url": "u", "prefix": "10.0.0.0/8"})).unwrap();
         let view = PrefixView::build(p, vec![], vec![]);
-        assert!(view.tags.is_empty());
+        assert_eq!(view.tags, [] as [String; 0]);
         let value = serde_json::to_value(&view).unwrap();
         assert!(value.get("tags").is_none());
         assert!(!view.to_plain().contains("tags:"));

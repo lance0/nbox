@@ -718,7 +718,7 @@ mod tests {
         let w = OnboardingWizard::new();
         // The name starts blank — it's derived from the url host on save, not
         // pre-seeded to `default`.
-        assert!(w.form.name().is_empty());
+        assert_eq!(w.form.name(), "");
         assert_eq!(w.form.form_input().focus(), field::URL);
         assert!(!w.advanced, "advanced fields start collapsed");
     }

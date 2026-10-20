@@ -182,7 +182,7 @@ mod tests {
         }))
         .unwrap();
         let view = VlanView::build(v, vec![], None);
-        assert!(view.tags.is_empty());
+        assert_eq!(view.tags, [] as [String; 0]);
         let value = serde_json::to_value(&view).unwrap();
         assert!(value.get("tags").is_none());
         assert!(!view.to_plain().contains("tags:"));

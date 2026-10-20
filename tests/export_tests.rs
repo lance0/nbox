@@ -251,7 +251,7 @@ async fn prometheus_sd_rejects_both_prefix_and_tag() {
         "prod".as_ref(),
     ]);
     assert_eq!(out.code, Some(2));
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, "");
     assert!(
         out.stderr.contains("mutually exclusive"),
         "stderr: {}",
@@ -400,7 +400,7 @@ async fn address_list_rejects_bad_family() {
         "5".as_ref(),
     ]);
     assert_eq!(out.code, Some(2), "stderr: {}", out.stderr);
-    assert!(out.stdout.is_empty());
+    assert_eq!(out.stdout, "");
     assert!(out.stderr.contains("--family"), "stderr: {}", out.stderr);
 }
 

@@ -220,7 +220,7 @@ mod tests {
         }))
         .unwrap();
         let view = IpView::build(ip, None);
-        assert!(view.tags.is_empty());
+        assert_eq!(view.tags, [] as [String; 0]);
         let value = serde_json::to_value(&view).unwrap();
         assert!(value.get("tags").is_none());
         assert!(!view.to_key_values().render().contains("tags:"));
@@ -238,7 +238,7 @@ mod tests {
         .unwrap();
         let view = IpView::build(ip, None);
         assert_eq!(view.nat_inside.as_deref(), Some("100.64.0.9/30"));
-        assert!(view.nat_outside.is_empty());
+        assert_eq!(view.nat_outside, [] as [String; 0]);
 
         // JSON: `nat_inside` set, `nat_outside` omitted (empty Vec → skip).
         let value = serde_json::to_value(&view).unwrap();
@@ -298,7 +298,7 @@ mod tests {
         .unwrap();
         let view = IpView::build(ip, None);
         assert!(view.nat_inside.is_none());
-        assert!(view.nat_outside.is_empty());
+        assert_eq!(view.nat_outside, [] as [String; 0]);
         let value = serde_json::to_value(&view).unwrap();
         assert!(value.get("nat_inside").is_none());
         assert!(value.get("nat_outside").is_none());

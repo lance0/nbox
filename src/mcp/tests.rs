@@ -525,7 +525,7 @@ async fn search_returns_results_and_errors() {
     assert_eq!(results.len(), 1);
     assert_eq!(results[0]["display"], "edge01");
     // No endpoint failed, so the errors list is present and empty.
-    assert!(value["errors"].as_array().expect("errors array").is_empty());
+    assert_eq!(value["errors"], serde_json::json!([]));
 }
 
 #[tokio::test]
@@ -2356,7 +2356,7 @@ mod contracts {
         // Exact-match query ranks highest.
         assert_eq!(hit["score"], 100);
         // Every endpoint succeeded → errors present and empty (fail-closed shape).
-        assert!(value["errors"].as_array().expect("errors array").is_empty());
+        assert_eq!(value["errors"], serde_json::json!([]));
     }
 
     /// `nbox_search` with `fields` trims each hit in `results` to the requested
@@ -2389,7 +2389,7 @@ mod contracts {
         assert_eq!(hit["kind"], "device");
         assert_eq!(hit["display"], "edge01");
         // `errors` is not projected away — fail-closed reporting survives.
-        assert!(value["errors"].as_array().expect("errors array").is_empty());
+        assert_eq!(value["errors"], serde_json::json!([]));
     }
 
     /// `nbox_search` hit `kind` for an IP address serializes as `ip_address`
@@ -4406,7 +4406,7 @@ async fn plan_write_device_status_produces_plan() {
     assert_eq!(status_change.before, "planned");
     assert_eq!(status_change.after, "active");
     // The plan must have a confirm_token (non-empty).
-    assert!(!plan.confirm_token.is_empty());
+    assert_ne!(plan.confirm_token, "");
 }
 
 /// A write-enabled server whose `sub` resolves to a per-user token via `env_name`

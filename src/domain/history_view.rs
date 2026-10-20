@@ -248,7 +248,7 @@ mod tests {
         ];
         let view = HistoryView::from_models(changes, false);
         // prechange is null → no diff (only both-present objects are compared).
-        assert!(view.entries[0].fields_changed.is_empty());
+        assert_eq!(view.entries[0].fields_changed, [] as [String; 0]);
     }
 
     #[test]

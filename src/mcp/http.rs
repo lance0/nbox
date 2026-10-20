@@ -1330,7 +1330,7 @@ mod tests {
         assert!(allowed.allows(&host_port("another.example.com", 1)));
         // An opaque audience contributes no host but isn't an error.
         let opaque = build_allowed_hosts(Some("nbox"), &[]).expect("opaque audience ok");
-        assert!(opaque.extra.is_empty());
+        assert_eq!(opaque.extra, [] as [Authority; 0]);
     }
 
     #[test]

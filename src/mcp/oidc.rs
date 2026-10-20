@@ -650,7 +650,7 @@ mod tests {
         };
         let id = identity_from_claims(claims);
         assert_eq!(id.client_id.as_deref(), Some("explicit"));
-        assert!(id.scopes.is_empty());
+        assert_eq!(id.scopes, [] as [String; 0]);
     }
 
     // --- (H2): the OIDC HTTP client is redirect-safe (no HTTPS downgrade) -------

@@ -5787,7 +5787,7 @@ mod tests {
         }
 
         a.handle_event(AppEvent::PreviewTick);
-        assert!(a.status.is_empty());
+        assert_eq!(a.status, "");
         assert_eq!(a.status_severity, Severity::Info);
         assert_eq!(a.status_ttl, None);
     }
@@ -6838,7 +6838,7 @@ mod tests {
         let cmds = a.handle_event(press(KeyCode::Enter));
         assert!(cmds.is_empty());
         assert_eq!(a.browse_kind, None);
-        assert!(a.view.is_empty());
+        assert_eq!(a.view, [] as [usize; 0]);
         assert_eq!(a.focus, Focus::List);
     }
 
@@ -7731,7 +7731,7 @@ mod tests {
         );
         profile_switched_ok(&mut a, "4.5.0");
         assert!(a.results.is_empty(), "old results dropped on success");
-        assert!(a.view.is_empty());
+        assert_eq!(a.view, [] as [usize; 0]);
         assert!(a.recent.is_empty(), "old recents dropped");
         assert!(a.detail.is_none(), "old detail dropped");
         assert!(a.browse_cache.is_empty(), "old browse cache dropped");
