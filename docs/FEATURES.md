@@ -130,76 +130,202 @@ See [AGENTS.md](../AGENTS.md) for the machine-readable surface and exit codes.
 
 ## TUI
 
-`nbox` (no subcommand) launches the TUI — a three-pane home (a navigation rail of
-browsable kinds → results → a live detail preview):
+`nbox` (no subcommand) launches the TUI: a three-pane home with a navigation
+rail of browsable kinds, a results list, and a live detail preview. First run
+with no config drops into a guided onboarding wizard instead.
 
-- `/` search — or, on a browse kind, a server-side filter on that list: a name
-  substring (`name__ic`) for devices/sites/racks/VLANs/VRFs/route-targets, or
-  network containment for prefix (`within_include`) and IP (`parent`) browse
-  (type a CIDR, Enter; the title reads `within "10.0.0.0/24"`). `:` command palette,
-  `f`/`F` filter / clear, `Tab`/`Shift+Tab` move between panes (or cycle detail
-  tabs), `j`/`k` move (live-browse the kind while on the nav rail), `g`/`G`
-  top/bottom, `Enter` open.
-- `o` open in browser, `y` copy, `R` related objects (jump between connected
-  objects), navigable device tabs `i`/`p`/`c`/`v`/`s` (`j`/`k` + `Enter` opens a
-  row — interfaces/cables open the interface detail, which has a cable-path A↔Z
-  diagram), `e` rack elevation.
-- `D` overview dashboard, `T` prefix tree (`Space`/`←`/`→` collapse/expand), `t`
-  cycle theme, `r` refresh, recents on the home screen, optional auto-refresh
-  (`[ui].refresh_secs`).
-- `P`/`Ctrl+P` switch profile live; `S` opens the Config modal — add/edit/select
-  profiles and a settings editor (appearance, behavior, logging). First run with
-  no config drops into a guided onboarding wizard instead.
+On a browse kind, `/` is a server-side filter on that list rather than a search:
+a name substring (`name__ic`) for devices/sites/racks/VLANs/VRFs/route-targets,
+or network containment for prefix (`within_include`) and IP (`parent`) browse
+(type a CIDR, Enter; the title reads `within "10.0.0.0/24"`).
 
-Twelve themes (`NO_COLOR` honored); `?`/`F1` shows the full keymap.
+The home screen lists recently opened objects (deduped, most recent first) when
+there are no search results; `Enter` reopens one. Set `[ui].refresh_secs` to
+auto-refresh the current search on an interval (off by default). A detail served
+from the [read cache](CONFIG.md#cache-cache) shows "cached Ns ago"; `r` fetches
+fresh.
+
+### Keybindings
+
+| Key | Action |
+|-----|--------|
+| `/` | search |
+| `:` | command palette |
+| `f` / `F` | filter results / clear filters |
+| `Tab` / `Shift+Tab` | switch pane focus (or cycle detail tabs) |
+| `j` / `k` | move selection / scroll detail (on the nav rail, live-browse the kind) |
+| `g` / `G` | top / bottom |
+| `PgUp` / `PgDn` | page up / down |
+| `Enter` | open selected object |
+| `o` | open in browser |
+| `y` | copy current item label (desktop clipboard, or OSC 52 over SSH/headless terminals) |
+| `R` | related objects (jump between connected objects) |
+| `D` | overview dashboard |
+| `T` | prefix tree (`Space` / `←` / `→` collapse/expand) |
+| `t` | cycle theme |
+| `r` | refresh |
+| `P` / `Ctrl+P` | switch profile (cycle forward / backward) |
+| `S` | open the Config modal (profiles + settings) |
+| `b` / `Esc` | back / clear search |
+| `i p c v s` | device tabs (interfaces / IPs / cables / VLANs / services); `j`/`k` + `Enter` opens a row — interfaces/cables open the interface detail (with its cable-path A↔Z diagram) |
+| `e` | rack elevation |
+| `u` | dismiss update notice |
+| `?` / `F1` | help |
+| `q` / `Ctrl+c` | quit |
+
+### Command palette
+
+`:` accepts `device`/`ip`/`prefix`/`vlan`/`site`/`vrf <ref>`, `find <q>` (or
+bare text), `filter <key>=<value>`, `open`, `copy`, `theme <name>`,
+`profile <name>`, `config`, and `refresh`.
+
+### Switching profiles
+
+`P` / `Ctrl+P` (or `profile <name>` in the palette) switches between the
+profiles in your config without restarting: it rebuilds the client for that
+instance and re-probes `/api/status/`, so the header flips to the new profile
+and its NetBox version. With a single profile the hotkey is a no-op. The cycle
+is session-only; it does not rewrite `active_profile` (use
+`nbox profile use <name>` for that).
+
+### Config modal
+
+`S` (or `config` in the palette) opens the Config modal to manage profiles
+in-app: list them (active marked), and add, edit, select, or delete without
+hand-editing `config.toml`. The add/edit form covers `name`, `url`,
+`token_env`, `auth_scheme`, and `verify_tls`, plus an optional masked token
+field. A typed token is saved to `config.toml` (redacted by display commands;
+written user-only on Unix); on an edit, `Ctrl+X` clears the stored token.
+`Ctrl+T` test-connects before you commit; `Enter` saves, `Ctrl+G` saves and
+switches to it. Unlike the `P` cycle, selecting or adding-and-using a profile
+here persists `active_profile`. Deleting the active or last profile is blocked.
+
+`Tab` switches the modal to its **Settings** section, a two-pane editor for
+appearance, behavior, connection, cache, and logging keys. Saves are
+format-preserving and hot-applied where possible. The keys and navigation are
+in [Configuration: UI settings](CONFIG.md#ui-settings).
+
+### Themes
+
+Twelve built-in themes. Set `[ui].theme` in the config, press `t` to cycle, or
+use `:theme <name>`:
+
+`default`, `kawaii`, `cyber`, `dracula`, `monochrome`, `matrix`, `nord`,
+`gruvbox`, `catppuccin`, `tokyo_night`, `solarized`, `light`.
+
+`light` is the only light-background theme. `NO_COLOR` is honored: when set, the
+TUI renders without color and marks the selection with a `>` cursor.
 
 ## MCP server
 
-`nbox serve` defaults to a read-only MCP server over stdio. An MCP host launches it as a
-subprocess and speaks JSON-RPC over stdin/stdout; the tools reuse the CLI's query
-+ view layer and return the same JSON view models. JSON-RPC on stdout, logs on
-stderr; URL/token from the active profile (same `-p`/`--config` flags). The read
-tools are annotated read-only; the write tools (`nbox_plan_write`/`nbox_apply_write`)
-are not and execute only with local stdio `--local-writes` or shared HTTP/OIDC
-`--allow-writes` plus caller `nbox:write` and a vault.
-`nbox serve --print-config` prints the paste-ready
-`mcpServers` JSON (absolute binary path, echoed `--profile`/`--config`/
-`--local-writes`, placeholder token) and exits — no server start, no connection;
-see docs/MCP.md for the per-host config-file path.
-
-| Tool | What |
-| ---- | ---- |
-| `nbox_status` | Connection + active backend capabilities + NetBox/Django/Python versions + a token-validity preflight (`token`: `valid`/`invalid`/`unverified`; NetBox 4.5+). |
-| `nbox_search` | Search devices/sites/racks/rack-groups/IPs/prefixes/VLANs/circuits/virtual-circuits/aggregates/ASNs/IP-ranges/tenants/contacts/providers/VMs/VM-types/clusters/VRFs/route-targets; `query`, `limit`, `status`, `site`, `region`, `site_group`, `location`, `tenant`, `role`, `tag`, `owner`/`owner_group` (4.5+; user/group by name), `vrf` (id\|rd\|name; IP/prefix only). |
-| `nbox_get` | One object by `kind` (device, ip, prefix, vlan, site, rack, rack_group, circuit, virtual_circuit, aggregate, asn, ip_range, tenant, contact, provider, vm, vm_type, cluster, vrf, route_target, mac, interface) + `ref`; `vrf`/`site`/`group` disambiguate. |
-| `nbox_get_interface` | One interface on a device, with its cable-path trace. |
-| `nbox_next_ip` | Next available address(es) in a prefix. |
-| `nbox_next_prefix` | Available child prefix(es) of a given length, or all free blocks. |
-| `nbox_journal` | Recent journal entries for an object. |
-| `nbox_history` | Change history (system audit log: create/update/delete, who + when) for an object. `/api/core/object-changes/` (NetBox 4.x) — distinct from `nbox_journal` (operator notes). |
-| `nbox_list_tags` | List tags. |
-| `nbox_tagged` | Objects carrying a tag, across kinds (NetBox 4.3+); `tag` (id\|name\|slug). Cross-kind reverse lookup. |
-| `nbox_cache_clear` | Drop nbox's local read cache so the next lookups fetch fresh (read-only w.r.t. NetBox). |
-| `nbox_plan_write` | Plan a safe write (interface description, device status, IP/prefix/IP-range reserve, tag add/remove): builds a before/after diff and a confirm token without mutating. Requires local stdio `--local-writes`, or shared HTTP/OIDC `--allow-writes` plus `nbox:write` and a `[serve.vault]` mapping for the caller's OIDC `sub`. |
-| `nbox_apply_write` | Apply a previously planned write (verifies the confirm token, then executes the server-stored plan under the same write mode). Same gating as `nbox_plan_write`. |
-
-A loopback HTTP transport ships in the default build (behind the `http` cargo
-feature, on by default; `--no-default-features` for stdio-only):
-`nbox serve --http 127.0.0.1:8080`, optional static bearer — same tools mounted at
-`/mcp`, loopback only with `Origin`/`Host` validation. Add `--oidc-issuer` +
-`--audience` for OAuth 2.1 resource-server mode (inbound IdP JWT validation,
-Protected Resource Metadata, routable bind allowed) — accountability, not per-user
-RBAC. See [docs/MCP.md](MCP.md). The same objects are also exposed as MCP
-**resources** via one `nbox://{kind}/{ref}` template (the view `nbox_get`
-returns). Local stdio MCP writes ship behind `--local-writes`; per-user NetBox
-identity bridging ships as the credential vault (`[serve.vault.<sub>]` maps each
-caller's OIDC `sub` to a per-user NetBox token) for shared HTTP/OIDC writes. The
-MCP **prompts** catalog ships a curated set of read-only
-investigation prompts (`ip_utilization_audit`, `cable_path_trace`,
-`find_stale_prefixes`, `object_change_review`). A raw escape-hatch MCP tool is
-later.
+`nbox serve` exposes the same lookups to AI agents over MCP: eleven read tools,
+every object as an `nbox://{kind}/{ref}` resource, a small catalog of read-only
+investigation prompts, and two opt-in write tools (`nbox_plan_write` /
+`nbox_apply_write`) on the same safe-write engine as the CLI. Read-only by
+default; stdio by default, with a loopback HTTP transport and an OAuth 2.1
+resource-server mode for shared deployments. Tools, transports, write modes, and
+host setup are in [MCP server](MCP.md).
 
 ## Robustness
 
 Retries HTTP 429 (`Retry-After` + backoff). `search` fails closed if an endpoint
 errors (use `--partial` for best-effort). Targets NetBox 4.2+.
+
+## CLI reference
+
+`nbox <command> --help` (or `man nbox-<command>`, see
+[Man pages](INSTALL.md#man-pages)) has the full flag list for each command.
+
+```bash
+nbox                              # launch the TUI
+nbox status                       # connection + backend capabilities + NetBox/Django/Python versions
+                                  # + token-validity preflight (NetBox 4.5+)
+nbox search <query> [--limit N] [--status/--site/--region/--site-group/--location/--tenant/--role/--tag <v>] [--owner <name>] [--owner-group <name>] [--vrf <id|rd|name>] [--cols a,b,c] [--partial]
+                                  # one scope flag at a time; --site is exact, region/site-group/location include descendants where supported.
+                                  # --vrf filters IP/prefix results.
+                                  # --owner/--owner-group filter by user/group name (NetBox 4.5+).
+nbox device <name-or-id> [--journal] [--journal-limit N]
+  device <name> set status <value>                    # write: status validated live via OPTIONS; --dry-run | --allow-writes --confirm [--message]
+nbox ip <address> [--vrf <name>] [--journal]    # --vrf disambiguates duplicates across VRFs
+                                  # shows nat_inside/nat_outside (NetBox 4.6) when set
+  ip reserve <cidr> [--vrf <name>] [--description "…"] [--dns-name "…"] [--count N]
+                                  # write: reserve the next available IP (POST available-ips); --dry-run | --allow-writes --confirm [--message]
+                                  # --count N: reserve N IPs atomically (one list-body POST, all-or-nothing); any failure exits 1
+nbox prefix <cidr> [--vrf <name>] [--journal]   # includes utilization + children when present
+  prefix reserve [--length L] [--vrf <name>] [--description "…"]
+                                  # write: reserve the next available child prefix (POST available-prefixes); --dry-run | --allow-writes --confirm [--message]
+nbox next-ip <cidr> [--count N] [--vrf <name>]        # next available address(es)
+nbox next-prefix <cidr> [--length L] [--vrf <name>]   # available free block(s)
+nbox vlan <vid-or-name> [--site <s>] [--group <g>] [--journal]
+nbox site <name-or-slug> [--journal]
+nbox rack <name-or-id> [--journal]
+nbox rack-group <slug-or-name-or-id>             # NetBox 4.6+
+nbox circuit <cid-or-id> [--journal]              # incl. its A↔Z terminations + path
+nbox virtual-circuit <cid-or-id>                   # incl. its multi-point terminations (4.2+)
+nbox provider <slug-or-name-or-id>
+nbox aggregate <cidr-or-id> [--journal]
+nbox asn <number> [--journal]
+nbox ip-range <start-or-id> [--journal]
+  ip-range reserve [--description "…"] [--dns-name "…"] [--count N]
+                                  # write: reserve the next available IP in an IP range (POST available-ips); --dry-run | --allow-writes --confirm [--message]
+                                  # --count N: reserve N IPs atomically (one list-body POST, all-or-nothing); any failure exits 1
+nbox tenant <slug-or-name-or-id>
+nbox contact <name-or-id>
+nbox vm <name-or-id>
+nbox vm-type <slug-or-name-or-id>                 # NetBox 4.6+
+nbox cluster <name-or-id>
+nbox vrf <name-or-rd-or-id>
+nbox route-target <name-or-id>
+nbox mac <addr>                   # reverse-resolve to the carrying interface(s)/device(s)
+nbox interface <device> <interface>
+  interface <device> <interface> set description "…"   # write: --dry-run | --allow-writes --confirm [--message]
+nbox tags                         # list tags (slug, name, count)
+nbox tagged <tag>                 # objects carrying a tag, across kinds
+                                  # (NetBox 4.3+; tag = id|name|slug)
+nbox tag add <type> <name> <tag>   # write: add a tag to any object (PATCH tags array)
+nbox tag remove <type> <name> <tag>  # write: remove a tag from any object (PATCH tags array)
+nbox journal <kind> <ref>         # recent journal entries for an object
+                                  # kinds incl. interface as <device>/<name>
+                                  # --journal folds recent entries into a detail lookup (cap 5)
+                                  # --journal-limit N overrides the cap (implies --journal)
+nbox history <kind> <ref> [--diff]  # system audit log (create/update/delete, who + when)
+                                  # /api/core/object-changes/ (NetBox 4.x); distinct from journal
+nbox open <kind>/<ref>            # device, ip, prefix, vlan, site, rack, rack-group, circuit, virtual-circuit, provider,
+                                  # aggregate, asn, ip-range, tenant, contact, vm, vm-type, cluster, vrf, route-target,
+                                  # and interface/<device>/<name> (the name may contain slashes,
+                                  # e.g. xe-0/0/1)
+nbox raw GET <api-path>           # raw read-only API request (escape hatch)
+nbox export <prometheus-sd|address-list|device-inventory>
+                                  # structured read-only exports (Prometheus SD JSON, firewall/blocklist
+                                  # address list, device inventory) — fixed shapes for scripting
+nbox serve [--http <addr>]        # read-first MCP server for AI agents (read-only by default;
+                                  # --local-writes enables local stdio writes;
+                                  # --allow-writes enables shared HTTP/OIDC writes)
+                                  # --print-config prints the paste-ready mcpServers JSON and exits
+nbox config <init|path|show|token>    # token: status reports the resolved source (never echoed)
+nbox profile <add|use|remove|list|show>
+nbox completions <bash|zsh|fish|powershell|elvish>
+nbox man [DIR]                    # man pages: `nbox man > nbox.1` (top-level),
+                                  # or `nbox man man/` for the full per-subcommand set
+```
+
+### Global flags
+
+These apply to every command:
+
+| Flag | Effect |
+|------|--------|
+| `-o, --output <fmt>` | `plain` (default), `json`, or `csv` (tabular/list results only) |
+| `--json` | Shortcut for `-o json` |
+| `--fields a,b,c` | JSON: keep only these top-level fields |
+| `--raw` | JSON: compact (single line) instead of pretty |
+| `--envelope` | JSON: wrap as `{ schema_version, data }` |
+| `-p, --profile <name>` | Use a specific profile for this invocation |
+| `--config <path>` | Use an alternate config file |
+| `--log-level <spec>` | `tracing` filter (`info`, `debug`, `nbox=debug`, …) |
+| `--log-file <path>` | Write logs to this file (and stderr); stdout stays clean |
+| `--no-tui` | Refuse to launch the interactive TUI (a bare `nbox` or `nbox tui` exits `2` instead) |
+
+Logs go to stderr, never stdout; the level and file precedence are in
+[Configuration: Logging](CONFIG.md#logging). Exit codes are stable; see
+[Scripting: Exit codes](SCRIPTING.md#exit-codes).

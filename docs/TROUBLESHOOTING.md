@@ -1,11 +1,21 @@
 # Troubleshooting
 
-Symptom → cause → fix. The short table in the [README](../README.md#troubleshooting)
-covers the common cases; this is the long form, grouped by where things go wrong.
+Symptom → cause → fix. The table covers the common cases; the sections below
+are the long form, grouped by where things go wrong.
 Exit codes are stable: `0` success, `1` generic, `2` usage, `3` auth/permission,
 `4` not found, `5` ambiguous reference. When in doubt, run `nbox status` first —
 it confirms reachability, auth, and the NetBox version, and most failures repeat
 there with a clearer message.
+
+| Symptom | Fix |
+|---------|-----|
+| `no config at … — run nbox config init` | First run: launch `nbox` for the guided wizard, or `nbox profile add …`. |
+| `error: authentication failed` (exit 3) | The token is missing/invalid. Check `nbox config token status` for the resolved source; paste a token in the TUI, export `NBOX_TOKEN`, or point `token_env` at a set variable. |
+| `403` / permission denied (exit 3) | The token is valid but lacks object permissions, or your NetBox needs `LOGIN_REQUIRED`-aware tokens. Use a token with read access. |
+| TLS / certificate error | For a lab with a self-signed cert, set `verify_tls = false` on that profile (never in production). |
+| `operation timed out` on one search endpoint | Transient; nbox already disables stale keep-alive reuse. Retry, or raise `timeout_secs`. |
+| `ambiguous` (exit 5) | The reference matched several objects. Disambiguate (`--vrf` for an IP/prefix, `--site`/`--group` for a VLAN). |
+| NetBox version error | nbox requires NetBox **4.2+**. Check `nbox status`; see [Compatibility](COMPATIBILITY.md). |
 
 ## Connection & auth
 
@@ -192,7 +202,7 @@ for a VLAN VID present at several sites — or pass an exact ID:
 
 ```bash
 nbox ip 10.0.0.1 --vrf mgmt       # the IP in the mgmt VRF
-nbox vlan 100 --site iad1         # VID 100 at site iad1
+nbox vlan 100 --site dc1          # VID 100 at site dc1
 ```
 
 ## MCP server

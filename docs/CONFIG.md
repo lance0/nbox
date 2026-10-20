@@ -5,6 +5,13 @@ Config lives at `~/.config/nbox/config.toml` (Linux/macOS) or
 inspect the resolved path with `nbox config path` and the effective config with
 `nbox config show`. A full example is in [`examples/config.toml`](../examples/config.toml).
 
+You don't have to write it by hand. Launch `nbox` with no config and the TUI
+runs a first-run wizard that captures a profile, test-connects, writes the file,
+and continues into the app. The same wizard appears when a config exists but has
+no resolvable active profile. After that, the TUI's
+[Config modal](FEATURES.md#config-modal) (`S`) edits profiles and settings
+in place.
+
 ## Shape
 
 ```toml

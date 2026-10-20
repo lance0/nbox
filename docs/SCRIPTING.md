@@ -165,62 +165,20 @@ docker run --rm -e NBOX_TOKEN=... \
 
 ## For AI agents (MCP)
 
-`nbox serve` is read-only by default. An MCP host launches it as a subprocess
-and speaks JSON-RPC over stdin/stdout (logs stay on stderr). The tools reuse the
-CLI's query and view layer, so they return the exact same JSON view models the
-CLI prints — an agent gets the structured data, not screen-scraped text. Run
-with `--local-writes` for local stdio writes using the active profile token, or
-with `--allow-writes` (HTTP + OIDC) to expose the `nbox_plan_write`/
-`nbox_apply_write` tools under the caller's per-user NetBox identity via the
-`[serve.vault]` mapping. See [MCP.md](MCP.md) for the write details.
-
-Local stdio host (Claude Code):
+`nbox serve` is an MCP server, read-only by default. An MCP host launches it as
+a subprocess and speaks JSON-RPC over stdin/stdout (logs stay on stderr). The
+tools reuse the CLI's query and view layer, so they return the same JSON view
+models the CLI prints: an agent gets structured data, not screen-scraped text.
 
 ```bash
 claude mcp add nbox -e NBOX_TOKEN=nbt_xxx.yyy -- nbox serve   # register nbox as a subprocess
+nbox serve --print-config                                     # paste-ready mcpServers JSON for other hosts
 ```
 
-Generic MCP host config (e.g. Claude Desktop's JSON):
-
-```json
-{
-  "mcpServers": {
-    "nbox": {
-      "command": "nbox",
-      "args": ["serve"],
-      "env": { "NBOX_TOKEN": "nbt_xxx.yyy" }
-    }
-  }
-}
-```
-
-The eleven read tools, all annotated read-only:
-
-| Tool | What |
-|------|------|
-| `nbox_status` | Connection + backend capabilities + NetBox/Django/Python versions + token preflight (`valid`/`invalid`/`unverified`; user on valid). Call first. |
-| `nbox_search` | Search across object types; `query` (required) plus scope/filter args. |
-| `nbox_get` | Fetch one object by `kind` + `ref` (`vrf`/`site`/`group` disambiguate). |
-| `nbox_get_interface` | One interface on a device, with its cable-path trace. |
-| `nbox_next_ip` | Next available address(es) in a prefix (nothing is reserved). |
-| `nbox_next_prefix` | Available free child prefix(es) of a given length. |
-| `nbox_journal` | Recent journal entries for an object. |
-| `nbox_history` | Change history (system audit log: create/update/delete, who + when) for an object. `/api/core/object-changes/` (NetBox 4.x) — distinct from `nbox_journal` (operator notes). |
-| `nbox_list_tags` | List tags (name, slug, color, usage count). |
-| `nbox_tagged` | Objects carrying a tag, across kinds (NetBox 4.3+); `tag` (id\|name\|slug). |
-| `nbox_cache_clear` | Drop nbox's local read cache so the next reads fetch fresh. |
-
-Two more tools — `nbox_plan_write` and `nbox_apply_write` (`read_only_hint =
-false`) — execute only with local stdio `--local-writes` or shared HTTP/OIDC
-`--allow-writes` plus caller `nbox:write` and a vault entry; see [MCP.md](MCP.md).
-
-The same objects are also exposed as MCP resources via one template,
-`nbox://{kind}/{ref}` (e.g. `nbox://device/edge01`) — reading one returns the
-same view `nbox_get` does, for hosts that browse resources instead of calling
-tools.
-
-HTTP transport, OIDC resource-server mode, the audit log, and rate limiting are
-covered in [MCP.md](MCP.md).
+The tool list, resources, prompts, write modes (`--local-writes`,
+`--allow-writes` + vault), HTTP transport, OIDC, the audit log, and rate
+limiting are in [MCP.md](MCP.md). [AGENTS.md](../AGENTS.md) is the compact
+machine-readable reference for agents driving the CLI directly.
 
 ## Tips
 
