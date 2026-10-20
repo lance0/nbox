@@ -114,7 +114,8 @@ The wire→view split makes most additions mechanical. End to end:
    `scripts/gen_schema_snapshot.py`), the TUI Nav rail, the MCP `nbox_get`
    kinds, and the `open` / `journal` resolvers.
 6. **Tests + docs** — a `wiremock` test (plus a golden if it has a JSON shape) and
-   the kind lists in README, docs/FEATURES.md, and AGENTS.md, kept in sync.
+   the kind lists in docs/FEATURES.md (lookups and CLI reference), docs/MCP.md,
+   and AGENTS.md, kept in sync.
 
 ### Schema-drift canary
 
@@ -157,7 +158,8 @@ Good examples:
 ### What to include
 
 - **Bug fixes:** steps to reproduce and verify.
-- **New features:** update README.md and the relevant docs.
+- **New features:** update the relevant page under docs/ (and README.md if the
+  change belongs on the front page).
 - **Breaking changes:** note in CHANGELOG.md.
 
 ## Reporting issues

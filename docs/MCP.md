@@ -115,6 +115,19 @@ Paste the printed object into the host's config file (merging under its
 `mcpServers` key if the file already has other servers), restart the host, and
 the `nbox` server appears in its MCP server list.
 
+### Without MCP: the Agent Skill
+
+To have an agent drive the CLI directly instead, install
+[`SKILL.md`](../SKILL.md) as a Claude Code Agent Skill. Claude then runs `nbox`
+subcommands on matching requests:
+
+```bash
+mkdir -p ~/.claude/skills/nbox && cp SKILL.md ~/.claude/skills/nbox/
+```
+
+The [`skills/`](../skills/) directory holds narrower skills (search, IPAM reads
+and allocation, device context, writes, serve) in the same format.
+
 ## HTTP transport (loopback)
 
 Stdio is the default transport. For local clients that want HTTP framing

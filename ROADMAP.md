@@ -128,7 +128,7 @@ the shared safe-write rails.
   (a `device_by_ref` suffix-strip fallback is a candidate fix), not yet scheduled. The remaining two —
   parent-prefix enrichment as a best-effort longest match, and name lookups resolving exact-then-contains
   — are **by design** (surfacing ambiguity over guessing), acknowledged here, not tracked for a fix._
-- ☑ **Demo recording** — a VHS cast for the README (`docs/demo.tape`, rendered to `docs/demo.gif`); see the [Demo](README.md#demo) section.
+- ☑ **Demo recording** — a VHS cast for the README (`docs/demo.tape`, rendered to `docs/demo.gif`); shown at the top of the [README](README.md).
 - ☑ **TUI browse kind-switch cache.** Browse-by-kind results are cached for the
   current TUI session by `(kind, filter)`, so returning to a previously-loaded
   Nav kind repaints instantly and restores the row selection while the normal
