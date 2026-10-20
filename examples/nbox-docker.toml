@@ -1,0 +1,16 @@
+# Config for the containerized MCP server in multi-user pass-through mode
+# (see docker-compose.yml). Point `url` at your NetBox and you're done.
+#
+# There is deliberately no token here: in pass-through mode every caller sends
+# their own NetBox API token per request, and a request without one is rejected
+# rather than falling back to a shared server-side credential.
+
+config_version = 1
+active_profile = "netbox"
+
+[profiles.netbox]
+url = "https://netbox.example.com"
+# verify_tls = false   # only for labs with self-signed certs
+
+[serve]
+netbox_token_passthrough = true

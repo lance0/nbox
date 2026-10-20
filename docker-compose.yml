@@ -1,0 +1,57 @@
+# Run the nbox MCP server in multi-user pass-through mode.
+#
+#   docker compose up -d --build
+#
+# One container serves many users: each MCP client sends its *own* NetBox API
+# token on every request (`X-NetBox-Token`, or `Authorization` when that header
+# isn't otherwise in use), and nbox forwards it to NetBox. NetBox's own object
+# permissions and changelog therefore apply to the real caller — the container
+# holds no shared credential. A request without a token is rejected with 401.
+#
+# Point `examples/nbox-docker.toml` at your NetBox first (or set NBOX_CONFIG_FILE
+# to your own config). See docs/MCP.md for the security model.
+
+services:
+  nbox:
+    build: .
+    image: nbox:local
+    container_name: nbox-mcp
+    restart: unless-stopped
+    ports:
+      # Defaults to loopback. Callers send real NetBox credentials on every
+      # request, so anything wider should be fronted by a TLS-terminating proxy;
+      # set NBOX_BIND=0.0.0.0 only on a network you trust.
+      - "${NBOX_BIND:-127.0.0.1}:${NBOX_PORT:-8080}:8080"
+    configs:
+      - source: nbox_config
+        target: /etc/nbox/nbox.toml
+    volumes:
+      # Only needed when NetBox is served by an internal CA; point `ca_bundle`
+      # in the config at /etc/nbox/ca.pem. Harmless when unset.
+      - ${NBOX_CA_BUNDLE:-/dev/null}:/etc/nbox/ca.pem:ro
+    command:
+      - --config
+      - /etc/nbox/nbox.toml
+      - serve
+      - --http
+      - 0.0.0.0:8080
+      - --netbox-token-passthrough
+      # The public hostname clients use, for the Host/Origin (DNS-rebinding)
+      # check. Add one --allowed-host per name your proxy serves.
+      - --allowed-host
+      - ${NBOX_PUBLIC_HOST:-localhost}
+      - --rate-limit
+      - "120"
+    # No shared NetBox token is configured on purpose: in pass-through mode the
+    # caller's token is the only credential, and a missing one must fail rather
+    # than silently fall back to a server-side identity.
+    read_only: true
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+
+configs:
+  nbox_config:
+    # A real file, not inline content: a `read_only` service can only take
+    # file-backed configs. Override with NBOX_CONFIG_FILE=/path/to/nbox.toml.
+    file: ${NBOX_CONFIG_FILE:-./examples/nbox-docker.toml}

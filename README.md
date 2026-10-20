@@ -604,6 +604,13 @@ nbox serve --http 0.0.0.0:8080 --netbox-token-passthrough \
   --allowed-host nbox.example.com
 ```
 
+The repo ships a `Dockerfile` (from source) and a `docker-compose.yml` for this
+mode — unprivileged, read-only, no baked-in credential:
+
+```bash
+NBOX_PUBLIC_HOST=nbox.example.com docker compose up -d --build
+```
+
 An audit log
 (`nbox::audit`) and an optional per-caller rate limit (`--rate-limit`) round it
 out. Full setup, security model, and IdP notes: [docs/MCP.md](docs/MCP.md).

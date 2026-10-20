@@ -1,0 +1,8 @@
+# The build context is the crate source only. `target/` is many GB of local
+# build artifacts that the image builds from scratch anyway, and shipping a
+# local config would bake a NetBox token into the image.
+target/
+.git/
+*.toml.local
+nbox.toml
+config.toml

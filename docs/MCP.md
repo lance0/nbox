@@ -371,6 +371,34 @@ misconfigured client gets an error, not somebody else's privileges.
   a configured `[serve.vault]` is ignored (nbox warns at startup) — the vault
   exists to bridge OIDC identities to tokens, which pass-through makes redundant.
 
+### Running it in Docker
+
+The repo ships a from-source `Dockerfile` and a `docker-compose.yml` for exactly
+this mode. Point `examples/nbox-docker.toml` at your NetBox (or set
+`NBOX_CONFIG_FILE` to your own config), then:
+
+```bash
+NBOX_PUBLIC_HOST=nbox.example.com docker compose up -d --build
+```
+
+The container runs unprivileged (uid 10001), read-only, with all capabilities
+dropped, and publishes `127.0.0.1:8080` (override with `NBOX_BIND` /
+`NBOX_PORT`) — put your TLS-terminating reverse proxy in front of that and set
+`NBOX_PUBLIC_HOST` to the name it serves so the `Host`/`Origin` check matches. For
+a NetBox behind an internal CA, set `NBOX_CA_BUNDLE` to the PEM file; it is
+mounted at `/etc/nbox/ca.pem`, so set `ca_bundle = "/etc/nbox/ca.pem"` in the
+profile. No NetBox credential is baked into the image or the config: the
+container is only useful once callers bring their own tokens.
+
+```bash
+# Smoke test: no token must be refused, never served from a shared identity.
+curl -s -o /dev/null -w '%{http_code}\n' -X POST http://127.0.0.1:8080/mcp \
+  -H 'content-type: application/json' \
+  -H 'accept: application/json, text/event-stream' \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","capabilities":{},"clientInfo":{"name":"c","version":"0"}}}'
+# => 401
+```
+
 ### Deployment notes
 
 - **Pass-through requires the HTTP transport.** stdio has no per-request headers,
