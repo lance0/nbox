@@ -12,7 +12,7 @@ there with a clearer message.
 | `no config at … — run nbox config init` | First run: launch `nbox` for the guided wizard, or `nbox profile add …`. |
 | `error: authentication failed` (exit 3) | The token is missing/invalid. Check `nbox config token status` for the resolved source; paste a token in the TUI, export `NBOX_TOKEN`, or point `token_env` at a set variable. |
 | `403` / permission denied (exit 3) | The token is valid but lacks object permissions, or your NetBox needs `LOGIN_REQUIRED`-aware tokens. Use a token with read access. |
-| TLS / certificate error | For a lab with a self-signed cert, set `verify_tls = false` on that profile (never in production). |
+| TLS / certificate error | NetBox behind an internal CA? Point `ca_bundle` at that CA's PEM; it adds trust anchors and keeps verification on. Only for a lab you control, `verify_tls = false` disables checking entirely. See [TLS](#tls). |
 | `operation timed out` on one search endpoint | Transient; nbox already disables stale keep-alive reuse. Retry, or raise `timeout_secs`. |
 | `ambiguous` (exit 5) | The reference matched several objects. Disambiguate (`--vrf` for an IP/prefix, `--site`/`--group` for a VLAN). |
 | NetBox version error | nbox requires NetBox **4.2+**. Check `nbox status`; see [Compatibility](COMPATIBILITY.md). |

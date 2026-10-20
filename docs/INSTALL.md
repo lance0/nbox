@@ -36,6 +36,9 @@ docker run --rm ghcr.io/lance0/nbox:latest --help
 Pass `-e NBOX_TOKEN=...` and mount a config (or pass `--config`) to run real
 lookups. Worked examples are in [Scripting: Docker](SCRIPTING.md#docker).
 
+To run the shared MCP server, the repo also ships a from-source `Dockerfile` and
+`docker-compose.yml`; see [MCP: Running it in Docker](MCP.md#running-it-in-docker).
+
 ### Pre-built binaries
 
 Download from [GitHub Releases](https://github.com/lance0/nbox/releases):

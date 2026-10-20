@@ -222,9 +222,9 @@ TUI renders without color and marks the selection with a `>` cursor.
 every object as an `nbox://{kind}/{ref}` resource, a small catalog of read-only
 investigation prompts, and two opt-in write tools (`nbox_plan_write` /
 `nbox_apply_write`) on the same safe-write engine as the CLI. Read-only by
-default; stdio by default, with a loopback HTTP transport and an OAuth 2.1
-resource-server mode for shared deployments. Tools, transports, write modes, and
-host setup are in [MCP server](MCP.md).
+default; stdio by default, with a loopback HTTP transport, an OAuth 2.1
+resource-server mode, and NetBox-token pass-through for shared deployments.
+Tools, transports, write modes, and host setup are in [MCP server](MCP.md).
 
 ## Robustness
 
@@ -300,7 +300,8 @@ nbox export <prometheus-sd|address-list|device-inventory>
                                   # address list, device inventory) — fixed shapes for scripting
 nbox serve [--http <addr>]        # read-first MCP server for AI agents (read-only by default;
                                   # --local-writes enables local stdio writes;
-                                  # --allow-writes enables shared HTTP/OIDC writes)
+                                  # --allow-writes enables shared HTTP/OIDC writes;
+                                  # --netbox-token-passthrough forwards each HTTP caller's own NetBox token)
                                   # --print-config prints the paste-ready mcpServers JSON and exits
 nbox config <init|path|show|token>    # token: status reports the resolved source (never echoed)
 nbox profile <add|use|remove|list|show>

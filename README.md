@@ -79,6 +79,9 @@ nbox serve --print-config             # mcpServers JSON for other hosts
 
 Writes over MCP are opt-in: `--local-writes` for a local stdio host using your
 profile token, or `--allow-writes` over HTTP/OIDC with a per-user token vault.
+For a shared multi-user server,
+[`--netbox-token-passthrough`](docs/MCP.md#netbox-api-token-pass-through-multi-user)
+forwards each caller's own NetBox token, so NetBox permissions apply per user.
 Host setup, tools, transports, and the security model are in
 [docs/MCP.md](docs/MCP.md). Agents driving the CLI directly should read
 [AGENTS.md](AGENTS.md); [SKILL.md](SKILL.md) is an installable Agent Skill.

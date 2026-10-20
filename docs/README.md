@@ -11,7 +11,7 @@ short overview; everything else lives here.
 | [Features](FEATURES.md) | Every lookup and export, search filters, output, the TUI (keys, palette, Config modal, themes), CLI reference, global flags. |
 | [Configuration](CONFIG.md) | `config.toml`, profiles, token resolution, GraphQL backends, UI settings, cache, `[serve]`, logging. |
 | [Scripting](SCRIPTING.md) | Output formats, exit codes, `jq` recipes, CI, Docker. |
-| [MCP server](MCP.md) | `nbox serve` for AI agents: host setup, tools, resources, prompts, write modes, HTTP and OIDC. |
+| [MCP server](MCP.md) | `nbox serve` for AI agents: host setup, tools, resources, prompts, write modes, HTTP, OIDC, token pass-through, Docker. |
 | [Troubleshooting](TROUBLESHOOTING.md) | Symptoms and fixes for auth, config, TLS, output, and the MCP server. |
 | [Comparison](COMPARISON.md) | nbox next to the NetBox web UI, `curl`, and `pynetbox`. |
 
