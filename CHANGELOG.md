@@ -48,6 +48,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   time, futures, …). No behavior change: the OIDC algorithm allowlist is
   unchanged, and `dirs` 7 only moves the Windows preference directory, which
   nbox does not use (config paths are the same on every platform).
+- Bump `rmcp` 3.3 → 3.5 (`ServerInfo` → `ServerConfig` rename; the handshake
+  version stays pinned at `2025-11-25`, no behavior change) plus
+  semver-compatible refreshes (tokio, clap_complete, serde_json, thiserror,
+  tokio-util, jsonwebtoken, libc, tokio-test, insta).
 
 ### Fixed
 

@@ -16,9 +16,9 @@ use std::time::Duration;
 use serde_json::{Value, json};
 use tempfile::NamedTempFile;
 
-/// The protocol version the server advertises (`ProtocolVersion::LATEST`). The
-/// server negotiates down to an older client version, so sending the latest is
-/// always accepted.
+/// The protocol version the server advertises
+/// (`ProtocolVersion::LATEST_WITH_INITIALIZE`). The server negotiates down to an
+/// older client version, so sending the latest is always accepted.
 pub const PROTOCOL_VERSION: &str = "2025-11-25";
 
 /// Every read off the child's stdout is bounded by this — a generous ceiling so

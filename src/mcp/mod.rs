@@ -19,7 +19,7 @@ use rmcp::model::{
     Extensions, GetPromptRequestParams, GetPromptResponse, JsonObject, ListPromptsResult,
     ListResourceTemplatesResult, ListResourcesResult, PaginatedRequestParams, ProtocolVersion,
     ReadResourceRequestParams, ReadResourceResponse, ReadResourceResult, ResourceContents,
-    ResourceTemplate, ServerCapabilities, ServerInfo,
+    ResourceTemplate, ServerCapabilities, ServerConfig,
 };
 use rmcp::service::RequestContext;
 use rmcp::{
@@ -1342,12 +1342,12 @@ impl NboxMcp {
 #[allow(clippy::unused_async_trait_impl)]
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for NboxMcp {
-    fn get_info(&self) -> ServerInfo {
-        // ServerInfo (InitializeResult) is #[non_exhaustive], so it can't be
+    fn get_info(&self) -> ServerConfig {
+        // ServerConfig (InitializeResult) is #[non_exhaustive], so it can't be
         // built with a struct literal from here — start from the default and
         // override the fields we care about.
-        let mut info = ServerInfo::default();
-        info.protocol_version = ProtocolVersion::LATEST;
+        let mut info = ServerConfig::default();
+        info.protocol_version = ProtocolVersion::LATEST_WITH_INITIALIZE;
         info.capabilities = ServerCapabilities::builder()
             .enable_tools()
             .enable_resources()
