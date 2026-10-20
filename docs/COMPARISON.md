@@ -139,5 +139,5 @@ nbox next-ip 10.44.208.0/24 --count 4                      # or the next free ad
 
 ---
 
-See the [README](../README.md) for setup and the full command list, and
-[docs/FEATURES.md](FEATURES.md) for the complete command reference.
+See [Installation](INSTALL.md) for setup and the
+[CLI reference](FEATURES.md#cli-reference) for the full command list.
