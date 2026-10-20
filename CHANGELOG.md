@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-10-20
+
 ### Added
 
 - **Multi-user NetBox API-token pass-through.** `nbox serve --http
@@ -58,6 +60,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   version stays pinned at `2025-11-25`, no behavior change) plus
   semver-compatible refreshes (tokio, clap_complete, serde_json, thiserror,
   tokio-util, jsonwebtoken, libc, tokio-test, insta).
+- Vault (`[serve.vault]`) writes pick the auth scheme from each caller's token
+  (`nbt_…` → `Bearer`, otherwise `Token`) instead of inheriting the profile's
+  `auth_scheme`, and share the profile client's GraphQL probe.
+- The README is now a short overview; install, usage, keybindings, and themes
+  moved to `docs/INSTALL.md` and `docs/FEATURES.md`, indexed by `docs/README.md`.
 
 ### Fixed
 
