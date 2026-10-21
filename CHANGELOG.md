@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Bump `rustls-webpki` 0.103.15 → 0.103.16 and `webpki-roots` 1.0.9 → 1.0.10
+  (RUSTSEC-2026-0382, RUSTSEC-2026-0381: distrusted emSign intermediates could
+  be accepted).
+
 ## [0.15.0] - 2026-10-20
 
 ### Added
