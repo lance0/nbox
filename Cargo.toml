@@ -65,7 +65,7 @@ base64 = "0.23"
 # JSON Schema derivation for MCP tool output schemas. Pinned to the exact
 # version rmcp depends on so `Json<T>` accepts our `JsonSchema` types
 # (the trait bound is satisfied only by that one schemars instance).
-schemars = "=1.2.2"
+schemars = "=1.2.3"
 # `preserve_order` keeps map keys in TOML document order through deserialization
 # (so `[profiles.*]` load in file order for the TUI switcher, not alphabetical).
 toml = { version = "1", features = ["preserve_order"] }
