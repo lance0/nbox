@@ -25,6 +25,11 @@ ignore = [
     # private-key oracle is exposed by nbox. Revisit when upstream fixes `rsa`
     # or we can move to a release-safe non-vulnerable backend.
     "RUSTSEC-2023-0071",
+    # RUSTSEC-2026-0387 — same rationale as `.cargo/audit.toml`: crypto-bigint
+    # is used by jsonwebtoken's EC public-key verification, never production
+    # secret-integer operations. Remove when the rust_crypto stack accepts
+    # >=0.7.6 or before introducing production private-key operations.
+    "RUSTSEC-2026-0387",
 ]
 
 [licenses]
