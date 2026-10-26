@@ -17,4 +17,13 @@ ignore = [
     # breaks the static-musl release legs, which is why Cargo.toml deliberately
     # pins `rust_crypto`. Re-evaluate if a fixed `rsa` ships or we move off RSA.
     "RUSTSEC-2023-0071",
+    # RUSTSEC-2026-0387 — crypto-bigint timing variability reaches us through
+    # jsonwebtoken -> p256/p384 -> elliptic-curve. The shipped OIDC path only
+    # verifies signatures with public keys (RS256/ES256); it performs no EC
+    # signing, key generation, or secret-scalar operations. The timing leak
+    # concerns secret integers, so there is no secret key to recover here.
+    # jsonwebtoken 11's rust_crypto stack requires crypto-bigint 0.5; the fix
+    # is >=0.7.6. Remove this exception when that stack accepts a patched version
+    # or if production gains private-key operations (src/mcp/oidc.rs).
+    "RUSTSEC-2026-0387",
 ]
